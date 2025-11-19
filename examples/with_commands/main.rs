@@ -21,7 +21,7 @@ use ratatui::Frame;
 use std::collections::HashMap;
 
 // Data models
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Service {
     id: u32,
     name: String,
@@ -65,7 +65,14 @@ impl ServicesView {
         ];
         let data_source = ServiceDataSource { services };
         let theme = Theme::default();
-        let grid = GridView::new(data_source, theme);
+        let grid = GridView::new(data_source, theme)
+            .with_formatter(|service: &Service| {
+                vec![
+                    service.name.clone(),
+                    service.status.clone(),
+                    format!(":{}", service.port),
+                ]
+            });
         Self { grid }
     }
 }
