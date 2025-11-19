@@ -356,8 +356,12 @@ pub struct AppMessage {
 ### 7.3 Command palette (`:`)
 
 - **Enabled by default**, but **opt-out** via `AppBuilder`.
-- Lists available commands / actions, searchable by text.
-- Uses the same `ActionId` / `AppCommand` model as keybindings (see next section).
+- Uses a **formal `Command` abstraction** (see section 8).
+- Lists available commands, searchable by text, based on:
+  - command **id**,
+  - human-friendly **summary**,
+  - optional **syntax** metadata.
+- Accepts commands typed using a **standard textual syntax** (see section 8.2).
 
 ### 7.4 Modals
 
@@ -369,30 +373,105 @@ pub struct AppMessage {
 
 ---
 
-## 8. Actions and commands (v1 vs v2)
+## 8. Actions and commands
 
-We distinguish two levels:
+We want a **formal command abstraction** that is shared by:
 
-1. **v1 (simpler)**:
-   - Views handle their own keys via `handle_event`.
-   - They can directly perform operations using `AppContext` (call clients, update state, push `AppMessage`s).
+- keybindings (keys → commands),
+- the command palette (search and execution),
+- and potentially external control surfaces in the future.
 
-2. **v2 (more structured)**:
-   - Introduce a formal `Action` / `ActionRegistry`:
+### 8.1 Core types
 
-     ```rust
-     pub type ActionId = &'static str;
+```rust
+pub type ActionId = &'static str;
+pub type CommandId = &'static str;
 
-     pub enum AppCommand {
-         SwitchView(&'static str),
-         InvokeAction(ActionId),
-     }
-     ```
+pub enum AppCommand {
+    SwitchView(&'static str),
+    InvokeAction(ActionId),
+    RunCommand(CommandId, CommandArgs),
+}
+```
 
-   - Keybindings and command palette both produce `AppCommand`s, which the core dispatches.
-   - Views can register actions and associate them with the current selection (e.g., trigger DAG on selected row).
+`Command` is a higher-level abstraction with metadata:
 
-For now, we **document the idea** of actions and `AppCommand`, but v1 can be implemented with direct `handle_event` and evolve later without breaking the core concepts.
+```rust
+pub struct Command {
+    pub id: CommandId,
+    /// Short, human-readable description (shown in palette).
+    pub summary: &'static str,
+    /// Optional syntax hint (e.g. ":restart service=<name> env=<env>").
+    pub syntax: Option<&'static str>,
+    /// Category/group (optional, for palette grouping).
+    pub category: Option<&'static str>,
+    /// Execution function.
+    pub execute: fn(&mut AppContext, CommandArgs) -> CommandResult,
+}
+```
+
+`CommandArgs` represents parsed arguments from the command line (see next subsection):
+
+```rust
+pub struct CommandArgs {
+    pub positional: Vec<String>,
+    pub named: HashMap<String, String>,
+}
+
+pub type CommandResult = anyhow::Result<()>;
+```
+
+The **application** registers commands with an internal `CommandRegistry` through `AppBuilder`:
+
+```rust
+impl AppBuilder {
+    pub fn register_command(mut self, command: Command) -> Self { /* ... */ }
+}
+```
+
+Keybindings and the command palette both ultimately produce an `AppCommand`, which the core dispatches:
+
+- `SwitchView(view_id)` for navigation.
+- `InvokeAction(action_id)` for simple operations tied to the current selection (v2+).
+- `RunCommand(command_id, args)` for richer operations with parsed arguments.
+
+### 8.2 Standard command syntax
+
+The command palette uses a **standard textual syntax** when the user types commands:
+
+- Commands are always prefixed by `:` when typed:
+  - `:restart`
+  - `:restart api`
+  - `:restart service=api env=prod`
+  - `:tail-logs service=worker`
+- Parsing rules (v1):
+  - First token after `:` is the **command id**.
+  - Remaining tokens are optional **arguments**.
+  - Arguments are either:
+    - **named**: `key=value`, added to `CommandArgs::named`.
+    - **positional**: tokens without `=`, added to `CommandArgs::positional` in order.
+- Quoting and advanced parsing can be kept simple in v1:
+  - Spaces separate tokens.
+  - No nested quoting/escaping in the first iteration.
+
+Examples:
+
+- `:restart api` → `id = "restart"`, positional = `["api"]`, named = `{}`.
+- `:restart service=api env=prod` → `id = "restart"`, positional = `[]`, named = `{ "service": "api", "env": "prod" }`.
+
+The app can decide how strict or flexible each `Command` is with respect to arguments and report validation errors via `AppMessage`.
+
+### 8.3 v1 vs v2 responsibilities
+
+- **v1**:
+  - Views still handle most keys via `handle_event`.
+  - Command palette and some keybindings can invoke `RunCommand` with parsed `CommandArgs`.
+  - `ActionId` / `InvokeAction` may be unused or used only for simple, selection-aware operations.
+- **v2+**:
+  - Introduce a full `ActionRegistry` and richer integration:
+    - Views register actions that can be triggered by commands or keybindings.
+    - Better selection-awareness (e.g., trigger operation on selected grid row).
+    - Unified help/metadata for both commands and actions.
 
 ---
 
@@ -452,7 +531,52 @@ For now, these are left to the application.
 
 ---
 
-## 11. v1 scope vs future extensions
+## 11. Logs and `LogView`
+
+We distinguish between CLI-level logging and the TUI `LogView`:
+
+- **CLI-level logging**:
+  - The application may already support streaming logs on the command line (e.g., `xyz logs --follow`).
+  - The framework does not prescribe how that CLI command works.
+
+- **TUI `LogView`**:
+  - A dedicated view for logs inside the TUI, backed by an application-provided log source.
+
+### 11.1 Streaming logs in `LogView`
+
+`LogView` is designed to support live, tail-like streaming:
+
+- It accepts a log source implemented by the application:
+  - push-based (stream of lines), or
+  - pull-based (periodic polling).
+- New log lines are appended to an in-memory buffer:
+  - buffer size (bounded/unbounded) is decided by the application,
+  - a typical implementation might use a ring buffer of the last N lines.
+- The view supports:
+  - scrolling up/down,
+  - page up/down,
+  - jump to top/bottom,
+  - a “follow” mode that keeps the view pinned to the latest lines as they arrive.
+
+The framework provides the `LogView` widget and navigation behavior; the application provides the actual log source using its preferred clients/protocols.
+
+### 11.2 Keyword filtering
+
+`LogView` provides a **simple keyword filter**:
+
+- The user can enter a **single filter string**.
+- Only lines whose rendered text **contains** this substring are displayed.
+- Matching is **case-insensitive** by default in v1.
+
+More advanced capabilities are explicitly deferred to future versions:
+
+- multiple keywords with AND/OR semantics,
+- regex or structured-log queries (e.g., by level or field),
+- cross-view search and bookmarks.
+
+---
+
+## 12. v1 scope vs future extensions
 
 **v1 (minimum usable)**:
 
@@ -474,45 +598,36 @@ For now, these are left to the application.
   - help overlay (opt-out),
   - command palette (opt-out),
   - simple modal component.
+- Basic `Command` abstraction and standard `:command arg=value` syntax used by the command palette.
+- `LogView` with streaming support backed by the app, plus simple keyword filtering.
 
 **v2+ (explicitly future work)**:
 
 - Background jobs / async refresh (non-blocking I/O).
-- Formal `Action` / `ActionRegistry` and unified command model.
+- Formal `Action` / `ActionRegistry` and richer integration with selection-aware actions.
 - Loading keymaps and configuration from external files (YAML/TOML).
 - Split-screen / multiple views visible at once.
-- More advanced logging (streaming, filters, search).
+- More advanced logging (structured logs, multi-field queries, regex, cross-view search).
 - Shared helpers for multi-environment support.
-- Tighter integration helpers for embedded REST/gRPC servers.
+- Potential helpers for exposing TUI metrics/state via REST/gRPC if needed.
 
 ---
 
-## 12. Open questions (next design steps)
+## 13. Open questions (next design steps)
 
-Some questions that remain open and are worth deciding in later iterations:
+Some questions remain open and can be refined in future iterations:
 
-1. **Command palette model**  
-   Do we want a formal `Command` abstraction (with description, arguments, categories), or is it just a list of actions plus some built-in commands?
+1. **Command arguments and validation**
+   - How strict should validation be in v1 (required vs optional args, validation errors surfaced via `AppMessage`)?
 
-2. **Standard command syntax**  
-   Should we define a standard textual syntax (e.g. `:restart service=api env=prod`) that maps to commands, or leave it entirely to the application?
+2. **Command discovery and grouping**
+   - Do we want built-in categories and tags for commands to improve palette UX, or is a simple flat list enough for small CLIs?
 
-3. **Logs and streaming**  
-   How far should v2 go in supporting streaming logs (e.g. tail -f style) and log filtering/search directly in `LogView`?
+3. **Log UX refinements**
+   - Do we want to add multi-keyword filters or regex support in a near-term v2?
+   - Should we support simple “next match / previous match” navigation for the current filter?
 
-4. **Service health and metrics**  
-   Do we want optional helpers or conventions for:
-   - health checks,
-   - metrics panels,
-   - alert banners in the status bar?
+4. **Metrics presentation**
+   - Which minimal set of metrics widgets is worth standardizing (single number, bar, sparkline, table)?
 
-5. **REST/gRPC lifecycle helpers**  
-   Should the framework provide utilities to:
-   - coordinate shutdown between TUI and REST/gRPC servers,
-   - expose high-level TUI state via those APIs?
-
-6. **Thread-safety and async**  
-   Do we want to require `AppContext` (and main types) to be `Send + Sync` from day one, to make the later async/background job story smoother?
-
-These questions do not block v1, but the answers will influence how far the framework can go in v2+ without breaking changes.
-
+These do not block v1 but will influence UX polish and developer ergonomics.

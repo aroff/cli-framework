@@ -1,0 +1,41 @@
+# Rust
+target/
+debug/
+release/
+*.rs.bk
+*.rlib
+*.prof*
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+*.tmp
+
+# Environment
+.env
+.env.local
+.env.*.local
+*.log
+
+# Coverage
+coverage/
+*.gcda
+*.gcno
+*.gcov
+
+# Documentation
+/book/
+
+# Build artifacts
+dist/
+build/
+out/
+

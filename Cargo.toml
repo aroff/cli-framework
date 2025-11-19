@@ -1,0 +1,48 @@
+[package]
+name = "tui-framework"
+version = "0.1.0"
+edition = "2021"
+authors = ["CLI Framework Team"]
+description = "An opinionated TUI framework library for building terminal user interfaces"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/your-org/tui-framework"
+
+[dependencies]
+ratatui = "0.27"
+crossterm = "0.28"
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Optional OpenTelemetry dependencies (applications can enable)
+# Note: Applications should add these dependencies themselves when using observability feature
+# opentelemetry = { version = "0.24", optional = true }
+# opentelemetry-otlp = { version = "0.17", optional = true }
+# opentelemetry-sdk = { version = "0.24", optional = true }
+
+[dev-dependencies]
+ratatui = { version = "0.27", features = ["crossterm"] }
+
+[features]
+default = []
+# observability = ["opentelemetry", "opentelemetry-otlp", "opentelemetry-sdk"]
+# Note: OpenTelemetry integration will be implemented in src/observability/mod.rs
+# Applications should add opentelemetry crates to their own Cargo.toml when using this feature
+observability = []
+
+[lib]
+name = "tui_framework"
+path = "src/lib.rs"
+
+[[example]]
+name = "simple"
+path = "examples/simple/main.rs"
+
+[[example]]
+name = "multi_view"
+path = "examples/multi_view/main.rs"
+
+[[example]]
+name = "kitchen_sink"
+path = "examples/kitchen_sink/main.rs"
+

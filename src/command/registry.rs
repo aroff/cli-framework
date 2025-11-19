@@ -1,0 +1,40 @@
+//! CommandRegistry for managing commands
+
+use std::collections::HashMap;
+use crate::command::Command;
+
+/// Registry for managing commands
+pub struct CommandRegistry {
+    commands: HashMap<String, Command>,
+}
+
+impl CommandRegistry {
+    /// Create a new command registry
+    pub fn new() -> Self {
+        Self {
+            commands: HashMap::new(),
+        }
+    }
+
+    /// Register a command
+    pub fn register(&mut self, command: Command) {
+        self.commands.insert(command.id.to_string(), command);
+    }
+
+    /// Get a command by ID
+    pub fn get(&self, id: &str) -> Option<&Command> {
+        self.commands.get(id)
+    }
+
+    /// Get all commands
+    pub fn commands(&self) -> impl Iterator<Item = &Command> {
+        self.commands.values()
+    }
+}
+
+impl Default for CommandRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
