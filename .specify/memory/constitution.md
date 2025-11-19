@@ -1,50 +1,67 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+<!--
+Sync Impact Report:
+Version: 0.0.0 → 1.0.0 (Initial constitution)
+Modified principles: N/A (initial creation)
+Added sections: Core Principles, Technology Stack, Development Workflow, Governance
+Removed sections: N/A
+Templates requiring updates:
+  ✅ plan-template.md - Constitution Check section references constitution
+  ✅ spec-template.md - No direct references, compatible
+  ✅ tasks-template.md - No direct references, compatible
+Follow-up TODOs: None
+-->
+
+# CLI Framework Constitution
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. Library-First
+The framework MUST be a standalone, independently testable library crate. Every feature MUST be self-contained with clear purpose. The framework MUST minimize hosting code for application developers, allowing them to focus on commands and operations rather than terminal management. Rationale: Enables reuse, independent testing, and clear separation of concerns between framework and application code.
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+### II. Test-First (NON-NEGOTIABLE)
+TDD mandatory: Tests written → User approved → Tests fail → Then implement. Red-Green-Refactor cycle strictly enforced. All core abstractions (View, DataSource, Command) MUST have contract tests. Integration tests MUST verify user stories independently. Unit tests MUST cover all public API methods. Rationale: Ensures correctness, prevents regressions, and maintains confidence during refactoring.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+### III. Documentation & API Design
+Public API MUST be documented with examples. All public traits, structs, and functions MUST have doc comments explaining purpose, usage, and error conditions. Examples directory MUST demonstrate all major features. Rationale: Enables adoption, reduces support burden, and clarifies intended usage patterns.
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+### IV. Observability
+Framework MUST provide optional debug logging and metrics that applications can enable. Framework MUST be compatible with OpenTelemetry for integration with standard observability tooling. Observability features MUST be opt-in to keep the framework lightweight. Rationale: Enables troubleshooting framework behavior without imposing observability requirements on all applications.
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+### V. Simplicity & Error Handling
+Code MUST be straightforward, clean, and non-convoluted. YAGNI principles apply: build only what is needed now. Framework MUST use `anyhow::Result` for framework operations to provide clear error context. Complex solutions MUST be justified against simpler alternatives. Rationale: Maintains codebase readability, reduces maintenance burden, and enables faster onboarding.
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+## Technology Stack
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+**Language**: Rust (latest stable, minimum 1.75+)  
+**Primary Dependencies**: 
+- `ratatui` (TUI rendering library)
+- `crossterm` (terminal I/O and event handling)
+- `anyhow` (error handling)
+- `serde` (serialization for configuration)
+- OpenTelemetry crates (optional observability integration)
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+**Testing**: `cargo test` with unit tests, integration tests, and contract tests for View/DataSource traits. TUI testing uses `ratatui::backend::TestBackend` for headless testing of rendering logic.
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+**Target Platform**: Linux, macOS, Windows (terminal-based CLI applications)
+
+**Project Type**: Library crate (`tui-framework`) that applications statically link
+
+## Development Workflow
+
+**Test-Driven Development**: All features MUST follow TDD: write tests first, ensure they fail, then implement. Contract tests MUST be written for all trait implementations.
+
+**Code Review**: All PRs/reviews MUST verify constitution compliance. Complexity MUST be justified. Public API changes MUST include documentation updates.
+
+**Quality Gates**: 
+- All tests MUST pass before merge
+- Public API MUST be documented
+- Examples MUST be updated for new features
+- Contract tests MUST pass for trait implementations
+
+**Reference Application**: `examples/kitchen_sink` serves as the primary integration test bench and demonstrates all framework features.
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+Constitution supersedes all other practices. Amendments require documentation, approval, and migration plan. All PRs/reviews MUST verify compliance with constitution principles. Complexity MUST be justified against simpler alternatives. Use `.specify/templates/` for runtime development guidance.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+**Version**: 1.0.0 | **Ratified**: 2025-11-17 | **Last Amended**: 2025-11-19
