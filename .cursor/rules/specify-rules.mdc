@@ -1,0 +1,29 @@
+# cli-framework Development Guidelines
+
+Auto-generated from all feature plans. Last updated: 2025-11-19
+
+## Active Technologies
+
+- Rust (latest stable, minimum 1.75+) (001-cli-framework-spec)
+
+## Project Structure
+
+```text
+src/
+tests/
+```
+
+## Commands
+
+cargo test [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLOGIES] cargo clippy
+
+## Code Style
+
+Rust (latest stable, minimum 1.75+): Follow standard conventions
+
+## Recent Changes
+
+- 001-cli-framework-spec: Added Rust (latest stable, minimum 1.75+)
+
+<!-- MANUAL ADDITIONS START -->
+<!-- MANUAL ADDITIONS END -->
