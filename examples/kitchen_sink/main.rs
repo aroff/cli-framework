@@ -18,7 +18,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 // Data models
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Resource {
     id: u32,
     name: String,
@@ -60,7 +60,13 @@ impl ResourcesView {
         ];
         let data_source = ResourceDataSource { resources };
         let theme = Theme::default();
-        let grid = GridView::new(data_source, theme);
+        let grid = GridView::new(data_source, theme)
+            .with_formatter(|resource: &Resource| {
+                vec![
+                    resource.name.clone(),
+                    resource.status.clone(),
+                ]
+            });
         Self { grid }
     }
 }

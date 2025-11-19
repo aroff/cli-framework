@@ -14,7 +14,7 @@ use ratatui::layout::Rect;
 use ratatui::Frame;
 
 // Simple data row
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Item {
     id: u32,
     name: String,
@@ -58,7 +58,14 @@ impl SimpleView {
         ];
         let data_source = SimpleDataSource { items };
         let theme = Theme::default();
-        let grid = GridView::new(data_source, theme);
+        let grid = GridView::new(data_source, theme)
+            .with_formatter(|item: &Item| {
+                vec![
+                    format!("ID: {}", item.id),
+                    item.name.clone(),
+                    item.status.clone(),
+                ]
+            });
         Self { grid }
     }
 }
