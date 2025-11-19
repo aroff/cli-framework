@@ -9,22 +9,41 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Row, Table, TableState};
 use ratatui::Frame;
+use std::fmt::Debug;
 
 /// GridView widget for displaying tabular data
-pub struct GridView<D: DataSource> {
+pub struct GridView<D: DataSource> 
+where
+    D::Row: Debug,
+{
     data_source: D,
     state: TableState,
     theme: Theme,
+    formatter: Option<Box<dyn Fn(&D::Row) -> Vec<String>>>,
 }
 
-impl<D: DataSource> GridView<D> {
+impl<D: DataSource> GridView<D> 
+where
+    D::Row: Debug,
+{
     /// Create a new GridView
     pub fn new(data_source: D, theme: Theme) -> Self {
         Self {
             data_source,
             state: TableState::default(),
             theme,
+            formatter: None,
         }
+    }
+
+    /// Set a custom formatter function for rows
+    /// The formatter should return a Vec<String> representing the columns
+    pub fn with_formatter<F>(mut self, formatter: F) -> Self
+    where
+        F: Fn(&D::Row) -> Vec<String> + 'static,
+    {
+        self.formatter = Some(Box::new(formatter));
+        self
     }
 
     /// Get a reference to the data source
@@ -81,17 +100,51 @@ impl<D: DataSource> GridView<D> {
         }
 
         // Build rows from data source
-        // Note: Applications will need to provide a way to format rows
-        // For now, we'll create a placeholder implementation
         let mut rows = Vec::new();
-        for i in 0..len.min((area.height.saturating_sub(2)) as usize) {
-            if self.data_source.get(i).is_some() {
-                // Placeholder: applications will customize row formatting
-                rows.push(Row::new(vec![Span::raw(format!("Row {}", i + 1))]));
+        let visible_rows = (area.height.saturating_sub(2)) as usize;
+        let mut num_cols = 1;
+        
+        for i in 0..len.min(visible_rows) {
+            if let Some(row) = self.data_source.get(i) {
+                let cells = if let Some(ref formatter) = self.formatter {
+                    // Use custom formatter
+                    formatter(row)
+                } else {
+                    // Default: use Debug formatting, try to parse as structured data
+                    let debug_str = format!("{:?}", row);
+                    // Try to extract meaningful fields from Debug output
+                    // For structs like Item { id: 1, name: "...", status: "..." }
+                    // we'll show a simplified version
+                    if debug_str.contains("id:") && debug_str.contains("name:") {
+                        // Try to extract name field if it exists
+                        let name = if let Some(start) = debug_str.find("name: \"") {
+                            let start = start + 7;
+                            if let Some(end) = debug_str[start..].find('"') {
+                                debug_str[start..start+end].to_string()
+                            } else {
+                                format!("Item {}", i + 1)
+                            }
+                        } else {
+                            format!("Item {}", i + 1)
+                        };
+                        vec![name]
+                    } else {
+                        // Fallback to Debug string (truncated)
+                        vec![debug_str.chars().take(area.width as usize - 4).collect()]
+                    }
+                };
+                
+                num_cols = num_cols.max(cells.len());
+                let spans: Vec<Span> = cells.iter().map(|s| Span::raw(s.clone())).collect();
+                rows.push(Row::new(spans));
             }
         }
 
-        let widths = [ratatui::layout::Constraint::Percentage(100)];
+        // Create column constraints (equal width for all columns)
+        let widths: Vec<ratatui::layout::Constraint> = (0..num_cols)
+            .map(|_| ratatui::layout::Constraint::Percentage(100 / num_cols.max(1) as u16))
+            .collect();
+        
         let table = Table::new(rows, widths)
             .block(Block::default().borders(Borders::ALL).title("Data"))
             .highlight_style(
