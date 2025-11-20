@@ -113,6 +113,30 @@ impl View for ResourcesView {
             },
         ]
     }
+
+    fn header_info(&self) -> Option<Vec<(String, String)>> {
+        Some(vec![
+            ("Resources".to_string(), "3".to_string()),
+            ("Context".to_string(), "default".to_string()),
+        ])
+    }
+
+    fn header_help(&self) -> Option<Vec<HelpItem>> {
+        Some(vec![
+            HelpItem {
+                key: "j/↓".to_string(),
+                description: "Down".to_string(),
+            },
+            HelpItem {
+                key: "k/↑".to_string(),
+                description: "Up".to_string(),
+            },
+            HelpItem {
+                key: ":".to_string(),
+                description: "Commands".to_string(),
+            },
+        ])
+    }
 }
 
 // Logs view with LogView
@@ -182,6 +206,34 @@ impl View for LogsView {
         
         // Render log view
         self.log_view.render(f, area);
+    }
+
+    fn header_info(&self) -> Option<Vec<(String, String)>> {
+        Some(vec![
+            ("Logs".to_string(), "streaming".to_string()),
+            ("Follow".to_string(), if self.log_view.is_follow_mode() { "ON" } else { "OFF" }.to_string()),
+        ])
+    }
+
+    fn header_help(&self) -> Option<Vec<HelpItem>> {
+        Some(vec![
+            HelpItem {
+                key: "/".to_string(),
+                description: "Filter".to_string(),
+            },
+            HelpItem {
+                key: "f".to_string(),
+                description: "Follow".to_string(),
+            },
+            HelpItem {
+                key: "g".to_string(),
+                description: "Top".to_string(),
+            },
+            HelpItem {
+                key: "G".to_string(),
+                description: "Bottom".to_string(),
+            },
+        ])
     }
 
     fn handle_event(&mut self, event: &Event, _ctx: &mut dyn AppContext) -> ViewResult {
@@ -311,10 +363,10 @@ fn main() -> Result<()> {
         .register_view(ResourcesView::new())
         .register_view(LogsView::new());
     
-    // Map views to F-keys
+    // Map views to numeric keys
     builder = builder
-        .map_view_slot(ViewSlot::F1, "resources.view")
-        .map_view_slot(ViewSlot::F2, "logs.view");
+        .map_view_slot(ViewSlot::Slot1, "resources.view")
+        .map_view_slot(ViewSlot::Slot2, "logs.view");
     
     // Register commands
     builder = builder.register_command(Command {
@@ -334,7 +386,7 @@ fn main() -> Result<()> {
     println!("  - GridView with data sources");
     println!("  - LogView with streaming logs");
     println!("  - Command palette (press ':')");
-    println!("  - View switching (F1, F2)");
+    println!("  - View switching (1, 2)");
     println!("  - Help overlay (press '?')");
     println!("");
     println!("Log View Controls:");

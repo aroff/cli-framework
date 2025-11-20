@@ -45,7 +45,7 @@ impl AppBuilder {
         self
     }
 
-    /// Map a view to an F-key slot
+    /// Map a view to a numeric key slot (1-9)
     pub fn map_view_slot(mut self, slot: ViewSlot, view_id: &'static str) -> Self {
         self.view_slots.insert(slot, view_id.to_string());
         self
@@ -201,7 +201,51 @@ impl<C: AppContext> App<C> {
                             // Render current view if no overlay is active
                             if let Some(ref view_id) = current_view_id {
                                 if let Some(view) = view_registry.get_mut(view_id) {
-                                    view.render(f, main_area, ctx);
+                                    // Get header info and help once
+                                    let header_info = view.header_info();
+                                    let header_help = view.header_help();
+                                    let has_header = header_info.is_some() || header_help.is_some();
+                                    
+                                    if has_header {
+                                        // Calculate header height dynamically
+                                        let header_height = {
+                                            let info_lines = header_info.as_ref().map(|i| i.len() as u16).unwrap_or(0);
+                                            let help_lines = header_help.as_ref().map(|h| h.len().min(5) as u16).unwrap_or(0);
+                                            info_lines.max(help_lines).max(1) + 1
+                                        };
+                                        
+                                        // Split main area into header and content
+                                        let chunks = ratatui::layout::Layout::vertical([
+                                            ratatui::layout::Constraint::Length(header_height),
+                                            ratatui::layout::Constraint::Min(0),
+                                        ])
+                                        .split(main_area);
+                                        
+                                        let header_area = chunks[0];
+                                        let content_area = chunks[1];
+                                        
+                                        // Build and render header
+                                        let mut header = crate::widget::ViewHeader::new(
+                                            view.title().to_string(),
+                                            crate::view::Theme::default(),
+                                        );
+                                        
+                                        if let Some(info) = header_info {
+                                            header = header.with_info(info);
+                                        }
+                                        
+                                        if let Some(help) = header_help {
+                                            header = header.with_help(help);
+                                        }
+                                        
+                                        header.render(f, header_area);
+                                        
+                                        // Render view content in remaining area
+                                        view.render(f, content_area, ctx);
+                                    } else {
+                                        // No header, render view directly
+                                        view.render(f, main_area, ctx);
+                                    }
                                 }
                             }
                         }
@@ -284,7 +328,7 @@ impl<C: AppContext> App<C> {
             _ => {}
         }
 
-        // Handle F-keys for view switching
+        // Handle numeric keys (1-9) for view switching
         if let Some(slot) = self.key_to_view_slot(key) {
             if let Some(view_id) = self.view_slots.get(&slot) {
                 self.current_view_id = Some(view_id.clone());
@@ -361,18 +405,15 @@ impl<C: AppContext> App<C> {
     /// Convert key code to view slot
     fn key_to_view_slot(&self, key: KeyCode) -> Option<ViewSlot> {
         match key {
-            KeyCode::F(1) => Some(ViewSlot::F1),
-            KeyCode::F(2) => Some(ViewSlot::F2),
-            KeyCode::F(3) => Some(ViewSlot::F3),
-            KeyCode::F(4) => Some(ViewSlot::F4),
-            KeyCode::F(5) => Some(ViewSlot::F5),
-            KeyCode::F(6) => Some(ViewSlot::F6),
-            KeyCode::F(7) => Some(ViewSlot::F7),
-            KeyCode::F(8) => Some(ViewSlot::F8),
-            KeyCode::F(9) => Some(ViewSlot::F9),
-            KeyCode::F(10) => Some(ViewSlot::F10),
-            KeyCode::F(11) => Some(ViewSlot::F11),
-            KeyCode::F(12) => Some(ViewSlot::F12),
+            KeyCode::Char('1') => Some(ViewSlot::Slot1),
+            KeyCode::Char('2') => Some(ViewSlot::Slot2),
+            KeyCode::Char('3') => Some(ViewSlot::Slot3),
+            KeyCode::Char('4') => Some(ViewSlot::Slot4),
+            KeyCode::Char('5') => Some(ViewSlot::Slot5),
+            KeyCode::Char('6') => Some(ViewSlot::Slot6),
+            KeyCode::Char('7') => Some(ViewSlot::Slot7),
+            KeyCode::Char('8') => Some(ViewSlot::Slot8),
+            KeyCode::Char('9') => Some(ViewSlot::Slot9),
             _ => None,
         }
     }
