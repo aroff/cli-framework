@@ -26,7 +26,7 @@ pub enum ViewResult {
 /// Help item for display in help overlay
 #[derive(Debug, Clone)]
 pub struct HelpItem {
-    /// The key or key sequence (e.g., "F1", "t", "Ctrl+C")
+    /// The key or key sequence (e.g., "1", "t", "Ctrl+C")
     pub key: String,
     /// What the keybinding does
     pub description: String,
@@ -48,5 +48,19 @@ pub trait View {
 
     /// Help items specific to this view (used by '?').
     fn help_items(&self) -> Vec<HelpItem>;
+
+    /// Optional contextual information for header display (left side).
+    /// Returns key-value pairs like [("Context", "prod"), ("Cluster", "k8s")].
+    /// Default implementation returns None (no contextual info).
+    fn header_info(&self) -> Option<Vec<(String, String)>> {
+        None
+    }
+
+    /// Optional short help items for header display (right side).
+    /// Should be concise (max 5 items) for header display.
+    /// Default implementation returns None (no header help).
+    fn header_help(&self) -> Option<Vec<HelpItem>> {
+        None
+    }
 }
 

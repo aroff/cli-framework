@@ -5,39 +5,33 @@
 use crossterm::event::KeyCode;
 use std::collections::HashMap;
 
-/// View slot identifier (F1-F12)
+/// View slot identifier (1-9)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ViewSlot {
-    F1,
-    F2,
-    F3,
-    F4,
-    F5,
-    F6,
-    F7,
-    F8,
-    F9,
-    F10,
-    F11,
-    F12,
+    Slot1,
+    Slot2,
+    Slot3,
+    Slot4,
+    Slot5,
+    Slot6,
+    Slot7,
+    Slot8,
+    Slot9,
 }
 
 impl ViewSlot {
     /// Convert to KeyCode
     pub fn to_key_code(&self) -> KeyCode {
         match self {
-            ViewSlot::F1 => KeyCode::F(1),
-            ViewSlot::F2 => KeyCode::F(2),
-            ViewSlot::F3 => KeyCode::F(3),
-            ViewSlot::F4 => KeyCode::F(4),
-            ViewSlot::F5 => KeyCode::F(5),
-            ViewSlot::F6 => KeyCode::F(6),
-            ViewSlot::F7 => KeyCode::F(7),
-            ViewSlot::F8 => KeyCode::F(8),
-            ViewSlot::F9 => KeyCode::F(9),
-            ViewSlot::F10 => KeyCode::F(10),
-            ViewSlot::F11 => KeyCode::F(11),
-            ViewSlot::F12 => KeyCode::F(12),
+            ViewSlot::Slot1 => KeyCode::Char('1'),
+            ViewSlot::Slot2 => KeyCode::Char('2'),
+            ViewSlot::Slot3 => KeyCode::Char('3'),
+            ViewSlot::Slot4 => KeyCode::Char('4'),
+            ViewSlot::Slot5 => KeyCode::Char('5'),
+            ViewSlot::Slot6 => KeyCode::Char('6'),
+            ViewSlot::Slot7 => KeyCode::Char('7'),
+            ViewSlot::Slot8 => KeyCode::Char('8'),
+            ViewSlot::Slot9 => KeyCode::Char('9'),
         }
     }
 }

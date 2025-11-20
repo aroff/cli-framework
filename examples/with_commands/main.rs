@@ -97,11 +97,11 @@ impl View for ServicesView {
     fn help_items(&self) -> Vec<HelpItem> {
         vec![
             HelpItem {
-                key: "F1".to_string(),
+                key: "1".to_string(),
                 description: "Switch to Services view".to_string(),
             },
             HelpItem {
-                key: "F2".to_string(),
+                key: "2".to_string(),
                 description: "Switch to Logs view".to_string(),
             },
             HelpItem {
@@ -113,6 +113,26 @@ impl View for ServicesView {
                 description: "Toggle help".to_string(),
             },
         ]
+    }
+
+    fn header_info(&self) -> Option<Vec<(String, String)>> {
+        Some(vec![
+            ("Services".to_string(), "3".to_string()),
+            ("Status".to_string(), "Active".to_string()),
+        ])
+    }
+
+    fn header_help(&self) -> Option<Vec<HelpItem>> {
+        Some(vec![
+            HelpItem {
+                key: ":".to_string(),
+                description: "Command palette".to_string(),
+            },
+            HelpItem {
+                key: "?".to_string(),
+                description: "Help".to_string(),
+            },
+        ])
     }
 }
 
@@ -139,7 +159,7 @@ impl View for LogsView {
         let text = vec![
             Line::from("This is the logs view."),
             Line::from(""),
-            Line::from("Press F1 to switch to Services view."),
+            Line::from("Press 1 to switch to Services view."),
             Line::from("Press : to open command palette."),
         ];
         
@@ -154,11 +174,11 @@ impl View for LogsView {
     fn help_items(&self) -> Vec<HelpItem> {
         vec![
             HelpItem {
-                key: "F1".to_string(),
+                key: "1".to_string(),
                 description: "Switch to Services view".to_string(),
             },
             HelpItem {
-                key: "F2".to_string(),
+                key: "2".to_string(),
                 description: "Switch to Logs view".to_string(),
             },
         ]
@@ -227,10 +247,10 @@ fn main() -> Result<()> {
         .register_view(ServicesView::new())
         .register_view(LogsView);
     
-    // Map views to F-keys
+    // Map views to numeric keys
     builder = builder
-        .map_view_slot(ViewSlot::F1, "services.view")
-        .map_view_slot(ViewSlot::F2, "logs.view");
+        .map_view_slot(ViewSlot::Slot1, "services.view")
+        .map_view_slot(ViewSlot::Slot2, "logs.view");
     
     // Register commands
     builder = builder
@@ -278,8 +298,8 @@ fn main() -> Result<()> {
     println!("================================");
     println!("Press ':' to open command palette");
     println!("Press '?' to toggle help");
-    println!("Press 'F1' to switch to Services view");
-    println!("Press 'F2' to switch to Logs view");
+    println!("Press '1' to switch to Services view");
+    println!("Press '2' to switch to Logs view");
     println!("Press 'q' to quit");
     println!("");
     
