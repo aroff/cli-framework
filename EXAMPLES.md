@@ -34,7 +34,8 @@ This document describes the three example applications included with the framewo
 
 **Features Shown**:
 - Multiple views (Services view, Logs view)
-- F-key view switching (F1 → Services, F2 → Logs)
+- View headers with contextual information and keybindings
+- Numeric key view switching (1 → Services, 2 → Logs)
 - Command palette (press `:`)
 - Command registration and execution
 - Modal dialogs for command feedback
@@ -48,13 +49,13 @@ This document describes the three example applications included with the framewo
   - `stop` - Stop a service
   - `info` - Show application information
   - `fail` - Demonstrate error handling (intentionally fails)
-- Press F1/F2 to switch between views
+- Press 1/2 to switch between views
 - Commands show success/error messages in status bar and modals
 
 **Code Highlights**:
 - Command registration
 - Command execution with AppContext
-- Multiple views with F-key mapping
+- Multiple views with numeric key mapping
 - Error handling with modals
 
 ## Example 3: Kitchen Sink
@@ -64,6 +65,7 @@ This document describes the three example applications included with the framewo
 **Purpose**: Comprehensive demonstration of all framework features.
 
 **Features Shown**:
+- View headers with dynamic contextual information
 - GridView with interactive navigation (j/k keys)
 - LogView with **live streaming logs** (updates every 500ms)
 - Log filtering (press `/` in logs view)
@@ -75,12 +77,12 @@ This document describes the three example applications included with the framewo
 
 **What You'll See**:
 
-### Resources View (F1)
+### Resources View (1)
 - Grid of 3 resources (web-server, api-server, db-server)
 - Use `j`/`↓` or `k`/`↑` to navigate
 - Selection highlighting
 
-### Logs View (F2)
+### Logs View (2)
 - **Live streaming logs** - new log lines appear every 500ms
 - Log levels: INFO, WARN, ERROR
 - Timestamps on each line
@@ -115,7 +117,7 @@ All examples are interactive TUI applications. Here's how to use them:
 - `?`: Toggle help overlay
 - `:`: Open command palette (if available)
 - `Esc`: Close modals/overlays
-- `F1-F12`: Switch views (if mapped)
+- `1-9`: Switch views (if mapped)
 
 ### LogView Controls (Kitchen Sink)
 - `/`: Enter filter mode (type keyword, press Enter)

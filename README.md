@@ -6,13 +6,14 @@ This framework provides a complete event loop, layout system, navigation, status
 
 ## Features
 
-- **View System**: Register views, switch between them with F-keys (F1-F12)
+- **View System**: Register views, switch between them with numeric keys (1-9)
+- **View Headers**: Optional contextual information and keybindings displayed in view headers
 - **Command Palette**: Execute commands via `:` key with filtering
 - **Keybindings**: Global and per-view keybindings with conflict resolution
 - **GridView**: Paginated data display with DataSource trait
 - **LogView**: Streaming logs with filtering and follow mode
-- **UI Components**: Status bar, help overlay, modal dialogs
-- **Customization**: Toggle UI elements, configure keybindings
+- **UI Components**: Status bar, help overlay, modal dialogs, view headers
+- **Customization**: Toggle UI elements, configure keybindings, add view headers
 - **Resilience**: Retry policies for network operations
 - **Optional Features**: Authentication hooks, OpenTelemetry integration
 
@@ -55,7 +56,7 @@ fn main() -> anyhow::Result<()> {
     let mut builder = AppBuilder::new();
     builder = builder
         .register_view(MyView)
-        .map_view_slot(ViewSlot::F1, "my.view");
+        .map_view_slot(ViewSlot::Slot1, "my.view");
     let mut app = builder.build(MyContext)?;
     app.run()?;
     Ok(())
@@ -87,7 +88,7 @@ cargo run --example kitchen_sink
 ## Key Bindings
 
 Default keybindings:
-- `F1-F12`: Switch to mapped views
+- `1-9`: Switch to mapped views
 - `:`: Open command palette
 - `?`: Toggle help overlay
 - `q`: Quit application
