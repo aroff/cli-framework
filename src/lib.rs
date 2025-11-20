@@ -36,7 +36,7 @@
 //! let mut builder = AppBuilder::new();
 //! builder = builder
 //!     .register_view(MyView)
-//!     .map_view_slot(ViewSlot::F1, "my.view");
+//!     .map_view_slot(ViewSlot::Slot1, "my.view");
 //! let mut app = builder.build(MyContext)?;
 //! app.run()?;
 //! # Ok(())
