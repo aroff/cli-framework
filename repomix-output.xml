@@ -1,0 +1,3937 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+src/
+  app/
+    builder.rs
+    context.rs
+    mod.rs
+    module.rs
+    runtime.rs
+  auth/
+    login.rs
+    mod.rs
+    rbac.rs
+    token.rs
+  command/
+    mod.rs
+    palette.rs
+    parser.rs
+    registry.rs
+  data_source/
+    data_source_trait.rs
+    log.rs
+    mod.rs
+  keymap/
+    config.rs
+    mod.rs
+    registry.rs
+    resolver.rs
+  message/
+    mod.rs
+    model.rs
+  observability/
+    mod.rs
+    opentelemetry.rs
+  retry/
+    executor.rs
+    mod.rs
+    policy.rs
+  view/
+    mod.rs
+    registry.rs
+    theme.rs
+    view_trait.rs
+  widget/
+    empty_state.rs
+    grid.rs
+    help.rs
+    log.rs
+    mod.rs
+    modal.rs
+    status_bar.rs
+    view_header.rs
+  lib.rs
+.gitignore
+.repomixignore
+Cargo.toml
+CONTRIBUTING.md
+EXAMPLES.md
+README.md
+repomix.config.json
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".repomixignore">
+# Add patterns to ignore here, one per line
+# Example:
+# *.log
+# tmp/
+.specify
+specs
+.cursor
+tests
+examples
+</file>
+
+<file path="repomix.config.json">
+{
+  "$schema": "https://repomix.com/schemas/latest/schema.json",
+  "input": {
+    "maxFileSize": 52428800
+  },
+  "output": {
+    "filePath": "repomix-output.xml",
+    "style": "xml",
+    "parsableStyle": false,
+    "fileSummary": true,
+    "directoryStructure": true,
+    "files": true,
+    "removeComments": false,
+    "removeEmptyLines": false,
+    "compress": false,
+    "topFilesLength": 5,
+    "showLineNumbers": false,
+    "truncateBase64": false,
+    "copyToClipboard": false,
+    "includeFullDirectoryStructure": false,
+    "tokenCountTree": false,
+    "git": {
+      "sortByChanges": true,
+      "sortByChangesMaxCommits": 100,
+      "includeDiffs": false,
+      "includeLogs": false,
+      "includeLogsCount": 50
+    }
+  },
+  "include": [],
+  "ignore": {
+    "useGitignore": true,
+    "useDotIgnore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": []
+  },
+  "security": {
+    "enableSecurityCheck": true
+  },
+  "tokenCount": {
+    "encoding": "o200k_base"
+  }
+}
+</file>
+
+<file path="src/app/context.rs">
+//! AppContext trait and helpers
+//!
+//! AppContext represents application-owned state and service clients.
+
+/// Application context trait
+///
+/// Applications implement this trait to provide their own state and service clients.
+/// The framework uses this to pass context to views, datasources, and commands.
+pub trait AppContext {
+    // Applications define their own structure
+    // Framework only requires the trait to exist
+}
+</file>
+
+<file path="src/app/mod.rs">
+pub mod builder;
+pub mod context;
+pub mod module;
+pub mod runtime;
+
+pub use builder::{App, AppBuilder};
+pub use context::AppContext;
+pub use module::Module;
+</file>
+
+<file path="src/app/module.rs">
+//! Module trait for internal modularization
+//!
+//! Allows applications to group related views, commands, and keybindings
+//! into modules for better organization.
+
+use crate::app::builder::AppBuilder;
+use anyhow::Result;
+
+/// Trait for application modules
+///
+/// Modules allow applications to group related components (views, commands, keybindings)
+/// together for better organization. This is useful for large applications that want
+/// to organize features into logical groups (e.g., AirflowModule, HetznerModule).
+pub trait Module {
+    /// Returns a stable identifier for the module
+    ///
+    /// This should be a compile-time string literal that uniquely identifies
+    /// the module within the application.
+    fn id(&self) -> &'static str;
+
+    /// Called during application build time to register module components
+    ///
+    /// This method should register all views, commands, and keybindings
+    /// that belong to this module with the provided AppBuilder.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if registration fails (e.g., duplicate view IDs,
+    /// conflicting keybindings, etc.)
+    fn register(&self, builder: &mut AppBuilder) -> Result<()>;
+}
+</file>
+
+<file path="src/app/runtime.rs">
+//! Basic event loop and runtime
+//!
+//! Provides the main event loop for the TUI application.
+
+use crate::command::{CommandPalette, CommandPaletteResult};
+use crate::keymap::ViewSlot;
+use crate::message::AppMessage;
+use crate::widget::{HelpOverlay, ModalView, StatusBar};
+use crate::view::Theme;
+use anyhow::Result;
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event as CrosstermEvent, KeyCode, KeyEventKind};
+use crossterm::execute;
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::Terminal;
+use std::io;
+
+/// Runtime for the TUI application
+pub struct Runtime {
+    terminal: Option<Terminal<CrosstermBackend<io::Stdout>>>,
+    pub(crate) status_bar: StatusBar,
+    pub(crate) help_overlay: HelpOverlay,
+    pub(crate) command_palette: CommandPalette,
+    pub(crate) modal: ModalView,
+    theme: Theme,
+    pub(crate) status_bar_enabled: bool,
+    pub(crate) help_overlay_enabled: bool,
+    pub(crate) command_palette_enabled: bool,
+}
+
+impl Runtime {
+    /// Create a new runtime
+    pub fn new() -> Self {
+        let theme = Theme::default();
+        Self {
+            terminal: None,
+            status_bar: StatusBar::new(theme.clone()),
+            help_overlay: HelpOverlay::new(theme.clone()),
+            command_palette: CommandPalette::new(theme.clone()),
+            modal: ModalView::new(theme.clone()),
+            theme,
+            status_bar_enabled: true,
+            help_overlay_enabled: true,
+            command_palette_enabled: true,
+        }
+    }
+
+    /// Set commands for palette
+    pub fn set_commands(&mut self, commands: Vec<crate::command::Command>) {
+        self.command_palette.set_commands(commands);
+    }
+
+    /// Set status bar enabled
+    pub fn set_status_bar_enabled(&mut self, enabled: bool) {
+        self.status_bar_enabled = enabled;
+    }
+
+    /// Set help overlay enabled
+    pub fn set_help_overlay_enabled(&mut self, enabled: bool) {
+        self.help_overlay_enabled = enabled;
+    }
+
+    /// Set command palette enabled
+    pub fn set_command_palette_enabled(&mut self, enabled: bool) {
+        self.command_palette_enabled = enabled;
+    }
+
+    /// Set status message
+    pub fn set_status_message(&mut self, message: AppMessage) {
+        self.status_bar.set_message(message);
+    }
+
+    /// Get command palette for external handling
+    pub fn command_palette_mut(&mut self) -> &mut CommandPalette {
+        &mut self.command_palette
+    }
+
+    /// Get modal for external handling
+    pub fn modal_mut(&mut self) -> &mut ModalView {
+        &mut self.modal
+    }
+
+    /// Get help overlay for external handling
+    pub fn help_overlay_mut(&mut self) -> &mut HelpOverlay {
+        &mut self.help_overlay
+    }
+
+    /// Check if modal is visible
+    pub fn is_modal_visible(&self) -> bool {
+        self.modal.is_visible()
+    }
+
+    /// Check if command palette is visible
+    pub fn is_command_palette_visible(&self) -> bool {
+        self.command_palette.is_visible()
+    }
+
+    /// Minimum terminal size (80x24 as per spec)
+    const MIN_WIDTH: u16 = 80;
+    const MIN_HEIGHT: u16 = 24;
+
+    /// Initialize the terminal
+    pub fn init(&mut self) -> Result<()> {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        let backend = CrosstermBackend::new(stdout);
+        let terminal = Terminal::new(backend)?;
+        
+        // Check terminal size and warn if too small
+        let size = terminal.size()?;
+        if size.width < Self::MIN_WIDTH || size.height < Self::MIN_HEIGHT {
+            // Note: We don't fail here, but gracefully degrade
+            // The render loop will handle small terminals
+        }
+        
+        self.terminal = Some(terminal);
+        Ok(())
+    }
+
+    /// Validate and adjust area for minimum terminal size
+    ///
+    /// Ensures that the area meets minimum requirements (80x24) and
+    /// gracefully degrades for smaller terminals by preserving minimum
+    /// functional areas.
+    pub fn validate_area(&self, area: Rect) -> Rect {
+        let min_width = Self::MIN_WIDTH.min(area.width);
+        let min_height = Self::MIN_HEIGHT.min(area.height);
+        
+        // Ensure we have at least minimum size
+        // If terminal is smaller, we use what we have but ensure
+        // status bar and essential UI elements remain accessible
+        Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width.max(min_width),
+            height: area.height.max(min_height),
+        }
+    }
+
+    /// Cleanup the terminal
+    pub fn cleanup(&mut self) -> Result<()> {
+        disable_raw_mode()?;
+        if let Some(mut terminal) = self.terminal.take() {
+            execute!(
+                terminal.backend_mut(),
+                LeaveAlternateScreen,
+                DisableMouseCapture
+            )?;
+            terminal.show_cursor()?;
+        }
+        Ok(())
+    }
+
+    /// Get terminal for external use
+    pub fn terminal_mut(&mut self) -> &mut Option<Terminal<CrosstermBackend<io::Stdout>>> {
+        &mut self.terminal
+    }
+
+    /// Get main area after accounting for status bar
+    pub fn get_main_area(&self, area: Rect) -> (Rect, Option<Rect>) {
+        let chunks: Vec<Rect> = if self.status_bar_enabled {
+            Layout::vertical([
+                Constraint::Min(0),
+                Constraint::Length(1),
+            ])
+            .split(area)
+            .to_vec()
+        } else {
+            vec![area]
+        };
+
+        let main_area = chunks[0];
+        let status_area = if chunks.len() > 1 { Some(chunks[1]) } else { None };
+        (main_area, status_area)
+    }
+
+    /// Render status bar
+    pub fn render_status_bar(&self, f: &mut ratatui::Frame, area: Rect) {
+        if self.status_bar_enabled {
+            self.status_bar.render(f, area);
+        }
+    }
+}
+
+impl Default for Runtime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        let _ = self.cleanup();
+    }
+}
+</file>
+
+<file path="src/auth/login.rs">
+//! Login screen implementation
+//!
+//! Provides optional built-in authentication mechanisms
+
+use crate::view::Theme;
+use ratatui::layout::Rect;
+use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::Frame;
+
+/// Login screen widget
+///
+/// Applications can use this for built-in authentication, or implement
+/// their own authentication via AppContext.
+pub struct LoginScreen {
+    username: String,
+    password: String,
+    theme: Theme,
+}
+
+impl LoginScreen {
+    /// Create a new login screen
+    pub fn new(theme: Theme) -> Self {
+        Self {
+            username: String::new(),
+            password: String::new(),
+            theme,
+        }
+    }
+
+    /// Get username
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+
+    /// Get password
+    pub fn password(&self) -> &str {
+        &self.password
+    }
+
+    /// Set username
+    pub fn set_username(&mut self, username: String) {
+        self.username = username;
+    }
+
+    /// Set password
+    pub fn set_password(&mut self, password: String) {
+        self.password = password;
+    }
+
+    /// Render the login screen
+    pub fn render(&self, f: &mut Frame, area: Rect) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title("Login")
+            .style(self.theme.modal_style);
+        
+        let paragraph = Paragraph::new("Login screen - implement authentication logic here")
+            .block(block);
+        
+        f.render_widget(paragraph, area);
+    }
+}
+</file>
+
+<file path="src/auth/mod.rs">
+//! Optional authentication module
+//!
+//! Provides built-in authentication mechanisms that applications can opt-in to use.
+//! Applications can also implement their own authentication via AppContext.
+
+pub mod login;
+pub mod token;
+pub mod rbac;
+
+pub use login::LoginScreen;
+pub use token::TokenManager;
+pub use rbac::RbacManager;
+</file>
+
+<file path="src/auth/rbac.rs">
+//! Role-Based Access Control (RBAC) helpers
+//!
+//! Provides optional RBAC functionality for applications that need it
+
+use std::collections::HashSet;
+
+/// User role
+pub type Role = String;
+
+/// Permission identifier
+pub type Permission = String;
+
+/// RBAC manager for role-based access control
+pub struct RbacManager {
+    user_roles: HashSet<Role>,
+    role_permissions: std::collections::HashMap<Role, HashSet<Permission>>,
+}
+
+impl RbacManager {
+    /// Create a new RBAC manager
+    pub fn new() -> Self {
+        Self {
+            user_roles: HashSet::new(),
+            role_permissions: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Assign a role to the user
+    pub fn assign_role(&mut self, role: Role) {
+        self.user_roles.insert(role);
+    }
+
+    /// Remove a role from the user
+    pub fn remove_role(&mut self, role: &str) {
+        self.user_roles.remove(role);
+    }
+
+    /// Grant a permission to a role
+    pub fn grant_permission(&mut self, role: Role, permission: Permission) {
+        self.role_permissions
+            .entry(role)
+            .or_insert_with(HashSet::new)
+            .insert(permission);
+    }
+
+    /// Check if user has a specific role
+    pub fn has_role(&self, role: &str) -> bool {
+        self.user_roles.contains(role)
+    }
+
+    /// Check if user has a specific permission (via any of their roles)
+    pub fn has_permission(&self, permission: &str) -> bool {
+        self.user_roles.iter().any(|role| {
+            self.role_permissions
+                .get(role)
+                .map(|perms| perms.contains(permission))
+                .unwrap_or(false)
+        })
+    }
+
+    /// Get all user roles
+    pub fn roles(&self) -> &HashSet<Role> {
+        &self.user_roles
+    }
+}
+
+impl Default for RbacManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+</file>
+
+<file path="src/auth/token.rs">
+//! Token management for authentication
+//!
+//! Provides token storage and validation helpers
+
+use std::time::{SystemTime, Duration};
+
+/// Token manager for handling authentication tokens
+pub struct TokenManager {
+    token: Option<String>,
+    expires_at: Option<SystemTime>,
+}
+
+impl TokenManager {
+    /// Create a new token manager
+    pub fn new() -> Self {
+        Self {
+            token: None,
+            expires_at: None,
+        }
+    }
+
+    /// Set a token with optional expiration
+    pub fn set_token(&mut self, token: String, expires_in: Option<Duration>) {
+        self.token = Some(token);
+        self.expires_at = expires_in.map(|dur| SystemTime::now() + dur);
+    }
+
+    /// Get the current token if valid
+    pub fn get_token(&self) -> Option<&str> {
+        if let Some(ref token) = self.token {
+            if let Some(expires) = self.expires_at {
+                if SystemTime::now() < expires {
+                    Some(token.as_str())
+                } else {
+                    None // Token expired
+                }
+            } else {
+                Some(token.as_str()) // No expiration
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Check if token is valid
+    pub fn is_valid(&self) -> bool {
+        self.get_token().is_some()
+    }
+
+    /// Clear the token
+    pub fn clear(&mut self) {
+        self.token = None;
+        self.expires_at = None;
+    }
+}
+
+impl Default for TokenManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+</file>
+
+<file path="src/command/mod.rs">
+pub mod registry;
+pub mod parser;
+pub mod palette;
+
+pub use registry::CommandRegistry;
+pub use palette::{CommandPalette, CommandPaletteResult};
+
+use crate::app::context::AppContext;
+use anyhow::Result;
+use std::collections::HashMap;
+
+/// Command identifier
+pub type CommandId = &'static str;
+
+/// Command arguments (positional and named)
+#[derive(Debug, Clone)]
+pub struct CommandArgs {
+    /// Positional arguments
+    pub positional: Vec<String>,
+    /// Named arguments (key-value pairs)
+    pub named: HashMap<String, String>,
+}
+
+/// Command result type
+pub type CommandResult = Result<()>;
+
+/// Command struct representing an executable operation
+#[derive(Debug, Clone)]
+pub struct Command {
+    /// Unique command identifier
+    pub id: CommandId,
+    /// Short description (shown in command palette)
+    pub summary: &'static str,
+    /// Optional syntax hint (e.g., ":restart service=<name> env=<env>")
+    pub syntax: Option<&'static str>,
+    /// Optional category for grouping in palette
+    pub category: Option<&'static str>,
+    /// Execution function
+    pub execute: fn(&mut dyn AppContext, CommandArgs) -> CommandResult,
+}
+</file>
+
+<file path="src/command/palette.rs">
+//! CommandPalette widget for displaying and executing commands
+
+use crate::command::Command;
+use crate::view::Theme;
+use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::Frame;
+use std::collections::HashMap;
+
+/// CommandPalette widget for displaying and executing commands
+pub struct CommandPalette {
+    commands: Vec<Command>,
+    input: String,
+    selected_index: usize,
+    visible: bool,
+    theme: Theme,
+}
+
+impl CommandPalette {
+    /// Create a new command palette
+    pub fn new(theme: Theme) -> Self {
+        Self {
+            commands: Vec::new(),
+            input: String::new(),
+            selected_index: 0,
+            visible: false,
+            theme,
+        }
+    }
+
+    /// Set available commands
+    pub fn set_commands(&mut self, commands: Vec<Command>) {
+        self.commands = commands;
+        self.selected_index = 0;
+    }
+
+    /// Show the command palette
+    pub fn show(&mut self) {
+        self.visible = true;
+        self.input.clear();
+        self.selected_index = 0;
+    }
+
+    /// Hide the command palette
+    pub fn hide(&mut self) {
+        self.visible = false;
+        self.input.clear();
+    }
+
+    /// Check if visible
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    /// Get current input
+    pub fn input(&self) -> &str {
+        &self.input
+    }
+
+    /// Handle key event
+    pub fn handle_key(&mut self, key: KeyCode) -> CommandPaletteResult {
+        match key {
+            KeyCode::Esc => {
+                self.hide();
+                return CommandPaletteResult::Cancel;
+            }
+            KeyCode::Enter => {
+                if let Some(command) = self.get_selected_command() {
+                    let command_id = command.id.to_string();
+                    self.hide();
+                    return CommandPaletteResult::Execute(command_id);
+                }
+            }
+            KeyCode::Up => {
+                if !self.filtered_commands().is_empty() {
+                    self.selected_index = if self.selected_index == 0 {
+                        self.filtered_commands().len() - 1
+                    } else {
+                        self.selected_index - 1
+                    };
+                }
+            }
+            KeyCode::Down => {
+                let filtered = self.filtered_commands();
+                if !filtered.is_empty() {
+                    self.selected_index = (self.selected_index + 1) % filtered.len();
+                }
+            }
+            KeyCode::Char(c) => {
+                if c == ':' && self.input.is_empty() {
+                    // Already in command mode
+                } else {
+                    self.input.push(c);
+                    self.selected_index = 0;
+                }
+            }
+            KeyCode::Backspace => {
+                self.input.pop();
+                self.selected_index = 0;
+            }
+            _ => {}
+        }
+        CommandPaletteResult::Continue
+    }
+
+    /// Get filtered commands based on input
+    fn filtered_commands(&self) -> Vec<&Command> {
+        if self.input.is_empty() {
+            return self.commands.iter().collect();
+        }
+        self.commands
+            .iter()
+            .filter(|cmd| {
+                cmd.id.contains(&self.input)
+                    || cmd.summary.to_lowercase().contains(&self.input.to_lowercase())
+            })
+            .collect()
+    }
+
+    /// Get selected command
+    fn get_selected_command(&self) -> Option<&Command> {
+        let filtered = self.filtered_commands();
+        filtered.get(self.selected_index).copied()
+    }
+
+    /// Render the command palette
+    pub fn render(&self, f: &mut Frame, area: Rect) {
+        if !self.visible {
+            return;
+        }
+
+        // Create a centered modal area
+        let vertical = Layout::vertical([
+            Constraint::Percentage(30),
+            Constraint::Percentage(40),
+            Constraint::Percentage(30),
+        ])
+        .split(area);
+
+        let horizontal = Layout::horizontal([
+            Constraint::Percentage(20),
+            Constraint::Percentage(60),
+            Constraint::Percentage(20),
+        ])
+        .split(vertical[1]);
+
+        let modal_area = horizontal[1];
+
+        // Split modal into input and command list
+        let chunks = Layout::vertical([
+            Constraint::Length(3),
+            Constraint::Min(5),
+        ])
+        .split(modal_area);
+
+        // Render input field
+        let input_text = format!(":{}", self.input);
+        let input_paragraph = Paragraph::new(input_text)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Command")
+                    .style(self.theme.modal_style),
+            );
+        f.render_widget(input_paragraph, chunks[0]);
+
+        // Render command list
+        let filtered = self.filtered_commands();
+        let items: Vec<ListItem> = filtered
+            .iter()
+            .enumerate()
+            .map(|(i, cmd)| {
+                let is_selected = i == self.selected_index;
+                let style = if is_selected {
+                    self.theme.primary_style.add_modifier(Modifier::REVERSED)
+                } else {
+                    self.theme.secondary_style
+                };
+
+                let mut spans = vec![
+                    Span::styled(format!("{:20}", cmd.id), style.clone()),
+                    Span::raw(" "),
+                ];
+
+                if let Some(syntax) = cmd.syntax {
+                    spans.push(Span::styled(
+                        format!("{} ", syntax),
+                        Style::default().fg(ratatui::style::Color::Gray),
+                    ));
+                }
+
+                spans.push(Span::styled(cmd.summary, style));
+
+                ListItem::new(Line::from(spans))
+            })
+            .collect();
+
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Commands")
+                    .style(self.theme.modal_style),
+            );
+
+        f.render_widget(list, chunks[1]);
+    }
+}
+
+/// Result of command palette interaction
+#[derive(Debug, Clone)]
+pub enum CommandPaletteResult {
+    /// Continue showing palette
+    Continue,
+    /// Cancel (user pressed Esc)
+    Cancel,
+    /// Execute command with given ID
+    Execute(String),
+}
+</file>
+
+<file path="src/command/parser.rs">
+//! Command parser for parsing command syntax (:command arg=value)
+
+use crate::command::CommandArgs;
+use std::collections::HashMap;
+
+/// Parse a command string (e.g., ":restart service=api env=prod")
+pub fn parse_command(input: &str) -> Option<(String, CommandArgs)> {
+    let input = input.trim();
+    if !input.starts_with(':') {
+        return None;
+    }
+
+    let parts: Vec<&str> = input[1..].split_whitespace().collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    let command_name = parts[0].to_string();
+    let mut positional = Vec::new();
+    let mut named = HashMap::new();
+
+    for part in parts.iter().skip(1) {
+        if let Some((key, value)) = part.split_once('=') {
+            named.insert(key.to_string(), value.to_string());
+        } else {
+            positional.push(part.to_string());
+        }
+    }
+
+    Some((
+        command_name,
+        CommandArgs { positional, named },
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_simple_command() {
+        let result = parse_command(":restart");
+        assert!(result.is_some());
+        let (name, args) = result.unwrap();
+        assert_eq!(name, "restart");
+        assert!(args.positional.is_empty());
+        assert!(args.named.is_empty());
+    }
+
+    #[test]
+    fn test_parse_command_with_args() {
+        let result = parse_command(":restart service=api env=prod");
+        assert!(result.is_some());
+        let (name, args) = result.unwrap();
+        assert_eq!(name, "restart");
+        assert_eq!(args.named.get("service"), Some(&"api".to_string()));
+        assert_eq!(args.named.get("env"), Some(&"prod".to_string()));
+    }
+}
+</file>
+
+<file path="src/command/registry.rs">
+//! CommandRegistry for managing commands
+
+use std::collections::HashMap;
+use crate::command::Command;
+
+/// Registry for managing commands
+pub struct CommandRegistry {
+    commands: HashMap<String, Command>,
+}
+
+impl CommandRegistry {
+    /// Create a new command registry
+    pub fn new() -> Self {
+        Self {
+            commands: HashMap::new(),
+        }
+    }
+
+    /// Register a command
+    pub fn register(&mut self, command: Command) {
+        self.commands.insert(command.id.to_string(), command);
+    }
+
+    /// Get a command by ID
+    pub fn get(&self, id: &str) -> Option<&Command> {
+        self.commands.get(id)
+    }
+
+    /// Get all commands
+    pub fn commands(&self) -> impl Iterator<Item = &Command> {
+        self.commands.values()
+    }
+}
+
+impl Default for CommandRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+</file>
+
+<file path="src/data_source/data_source_trait.rs">
+//! DataSource trait definition
+//!
+//! Defines the DataSource trait for providing tabular data to GridView.
+
+use crate::app::context::AppContext;
+use anyhow::Result;
+
+/// DataSource trait for providing tabular data
+pub trait DataSource {
+    /// The type of data row
+    type Row;
+
+    /// Total number of rows (logical length)
+    fn len(&self) -> usize;
+
+    /// Access a row by index (0-based). Behind the scenes this may fetch a page.
+    fn get(&self, index: usize) -> Option<&Self::Row>;
+
+    /// Refresh underlying data (may fetch from network, disk, etc.)
+    fn refresh(&mut self, ctx: &dyn AppContext) -> Result<()>;
+}
+</file>
+
+<file path="src/data_source/log.rs">
+//! LogDataSource trait and helpers for pushing logs to LogView
+//!
+//! Provides a pattern for applications to stream log lines to LogView widgets.
+
+use crate::widget::LogView;
+use std::sync::{Arc, Mutex};
+
+/// Trait for sources that can provide log lines
+///
+/// Applications implement this trait to provide log streaming functionality.
+/// The framework uses this to connect log sources to LogView widgets.
+pub trait LogSource {
+    /// Get the next batch of log lines (non-blocking)
+    ///
+    /// Returns new lines since the last call, or empty if no new lines.
+    fn poll_lines(&mut self) -> Vec<String>;
+    
+    /// Check if the log source is still active
+    fn is_active(&self) -> bool;
+}
+
+/// Shared log buffer for thread-safe log streaming
+///
+/// Applications can push log lines from any thread, and LogView can consume them
+/// from the main thread during rendering.
+#[derive(Clone)]
+pub struct SharedLogBuffer {
+    lines: Arc<Mutex<VecDeque<String>>>,
+    max_lines: usize,
+}
+
+impl SharedLogBuffer {
+    /// Create a new shared log buffer
+    pub fn new(max_lines: usize) -> Self {
+        Self {
+            lines: Arc::new(Mutex::new(VecDeque::new())),
+            max_lines,
+        }
+    }
+
+    /// Push a log line to the buffer
+    pub fn push(&self, line: String) {
+        if let Ok(mut lines) = self.lines.lock() {
+            lines.push_back(line);
+            while lines.len() > self.max_lines {
+                lines.pop_front();
+            }
+        }
+    }
+
+    /// Push multiple log lines
+    pub fn push_lines(&self, new_lines: Vec<String>) {
+        if let Ok(mut lines) = self.lines.lock() {
+            for line in new_lines {
+                lines.push_back(line);
+            }
+            while lines.len() > self.max_lines {
+                lines.pop_front();
+            }
+        }
+    }
+
+    /// Drain all pending lines (used by LogView to consume lines)
+    pub fn drain(&self) -> Vec<String> {
+        if let Ok(mut lines) = self.lines.lock() {
+            let drained: Vec<String> = lines.drain(..).collect();
+            drained
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Get a clone of the buffer for reading
+    pub fn clone_lines(&self) -> Vec<String> {
+        if let Ok(lines) = self.lines.lock() {
+            lines.iter().cloned().collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Clear all lines
+    pub fn clear(&self) {
+        if let Ok(mut lines) = self.lines.lock() {
+            lines.clear();
+        }
+    }
+
+    /// Get the number of lines in the buffer
+    pub fn len(&self) -> usize {
+        if let Ok(lines) = self.lines.lock() {
+            lines.len()
+        } else {
+            0
+        }
+    }
+}
+
+use std::collections::VecDeque;
+
+/// Helper to connect a SharedLogBuffer to a LogView
+///
+/// Applications should call this periodically (e.g., in the render loop or event handler)
+/// to transfer log lines from the buffer to the LogView.
+pub fn sync_log_buffer_to_view(buffer: &SharedLogBuffer, view: &mut LogView) {
+    let lines = buffer.drain();
+    if !lines.is_empty() {
+        view.add_lines(lines);
+    }
+}
+</file>
+
+<file path="src/data_source/mod.rs">
+mod data_source_trait;
+pub mod log;
+
+pub use data_source_trait::DataSource;
+pub use log::{LogSource, SharedLogBuffer, sync_log_buffer_to_view};
+</file>
+
+<file path="src/keymap/mod.rs">
+pub mod config;
+pub mod registry;
+pub mod resolver;
+
+pub use config::{KeyBinding, KeymapConfig, ViewSlot, AppCommand};
+pub use registry::KeymapRegistry;
+pub use resolver::KeymapResolver;
+</file>
+
+<file path="src/keymap/registry.rs">
+//! KeymapRegistry for managing keybindings
+
+use crate::keymap::config::{AppCommand, KeyBinding, KeymapConfig};
+use crossterm::event::KeyCode;
+use std::collections::HashMap;
+
+/// Registry for managing keybindings
+pub struct KeymapRegistry {
+    global: HashMap<KeyCode, KeyBinding>,
+    per_view: HashMap<String, HashMap<KeyCode, KeyBinding>>,
+}
+
+impl KeymapRegistry {
+    /// Create a new keymap registry
+    pub fn new() -> Self {
+        Self {
+            global: HashMap::new(),
+            per_view: HashMap::new(),
+        }
+    }
+
+    /// Load configuration into registry
+    pub fn load_config(&mut self, config: KeymapConfig) {
+        for binding in config.global {
+            self.global.insert(binding.key, binding);
+        }
+        for (view_id, bindings) in config.per_view {
+            let view_map = self.per_view.entry(view_id).or_insert_with(HashMap::new);
+            for binding in bindings {
+                view_map.insert(binding.key, binding);
+            }
+        }
+    }
+
+    /// Get a global binding
+    pub fn get_global(&self, key: KeyCode) -> Option<&KeyBinding> {
+        self.global.get(&key)
+    }
+
+    /// Get a view-specific binding
+    pub fn get_view_binding(&self, view_id: &str, key: KeyCode) -> Option<&KeyBinding> {
+        self.per_view.get(view_id)?.get(&key)
+    }
+}
+
+impl Default for KeymapRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+</file>
+
+<file path="src/keymap/resolver.rs">
+//! KeymapResolver for resolving keybinding conflicts
+//!
+//! Resolution priority: modals > view-specific > global
+
+use crate::keymap::config::AppCommand;
+use crate::keymap::registry::KeymapRegistry;
+use crossterm::event::KeyCode;
+
+/// Resolver for keybinding conflicts
+pub struct KeymapResolver {
+    registry: KeymapRegistry,
+}
+
+impl KeymapResolver {
+    /// Create a new keymap resolver
+    pub fn new(registry: KeymapRegistry) -> Self {
+        Self { registry }
+    }
+
+    /// Resolve a key press (priority: modal > view-specific > global)
+    pub fn resolve(&self, key: KeyCode, view_id: Option<&str>, modal_active: bool) -> Option<AppCommand> {
+        // If modal is active, modals should handle all keys
+        // For now, we'll let modals handle their own keys
+        // and only check view/global if modal is not active
+        if modal_active {
+            return None; // Modal handles its own keys
+        }
+
+        // Check view-specific bindings first (they override global)
+        if let Some(view_id) = view_id {
+            if let Some(binding) = self.registry.get_view_binding(view_id, key) {
+                return Some(binding.action.clone());
+            }
+        }
+
+        // Check global bindings
+        if let Some(binding) = self.registry.get_global(key) {
+            return Some(binding.action.clone());
+        }
+
+        None
+    }
+}
+</file>
+
+<file path="src/message/mod.rs">
+pub mod model;
+
+pub use model::{AppMessage, AppMessageKind};
+</file>
+
+<file path="src/message/model.rs">
+//! AppMessage and AppMessageKind models
+//!
+//! Provides user-visible messages with different severity levels and detail levels.
+
+/// Kind of application message
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppMessageKind {
+    /// Informational message
+    Info,
+    /// Warning message
+    Warning,
+    /// Error message
+    Error,
+}
+
+/// User-visible message with short and detailed text
+#[derive(Debug, Clone)]
+pub struct AppMessage {
+    /// Message kind (info, warning, error)
+    pub kind: AppMessageKind,
+    /// One-line text for status bar
+    pub short: String,
+    /// Optional detailed text for modal
+    pub details: Option<String>,
+}
+
+impl AppMessage {
+    /// Create a new info message
+    pub fn info(short: impl Into<String>) -> Self {
+        Self {
+            kind: AppMessageKind::Info,
+            short: short.into(),
+            details: None,
+        }
+    }
+
+    /// Create a new warning message
+    pub fn warning(short: impl Into<String>) -> Self {
+        Self {
+            kind: AppMessageKind::Warning,
+            short: short.into(),
+            details: None,
+        }
+    }
+
+    /// Create a new error message
+    pub fn error(short: impl Into<String>) -> Self {
+        Self {
+            kind: AppMessageKind::Error,
+            short: short.into(),
+            details: None,
+        }
+    }
+
+    /// Add detailed text to the message
+    pub fn with_details(mut self, details: impl Into<String>) -> Self {
+        self.details = Some(details.into());
+        self
+    }
+}
+</file>
+
+<file path="src/observability/mod.rs">
+// Optional observability module
+#[cfg(feature = "observability")]
+pub mod opentelemetry;
+
+pub use opentelemetry::{ObservabilityConfig, init_observability};
+</file>
+
+<file path="src/observability/opentelemetry.rs">
+//! OpenTelemetry integration
+//!
+//! Optional observability feature for logging, metrics, and tracing
+//!
+//! Note: Applications should add OpenTelemetry dependencies to their Cargo.toml:
+//! ```toml
+//! opentelemetry = "0.22"
+//! opentelemetry-otlp = { version = "0.15", features = ["grpc-tonic", "metrics", "trace"] }
+//! opentelemetry-sdk = "0.22"
+//! ```
+
+/// OpenTelemetry configuration
+#[derive(Debug, Clone)]
+pub struct ObservabilityConfig {
+    /// Enable tracing
+    pub tracing_enabled: bool,
+    /// Enable metrics
+    pub metrics_enabled: bool,
+    /// OTLP endpoint URL
+    pub otlp_endpoint: Option<String>,
+}
+
+impl ObservabilityConfig {
+    /// Create a new observability configuration
+    pub fn new() -> Self {
+        Self {
+            tracing_enabled: false,
+            metrics_enabled: false,
+            otlp_endpoint: None,
+        }
+    }
+
+    /// Enable tracing
+    pub fn with_tracing(mut self, enabled: bool) -> Self {
+        self.tracing_enabled = enabled;
+        self
+    }
+
+    /// Enable metrics
+    pub fn with_metrics(mut self, enabled: bool) -> Self {
+        self.metrics_enabled = enabled;
+        self
+    }
+
+    /// Set OTLP endpoint
+    pub fn with_otlp_endpoint(mut self, endpoint: String) -> Self {
+        self.otlp_endpoint = Some(endpoint);
+        self
+    }
+}
+
+impl Default for ObservabilityConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Initialize OpenTelemetry observability
+///
+/// This is a placeholder for v1. Applications can implement their own
+/// OpenTelemetry setup using the configuration, or extend this function
+/// when OpenTelemetry dependencies are available.
+pub fn init_observability(_config: ObservabilityConfig) -> anyhow::Result<()> {
+    // Placeholder: In v2, this would initialize OpenTelemetry SDK
+    // For now, applications can implement their own observability setup
+    Ok(())
+}
+</file>
+
+<file path="src/retry/executor.rs">
+//! Retry execution logic
+//!
+//! Executes operations with retry policies
+
+use crate::retry::policy::RetryPolicy;
+use anyhow::Result;
+use std::time::Duration;
+
+/// Executor that applies retry policies to operations
+pub struct RetryExecutor {
+    policy: RetryPolicy,
+}
+
+impl RetryExecutor {
+    /// Create a new retry executor with a policy
+    pub fn new(policy: RetryPolicy) -> Self {
+        Self { policy }
+    }
+
+    /// Execute an operation with retry logic
+    ///
+    /// The operation is retried according to the policy if it returns an error.
+    /// Returns the first successful result or the last error if all retries fail.
+    pub fn execute<F, T>(&self, mut operation: F) -> Result<T>
+    where
+        F: FnMut() -> Result<T>,
+    {
+        let mut last_error = None;
+        
+        for attempt in 0..=self.policy.max_attempts {
+            // Execute the operation
+            let result = if let Some(timeout) = self.policy.timeout {
+                // TODO: Implement actual timeout in v2
+                // For v1, we'll just execute without timeout
+                operation()
+            } else {
+                operation()
+            };
+
+            match result {
+                Ok(value) => return Ok(value),
+                Err(e) => {
+                    last_error = Some(e);
+                    
+                    // Don't retry if this was the last attempt
+                    if attempt >= self.policy.max_attempts {
+                        break;
+                    }
+                    
+                    // Calculate delay for next retry
+                    let delay = self.policy.delay_for_attempt(attempt);
+                    if delay > Duration::ZERO {
+                        std::thread::sleep(delay);
+                    }
+                }
+            }
+        }
+
+        // Return the last error
+        match last_error {
+            Some(e) => Err(e),
+            None => Err(anyhow::anyhow!("Operation failed but no error was recorded")),
+        }
+    }
+
+    // Note: Async support will be added in v2 when async runtime is available
+}
+
+impl Default for RetryExecutor {
+    fn default() -> Self {
+        Self::new(RetryPolicy::default())
+    }
+}
+</file>
+
+<file path="src/retry/mod.rs">
+pub mod policy;
+pub mod executor;
+
+pub use policy::RetryPolicy;
+pub use executor::RetryExecutor;
+</file>
+
+<file path="src/retry/policy.rs">
+//! RetryPolicy configuration
+//!
+//! Defines retry policies for network operations with configurable strategies
+
+use std::time::Duration;
+
+/// Retry strategy for handling failures
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryStrategy {
+    /// No retries
+    None,
+    /// Fixed delay between retries
+    Fixed(Duration),
+    /// Exponential backoff (delay doubles each retry)
+    Exponential {
+        /// Initial delay
+        initial: Duration,
+        /// Maximum delay cap
+        max: Duration,
+    },
+    /// Linear backoff (delay increases linearly)
+    Linear {
+        /// Initial delay
+        initial: Duration,
+        /// Increment per retry
+        increment: Duration,
+        /// Maximum delay cap
+        max: Duration,
+    },
+}
+
+/// Retry policy configuration
+#[derive(Debug, Clone)]
+pub struct RetryPolicy {
+    /// Maximum number of retry attempts (0 = no retries, 1 = one retry, etc.)
+    pub max_attempts: u32,
+    /// Strategy for delay between retries
+    pub strategy: RetryStrategy,
+    /// Timeout for each attempt
+    pub timeout: Option<Duration>,
+    /// Whether to retry on timeout
+    pub retry_on_timeout: bool,
+}
+
+impl RetryPolicy {
+    /// Create a new retry policy
+    pub fn new(max_attempts: u32, strategy: RetryStrategy) -> Self {
+        Self {
+            max_attempts,
+            strategy,
+            timeout: None,
+            retry_on_timeout: true,
+        }
+    }
+
+    /// Create a policy with no retries
+    pub fn no_retries() -> Self {
+        Self {
+            max_attempts: 0,
+            strategy: RetryStrategy::None,
+            timeout: None,
+            retry_on_timeout: false,
+        }
+    }
+
+    /// Create a policy with fixed delay retries
+    pub fn fixed_delay(max_attempts: u32, delay: Duration) -> Self {
+        Self {
+            max_attempts,
+            strategy: RetryStrategy::Fixed(delay),
+            timeout: None,
+            retry_on_timeout: true,
+        }
+    }
+
+    /// Create a policy with exponential backoff
+    pub fn exponential_backoff(
+        max_attempts: u32,
+        initial: Duration,
+        max: Duration,
+    ) -> Self {
+        Self {
+            max_attempts,
+            strategy: RetryStrategy::Exponential { initial, max },
+            timeout: None,
+            retry_on_timeout: true,
+        }
+    }
+
+    /// Set timeout for each attempt
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
+    /// Set whether to retry on timeout
+    pub fn with_retry_on_timeout(mut self, retry: bool) -> Self {
+        self.retry_on_timeout = retry;
+        self
+    }
+
+    /// Calculate delay for a specific retry attempt (0-indexed)
+    pub fn delay_for_attempt(&self, attempt: u32) -> Duration {
+        if attempt >= self.max_attempts {
+            return Duration::ZERO;
+        }
+
+        match self.strategy {
+            RetryStrategy::None => Duration::ZERO,
+            RetryStrategy::Fixed(delay) => delay,
+            RetryStrategy::Exponential { initial, max } => {
+                let delay = initial.as_millis() as u64 * (1 << attempt.min(10));
+                Duration::from_millis(delay.min(max.as_millis() as u64))
+            }
+            RetryStrategy::Linear {
+                initial,
+                increment,
+                max,
+            } => {
+                let delay = initial + increment * attempt;
+                delay.min(max)
+            }
+        }
+    }
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self::fixed_delay(
+            3,
+            Duration::from_millis(500),
+        )
+    }
+}
+</file>
+
+<file path="src/view/mod.rs">
+mod view_trait;
+mod registry;
+mod theme;
+
+pub use view_trait::{View, ViewResult, HelpItem};
+pub use registry::ViewRegistry;
+pub use theme::Theme;
+</file>
+
+<file path="src/view/registry.rs">
+//! ViewRegistry for managing registered views
+
+use std::collections::HashMap;
+use crate::view::View;
+
+/// Registry for managing views
+pub struct ViewRegistry {
+    views: HashMap<String, Box<dyn View>>,
+}
+
+impl ViewRegistry {
+    /// Create a new view registry
+    pub fn new() -> Self {
+        Self {
+            views: HashMap::new(),
+        }
+    }
+
+    /// Register a view
+    pub fn register(&mut self, view: Box<dyn View>) {
+        self.views.insert(view.id().to_string(), view);
+    }
+
+    /// Get a view by ID (returns a reference to the boxed view)
+    pub fn get(&self, id: &str) -> Option<&Box<dyn View>> {
+        self.views.get(id)
+    }
+
+    /// Get a mutable view by ID (returns a mutable reference to the boxed view)
+    pub fn get_mut(&mut self, id: &str) -> Option<&mut Box<dyn View>> {
+        self.views.get_mut(id)
+    }
+
+    /// Get iterator over view IDs
+    pub fn views(&self) -> impl Iterator<Item = (&String, &Box<dyn View>)> {
+        self.views.iter()
+    }
+}
+
+impl Default for ViewRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+</file>
+
+<file path="src/view/theme.rs">
+//! Theme struct with default ANSI colors
+//!
+//! Centralizes styling definitions (colors, modifiers) to ensure consistent UI
+//! across views and standard widgets. Uses standard ANSI 16-color palette.
+
+use ratatui::style::{Color, Modifier, Style};
+
+/// Theme for the TUI framework
+///
+/// Provides default styling using standard ANSI colors (16-color palette)
+/// to respect terminal user preferences and ensure readability across
+/// different terminal color schemes.
+#[derive(Debug, Clone)]
+pub struct Theme {
+    /// Style for focused/selected items
+    pub primary_style: Style,
+    /// Style for normal text
+    pub secondary_style: Style,
+    /// Style for error messages/states
+    pub error_style: Style,
+    /// Style for the bottom status bar
+    pub status_bar_style: Style,
+    /// Style for modal borders/backgrounds
+    pub modal_style: Style,
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self {
+            primary_style: Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+            secondary_style: Style::default().fg(Color::White),
+            error_style: Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+            status_bar_style: Style::default()
+                .fg(Color::Black)
+                .bg(Color::White),
+            modal_style: Style::default()
+                .fg(Color::White)
+                .bg(Color::Blue),
+        }
+    }
+}
+
+impl Theme {
+    /// Create a new theme with default ANSI colors
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a custom theme (allows applications to override defaults)
+    pub fn custom(
+        primary: Style,
+        secondary: Style,
+        error: Style,
+        status_bar: Style,
+        modal: Style,
+    ) -> Self {
+        Self {
+            primary_style: primary,
+            secondary_style: secondary,
+            error_style: error,
+            status_bar_style: status_bar,
+            modal_style: modal,
+        }
+    }
+}
+</file>
+
+<file path="src/widget/empty_state.rs">
+//! Empty state and loading indicators
+//!
+//! Provides standard empty state messages and loading indicators for consistent UX
+
+use crate::view::Theme;
+use ratatui::layout::{Alignment, Rect};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::Frame;
+
+/// Empty state widget for displaying when there's no data
+pub struct EmptyState {
+    message: String,
+    details: Option<String>,
+    theme: Theme,
+}
+
+impl EmptyState {
+    /// Create a new empty state with a message
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            details: None,
+            theme: Theme::default(),
+        }
+    }
+
+    /// Create a new empty state with theme
+    pub fn with_theme(message: impl Into<String>, theme: Theme) -> Self {
+        Self {
+            message: message.into(),
+            details: None,
+            theme,
+        }
+    }
+
+    /// Add detailed text
+    pub fn with_details(mut self, details: impl Into<String>) -> Self {
+        self.details = Some(details.into());
+        self
+    }
+
+    /// Render the empty state
+    pub fn render(&self, f: &mut Frame, area: Rect) {
+        let mut lines = vec![
+            Line::from(Span::styled(
+                self.message.clone(),
+                self.theme.secondary_style,
+            )),
+        ];
+
+        if let Some(ref details) = self.details {
+            lines.push(Line::from(""));
+            for line in details.lines() {
+                lines.push(Line::from(Span::styled(
+                    line,
+                    self.theme.secondary_style,
+                )));
+            }
+        }
+
+        let paragraph = Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("No Data")
+                    .style(self.theme.secondary_style),
+            )
+            .alignment(Alignment::Center);
+
+        f.render_widget(paragraph, area);
+    }
+}
+
+/// Loading indicator widget
+pub struct LoadingIndicator {
+    message: String,
+    theme: Theme,
+    spinner_chars: &'static [char],
+    spinner_index: usize,
+}
+
+impl LoadingIndicator {
+    /// Create a new loading indicator
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            theme: Theme::default(),
+            spinner_chars: &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
+            spinner_index: 0,
+        }
+    }
+
+    /// Create with theme
+    pub fn with_theme(message: impl Into<String>, theme: Theme) -> Self {
+        Self {
+            message: message.into(),
+            theme,
+            spinner_chars: &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
+            spinner_index: 0,
+        }
+    }
+
+    /// Advance the spinner animation
+    pub fn tick(&mut self) {
+        self.spinner_index = (self.spinner_index + 1) % self.spinner_chars.len();
+    }
+
+    /// Render the loading indicator
+    pub fn render(&self, f: &mut Frame, area: Rect) {
+        let spinner = self.spinner_chars[self.spinner_index];
+        let text = format!("{} {}", spinner, self.message);
+
+        let paragraph = Paragraph::new(Line::from(Span::styled(
+            text,
+            self.theme.secondary_style,
+        )))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Loading")
+                .style(self.theme.secondary_style),
+        )
+        .alignment(Alignment::Center);
+
+        f.render_widget(paragraph, area);
+    }
+}
+
+impl Default for EmptyState {
+    fn default() -> Self {
+        Self::new("No data available")
+    }
+}
+</file>
+
+<file path="src/widget/help.rs">
+//! HelpOverlay widget implementation
+//!
+//! Displays help information overlay
+
+use crate::view::{HelpItem, Theme};
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, List, ListItem};
+use ratatui::Frame;
+
+/// HelpOverlay widget for displaying help information
+pub struct HelpOverlay {
+    items: Vec<HelpItem>,
+    theme: Theme,
+    visible: bool,
+}
+
+impl HelpOverlay {
+    /// Create a new help overlay
+    pub fn new(theme: Theme) -> Self {
+        Self {
+            items: Vec::new(),
+            theme,
+            visible: false,
+        }
+    }
+
+    /// Set help items
+    pub fn set_items(&mut self, items: Vec<HelpItem>) {
+        self.items = items;
+    }
+
+    /// Show the help overlay
+    pub fn show(&mut self) {
+        self.visible = true;
+    }
+
+    /// Hide the help overlay
+    pub fn hide(&mut self) {
+        self.visible = false;
+    }
+
+    /// Toggle visibility
+    pub fn toggle(&mut self) {
+        self.visible = !self.visible;
+    }
+
+    /// Check if visible
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    /// Render the help overlay
+    pub fn render(&self, f: &mut Frame, area: Rect) {
+        if !self.visible {
+            return;
+        }
+
+        // Create a centered modal area
+        let vertical = Layout::vertical([
+            Constraint::Percentage(20),
+            Constraint::Percentage(60),
+            Constraint::Percentage(20),
+        ])
+        .split(area);
+
+        let horizontal = Layout::horizontal([
+            Constraint::Percentage(20),
+            Constraint::Percentage(60),
+            Constraint::Percentage(20),
+        ])
+        .split(vertical[1]);
+
+        let modal_area = horizontal[1];
+
+        let items: Vec<ListItem> = self
+            .items
+            .iter()
+            .map(|item| {
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!("{:20}", item.key),
+                        self.theme.primary_style,
+                    ),
+                    Span::raw(" "),
+                    Span::styled(item.description.clone(), self.theme.secondary_style),
+                ]))
+            })
+            .collect();
+
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Help")
+                    .style(self.theme.modal_style),
+            );
+
+        f.render_widget(list, modal_area);
+    }
+}
+</file>
+
+<file path="src/widget/log.rs">
+//! LogView widget implementation
+//!
+//! Displays streaming log lines with scrolling, follow mode, and keyword filtering
+
+use crate::view::Theme;
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, List, ListItem, Scrollbar, ScrollbarState};
+use ratatui::Frame;
+use std::collections::VecDeque;
+
+/// LogView widget for displaying streaming log lines
+pub struct LogView {
+    /// Internal buffer of log lines
+    lines: VecDeque<String>,
+    /// Maximum number of lines to keep in buffer
+    max_lines: usize,
+    /// Current scroll position (0 = top, higher = scrolled down)
+    scroll_position: usize,
+    /// Follow mode: automatically scroll to bottom when new lines arrive
+    follow_mode: bool,
+    /// Filter string (case-insensitive substring match)
+    filter: Option<String>,
+    /// Filtered lines (cached for performance)
+    filtered_lines: Vec<String>,
+    /// Scrollbar state
+    scrollbar_state: ScrollbarState,
+    /// Theme for styling
+    theme: Theme,
+}
+
+impl LogView {
+    /// Create a new LogView
+    pub fn new(theme: Theme) -> Self {
+        Self {
+            lines: VecDeque::new(),
+            max_lines: 10000, // Default: keep last 10k lines
+            scroll_position: 0,
+            follow_mode: true, // Default: follow mode enabled
+            filter: None,
+            filtered_lines: Vec::new(),
+            scrollbar_state: ScrollbarState::new(0),
+            theme,
+        }
+    }
+
+    /// Create a new LogView with custom max lines
+    pub fn with_max_lines(theme: Theme, max_lines: usize) -> Self {
+        Self {
+            max_lines,
+            ..Self::new(theme)
+        }
+    }
+
+    /// Add a log line to the buffer
+    pub fn add_line(&mut self, line: String) {
+        // Add line to buffer
+        self.lines.push_back(line);
+        
+        // Trim buffer if it exceeds max_lines
+        while self.lines.len() > self.max_lines {
+            self.lines.pop_front();
+        }
+        
+        // Update filtered lines if filter is active
+        if self.filter.is_some() {
+            self.update_filtered_lines();
+        }
+        
+        // Auto-scroll to bottom if follow mode is enabled
+        if self.follow_mode {
+            self.scroll_to_bottom();
+        }
+    }
+
+    /// Add multiple log lines
+    pub fn add_lines(&mut self, lines: Vec<String>) {
+        for line in lines {
+            self.add_line(line);
+        }
+    }
+
+    /// Set the filter string (case-insensitive substring match)
+    pub fn set_filter(&mut self, filter: Option<String>) {
+        self.filter = filter;
+        self.update_filtered_lines();
+        
+        // If follow mode is on, scroll to bottom after filtering
+        if self.follow_mode {
+            self.scroll_to_bottom();
+        } else {
+            // Reset scroll position when filter changes
+            self.scroll_position = 0;
+        }
+    }
+
+    /// Get current filter
+    pub fn filter(&self) -> Option<&str> {
+        self.filter.as_deref()
+    }
+
+    /// Toggle follow mode
+    pub fn toggle_follow_mode(&mut self) {
+        self.follow_mode = !self.follow_mode;
+        if self.follow_mode {
+            self.scroll_to_bottom();
+        }
+    }
+
+    /// Set follow mode
+    pub fn set_follow_mode(&mut self, enabled: bool) {
+        self.follow_mode = enabled;
+        if enabled {
+            self.scroll_to_bottom();
+        }
+    }
+
+    /// Check if follow mode is enabled
+    pub fn is_follow_mode(&self) -> bool {
+        self.follow_mode
+    }
+
+    /// Scroll up by one line
+    pub fn scroll_up(&mut self) {
+        let visible_lines = self.get_visible_lines_count();
+        if self.scroll_position > 0 {
+            self.scroll_position -= 1;
+            self.follow_mode = false; // Disable follow mode when user scrolls
+        }
+        self.update_scrollbar_state(visible_lines);
+    }
+
+    /// Scroll down by one line
+    pub fn scroll_down(&mut self) {
+        let visible_lines = self.get_visible_lines_count();
+        let max_scroll = self.get_max_scroll_position(visible_lines);
+        if self.scroll_position < max_scroll {
+            self.scroll_position += 1;
+        }
+        self.update_scrollbar_state(visible_lines);
+    }
+
+    /// Scroll to top
+    pub fn scroll_to_top(&mut self) {
+        self.scroll_position = 0;
+        self.follow_mode = false;
+        let visible_lines = self.get_visible_lines_count();
+        self.update_scrollbar_state(visible_lines);
+    }
+
+    /// Scroll to bottom
+    pub fn scroll_to_bottom(&mut self) {
+        let visible_lines = self.get_visible_lines_count();
+        let max_scroll = self.get_max_scroll_position(visible_lines);
+        self.scroll_position = max_scroll;
+        self.update_scrollbar_state(visible_lines);
+    }
+
+    /// Page up (scroll up by visible height)
+    pub fn page_up(&mut self) {
+        let visible_lines = self.get_visible_lines_count();
+        if self.scroll_position >= visible_lines {
+            self.scroll_position -= visible_lines;
+        } else {
+            self.scroll_position = 0;
+        }
+        self.follow_mode = false;
+        self.update_scrollbar_state(visible_lines);
+    }
+
+    /// Page down (scroll down by visible height)
+    pub fn page_down(&mut self) {
+        let visible_lines = self.get_visible_lines_count();
+        let max_scroll = self.get_max_scroll_position(visible_lines);
+        let new_position = (self.scroll_position + visible_lines).min(max_scroll);
+        self.scroll_position = new_position;
+        if self.scroll_position >= max_scroll {
+            self.follow_mode = true; // Enable follow mode if we reach bottom
+        }
+        self.update_scrollbar_state(visible_lines);
+    }
+
+
+    /// Update filtered lines based on current filter
+    fn update_filtered_lines(&mut self) {
+        if let Some(ref filter) = self.filter {
+            let filter_lower = filter.to_lowercase();
+            self.filtered_lines = self.lines
+                .iter()
+                .filter(|line| line.to_lowercase().contains(&filter_lower))
+                .cloned()
+                .collect();
+        } else {
+            self.filtered_lines.clear();
+        }
+    }
+
+    /// Get visible lines count (approximate based on area height)
+    fn get_visible_lines_count(&self) -> usize {
+        // This will be set during render based on actual area
+        // For now, return a reasonable default
+        20
+    }
+
+    /// Get maximum scroll position
+    fn get_max_scroll_position(&self, visible_lines: usize) -> usize {
+        let total_lines = if self.filter.is_some() {
+            self.filtered_lines.len()
+        } else {
+            self.lines.len()
+        };
+        
+        if total_lines <= visible_lines {
+            0
+        } else {
+            total_lines - visible_lines
+        }
+    }
+
+    /// Update scrollbar state
+    fn update_scrollbar_state(&mut self, visible_lines: usize) {
+        let total_lines = if self.filter.is_some() {
+            self.filtered_lines.len()
+        } else {
+            self.lines.len()
+        };
+        
+        self.scrollbar_state = ScrollbarState::new(total_lines)
+            .position(self.scroll_position)
+            .viewport_content_length(visible_lines);
+    }
+
+    /// Clear all log lines
+    pub fn clear(&mut self) {
+        self.lines.clear();
+        self.filtered_lines.clear();
+        self.scroll_position = 0;
+        let visible_lines = self.get_visible_lines_count();
+        self.update_scrollbar_state(visible_lines);
+    }
+
+    /// Get number of lines in buffer
+    pub fn line_count(&self) -> usize {
+        self.lines.len()
+    }
+
+    /// Render the log view
+    pub fn render(&mut self, f: &mut Frame, area: Rect) {
+        // Update visible lines count based on actual area
+        let visible_lines = (area.height.saturating_sub(2)) as usize; // Account for borders
+        
+        // Update filtered lines if needed
+        if self.filter.is_some() && self.filtered_lines.is_empty() && !self.lines.is_empty() {
+            self.update_filtered_lines();
+        }
+        
+        // Get lines to display
+        let display_lines: Vec<String> = if self.filter.is_some() {
+            self.filtered_lines.clone()
+        } else {
+            self.lines.iter().cloned().collect()
+        };
+        
+        // Calculate visible range
+        let total_lines = display_lines.len();
+        let max_scroll = self.get_max_scroll_position(visible_lines);
+        
+        // Ensure scroll position is valid
+        if self.scroll_position > max_scroll {
+            self.scroll_position = max_scroll;
+        }
+        
+        // Get visible slice
+        let start = self.scroll_position;
+        let end = (start + visible_lines).min(total_lines);
+        let visible_slice = if start < total_lines {
+            &display_lines[start..end]
+        } else {
+            &[]
+        };
+        
+        // Build list items
+        let items: Vec<ListItem> = visible_slice
+            .iter()
+            .map(|line| {
+                // Truncate line if too long for display
+                let max_width = area.width.saturating_sub(4) as usize; // Account for borders and scrollbar
+                let display_line = if line.len() > max_width {
+                    &line[..max_width]
+                } else {
+                    line.as_str()
+                };
+                
+                ListItem::new(Line::from(Span::raw(display_line)))
+            })
+            .collect();
+        
+        // Create block with title showing filter and follow mode status
+        let mut title = "Logs".to_string();
+        if let Some(ref filter) = self.filter {
+            title.push_str(&format!(" [filter: {}]", filter));
+        }
+        if self.follow_mode {
+            title.push_str(" [follow]");
+        }
+        
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .style(self.theme.secondary_style),
+            );
+        
+        // Render list
+        f.render_widget(list, area);
+        
+        // Render scrollbar if needed
+        if total_lines > visible_lines {
+            self.update_scrollbar_state(visible_lines);
+            let scrollbar = Scrollbar::default()
+                .orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("↑"))
+                .end_symbol(Some("↓"));
+            f.render_stateful_widget(scrollbar, area, &mut self.scrollbar_state);
+        }
+    }
+}
+
+impl Default for LogView {
+    fn default() -> Self {
+        Self::new(Theme::default())
+    }
+}
+</file>
+
+<file path="src/widget/modal.rs">
+//! ModalView widget implementation
+//!
+//! Displays modal dialogs for detailed feedback/errors
+
+use crate::message::AppMessage;
+use crate::view::Theme;
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::Frame;
+
+/// ModalView widget for displaying modal dialogs
+pub struct ModalView {
+    message: Option<AppMessage>,
+    visible: bool,
+    theme: Theme,
+}
+
+impl ModalView {
+    /// Create a new modal view
+    pub fn new(theme: Theme) -> Self {
+        Self {
+            message: None,
+            visible: false,
+            theme,
+        }
+    }
+
+    /// Show a message in the modal
+    pub fn show(&mut self, message: AppMessage) {
+        self.message = Some(message);
+        self.visible = true;
+    }
+
+    /// Hide the modal
+    pub fn hide(&mut self) {
+        self.visible = false;
+        self.message = None;
+    }
+
+    /// Check if visible
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    /// Render the modal
+    pub fn render(&self, f: &mut Frame, area: Rect) {
+        if !self.visible || self.message.is_none() {
+            return;
+        }
+
+        let message = self.message.as_ref().unwrap();
+
+        // Create a centered modal area
+        let vertical = Layout::vertical([
+            Constraint::Percentage(25),
+            Constraint::Percentage(50),
+            Constraint::Percentage(25),
+        ])
+        .split(area);
+
+        let horizontal = Layout::horizontal([
+            Constraint::Percentage(20),
+            Constraint::Percentage(60),
+            Constraint::Percentage(20),
+        ])
+        .split(vertical[1]);
+
+        let modal_area = horizontal[1];
+
+        // Determine style based on message kind
+        let style = match message.kind {
+            crate::message::AppMessageKind::Info => self.theme.secondary_style,
+            crate::message::AppMessageKind::Warning => self.theme.error_style,
+            crate::message::AppMessageKind::Error => self.theme.error_style,
+        };
+
+        // Build text content
+        let mut lines = vec![Line::from(Span::styled(
+            message.short.clone(),
+            style.clone(),
+        ))];
+
+        if let Some(ref details) = message.details {
+            lines.push(Line::from(""));
+            for line in details.lines() {
+                lines.push(Line::from(Span::styled(line, self.theme.secondary_style)));
+            }
+        }
+
+        let paragraph = Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(match message.kind {
+                        crate::message::AppMessageKind::Info => "Information",
+                        crate::message::AppMessageKind::Warning => "Warning",
+                        crate::message::AppMessageKind::Error => "Error",
+                    })
+                    .style(self.theme.modal_style),
+            )
+            .wrap(Wrap { trim: true });
+
+        f.render_widget(paragraph, modal_area);
+    }
+}
+</file>
+
+<file path="src/widget/status_bar.rs">
+//! StatusBar widget implementation
+//!
+//! Displays status information at the bottom of the screen
+
+use crate::message::{AppMessage, AppMessageKind};
+use crate::view::Theme;
+use ratatui::layout::Rect;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Paragraph};
+use ratatui::Frame;
+
+/// StatusBar widget for displaying status information
+pub struct StatusBar {
+    message: Option<AppMessage>,
+    theme: Theme,
+}
+
+impl StatusBar {
+    /// Create a new status bar
+    pub fn new(theme: Theme) -> Self {
+        Self {
+            message: None,
+            theme,
+        }
+    }
+
+    /// Set the current message
+    pub fn set_message(&mut self, message: AppMessage) {
+        self.message = Some(message);
+    }
+
+    /// Clear the current message
+    pub fn clear(&mut self) {
+        self.message = None;
+    }
+
+    /// Render the status bar
+    pub fn render(&self, f: &mut Frame, area: Rect) {
+        let text = if let Some(ref msg) = self.message {
+            let style = match msg.kind {
+                AppMessageKind::Info => self.theme.secondary_style,
+                AppMessageKind::Warning => self.theme.error_style,
+                AppMessageKind::Error => self.theme.error_style,
+            };
+            Line::from(Span::styled(msg.short.clone(), style))
+        } else {
+            Line::from(Span::raw(""))
+        };
+
+        let paragraph = Paragraph::new(text)
+            .block(Block::default().style(self.theme.status_bar_style));
+
+        f.render_widget(paragraph, area);
+    }
+}
+</file>
+
+<file path="src/widget/view_header.rs">
+//! ViewHeader widget implementation
+//!
+//! Displays view title, contextual information, and keybindings in a header layout
+
+use crate::view::{HelpItem, Theme};
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
+use ratatui::Frame;
+
+/// ViewHeader widget for displaying view information
+pub struct ViewHeader {
+    title: String,
+    info: Option<Vec<(String, String)>>,
+    help: Option<Vec<HelpItem>>,
+    theme: Theme,
+}
+
+impl ViewHeader {
+    /// Create a new ViewHeader
+    pub fn new(title: String, theme: Theme) -> Self {
+        Self {
+            title,
+            info: None,
+            help: None,
+            theme,
+        }
+    }
+
+    /// Set contextual information (left side)
+    pub fn with_info(mut self, info: Vec<(String, String)>) -> Self {
+        self.info = Some(info);
+        self
+    }
+
+    /// Set header help items (right side, max 5)
+    pub fn with_help(mut self, help: Vec<HelpItem>) -> Self {
+        // Limit to 5 items max
+        let limited: Vec<HelpItem> = help.into_iter().take(5).collect();
+        self.help = if limited.is_empty() { None } else { Some(limited) };
+        self
+    }
+
+    /// Calculate the height needed for the header
+    pub fn height(&self) -> u16 {
+        let info_height = self.info.as_ref().map(|i| i.len() as u16).unwrap_or(0);
+        let help_height = self.help.as_ref().map(|h| h.len() as u16).unwrap_or(0);
+        // Height is max of info lines and help lines, plus 1 for spacing
+        info_height.max(help_height).max(1) + 1
+    }
+
+    /// Render the view header
+    pub fn render(&self, f: &mut Frame, area: Rect) {
+        if area.height == 0 || area.width == 0 {
+            return;
+        }
+
+        // Split area into three sections: left (info), center (title), right (help)
+        let chunks = Layout::horizontal([
+            Constraint::Percentage(35), // Left: contextual info
+            Constraint::Percentage(30), // Center: title
+            Constraint::Percentage(35), // Right: help
+        ])
+        .split(area);
+
+        let left_area = chunks[0];
+        let center_area = chunks[1];
+        let right_area = chunks[2];
+
+        // Render left side: contextual information
+        if let Some(ref info) = self.info {
+            let mut lines = Vec::new();
+            for (key, value) in info {
+                let line = Line::from(vec![
+                    Span::styled(
+                        format!("{}: ", key),
+                        self.theme.primary_style,
+                    ),
+                    Span::styled(
+                        value.clone(),
+                        self.theme.secondary_style,
+                    ),
+                ]);
+                lines.push(line);
+            }
+            let paragraph = Paragraph::new(lines);
+            f.render_widget(paragraph, left_area);
+        }
+
+        // Render center: title (centered)
+        let title_line = Line::from(vec![Span::styled(
+            self.title.clone(),
+            self.theme.primary_style.add_modifier(Modifier::BOLD),
+        )]);
+        let title_paragraph = Paragraph::new(title_line)
+            .alignment(ratatui::layout::Alignment::Center);
+        f.render_widget(title_paragraph, center_area);
+
+        // Render right side: help items
+        if let Some(ref help) = self.help {
+            let mut lines = Vec::new();
+            for item in help {
+                let line = Line::from(vec![
+                    Span::styled(
+                        format!("<{}> ", item.key),
+                        self.theme.primary_style,
+                    ),
+                    Span::styled(
+                        item.description.clone(),
+                        self.theme.secondary_style,
+                    ),
+                ]);
+                lines.push(line);
+            }
+            let paragraph = Paragraph::new(lines)
+                .alignment(ratatui::layout::Alignment::Right);
+            f.render_widget(paragraph, right_area);
+        }
+    }
+}
+</file>
+
+<file path=".gitignore">
+# Rust
+target/
+debug/
+release/
+*.rs.bk
+*.rlib
+*.prof*
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+*.tmp
+
+# Environment
+.env
+.env.local
+.env.*.local
+*.log
+
+# Coverage
+coverage/
+*.gcda
+*.gcno
+*.gcov
+
+# Documentation
+/book/
+
+# Build artifacts
+dist/
+build/
+out/
+</file>
+
+<file path="Cargo.toml">
+[package]
+name = "tui-framework"
+version = "0.1.0"
+edition = "2021"
+authors = ["CLI Framework Team"]
+description = "An opinionated TUI framework library for building terminal user interfaces"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/your-org/tui-framework"
+
+[dependencies]
+ratatui = "0.27"
+crossterm = "0.28"
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Optional OpenTelemetry dependencies (applications can enable)
+# Note: Applications should add these dependencies themselves when using observability feature
+# opentelemetry = { version = "0.24", optional = true }
+# opentelemetry-otlp = { version = "0.17", optional = true }
+# opentelemetry-sdk = { version = "0.24", optional = true }
+
+[dev-dependencies]
+ratatui = { version = "0.27", features = ["crossterm"] }
+
+[features]
+default = []
+# observability = ["opentelemetry", "opentelemetry-otlp", "opentelemetry-sdk"]
+# Note: OpenTelemetry integration will be implemented in src/observability/mod.rs
+# Applications should add opentelemetry crates to their own Cargo.toml when using this feature
+observability = []
+
+[lib]
+name = "tui_framework"
+path = "src/lib.rs"
+
+[[example]]
+name = "simple"
+path = "examples/simple/main.rs"
+
+[[example]]
+name = "multi_view"
+path = "examples/multi_view/main.rs"
+
+[[example]]
+name = "kitchen_sink"
+path = "examples/kitchen_sink/main.rs"
+</file>
+
+<file path="CONTRIBUTING.md">
+# Contributing to TUI Framework
+
+Thank you for your interest in contributing to TUI Framework! This document provides guidelines and instructions for contributing.
+
+## Development Setup
+
+1. Clone the repository
+2. Install Rust toolchain (latest stable)
+3. Run tests: `cargo test`
+4. Build: `cargo build`
+
+## Code Style
+
+- Follow Rust standard formatting: `cargo fmt`
+- Run clippy: `cargo clippy`
+- Ensure all tests pass: `cargo test`
+- Ensure examples compile: `cargo build --examples`
+
+## Testing
+
+The project follows a test-first approach:
+
+- **Unit Tests**: Test individual components in `src/`
+- **Integration Tests**: Test component interactions in `tests/`
+- **Contract Tests**: Verify trait implementations comply with contracts in `tests/contract/`
+- **Examples**: Serve as integration tests and documentation
+
+Run all tests:
+```bash
+cargo test
+```
+
+Run specific test suites:
+```bash
+cargo test --lib              # Unit tests only
+cargo test --test keymap      # Integration tests
+cargo test contract           # Contract tests
+```
+
+## Project Structure
+
+```
+cli-framework/
+├── src/              # Source code
+│   ├── app/         # Application builder and runtime
+│   ├── command/     # Command system
+│   ├── data_source/ # Data source trait
+│   ├── keymap/      # Keybinding system
+│   ├── view/        # View trait and theme
+│   ├── widget/      # Standard widgets (GridView, LogView, etc.)
+│   ├── message/     # Message system
+│   ├── auth/        # Optional authentication
+│   ├── retry/       # Retry policies
+│   └── observability/ # OpenTelemetry integration
+├── tests/           # Test suites
+│   ├── unit/        # Unit tests
+│   ├── integration/ # Integration tests
+│   └── contract/    # Contract tests
+├── examples/        # Example applications
+└── specs/           # Specification documents
+```
+
+## Making Changes
+
+1. **Create a branch**: `git checkout -b feature/your-feature-name`
+2. **Write tests first** (test-first approach)
+3. **Implement the feature**
+4. **Ensure all tests pass**
+5. **Update documentation** if needed
+6. **Commit with clear messages**
+
+## Commit Messages
+
+Follow conventional commit format:
+- `feat: add new feature`
+- `fix: fix bug`
+- `docs: update documentation`
+- `test: add tests`
+- `refactor: refactor code`
+
+## Pull Request Process
+
+1. Ensure all tests pass
+2. Ensure examples compile
+3. Update documentation if needed
+4. Create a pull request with a clear description
+5. Reference any related issues
+
+## Design Principles
+
+The framework follows these principles:
+
+1. **Opinionated Defaults**: Provide sensible defaults that work for most cases
+2. **Flexibility**: Allow customization where needed
+3. **Test-First**: Write tests before implementation
+4. **Documentation**: Public API must be documented
+5. **Error Handling**: Use `anyhow::Result` for framework operations
+
+## Areas for Contribution
+
+- Bug fixes
+- Performance improvements
+- Additional widgets
+- Documentation improvements
+- Example applications
+- Test coverage improvements
+
+## Questions?
+
+Open an issue for questions or discussions about contributions.
+</file>
+
+<file path="src/app/builder.rs">
+//! AppBuilder implementation
+//!
+//! Provides a builder pattern for constructing TUI applications.
+
+use crate::app::context::AppContext;
+use crate::app::module::Module;
+use crate::app::runtime::Runtime;
+use crate::command::{Command, CommandArgs, CommandRegistry, CommandPaletteResult};
+use crate::keymap::{AppCommand, KeymapConfig, KeymapRegistry, KeymapResolver, ViewSlot};
+use crate::message::AppMessage;
+use crate::view::{View, ViewResult, ViewRegistry};
+use anyhow::Result;
+use crossterm::event::{Event as CrosstermEvent, KeyCode, KeyEventKind};
+use ratatui::layout::{Constraint, Layout, Rect};
+use std::collections::HashMap;
+
+/// Builder for constructing TUI applications
+pub struct AppBuilder {
+    view_registry: ViewRegistry,
+    command_registry: CommandRegistry,
+    view_slots: HashMap<ViewSlot, String>,
+    keymap_config: KeymapConfig,
+    status_bar_enabled: bool,
+    help_overlay_enabled: bool,
+    command_palette_enabled: bool,
+}
+
+impl AppBuilder {
+    /// Create a new AppBuilder with default configuration
+    pub fn new() -> Self {
+        Self {
+            view_registry: ViewRegistry::new(),
+            command_registry: CommandRegistry::new(),
+            view_slots: HashMap::new(),
+            keymap_config: KeymapConfig::new(),
+            status_bar_enabled: true,
+            help_overlay_enabled: true,
+            command_palette_enabled: true,
+        }
+    }
+
+    /// Register a view
+    pub fn register_view<V: View + 'static>(mut self, view: V) -> Self {
+        self.view_registry.register(Box::new(view));
+        self
+    }
+
+    /// Map a view to a numeric key slot (1-9)
+    pub fn map_view_slot(mut self, slot: ViewSlot, view_id: &'static str) -> Self {
+        self.view_slots.insert(slot, view_id.to_string());
+        self
+    }
+
+    /// Register a command
+    pub fn register_command(mut self, command: Command) -> Self {
+        self.command_registry.register(command);
+        self
+    }
+
+    /// Register a module
+    ///
+    /// Modules allow grouping related views, commands, and keybindings together.
+    /// This method calls the module's `register` method to add its components.
+    pub fn register_module<M: Module>(mut self, module: M) -> Result<Self> {
+        module.register(&mut self)?;
+        Ok(self)
+    }
+
+    /// Configure keymap
+    pub fn configure_keymap(mut self, keymap: KeymapConfig) -> Self {
+        self.keymap_config = keymap;
+        self
+    }
+
+    /// Enable or disable status bar
+    pub fn with_status_bar(mut self, enabled: bool) -> Self {
+        self.status_bar_enabled = enabled;
+        self
+    }
+
+    /// Enable or disable help overlay
+    pub fn with_help_overlay(mut self, enabled: bool) -> Self {
+        self.help_overlay_enabled = enabled;
+        self
+    }
+
+    /// Enable or disable command palette
+    pub fn with_command_palette(mut self, enabled: bool) -> Self {
+        self.command_palette_enabled = enabled;
+        self
+    }
+
+    /// Build the application
+    pub fn build<C: AppContext + 'static>(self, ctx: C) -> Result<App<C>> {
+        // Build keymap registry and resolver
+        let mut keymap_registry = KeymapRegistry::new();
+        keymap_registry.load_config(self.keymap_config.clone());
+        let keymap_resolver = KeymapResolver::new(keymap_registry);
+
+        // Get all commands for palette
+        let commands: Vec<Command> = self.command_registry.commands().cloned().collect();
+
+        let mut runtime = Runtime::new();
+        runtime.set_status_bar_enabled(self.status_bar_enabled);
+        runtime.set_help_overlay_enabled(self.help_overlay_enabled);
+        runtime.set_command_palette_enabled(self.command_palette_enabled);
+        runtime.set_commands(commands);
+        
+        Ok(App {
+            view_registry: self.view_registry,
+            command_registry: self.command_registry,
+            view_slots: self.view_slots,
+            keymap_resolver,
+            ctx,
+            runtime,
+            current_view_id: None,
+        })
+    }
+}
+
+impl Default for AppBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Built application
+pub struct App<C: AppContext> {
+    view_registry: ViewRegistry,
+    command_registry: CommandRegistry,
+    view_slots: HashMap<ViewSlot, String>,
+    keymap_resolver: KeymapResolver,
+    ctx: C,
+    runtime: Runtime,
+    current_view_id: Option<String>,
+}
+
+impl<C: AppContext> App<C> {
+    /// Run the application
+    pub fn run(&mut self) -> Result<()> {
+        // Set initial view if any views are registered
+        if let Some((first_id, _)) = self.view_registry.views().next() {
+            self.current_view_id = Some(first_id.clone());
+        }
+
+        self.runtime.init()?;
+        
+        loop {
+            // Render - use unsafe to work around borrow checker for v1
+            // TODO: Refactor in v2 to use better patterns (Rc<RefCell>, etc.)
+            let current_view_id = self.current_view_id.clone();
+            let status_bar_enabled = self.runtime.status_bar_enabled;
+            
+            unsafe {
+                let runtime_ptr = &mut self.runtime as *mut Runtime;
+                let view_registry = &mut self.view_registry;
+                let ctx = &self.ctx;
+                
+                if let Some(ref mut terminal) = (*runtime_ptr).terminal_mut() {
+                    terminal.draw(|f| {
+                        let mut area = f.size();
+                        
+                        // Validate and adjust area for minimum terminal size (80x24)
+                        // Gracefully degrade for smaller terminals
+                        area = (*runtime_ptr).validate_area(area);
+                        
+                        // Ensure minimum functional area
+                        // For very small terminals, preserve status bar and minimum view area
+                        let min_view_height = if area.height < 24 {
+                            area.height.saturating_sub(if status_bar_enabled { 1 } else { 0 })
+                        } else {
+                            area.height.saturating_sub(if status_bar_enabled { 1 } else { 0 })
+                        };
+                        
+                        // Calculate main area and status area
+                        let chunks: Vec<Rect> = if status_bar_enabled {
+                            Layout::vertical([
+                                Constraint::Min(min_view_height.max(1)),
+                                Constraint::Length(1),
+                            ])
+                            .split(area)
+                            .to_vec()
+                        } else {
+                            vec![area]
+                        };
+                        let main_area = chunks[0];
+                        let status_area = if chunks.len() > 1 { Some(chunks[1]) } else { None };
+                        
+                        // Render overlays (access widgets through raw pointer)
+                        let modal_visible = (*runtime_ptr).modal.is_visible();
+                        let palette_visible = (*runtime_ptr).command_palette.is_visible();
+                        let help_visible = (*runtime_ptr).help_overlay.is_visible();
+                        
+                        if modal_visible {
+                            (*runtime_ptr).modal.render(f, main_area);
+                        } else if palette_visible {
+                            (*runtime_ptr).command_palette.render(f, main_area);
+                        } else if help_visible {
+                            (*runtime_ptr).help_overlay.render(f, main_area);
+                        } else {
+                            // Render current view if no overlay is active
+                            if let Some(ref view_id) = current_view_id {
+                                if let Some(view) = view_registry.get_mut(view_id) {
+                                    // Get header info and help once
+                                    let header_info = view.header_info();
+                                    let header_help = view.header_help();
+                                    let has_header = header_info.is_some() || header_help.is_some();
+                                    
+                                    if has_header {
+                                        // Calculate header height dynamically
+                                        let header_height = {
+                                            let info_lines = header_info.as_ref().map(|i| i.len() as u16).unwrap_or(0);
+                                            let help_lines = header_help.as_ref().map(|h| h.len().min(5) as u16).unwrap_or(0);
+                                            info_lines.max(help_lines).max(1) + 1
+                                        };
+                                        
+                                        // Split main area into header and content
+                                        let chunks = ratatui::layout::Layout::vertical([
+                                            ratatui::layout::Constraint::Length(header_height),
+                                            ratatui::layout::Constraint::Min(0),
+                                        ])
+                                        .split(main_area);
+                                        
+                                        let header_area = chunks[0];
+                                        let content_area = chunks[1];
+                                        
+                                        // Build and render header
+                                        let mut header = crate::widget::ViewHeader::new(
+                                            view.title().to_string(),
+                                            crate::view::Theme::default(),
+                                        );
+                                        
+                                        if let Some(info) = header_info {
+                                            header = header.with_info(info);
+                                        }
+                                        
+                                        if let Some(help) = header_help {
+                                            header = header.with_help(help);
+                                        }
+                                        
+                                        header.render(f, header_area);
+                                        
+                                        // Render view content in remaining area
+                                        view.render(f, content_area, ctx);
+                                    } else {
+                                        // No header, render view directly
+                                        view.render(f, main_area, ctx);
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Render status bar
+                        if let Some(status_rect) = status_area {
+                            (*runtime_ptr).status_bar.render(f, status_rect);
+                        }
+                    })?;
+                }
+            }
+
+            // Handle events
+            if crossterm::event::poll(std::time::Duration::from_millis(16))? {
+                if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
+                    if key.kind == KeyEventKind::Press {
+                        if !self.handle_key(key.code) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        self.runtime.cleanup()?;
+        Ok(())
+    }
+
+    /// Handle key event
+    fn handle_key(&mut self, key: KeyCode) -> bool {
+        // Handle command palette
+        if self.runtime.is_command_palette_visible() {
+            match self.runtime.command_palette_mut().handle_key(key) {
+                CommandPaletteResult::Continue => {}
+                CommandPaletteResult::Cancel => {
+                    self.runtime.command_palette_mut().hide();
+                }
+                CommandPaletteResult::Execute(command_id) => {
+                    self.runtime.command_palette_mut().hide();
+                    self.execute_command(&command_id, CommandArgs {
+                        positional: vec![],
+                        named: std::collections::HashMap::new(),
+                    });
+                }
+            }
+            return true;
+        }
+
+        // Handle modal
+        if self.runtime.is_modal_visible() {
+            match key {
+                KeyCode::Esc | KeyCode::Enter => {
+                    self.runtime.modal_mut().hide();
+                }
+                _ => {}
+            }
+            return true;
+        }
+
+        // Handle global keys
+        match key {
+            KeyCode::Char('q') => {
+                return false; // Exit
+            }
+            KeyCode::Char('?') => {
+                if self.runtime.help_overlay_enabled {
+                    self.runtime.help_overlay_mut().toggle();
+                }
+            }
+            KeyCode::Char(':') => {
+                if self.runtime.command_palette_enabled {
+                    self.runtime.command_palette_mut().show();
+                }
+            }
+            KeyCode::Esc => {
+                if self.runtime.help_overlay_mut().is_visible() {
+                    self.runtime.help_overlay_mut().hide();
+                }
+            }
+            _ => {}
+        }
+
+        // Handle numeric keys (1-9) for view switching
+        if let Some(slot) = self.key_to_view_slot(key) {
+            if let Some(view_id) = self.view_slots.get(&slot) {
+                self.current_view_id = Some(view_id.clone());
+                self.runtime.set_status_message(AppMessage::info(format!("Switched to view: {}", view_id)));
+                return true;
+            }
+        }
+
+        // Try keymap resolver
+        if let Some(app_cmd) = self.keymap_resolver.resolve(
+            key,
+            self.current_view_id.as_deref(),
+            self.runtime.is_modal_visible(),
+        ) {
+            match app_cmd {
+                AppCommand::SwitchView(view_id) => {
+                    self.current_view_id = Some(view_id);
+                }
+                AppCommand::RunCommand(cmd_id, named_args) => {
+                    self.execute_command(&cmd_id, CommandArgs {
+                        positional: vec![],
+                        named: named_args,
+                    });
+                }
+                AppCommand::InvokeAction(_) => {
+                    // Actions will be implemented later
+                }
+            }
+            return true;
+        }
+
+        // Pass to current view
+        if let Some(ref view_id) = self.current_view_id {
+            if let Some(view) = self.view_registry.get_mut(view_id) {
+                let event = CrosstermEvent::Key(crossterm::event::KeyEvent {
+                    code: key,
+                    kind: KeyEventKind::Press,
+                    modifiers: crossterm::event::KeyModifiers::empty(),
+                    state: crossterm::event::KeyEventState::empty(),
+                });
+                match view.handle_event(&event, &mut self.ctx) {
+                    ViewResult::Exit => return false,
+                    ViewResult::SwitchView(new_view_id) => {
+                        self.current_view_id = Some(new_view_id);
+                    }
+                    ViewResult::ShowModal(msg) => {
+                        self.runtime.modal_mut().show(msg);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        true
+    }
+
+    /// Execute a command
+    fn execute_command(&mut self, command_id: &str, args: CommandArgs) {
+        if let Some(command) = self.command_registry.get(command_id) {
+            match (command.execute)(&mut self.ctx, args) {
+                Ok(()) => {
+                    self.runtime.set_status_message(AppMessage::info(format!("Command '{}' executed successfully", command_id)));
+                }
+                Err(e) => {
+                    let error_msg = AppMessage::error(format!("Command '{}' failed", command_id))
+                        .with_details(e.to_string());
+                    self.runtime.set_status_message(error_msg.clone());
+                    self.runtime.modal_mut().show(error_msg);
+                }
+            }
+        }
+    }
+
+    /// Convert key code to view slot
+    fn key_to_view_slot(&self, key: KeyCode) -> Option<ViewSlot> {
+        match key {
+            KeyCode::Char('1') => Some(ViewSlot::Slot1),
+            KeyCode::Char('2') => Some(ViewSlot::Slot2),
+            KeyCode::Char('3') => Some(ViewSlot::Slot3),
+            KeyCode::Char('4') => Some(ViewSlot::Slot4),
+            KeyCode::Char('5') => Some(ViewSlot::Slot5),
+            KeyCode::Char('6') => Some(ViewSlot::Slot6),
+            KeyCode::Char('7') => Some(ViewSlot::Slot7),
+            KeyCode::Char('8') => Some(ViewSlot::Slot8),
+            KeyCode::Char('9') => Some(ViewSlot::Slot9),
+            _ => None,
+        }
+    }
+}
+</file>
+
+<file path="src/keymap/config.rs">
+//! KeyBinding, KeymapConfig, and ViewSlot definitions
+//!
+//! Provides keybinding configuration for global and per-view bindings.
+
+use crossterm::event::KeyCode;
+use std::collections::HashMap;
+
+/// View slot identifier (1-9)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ViewSlot {
+    Slot1,
+    Slot2,
+    Slot3,
+    Slot4,
+    Slot5,
+    Slot6,
+    Slot7,
+    Slot8,
+    Slot9,
+}
+
+impl ViewSlot {
+    /// Convert to KeyCode
+    pub fn to_key_code(&self) -> KeyCode {
+        match self {
+            ViewSlot::Slot1 => KeyCode::Char('1'),
+            ViewSlot::Slot2 => KeyCode::Char('2'),
+            ViewSlot::Slot3 => KeyCode::Char('3'),
+            ViewSlot::Slot4 => KeyCode::Char('4'),
+            ViewSlot::Slot5 => KeyCode::Char('5'),
+            ViewSlot::Slot6 => KeyCode::Char('6'),
+            ViewSlot::Slot7 => KeyCode::Char('7'),
+            ViewSlot::Slot8 => KeyCode::Char('8'),
+            ViewSlot::Slot9 => KeyCode::Char('9'),
+        }
+    }
+}
+
+/// Action that can be triggered by a keybinding
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppCommand {
+    /// Switch to a different view
+    SwitchView(String),
+    /// Invoke an action by ID
+    InvokeAction(String),
+    /// Run a command with arguments
+    RunCommand(String, HashMap<String, String>),
+}
+
+/// Key binding mapping a key to an action
+#[derive(Debug, Clone)]
+pub struct KeyBinding {
+    /// The keyboard key or key sequence
+    pub key: KeyCode,
+    /// The action to execute
+    pub action: AppCommand,
+}
+
+impl KeyBinding {
+    /// Create a new key binding
+    pub fn new(key: KeyCode, action: AppCommand) -> Self {
+        Self { key, action }
+    }
+}
+
+/// Keymap configuration
+///
+/// Supports global bindings (apply to all views) and per-view bindings.
+/// View-specific bindings override global bindings.
+#[derive(Debug, Clone, Default)]
+pub struct KeymapConfig {
+    /// Global keybindings (apply to all views)
+    pub global: Vec<KeyBinding>,
+    /// Per-view keybindings (keyed by view ID)
+    pub per_view: HashMap<String, Vec<KeyBinding>>,
+}
+
+impl KeymapConfig {
+    /// Create a new empty keymap configuration
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a global keybinding
+    pub fn add_global(mut self, binding: KeyBinding) -> Self {
+        self.global.push(binding);
+        self
+    }
+
+    /// Add a per-view keybinding
+    pub fn add_view_binding(mut self, view_id: String, binding: KeyBinding) -> Self {
+        self.per_view.entry(view_id).or_insert_with(Vec::new).push(binding);
+        self
+    }
+}
+</file>
+
+<file path="src/view/view_trait.rs">
+//! View trait definition
+//!
+//! Defines the View trait that all views must implement.
+
+use crate::app::context::AppContext;
+use crate::message::AppMessage;
+use crossterm::event::Event;
+use ratatui::layout::Rect;
+use ratatui::Frame;
+
+/// Result of handling an event in a view
+#[derive(Debug, Clone)]
+pub enum ViewResult {
+    /// Event was processed by view
+    Handled,
+    /// Event not relevant to this view
+    Ignored,
+    /// Request to switch to another view
+    SwitchView(String),
+    /// Request to show modal with message
+    ShowModal(AppMessage),
+    /// Request to exit application
+    Exit,
+}
+
+/// Help item for display in help overlay
+#[derive(Debug, Clone)]
+pub struct HelpItem {
+    /// The key or key sequence (e.g., "1", "t", "Ctrl+C")
+    pub key: String,
+    /// What the keybinding does
+    pub description: String,
+}
+
+/// View trait that all views must implement
+pub trait View {
+    /// Stable identifier for this view. Literal, compile-time string.
+    fn id(&self) -> &'static str;
+
+    /// Name shown in the status bar / tabs.
+    fn title(&self) -> &'static str;
+
+    /// Called every frame to draw this view.
+    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &dyn AppContext);
+
+    /// Handles view-specific events (arrows, enter, letters, etc.).
+    fn handle_event(&mut self, event: &Event, ctx: &mut dyn AppContext) -> ViewResult;
+
+    /// Help items specific to this view (used by '?').
+    fn help_items(&self) -> Vec<HelpItem>;
+
+    /// Optional contextual information for header display (left side).
+    /// Returns key-value pairs like [("Context", "prod"), ("Cluster", "k8s")].
+    /// Default implementation returns None (no contextual info).
+    fn header_info(&self) -> Option<Vec<(String, String)>> {
+        None
+    }
+
+    /// Optional short help items for header display (right side).
+    /// Should be concise (max 5 items) for header display.
+    /// Default implementation returns None (no header help).
+    fn header_help(&self) -> Option<Vec<HelpItem>> {
+        None
+    }
+}
+</file>
+
+<file path="src/widget/grid.rs">
+//! GridView widget implementation
+//!
+//! Displays tabular data using the DataSource trait
+
+use crate::data_source::DataSource;
+use crate::view::Theme;
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Row, Table, TableState};
+use ratatui::Frame;
+use std::fmt::Debug;
+
+/// GridView widget for displaying tabular data
+pub struct GridView<D: DataSource> 
+where
+    D::Row: Debug,
+{
+    data_source: D,
+    state: TableState,
+    theme: Theme,
+    formatter: Option<Box<dyn Fn(&D::Row) -> Vec<String>>>,
+}
+
+impl<D: DataSource> GridView<D> 
+where
+    D::Row: Debug,
+{
+    /// Create a new GridView
+    pub fn new(data_source: D, theme: Theme) -> Self {
+        Self {
+            data_source,
+            state: TableState::default(),
+            theme,
+            formatter: None,
+        }
+    }
+
+    /// Set a custom formatter function for rows
+    /// The formatter should return a Vec<String> representing the columns
+    pub fn with_formatter<F>(mut self, formatter: F) -> Self
+    where
+        F: Fn(&D::Row) -> Vec<String> + 'static,
+    {
+        self.formatter = Some(Box::new(formatter));
+        self
+    }
+
+    /// Get a reference to the data source
+    pub fn data_source(&self) -> &D {
+        &self.data_source
+    }
+
+    /// Get a mutable reference to the data source
+    pub fn data_source_mut(&mut self) -> &mut D {
+        &mut self.data_source
+    }
+
+    /// Get the current selection index
+    pub fn selected(&self) -> Option<usize> {
+        self.state.selected()
+    }
+
+    /// Select a row by index
+    pub fn select(&mut self, index: Option<usize>) {
+        self.state.select(index);
+    }
+
+    /// Move selection down
+    pub fn next(&mut self) {
+        let len = self.data_source.len();
+        if len == 0 {
+            return;
+        }
+        let i = self.state.selected().map_or(0, |i| (i + 1) % len);
+        self.state.select(Some(i));
+    }
+
+    /// Move selection up
+    pub fn previous(&mut self) {
+        let len = self.data_source.len();
+        if len == 0 {
+            return;
+        }
+        let i = self.state.selected().map_or(0, |i| if i == 0 { len - 1 } else { i - 1 });
+        self.state.select(Some(i));
+    }
+
+    /// Render the grid view
+    pub fn render(&mut self, f: &mut Frame, area: Rect) {
+        let len = self.data_source.len();
+        
+        if len == 0 {
+            // Show empty state
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title("No Data");
+            f.render_widget(block, area);
+            return;
+        }
+
+        // Build rows from data source
+        let mut rows = Vec::new();
+        let visible_rows = (area.height.saturating_sub(2)) as usize;
+        let mut num_cols = 1;
+        
+        for i in 0..len.min(visible_rows) {
+            if let Some(row) = self.data_source.get(i) {
+                let cells = if let Some(ref formatter) = self.formatter {
+                    // Use custom formatter
+                    formatter(row)
+                } else {
+                    // Default: use Debug formatting, try to parse as structured data
+                    let debug_str = format!("{:?}", row);
+                    // Try to extract meaningful fields from Debug output
+                    // For structs like Item { id: 1, name: "...", status: "..." }
+                    // we'll show a simplified version
+                    if debug_str.contains("id:") && debug_str.contains("name:") {
+                        // Try to extract name field if it exists
+                        let name = if let Some(start) = debug_str.find("name: \"") {
+                            let start = start + 7;
+                            if let Some(end) = debug_str[start..].find('"') {
+                                debug_str[start..start+end].to_string()
+                            } else {
+                                format!("Item {}", i + 1)
+                            }
+                        } else {
+                            format!("Item {}", i + 1)
+                        };
+                        vec![name]
+                    } else {
+                        // Fallback to Debug string (truncated)
+                        vec![debug_str.chars().take(area.width as usize - 4).collect()]
+                    }
+                };
+                
+                num_cols = num_cols.max(cells.len());
+                let spans: Vec<Span> = cells.iter().map(|s| Span::raw(s.clone())).collect();
+                rows.push(Row::new(spans));
+            }
+        }
+
+        // Create column constraints (equal width for all columns)
+        let widths: Vec<ratatui::layout::Constraint> = (0..num_cols)
+            .map(|_| ratatui::layout::Constraint::Percentage(100 / num_cols.max(1) as u16))
+            .collect();
+        
+        let table = Table::new(rows, widths)
+            .block(Block::default().borders(Borders::ALL).title("Data"))
+            .highlight_style(
+                Style::default()
+                    .add_modifier(Modifier::REVERSED)
+                    .fg(self.theme.primary_style.fg.unwrap_or(ratatui::style::Color::Cyan)),
+            );
+
+        f.render_stateful_widget(table, area, &mut self.state);
+    }
+}
+</file>
+
+<file path="src/widget/mod.rs">
+pub mod grid;
+pub mod log;
+pub mod modal;
+pub mod status_bar;
+pub mod help;
+pub mod empty_state;
+pub mod view_header;
+
+pub use grid::GridView;
+pub use log::LogView;
+pub use modal::ModalView;
+pub use status_bar::StatusBar;
+pub use help::HelpOverlay;
+pub use empty_state::{EmptyState, LoadingIndicator};
+pub use view_header::ViewHeader;
+</file>
+
+<file path="src/lib.rs">
+//! # TUI Framework
+//!
+//! An opinionated TUI framework library for building terminal user interfaces.
+//!
+//! This framework provides a complete event loop, layout system, navigation, status bar,
+//! help overlay, command palette, and standard widgets (GridView, LogView, ModalView)
+//! so application authors can focus on implementing views, datasources, and commands
+//! rather than terminal management.
+//!
+//! ## Example
+//!
+//! ```no_run
+//! use tui_framework::prelude::*;
+//! use tui_framework::view::{View, ViewResult, HelpItem};
+//! use crossterm::event::Event;
+//! use ratatui::layout::Rect;
+//! use ratatui::Frame;
+//!
+//! // Define a simple view
+//! struct MyView;
+//! impl View for MyView {
+//!     fn id(&self) -> &'static str { "my.view" }
+//!     fn title(&self) -> &'static str { "My View" }
+//!     fn render(&mut self, _f: &mut Frame, _area: Rect, _ctx: &dyn AppContext) {}
+//!     fn handle_event(&mut self, _event: &Event, _ctx: &mut dyn AppContext) -> ViewResult {
+//!         ViewResult::Ignored
+//!     }
+//!     fn help_items(&self) -> Vec<HelpItem> { vec![] }
+//! }
+//!
+//! // Build and run the app
+//! struct MyContext;
+//! impl AppContext for MyContext {}
+//!
+//! # fn main() -> anyhow::Result<()> {
+//! let mut builder = AppBuilder::new();
+//! builder = builder
+//!     .register_view(MyView)
+//!     .map_view_slot(ViewSlot::Slot1, "my.view");
+//! let mut app = builder.build(MyContext)?;
+//! app.run()?;
+//! # Ok(())
+//! # }
+//! ```
+
+pub mod app;
+pub mod command;
+pub mod data_source;
+pub mod keymap;
+pub mod message;
+pub mod view;
+pub mod widget;
+
+// Optional modules
+#[cfg(feature = "observability")]
+pub mod observability;
+
+pub mod auth;
+pub mod retry;
+
+/// Prelude module for convenient imports
+pub mod prelude {
+    pub use crate::app::{AppBuilder, AppContext};
+    pub use crate::command::{Command, CommandArgs};
+    pub use crate::data_source::DataSource;
+    pub use crate::keymap::{KeyBinding, KeymapConfig, ViewSlot};
+    pub use crate::message::{AppMessage, AppMessageKind};
+    pub use crate::view::View;
+}
+</file>
+
+<file path="EXAMPLES.md">
+# TUI Framework Examples
+
+This document describes the three example applications included with the framework.
+
+## Example 1: Simple
+
+**Command**: `cargo run --example simple`
+
+**Purpose**: Demonstrates the minimal setup required to create a working TUI.
+
+**Features Shown**:
+- Basic view registration
+- GridView widget with DataSource
+- Status bar (bottom of screen)
+- Help overlay (press `?`)
+- Basic navigation
+
+**What You'll See**:
+- A simple grid view displaying 3 items (Item 1, Item 2, Item 3)
+- Status bar at the bottom
+- Press `?` to see help overlay
+- Press `q` to quit
+
+**Code Highlights**:
+- Minimal AppContext implementation
+- Simple DataSource with in-memory data
+- Basic View implementation
+
+## Example 2: With Commands
+
+**Command**: `cargo run --example with_commands`
+
+**Purpose**: Demonstrates command execution, command palette, and multiple views.
+
+**Features Shown**:
+- Multiple views (Services view, Logs view)
+- View headers with contextual information and keybindings
+- Numeric key view switching (1 → Services, 2 → Logs)
+- Command palette (press `:`)
+- Command registration and execution
+- Modal dialogs for command feedback
+- Error handling demonstration
+
+**What You'll See**:
+- Services view showing 3 services (web-server, api-server, db-server)
+- Logs view with placeholder content
+- Press `:` to open command palette with 4 commands:
+  - `restart` - Restart a service
+  - `stop` - Stop a service
+  - `info` - Show application information
+  - `fail` - Demonstrate error handling (intentionally fails)
+- Press 1/2 to switch between views
+- Commands show success/error messages in status bar and modals
+
+**Code Highlights**:
+- Command registration
+- Command execution with AppContext
+- Multiple views with numeric key mapping
+- Error handling with modals
+
+## Example 3: Kitchen Sink
+
+**Command**: `cargo run --example kitchen_sink`
+
+**Purpose**: Comprehensive demonstration of all framework features.
+
+**Features Shown**:
+- View headers with dynamic contextual information
+- GridView with interactive navigation (j/k keys)
+- LogView with **live streaming logs** (updates every 500ms)
+- Log filtering (press `/` in logs view)
+- Follow mode toggle (press `f` in logs view)
+- Scrolling controls (j/k, g/G, PageUp/PageDown)
+- Command palette
+- View switching
+- All UI components working together
+
+**What You'll See**:
+
+### Resources View (1)
+- Grid of 3 resources (web-server, api-server, db-server)
+- Use `j`/`↓` or `k`/`↑` to navigate
+- Selection highlighting
+
+### Logs View (2)
+- **Live streaming logs** - new log lines appear every 500ms
+- Log levels: INFO, WARN, ERROR
+- Timestamps on each line
+- **Filtering**: Press `/` to enter filter mode, type keyword (e.g., "ERROR"), press Enter
+- **Follow mode**: Press `f` to toggle auto-scroll to bottom
+- **Scrolling**:
+  - `j`/`↓`: Scroll down one line
+  - `k`/`↑`: Scroll up one line
+  - `g`: Jump to top
+  - `G`: Jump to bottom
+  - `PageUp`/`PageDown`: Page navigation
+- When follow mode is ON, new logs automatically scroll into view
+- When follow mode is OFF, you can scroll to review older logs
+
+**Code Highlights**:
+- SharedLogBuffer for thread-safe log streaming
+- Background thread simulating log generation
+- Interactive log filtering
+- Follow mode implementation
+- Complete integration of all framework features
+
+## Running the Examples
+
+All examples are interactive TUI applications. Here's how to use them:
+
+1. **Start an example**: `cargo run --example <name>`
+2. **Navigate**: Use the keys shown in help (press `?`)
+3. **Quit**: Press `q`
+
+### Common Controls (All Examples)
+- `q`: Quit application
+- `?`: Toggle help overlay
+- `:`: Open command palette (if available)
+- `Esc`: Close modals/overlays
+- `1-9`: Switch views (if mapped)
+
+### LogView Controls (Kitchen Sink)
+- `/`: Enter filter mode (type keyword, press Enter)
+- `f`: Toggle follow mode
+- `j`/`↓`: Scroll down
+- `k`/`↑`: Scroll up
+- `g`: Scroll to top
+- `G`: Scroll to bottom
+- `PageUp`/`PageDown`: Page navigation
+
+## Tips
+
+- The examples will show startup messages in your terminal before entering TUI mode
+- If the terminal is too small (< 80x24), the framework will gracefully degrade
+- All examples demonstrate real framework features - the code can be used as reference
+- The kitchen_sink example is the most comprehensive and shows all features working together
+</file>
+
+<file path="README.md">
+# TUI Framework
+
+An opinionated TUI framework library for building terminal user interfaces in Rust.
+
+This framework provides a complete event loop, layout system, navigation, status bar, help overlay, command palette, and standard widgets (GridView, LogView, ModalView) so application authors can focus on implementing views, datasources, and commands rather than terminal management.
+
+## Features
+
+- **View System**: Register views, switch between them with numeric keys (1-9)
+- **View Headers**: Optional contextual information and keybindings displayed in view headers
+- **Command Palette**: Execute commands via `:` key with filtering
+- **Keybindings**: Global and per-view keybindings with conflict resolution
+- **GridView**: Paginated data display with DataSource trait
+- **LogView**: Streaming logs with filtering and follow mode
+- **UI Components**: Status bar, help overlay, modal dialogs, view headers
+- **Customization**: Toggle UI elements, configure keybindings, add view headers
+- **Resilience**: Retry policies for network operations
+- **Optional Features**: Authentication hooks, OpenTelemetry integration
+
+## Quick Start
+
+Add to your `Cargo.toml`:
+
+```toml
+[dependencies]
+tui-framework = { path = "../tui-framework" }  # or from crates.io when published
+anyhow = "1.0"
+```
+
+Basic example:
+
+```rust
+use tui_framework::prelude::*;
+use tui_framework::view::{View, ViewResult, HelpItem};
+use crossterm::event::Event;
+use ratatui::layout::Rect;
+use ratatui::Frame;
+
+// Define a simple view
+struct MyView;
+impl View for MyView {
+    fn id(&self) -> &'static str { "my.view" }
+    fn title(&self) -> &'static str { "My View" }
+    fn render(&mut self, _f: &mut Frame, _area: Rect, _ctx: &dyn AppContext) {}
+    fn handle_event(&mut self, _event: &Event, _ctx: &mut dyn AppContext) -> ViewResult {
+        ViewResult::Ignored
+    }
+    fn help_items(&self) -> Vec<HelpItem> { vec![] }
+}
+
+// Build and run
+struct MyContext;
+impl AppContext for MyContext {}
+
+fn main() -> anyhow::Result<()> {
+    let mut builder = AppBuilder::new();
+    builder = builder
+        .register_view(MyView)
+        .map_view_slot(ViewSlot::Slot1, "my.view");
+    let mut app = builder.build(MyContext)?;
+    app.run()?;
+    Ok(())
+}
+```
+
+## Running Examples
+
+The framework includes several examples demonstrating different features:
+
+### Simple Example
+Basic TUI with a single grid view:
+```bash
+cargo run --example simple
+```
+
+### With Commands Example
+Demonstrates command palette, keybindings, and multiple views:
+```bash
+cargo run --example with_commands
+```
+
+### Kitchen Sink Example
+Comprehensive example showing all framework features:
+```bash
+cargo run --example kitchen_sink
+```
+
+## Key Bindings
+
+Default keybindings:
+- `1-9`: Switch to mapped views
+- `:`: Open command palette
+- `?`: Toggle help overlay
+- `q`: Quit application
+- `Esc`: Close modals/overlays
+
+## Documentation
+
+- [Quickstart Guide](specs/001-cli-framework-spec/quickstart.md) - Detailed getting started guide
+- [Specification](specs/001-cli-framework-spec/spec.md) - Full specification
+- [API Documentation](https://docs.rs/tui-framework) - Generated API docs (when published)
+
+## Requirements
+
+- Rust 1.70+ (2021 edition)
+- Terminal with at least 80x24 characters (gracefully degrades for smaller terminals)
+
+## License
+
+MIT OR Apache-2.0
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on contributing to this project.
+</file>
+
+</files>
