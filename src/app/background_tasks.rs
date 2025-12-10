@@ -68,6 +68,135 @@ use tokio_util::sync::CancellationToken;
 /// Result type for background tasks (legacy single-task API)
 pub type TaskResult = Result<()>;
 
+/// Progress update from a background task
+///
+/// Represents the current state of a long-running operation's progress,
+/// including current item count, optional total count, and optional contextual message.
+#[derive(Debug, Clone)]
+pub struct ProgressReporter {
+    /// Current item number (0-indexed or 1-indexed, application choice)
+    pub current: usize,
+    /// Total number of items (None for indeterminate progress)
+    pub total: Option<usize>,
+    /// Optional contextual message describing current operation
+    pub message: Option<String>,
+}
+
+impl ProgressReporter {
+    /// Create a new progress reporter with current and total counts
+    ///
+    /// # Arguments
+    ///
+    /// * `current` - Current item number
+    /// * `total` - Total number of items (must be > 0)
+    ///
+    /// # Returns
+    ///
+    /// `ProgressReporter` with `message: None`
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use tui_framework::app::background_tasks::ProgressReporter;
+    ///
+    /// let progress = ProgressReporter::new(45, 200);
+    /// assert_eq!(progress.current, 45);
+    /// assert_eq!(progress.total, Some(200));
+    /// ```
+    pub fn new(current: usize, total: usize) -> Self {
+        Self {
+            current,
+            total: Some(total),
+            message: None,
+        }
+    }
+
+    /// Create a progress reporter with current, total, and contextual message
+    ///
+    /// # Arguments
+    ///
+    /// * `current` - Current item number
+    /// * `total` - Total number of items (must be > 0)
+    /// * `message` - Contextual message describing current operation
+    ///
+    /// # Returns
+    ///
+    /// `ProgressReporter` with message set
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use tui_framework::app::background_tasks::ProgressReporter;
+    ///
+    /// let progress = ProgressReporter::with_message(45, 200, "Processing file.jpg");
+    /// assert_eq!(progress.message, Some("Processing file.jpg".to_string()));
+    /// ```
+    pub fn with_message(current: usize, total: usize, message: impl Into<String>) -> Self {
+        Self {
+            current,
+            total: Some(total),
+            message: Some(message.into()),
+        }
+    }
+
+    /// Calculate completion percentage
+    ///
+    /// # Returns
+    ///
+    /// * `0.0` if `total` is `None` or `0`
+    /// * `(current as f64 / total as f64) * 100.0` if current <= total
+    /// * `100.0` if current > total (capped at 100%)
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use tui_framework::app::background_tasks::ProgressReporter;
+    ///
+    /// let progress = ProgressReporter::new(45, 200);
+    /// assert_eq!(progress.percentage(), 22.5);
+    ///
+    /// let progress = ProgressReporter::new(200, 150);  // > 100%
+    /// assert_eq!(progress.percentage(), 100.0);  // Capped
+    /// ```
+    pub fn percentage(&self) -> f64 {
+        match self.total {
+            None | Some(0) => 0.0,
+            Some(total) => {
+                if self.current > total {
+                    100.0
+                } else {
+                    (self.current as f64 / total as f64) * 100.0
+                }
+            }
+        }
+    }
+
+    /// Check if progress is complete
+    ///
+    /// # Returns
+    ///
+    /// * `true` if `current >= total` and `total` is `Some` and `> 0`
+    /// * `false` otherwise (including when `total` is `None`)
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use tui_framework::app::background_tasks::ProgressReporter;
+    ///
+    /// let progress = ProgressReporter::new(200, 200);
+    /// assert!(progress.is_complete());
+    ///
+    /// let progress = ProgressReporter::new(45, 200);
+    /// assert!(!progress.is_complete());
+    /// ```
+    pub fn is_complete(&self) -> bool {
+        match self.total {
+            None | Some(0) => false,
+            Some(total) => self.current >= total,
+        }
+    }
+}
+
 // ============================================================================
 // Batch Task Management Types
 // ============================================================================
@@ -408,6 +537,83 @@ impl BackgroundTaskManager {
 
         self.active_tasks.push((handle, cancel_token.clone()));
         cancel_token
+    }
+
+    /// Spawn a background task with progress reporting capability
+    ///
+    /// The task receives a sender for progress updates and a cancellation token.
+    /// Progress updates can be collected via the returned receiver using `try_recv()`.
+    ///
+    /// The progress sender can be cloned for concurrent operations within the same task.
+    /// Each call to `spawn_with_progress()` creates a new, independent progress channel.
+    ///
+    /// # Returns
+    ///
+    /// A tuple containing:
+    /// - `CancellationToken` - Token for cancelling the task
+    /// - `mpsc::Receiver<ProgressReporter>` - Receiver for non-blocking progress updates
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use tui_framework::app::background_tasks::{BackgroundTaskManager, ProgressReporter};
+    ///
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let mut manager = BackgroundTaskManager::new();
+    /// let (token, mut progress_rx) = manager.spawn_with_progress(|progress_tx, cancel_token| {
+    ///     Box::pin(async move {
+    ///         for i in 1..=10 {
+    ///             if cancel_token.is_cancelled() {
+    ///                 break;
+    ///             }
+    ///             let progress = ProgressReporter::with_message(i, 10, format!("Item {}", i));
+    ///             let _ = progress_tx.send(progress).await;  // Best-effort, ignore errors
+    ///             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    ///         }
+    ///         Ok(())
+    ///     })
+    /// });
+    ///
+    /// // Poll progress updates (non-blocking)
+    /// while let Ok(progress) = progress_rx.try_recv() {
+    ///     println!("Progress: {}%", progress.percentage());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn spawn_with_progress<F>(
+        &mut self,
+        task: F,
+    ) -> (CancellationToken, mpsc::Receiver<ProgressReporter>)
+    where
+        F: FnOnce(
+                mpsc::Sender<ProgressReporter>,
+                CancellationToken,
+            )
+                -> std::pin::Pin<Box<dyn std::future::Future<Output = TaskResult> + Send>>
+            + Send
+            + 'static,
+    {
+        let cancel_token = CancellationToken::new();
+        let token_clone = cancel_token.clone();
+        let result_sender = self.result_sender.clone();
+
+        // Create a new progress channel for this task
+        let (progress_sender, progress_receiver) = mpsc::channel(100);
+        let progress_sender_clone = progress_sender.clone();
+
+        let handle = tokio::spawn(async move {
+            tokio::select! {
+                _ = token_clone.cancelled() => Ok(()),
+                result = task(progress_sender_clone, token_clone.clone()) => {
+                    let _ = result_sender.send(result).await;
+                    Ok(())
+                }
+            }
+        });
+
+        self.active_tasks.push((handle, cancel_token.clone()));
+        (cancel_token, progress_receiver)
     }
 
     /// Try to receive a task result (non-blocking)
