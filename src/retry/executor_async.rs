@@ -1,40 +1,47 @@
-//! Retry execution logic
+//! Async retry execution logic
 //!
-//! Executes operations with retry policies
+//! Executes async operations with retry policies
 
 use crate::retry::policy::RetryPolicy;
 use anyhow::Result;
+use std::future::Future;
 use std::time::Duration;
+use tokio::time::sleep;
 
-/// Executor that applies retry policies to operations
-pub struct RetryExecutor {
+/// Async executor that applies retry policies to async operations
+pub struct AsyncRetryExecutor {
     policy: RetryPolicy,
 }
 
-impl RetryExecutor {
-    /// Create a new retry executor with a policy
+impl AsyncRetryExecutor {
+    /// Create a new async retry executor with a policy
     pub fn new(policy: RetryPolicy) -> Self {
         Self { policy }
     }
 
-    /// Execute an operation with retry logic
+    /// Execute an async operation with retry logic
     ///
     /// The operation is retried according to the policy if it returns an error.
     /// Returns the first successful result or the last error if all retries fail.
-    pub fn execute<F, T>(&self, mut operation: F) -> Result<T>
+    /// T081: Async-compatible retry executor
+    pub async fn execute<F, Fut, T>(&self, mut operation: F) -> Result<T>
     where
-        F: FnMut() -> Result<T>,
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<T>>,
     {
         let mut last_error = None;
 
         for attempt in 0..=self.policy.max_attempts {
             // Execute the operation
-            let result = if self.policy.timeout.is_some() {
-                // TODO: Implement actual timeout in v2
-                // For v1, we'll just execute without timeout
-                operation()
+            let result = if let Some(timeout_duration) = self.policy.timeout {
+                // T081: Implement timeout for async operations
+                match tokio::time::timeout(timeout_duration, operation()).await {
+                    Ok(Ok(value)) => Ok(value),
+                    Ok(Err(e)) => Err(e),
+                    Err(_) => Err(anyhow::anyhow!("Operation timed out")),
+                }
             } else {
-                operation()
+                operation().await
             };
 
             match result {
@@ -50,7 +57,7 @@ impl RetryExecutor {
                     // Calculate delay for next retry
                     let delay = self.policy.delay_for_attempt(attempt);
                     if delay > Duration::ZERO {
-                        std::thread::sleep(delay);
+                        sleep(delay).await;
                     }
                 }
             }
@@ -64,11 +71,9 @@ impl RetryExecutor {
             )),
         }
     }
-
-    // Note: Async support will be added in v2 when async runtime is available
 }
 
-impl Default for RetryExecutor {
+impl Default for AsyncRetryExecutor {
     fn default() -> Self {
         Self::new(RetryPolicy::default())
     }

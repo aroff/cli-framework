@@ -29,4 +29,3 @@ pub trait Module {
     /// conflicting keybindings, etc.)
     fn register(&self, builder: &mut AppBuilder) -> Result<()>;
 }
-

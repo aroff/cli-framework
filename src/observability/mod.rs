@@ -2,5 +2,4 @@
 #[cfg(feature = "observability")]
 pub mod opentelemetry;
 
-pub use opentelemetry::{ObservabilityConfig, init_observability};
-
+pub use opentelemetry::{init_observability, ObservabilityConfig};

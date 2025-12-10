@@ -7,3 +7,4 @@ specs
 .cursor
 tests
 examples
+*.md

@@ -1,6 +1,6 @@
 [package]
 name = "tui-framework"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["CLI Framework Team"]
 description = "An opinionated TUI framework library for building terminal user interfaces"
@@ -13,6 +13,9 @@ crossterm = "0.28"
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+async-trait = "0.1"
+tokio-util = { version = "0.7", features = ["time"] }
 
 # Optional OpenTelemetry dependencies (applications can enable)
 # Note: Applications should add these dependencies themselves when using observability feature

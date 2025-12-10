@@ -42,6 +42,7 @@ The content is organized as follows:
 <directory_structure>
 src/
   app/
+    background_tasks.rs
     builder.rs
     context.rs
     mod.rs
@@ -73,6 +74,7 @@ src/
     mod.rs
     opentelemetry.rs
   retry/
+    executor_async.rs
     executor.rs
     mod.rs
     policy.rs
@@ -94,70 +96,213 @@ src/
 .gitignore
 .repomixignore
 Cargo.toml
-CONTRIBUTING.md
-EXAMPLES.md
-README.md
 repomix.config.json
 </directory_structure>
 
 <files>
 This section contains the contents of the repository's files.
 
-<file path=".repomixignore">
-# Add patterns to ignore here, one per line
-# Example:
-# *.log
-# tmp/
-.specify
-specs
-.cursor
-tests
-examples
+<file path="src/app/background_tasks.rs">
+//! Background task management for async operations
+//!
+//! Provides a system for spawning and managing long-running async operations
+//! that update the UI when complete, without blocking the event loop.
+
+use anyhow::Result;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+
+/// Result type for background tasks
+pub type TaskResult = Result<()>;
+
+/// Background task manager for spawning and tracking async operations
+///
+/// Manages the lifecycle of background tasks, including spawning, cancellation,
+/// and result collection. Tasks can be cancelled when views switch or when
+/// explicit cancellation is requested.
+pub struct BackgroundTaskManager {
+    /// Channel receiver for task results
+    result_receiver: Option<mpsc::Receiver<TaskResult>>,
+    /// Channel sender for task results (cloned for each task)
+    result_sender: mpsc::Sender<TaskResult>,
+    /// Active task handles for cancellation
+    active_tasks: Vec<(JoinHandle<TaskResult>, CancellationToken)>,
+}
+
+impl BackgroundTaskManager {
+    /// Create a new background task manager
+    pub fn new() -> Self {
+        let (sender, receiver) = mpsc::channel(100);
+        Self {
+            result_receiver: Some(receiver),
+            result_sender: sender,
+            active_tasks: Vec::new(),
+        }
+    }
+
+    /// Spawn a background task that will send its result via channel
+    ///
+    /// The task will be cancelled if the cancellation token is triggered.
+    /// Results are sent via the result channel and can be collected by calling `try_recv_result()`.
+    pub fn spawn<F>(&mut self, task: F) -> CancellationToken
+    where
+        F: std::future::Future<Output = TaskResult> + Send + 'static,
+    {
+        let cancel_token = CancellationToken::new();
+        let token_clone = cancel_token.clone();
+        let sender = self.result_sender.clone();
+
+        let handle = tokio::spawn(async move {
+            tokio::select! {
+                _ = token_clone.cancelled() => {
+                    // Task was cancelled, return Ok(()) to indicate graceful cancellation
+                    Ok(())
+                }
+                result = task => {
+                    // Task completed, send result
+                    let _ = sender.send(result).await;
+                    Ok(())
+                }
+            }
+        });
+
+        self.active_tasks.push((handle, cancel_token.clone()));
+        cancel_token
+    }
+
+    /// Try to receive a task result (non-blocking)
+    ///
+    /// Returns `Some(result)` if a result is available, `None` if no results are ready.
+    pub fn try_recv_result(&mut self) -> Option<TaskResult> {
+        if let Some(ref mut receiver) = self.result_receiver {
+            receiver.try_recv().ok()
+        } else {
+            None
+        }
+    }
+
+    /// Cancel all active tasks
+    ///
+    /// This is typically called when switching views or shutting down the application.
+    pub fn cancel_all(&mut self) {
+        for (_, token) in &self.active_tasks {
+            token.cancel();
+        }
+        self.active_tasks.clear();
+    }
+
+    /// Cancel a specific task by its cancellation token
+    pub fn cancel_task(&mut self, token: &CancellationToken) {
+        token.cancel();
+        // Remove tasks with matching token (compare by pointer address)
+        self.active_tasks.retain(|(_, t)| {
+            // Compare the inner Arc pointers
+            std::ptr::eq(t as *const _, token as *const _)
+        });
+    }
+
+    /// Clean up completed tasks
+    ///
+    /// Removes tasks that have completed from the active tasks list.
+    pub fn cleanup_completed(&mut self) {
+        self.active_tasks
+            .retain(|(handle, _)| !handle.is_finished());
+    }
+
+    /// Get the number of active tasks
+    pub fn active_task_count(&self) -> usize {
+        self.active_tasks.len()
+    }
+}
+
+impl Default for BackgroundTaskManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 </file>
 
-<file path="repomix.config.json">
-{
-  "$schema": "https://repomix.com/schemas/latest/schema.json",
-  "input": {
-    "maxFileSize": 52428800
-  },
-  "output": {
-    "filePath": "repomix-output.xml",
-    "style": "xml",
-    "parsableStyle": false,
-    "fileSummary": true,
-    "directoryStructure": true,
-    "files": true,
-    "removeComments": false,
-    "removeEmptyLines": false,
-    "compress": false,
-    "topFilesLength": 5,
-    "showLineNumbers": false,
-    "truncateBase64": false,
-    "copyToClipboard": false,
-    "includeFullDirectoryStructure": false,
-    "tokenCountTree": false,
-    "git": {
-      "sortByChanges": true,
-      "sortByChangesMaxCommits": 100,
-      "includeDiffs": false,
-      "includeLogs": false,
-      "includeLogsCount": 50
+<file path="src/retry/executor_async.rs">
+//! Async retry execution logic
+//!
+//! Executes async operations with retry policies
+
+use crate::retry::policy::RetryPolicy;
+use anyhow::Result;
+use std::future::Future;
+use std::time::Duration;
+use tokio::time::sleep;
+
+/// Async executor that applies retry policies to async operations
+pub struct AsyncRetryExecutor {
+    policy: RetryPolicy,
+}
+
+impl AsyncRetryExecutor {
+    /// Create a new async retry executor with a policy
+    pub fn new(policy: RetryPolicy) -> Self {
+        Self { policy }
     }
-  },
-  "include": [],
-  "ignore": {
-    "useGitignore": true,
-    "useDotIgnore": true,
-    "useDefaultPatterns": true,
-    "customPatterns": []
-  },
-  "security": {
-    "enableSecurityCheck": true
-  },
-  "tokenCount": {
-    "encoding": "o200k_base"
-  }
+
+    /// Execute an async operation with retry logic
+    ///
+    /// The operation is retried according to the policy if it returns an error.
+    /// Returns the first successful result or the last error if all retries fail.
+    /// T081: Async-compatible retry executor
+    pub async fn execute<F, Fut, T>(&self, mut operation: F) -> Result<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        let mut last_error = None;
+
+        for attempt in 0..=self.policy.max_attempts {
+            // Execute the operation
+            let result = if let Some(timeout_duration) = self.policy.timeout {
+                // T081: Implement timeout for async operations
+                match tokio::time::timeout(timeout_duration, operation()).await {
+                    Ok(Ok(value)) => Ok(value),
+                    Ok(Err(e)) => Err(e),
+                    Err(_) => Err(anyhow::anyhow!("Operation timed out")),
+                }
+            } else {
+                operation().await
+            };
+
+            match result {
+                Ok(value) => return Ok(value),
+                Err(e) => {
+                    last_error = Some(e);
+
+                    // Don't retry if this was the last attempt
+                    if attempt >= self.policy.max_attempts {
+                        break;
+                    }
+
+                    // Calculate delay for next retry
+                    let delay = self.policy.delay_for_attempt(attempt);
+                    if delay > Duration::ZERO {
+                        sleep(delay).await;
+                    }
+                }
+            }
+        }
+
+        // Return the last error
+        match last_error {
+            Some(e) => Err(e),
+            None => Err(anyhow::anyhow!(
+                "Operation failed but no error was recorded"
+            )),
+        }
+    }
+}
+
+impl Default for AsyncRetryExecutor {
+    fn default() -> Self {
+        Self::new(RetryPolicy::default())
+    }
 }
 </file>
 
@@ -170,18 +315,25 @@ examples
 ///
 /// Applications implement this trait to provide their own state and service clients.
 /// The framework uses this to pass context to views, datasources, and commands.
-pub trait AppContext {
+///
+/// # Thread Safety
+///
+/// AppContext implementations must be `Send + Sync` to ensure thread safety in the async runtime.
+/// This allows the framework to safely share context across async tasks and threads.
+pub trait AppContext: Send + Sync {
     // Applications define their own structure
     // Framework only requires the trait to exist
 }
 </file>
 
 <file path="src/app/mod.rs">
+pub mod background_tasks;
 pub mod builder;
 pub mod context;
 pub mod module;
 pub mod runtime;
 
+pub use background_tasks::BackgroundTaskManager;
 pub use builder::{App, AppBuilder};
 pub use context::AppContext;
 pub use module::Module;
@@ -226,19 +378,24 @@ pub trait Module {
 //!
 //! Provides the main event loop for the TUI application.
 
-use crate::command::{CommandPalette, CommandPaletteResult};
-use crate::keymap::ViewSlot;
+use crate::command::CommandPalette;
 use crate::message::AppMessage;
-use crate::widget::{HelpOverlay, ModalView, StatusBar};
 use crate::view::Theme;
+use crate::widget::{HelpOverlay, ModalView, StatusBar};
 use anyhow::Result;
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event as CrosstermEvent, KeyCode, KeyEventKind};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event as CrosstermEvent, KeyEventKind,
+};
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::Terminal;
 use std::io;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 /// Runtime for the TUI application
 pub struct Runtime {
@@ -247,10 +404,15 @@ pub struct Runtime {
     pub(crate) help_overlay: HelpOverlay,
     pub(crate) command_palette: CommandPalette,
     pub(crate) modal: ModalView,
+    #[allow(dead_code)] // Theme stored for potential future use
     theme: Theme,
     pub(crate) status_bar_enabled: bool,
     pub(crate) help_overlay_enabled: bool,
     pub(crate) command_palette_enabled: bool,
+    /// Number of active async operations (for loading indicators)
+    active_operations: Arc<AtomicUsize>,
+    /// Default timeout for async operations (in seconds)
+    default_timeout_seconds: u64,
 }
 
 impl Runtime {
@@ -267,6 +429,8 @@ impl Runtime {
             status_bar_enabled: true,
             help_overlay_enabled: true,
             command_palette_enabled: true,
+            active_operations: Arc::new(AtomicUsize::new(0)),
+            default_timeout_seconds: 30, // Default 30 seconds per FR-017
         }
     }
 
@@ -331,14 +495,14 @@ impl Runtime {
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
-        
+
         // Check terminal size and warn if too small
         let size = terminal.size()?;
         if size.width < Self::MIN_WIDTH || size.height < Self::MIN_HEIGHT {
             // Note: We don't fail here, but gracefully degrade
             // The render loop will handle small terminals
         }
-        
+
         self.terminal = Some(terminal);
         Ok(())
     }
@@ -351,7 +515,7 @@ impl Runtime {
     pub fn validate_area(&self, area: Rect) -> Rect {
         let min_width = Self::MIN_WIDTH.min(area.width);
         let min_height = Self::MIN_HEIGHT.min(area.height);
-        
+
         // Ensure we have at least minimum size
         // If terminal is smaller, we use what we have but ensure
         // status bar and essential UI elements remain accessible
@@ -385,26 +549,78 @@ impl Runtime {
     /// Get main area after accounting for status bar
     pub fn get_main_area(&self, area: Rect) -> (Rect, Option<Rect>) {
         let chunks: Vec<Rect> = if self.status_bar_enabled {
-            Layout::vertical([
-                Constraint::Min(0),
-                Constraint::Length(1),
-            ])
-            .split(area)
-            .to_vec()
+            Layout::vertical([Constraint::Min(0), Constraint::Length(1)])
+                .split(area)
+                .to_vec()
         } else {
             vec![area]
         };
 
         let main_area = chunks[0];
-        let status_area = if chunks.len() > 1 { Some(chunks[1]) } else { None };
+        let status_area = if chunks.len() > 1 {
+            Some(chunks[1])
+        } else {
+            None
+        };
         (main_area, status_area)
     }
 
     /// Render status bar
+    /// T054: Includes loading indicator
     pub fn render_status_bar(&self, f: &mut ratatui::Frame, area: Rect) {
         if self.status_bar_enabled {
-            self.status_bar.render(f, area);
+            let is_loading = self.has_active_operations();
+            self.status_bar.render(f, area, is_loading);
         }
+    }
+
+    /// Read a terminal event asynchronously using spawn_blocking
+    ///
+    /// This prevents blocking the async runtime while waiting for terminal input.
+    /// Returns `None` if no event is ready, `Some(event)` if an event is available.
+    pub async fn read_event_async(&self) -> Result<Option<CrosstermEvent>> {
+        tokio::task::spawn_blocking(|| {
+            if event::poll(std::time::Duration::from_millis(16))? {
+                let evt = event::read()?;
+                if let CrosstermEvent::Key(key) = evt {
+                    if key.kind == KeyEventKind::Press {
+                        return Ok(Some(CrosstermEvent::Key(key)));
+                    }
+                }
+            }
+            Ok(None)
+        })
+        .await?
+    }
+
+    /// Increment active operations count (for loading indicators)
+    pub fn start_operation(&self) {
+        self.active_operations.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Decrement active operations count
+    pub fn finish_operation(&self) {
+        self.active_operations.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// Check if any operations are active (for loading indicators)
+    pub fn has_active_operations(&self) -> bool {
+        self.active_operations.load(Ordering::Relaxed) > 0
+    }
+
+    /// Get the number of active operations
+    pub fn active_operations_count(&self) -> usize {
+        self.active_operations.load(Ordering::Relaxed)
+    }
+
+    /// Get default timeout in seconds
+    pub fn default_timeout_seconds(&self) -> u64 {
+        self.default_timeout_seconds
+    }
+
+    /// Set default timeout in seconds
+    pub fn set_default_timeout_seconds(&mut self, seconds: u64) {
+        self.default_timeout_seconds = seconds;
     }
 }
 
@@ -477,10 +693,10 @@ impl LoginScreen {
             .borders(Borders::ALL)
             .title("Login")
             .style(self.theme.modal_style);
-        
-        let paragraph = Paragraph::new("Login screen - implement authentication logic here")
-            .block(block);
-        
+
+        let paragraph =
+            Paragraph::new("Login screen - implement authentication logic here").block(block);
+
         f.render_widget(paragraph, area);
     }
 }
@@ -493,12 +709,12 @@ impl LoginScreen {
 //! Applications can also implement their own authentication via AppContext.
 
 pub mod login;
-pub mod token;
 pub mod rbac;
+pub mod token;
 
 pub use login::LoginScreen;
-pub use token::TokenManager;
 pub use rbac::RbacManager;
+pub use token::TokenManager;
 </file>
 
 <file path="src/auth/rbac.rs">
@@ -580,7 +796,7 @@ impl Default for RbacManager {
 //!
 //! Provides token storage and validation helpers
 
-use std::time::{SystemTime, Duration};
+use std::time::{Duration, SystemTime};
 
 /// Token manager for handling authentication tokens
 pub struct TokenManager {
@@ -640,16 +856,18 @@ impl Default for TokenManager {
 </file>
 
 <file path="src/command/mod.rs">
-pub mod registry;
-pub mod parser;
 pub mod palette;
+pub mod parser;
+pub mod registry;
 
-pub use registry::CommandRegistry;
 pub use palette::{CommandPalette, CommandPaletteResult};
+pub use registry::CommandRegistry;
 
 use crate::app::context::AppContext;
 use anyhow::Result;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 
 /// Command identifier
 pub type CommandId = &'static str;
@@ -667,7 +885,12 @@ pub struct CommandArgs {
 pub type CommandResult = Result<()>;
 
 /// Command struct representing an executable operation
-#[derive(Debug, Clone)]
+///
+/// # Async Execution
+///
+/// The `execute` function is async, allowing commands to perform async operations
+/// (network requests, database queries, etc.) using `.await` without blocking the UI.
+#[derive(Clone)]
 pub struct Command {
     /// Unique command identifier
     pub id: CommandId,
@@ -677,8 +900,11 @@ pub struct Command {
     pub syntax: Option<&'static str>,
     /// Optional category for grouping in palette
     pub category: Option<&'static str>,
-    /// Execution function
-    pub execute: fn(&mut dyn AppContext, CommandArgs) -> CommandResult,
+    /// Execution function (async)
+    ///
+    /// Returns a boxed future that will be awaited by the framework.
+    pub execute:
+        fn(&mut dyn AppContext, CommandArgs) -> Pin<Box<dyn Future<Output = CommandResult> + Send>>,
 }
 </file>
 
@@ -687,13 +913,12 @@ pub struct Command {
 
 use crate::command::Command;
 use crate::view::Theme;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
-use std::collections::HashMap;
 
 /// CommandPalette widget for displaying and executing commands
 pub struct CommandPalette {
@@ -800,7 +1025,10 @@ impl CommandPalette {
             .iter()
             .filter(|cmd| {
                 cmd.id.contains(&self.input)
-                    || cmd.summary.to_lowercase().contains(&self.input.to_lowercase())
+                    || cmd
+                        .summary
+                        .to_lowercase()
+                        .contains(&self.input.to_lowercase())
             })
             .collect()
     }
@@ -835,21 +1063,17 @@ impl CommandPalette {
         let modal_area = horizontal[1];
 
         // Split modal into input and command list
-        let chunks = Layout::vertical([
-            Constraint::Length(3),
-            Constraint::Min(5),
-        ])
-        .split(modal_area);
+        let chunks =
+            Layout::vertical([Constraint::Length(3), Constraint::Min(5)]).split(modal_area);
 
         // Render input field
         let input_text = format!(":{}", self.input);
-        let input_paragraph = Paragraph::new(input_text)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Command")
-                    .style(self.theme.modal_style),
-            );
+        let input_paragraph = Paragraph::new(input_text).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Command")
+                .style(self.theme.modal_style),
+        );
         f.render_widget(input_paragraph, chunks[0]);
 
         // Render command list
@@ -883,13 +1107,12 @@ impl CommandPalette {
             })
             .collect();
 
-        let list = List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Commands")
-                    .style(self.theme.modal_style),
-            );
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Commands")
+                .style(self.theme.modal_style),
+        );
 
         f.render_widget(list, chunks[1]);
     }
@@ -937,10 +1160,7 @@ pub fn parse_command(input: &str) -> Option<(String, CommandArgs)> {
         }
     }
 
-    Some((
-        command_name,
-        CommandArgs { positional, named },
-    ))
+    Some((command_name, CommandArgs { positional, named }))
 }
 
 #[cfg(test)]
@@ -972,8 +1192,8 @@ mod tests {
 <file path="src/command/registry.rs">
 //! CommandRegistry for managing commands
 
-use std::collections::HashMap;
 use crate::command::Command;
+use std::collections::HashMap;
 
 /// Registry for managing commands
 pub struct CommandRegistry {
@@ -1018,11 +1238,18 @@ impl Default for CommandRegistry {
 
 use crate::app::context::AppContext;
 use anyhow::Result;
+use async_trait::async_trait;
 
 /// DataSource trait for providing tabular data
-pub trait DataSource {
+///
+/// # Async Operations
+///
+/// The `refresh` method is async, allowing implementations to perform async I/O operations
+/// (network requests, database queries, etc.) without blocking the UI.
+#[async_trait]
+pub trait DataSource: Send + Sync {
     /// The type of data row
-    type Row;
+    type Row: Send + Sync;
 
     /// Total number of rows (logical length)
     fn len(&self) -> usize;
@@ -1031,7 +1258,10 @@ pub trait DataSource {
     fn get(&self, index: usize) -> Option<&Self::Row>;
 
     /// Refresh underlying data (may fetch from network, disk, etc.)
-    fn refresh(&mut self, ctx: &dyn AppContext) -> Result<()>;
+    ///
+    /// This method is async, allowing implementations to use `.await` for async operations.
+    /// The framework will call this method and handle the async execution without blocking the UI.
+    async fn refresh(&mut self, ctx: &dyn AppContext) -> Result<()>;
 }
 </file>
 
@@ -1052,7 +1282,7 @@ pub trait LogSource {
     ///
     /// Returns new lines since the last call, or empty if no new lines.
     fn poll_lines(&mut self) -> Vec<String>;
-    
+
     /// Check if the log source is still active
     fn is_active(&self) -> bool;
 }
@@ -1153,7 +1383,7 @@ mod data_source_trait;
 pub mod log;
 
 pub use data_source_trait::DataSource;
-pub use log::{LogSource, SharedLogBuffer, sync_log_buffer_to_view};
+pub use log::{sync_log_buffer_to_view, LogSource, SharedLogBuffer};
 </file>
 
 <file path="src/keymap/mod.rs">
@@ -1161,7 +1391,7 @@ pub mod config;
 pub mod registry;
 pub mod resolver;
 
-pub use config::{KeyBinding, KeymapConfig, ViewSlot, AppCommand};
+pub use config::{AppCommand, KeyBinding, KeymapConfig, ViewSlot};
 pub use registry::KeymapRegistry;
 pub use resolver::KeymapResolver;
 </file>
@@ -1169,7 +1399,7 @@ pub use resolver::KeymapResolver;
 <file path="src/keymap/registry.rs">
 //! KeymapRegistry for managing keybindings
 
-use crate::keymap::config::{AppCommand, KeyBinding, KeymapConfig};
+use crate::keymap::config::{KeyBinding, KeymapConfig};
 use crossterm::event::KeyCode;
 use std::collections::HashMap;
 
@@ -1240,7 +1470,12 @@ impl KeymapResolver {
     }
 
     /// Resolve a key press (priority: modal > view-specific > global)
-    pub fn resolve(&self, key: KeyCode, view_id: Option<&str>, modal_active: bool) -> Option<AppCommand> {
+    pub fn resolve(
+        &self,
+        key: KeyCode,
+        view_id: Option<&str>,
+        modal_active: bool,
+    ) -> Option<AppCommand> {
         // If modal is active, modals should handle all keys
         // For now, we'll let modals handle their own keys
         // and only check view/global if modal is not active
@@ -1339,7 +1574,7 @@ impl AppMessage {
 #[cfg(feature = "observability")]
 pub mod opentelemetry;
 
-pub use opentelemetry::{ObservabilityConfig, init_observability};
+pub use opentelemetry::{init_observability, ObservabilityConfig};
 </file>
 
 <file path="src/observability/opentelemetry.rs">
@@ -1441,10 +1676,10 @@ impl RetryExecutor {
         F: FnMut() -> Result<T>,
     {
         let mut last_error = None;
-        
+
         for attempt in 0..=self.policy.max_attempts {
             // Execute the operation
-            let result = if let Some(timeout) = self.policy.timeout {
+            let result = if self.policy.timeout.is_some() {
                 // TODO: Implement actual timeout in v2
                 // For v1, we'll just execute without timeout
                 operation()
@@ -1456,12 +1691,12 @@ impl RetryExecutor {
                 Ok(value) => return Ok(value),
                 Err(e) => {
                     last_error = Some(e);
-                    
+
                     // Don't retry if this was the last attempt
                     if attempt >= self.policy.max_attempts {
                         break;
                     }
-                    
+
                     // Calculate delay for next retry
                     let delay = self.policy.delay_for_attempt(attempt);
                     if delay > Duration::ZERO {
@@ -1474,7 +1709,9 @@ impl RetryExecutor {
         // Return the last error
         match last_error {
             Some(e) => Err(e),
-            None => Err(anyhow::anyhow!("Operation failed but no error was recorded")),
+            None => Err(anyhow::anyhow!(
+                "Operation failed but no error was recorded"
+            )),
         }
     }
 
@@ -1489,11 +1726,13 @@ impl Default for RetryExecutor {
 </file>
 
 <file path="src/retry/mod.rs">
-pub mod policy;
 pub mod executor;
+pub mod executor_async;
+pub mod policy;
 
-pub use policy::RetryPolicy;
 pub use executor::RetryExecutor;
+pub use executor_async::AsyncRetryExecutor;
+pub use policy::RetryPolicy;
 </file>
 
 <file path="src/retry/policy.rs">
@@ -1573,11 +1812,7 @@ impl RetryPolicy {
     }
 
     /// Create a policy with exponential backoff
-    pub fn exponential_backoff(
-        max_attempts: u32,
-        initial: Duration,
-        max: Duration,
-    ) -> Self {
+    pub fn exponential_backoff(max_attempts: u32, initial: Duration, max: Duration) -> Self {
         Self {
             max_attempts,
             strategy: RetryStrategy::Exponential { initial, max },
@@ -1625,29 +1860,26 @@ impl RetryPolicy {
 
 impl Default for RetryPolicy {
     fn default() -> Self {
-        Self::fixed_delay(
-            3,
-            Duration::from_millis(500),
-        )
+        Self::fixed_delay(3, Duration::from_millis(500))
     }
 }
 </file>
 
 <file path="src/view/mod.rs">
-mod view_trait;
 mod registry;
 mod theme;
+mod view_trait;
 
-pub use view_trait::{View, ViewResult, HelpItem};
 pub use registry::ViewRegistry;
 pub use theme::Theme;
+pub use view_trait::{HelpItem, View, ViewResult};
 </file>
 
 <file path="src/view/registry.rs">
 //! ViewRegistry for managing registered views
 
-use std::collections::HashMap;
 use crate::view::View;
+use std::collections::HashMap;
 
 /// Registry for managing views
 pub struct ViewRegistry {
@@ -1724,15 +1956,9 @@ impl Default for Theme {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
             secondary_style: Style::default().fg(Color::White),
-            error_style: Style::default()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD),
-            status_bar_style: Style::default()
-                .fg(Color::Black)
-                .bg(Color::White),
-            modal_style: Style::default()
-                .fg(Color::White)
-                .bg(Color::Blue),
+            error_style: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            status_bar_style: Style::default().fg(Color::Black).bg(Color::White),
+            modal_style: Style::default().fg(Color::White).bg(Color::Blue),
         }
     }
 }
@@ -1807,20 +2033,15 @@ impl EmptyState {
 
     /// Render the empty state
     pub fn render(&self, f: &mut Frame, area: Rect) {
-        let mut lines = vec![
-            Line::from(Span::styled(
-                self.message.clone(),
-                self.theme.secondary_style,
-            )),
-        ];
+        let mut lines = vec![Line::from(Span::styled(
+            self.message.clone(),
+            self.theme.secondary_style,
+        ))];
 
         if let Some(ref details) = self.details {
             lines.push(Line::from(""));
             for line in details.lines() {
-                lines.push(Line::from(Span::styled(
-                    line,
-                    self.theme.secondary_style,
-                )));
+                lines.push(Line::from(Span::styled(line, self.theme.secondary_style)));
             }
         }
 
@@ -1876,17 +2097,14 @@ impl LoadingIndicator {
         let spinner = self.spinner_chars[self.spinner_index];
         let text = format!("{} {}", spinner, self.message);
 
-        let paragraph = Paragraph::new(Line::from(Span::styled(
-            text,
-            self.theme.secondary_style,
-        )))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Loading")
-                .style(self.theme.secondary_style),
-        )
-        .alignment(Alignment::Center);
+        let paragraph = Paragraph::new(Line::from(Span::styled(text, self.theme.secondary_style)))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Loading")
+                    .style(self.theme.secondary_style),
+            )
+            .alignment(Alignment::Center);
 
         f.render_widget(paragraph, area);
     }
@@ -1980,23 +2198,19 @@ impl HelpOverlay {
             .iter()
             .map(|item| {
                 ListItem::new(Line::from(vec![
-                    Span::styled(
-                        format!("{:20}", item.key),
-                        self.theme.primary_style,
-                    ),
+                    Span::styled(format!("{:20}", item.key), self.theme.primary_style),
                     Span::raw(" "),
                     Span::styled(item.description.clone(), self.theme.secondary_style),
                 ]))
             })
             .collect();
 
-        let list = List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Help")
-                    .style(self.theme.modal_style),
-            );
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Help")
+                .style(self.theme.modal_style),
+        );
 
         f.render_widget(list, modal_area);
     }
@@ -2010,7 +2224,7 @@ impl HelpOverlay {
 
 use crate::view::Theme;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+// Modifier and Style not currently used in this file
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Scrollbar, ScrollbarState};
 use ratatui::Frame;
@@ -2063,17 +2277,17 @@ impl LogView {
     pub fn add_line(&mut self, line: String) {
         // Add line to buffer
         self.lines.push_back(line);
-        
+
         // Trim buffer if it exceeds max_lines
         while self.lines.len() > self.max_lines {
             self.lines.pop_front();
         }
-        
+
         // Update filtered lines if filter is active
         if self.filter.is_some() {
             self.update_filtered_lines();
         }
-        
+
         // Auto-scroll to bottom if follow mode is enabled
         if self.follow_mode {
             self.scroll_to_bottom();
@@ -2091,7 +2305,7 @@ impl LogView {
     pub fn set_filter(&mut self, filter: Option<String>) {
         self.filter = filter;
         self.update_filtered_lines();
-        
+
         // If follow mode is on, scroll to bottom after filtering
         if self.follow_mode {
             self.scroll_to_bottom();
@@ -2187,12 +2401,12 @@ impl LogView {
         self.update_scrollbar_state(visible_lines);
     }
 
-
     /// Update filtered lines based on current filter
     fn update_filtered_lines(&mut self) {
         if let Some(ref filter) = self.filter {
             let filter_lower = filter.to_lowercase();
-            self.filtered_lines = self.lines
+            self.filtered_lines = self
+                .lines
                 .iter()
                 .filter(|line| line.to_lowercase().contains(&filter_lower))
                 .cloned()
@@ -2216,7 +2430,7 @@ impl LogView {
         } else {
             self.lines.len()
         };
-        
+
         if total_lines <= visible_lines {
             0
         } else {
@@ -2231,7 +2445,7 @@ impl LogView {
         } else {
             self.lines.len()
         };
-        
+
         self.scrollbar_state = ScrollbarState::new(total_lines)
             .position(self.scroll_position)
             .viewport_content_length(visible_lines);
@@ -2255,28 +2469,28 @@ impl LogView {
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
         // Update visible lines count based on actual area
         let visible_lines = (area.height.saturating_sub(2)) as usize; // Account for borders
-        
+
         // Update filtered lines if needed
         if self.filter.is_some() && self.filtered_lines.is_empty() && !self.lines.is_empty() {
             self.update_filtered_lines();
         }
-        
+
         // Get lines to display
         let display_lines: Vec<String> = if self.filter.is_some() {
             self.filtered_lines.clone()
         } else {
             self.lines.iter().cloned().collect()
         };
-        
+
         // Calculate visible range
         let total_lines = display_lines.len();
         let max_scroll = self.get_max_scroll_position(visible_lines);
-        
+
         // Ensure scroll position is valid
         if self.scroll_position > max_scroll {
             self.scroll_position = max_scroll;
         }
-        
+
         // Get visible slice
         let start = self.scroll_position;
         let end = (start + visible_lines).min(total_lines);
@@ -2285,7 +2499,7 @@ impl LogView {
         } else {
             &[]
         };
-        
+
         // Build list items
         let items: Vec<ListItem> = visible_slice
             .iter()
@@ -2297,11 +2511,11 @@ impl LogView {
                 } else {
                     line.as_str()
                 };
-                
+
                 ListItem::new(Line::from(Span::raw(display_line)))
             })
             .collect();
-        
+
         // Create block with title showing filter and follow mode status
         let mut title = "Logs".to_string();
         if let Some(ref filter) = self.filter {
@@ -2310,18 +2524,17 @@ impl LogView {
         if self.follow_mode {
             title.push_str(" [follow]");
         }
-        
-        let list = List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(title)
-                    .style(self.theme.secondary_style),
-            );
-        
+
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .style(self.theme.secondary_style),
+        );
+
         // Render list
         f.render_widget(list, area);
-        
+
         // Render scrollbar if needed
         if total_lines > visible_lines {
             self.update_scrollbar_state(visible_lines);
@@ -2488,20 +2701,31 @@ impl StatusBar {
     }
 
     /// Render the status bar
-    pub fn render(&self, f: &mut Frame, area: Rect) {
-        let text = if let Some(ref msg) = self.message {
+    /// T054: Includes loading indicator display
+    pub fn render(&self, f: &mut Frame, area: Rect, is_loading: bool) {
+        let mut spans = Vec::new();
+
+        // T054: Add loading indicator if operations are active
+        if is_loading {
+            spans.push(Span::styled("⏳ ", self.theme.secondary_style));
+        }
+
+        // Add message if present
+        if let Some(ref msg) = self.message {
             let style = match msg.kind {
                 AppMessageKind::Info => self.theme.secondary_style,
                 AppMessageKind::Warning => self.theme.error_style,
                 AppMessageKind::Error => self.theme.error_style,
             };
-            Line::from(Span::styled(msg.short.clone(), style))
-        } else {
-            Line::from(Span::raw(""))
-        };
+            spans.push(Span::styled(msg.short.clone(), style));
+        } else if !is_loading {
+            // Empty if no message and not loading
+            spans.push(Span::raw(""));
+        }
 
-        let paragraph = Paragraph::new(text)
-            .block(Block::default().style(self.theme.status_bar_style));
+        let text = Line::from(spans);
+        let paragraph =
+            Paragraph::new(text).block(Block::default().style(self.theme.status_bar_style));
 
         f.render_widget(paragraph, area);
     }
@@ -2515,7 +2739,7 @@ impl StatusBar {
 
 use crate::view::{HelpItem, Theme};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -2549,7 +2773,11 @@ impl ViewHeader {
     pub fn with_help(mut self, help: Vec<HelpItem>) -> Self {
         // Limit to 5 items max
         let limited: Vec<HelpItem> = help.into_iter().take(5).collect();
-        self.help = if limited.is_empty() { None } else { Some(limited) };
+        self.help = if limited.is_empty() {
+            None
+        } else {
+            Some(limited)
+        };
         self
     }
 
@@ -2584,14 +2812,8 @@ impl ViewHeader {
             let mut lines = Vec::new();
             for (key, value) in info {
                 let line = Line::from(vec![
-                    Span::styled(
-                        format!("{}: ", key),
-                        self.theme.primary_style,
-                    ),
-                    Span::styled(
-                        value.clone(),
-                        self.theme.secondary_style,
-                    ),
+                    Span::styled(format!("{}: ", key), self.theme.primary_style),
+                    Span::styled(value.clone(), self.theme.secondary_style),
                 ]);
                 lines.push(line);
             }
@@ -2604,8 +2826,8 @@ impl ViewHeader {
             self.title.clone(),
             self.theme.primary_style.add_modifier(Modifier::BOLD),
         )]);
-        let title_paragraph = Paragraph::new(title_line)
-            .alignment(ratatui::layout::Alignment::Center);
+        let title_paragraph =
+            Paragraph::new(title_line).alignment(ratatui::layout::Alignment::Center);
         f.render_widget(title_paragraph, center_area);
 
         // Render right side: help items
@@ -2613,19 +2835,12 @@ impl ViewHeader {
             let mut lines = Vec::new();
             for item in help {
                 let line = Line::from(vec![
-                    Span::styled(
-                        format!("<{}> ", item.key),
-                        self.theme.primary_style,
-                    ),
-                    Span::styled(
-                        item.description.clone(),
-                        self.theme.secondary_style,
-                    ),
+                    Span::styled(format!("<{}> ", item.key), self.theme.primary_style),
+                    Span::styled(item.description.clone(), self.theme.secondary_style),
                 ]);
                 lines.push(line);
             }
-            let paragraph = Paragraph::new(lines)
-                .alignment(ratatui::layout::Alignment::Right);
+            let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Right);
             f.render_widget(paragraph, right_area);
         }
     }
@@ -2675,10 +2890,23 @@ build/
 out/
 </file>
 
+<file path=".repomixignore">
+# Add patterns to ignore here, one per line
+# Example:
+# *.log
+# tmp/
+.specify
+specs
+.cursor
+tests
+examples
+*.md
+</file>
+
 <file path="Cargo.toml">
 [package]
 name = "tui-framework"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["CLI Framework Team"]
 description = "An opinionated TUI framework library for building terminal user interfaces"
@@ -2691,6 +2919,9 @@ crossterm = "0.28"
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+async-trait = "0.1"
+tokio-util = { version = "0.7", features = ["time"] }
 
 # Optional OpenTelemetry dependencies (applications can enable)
 # Note: Applications should add these dependencies themselves when using observability feature
@@ -2725,117 +2956,50 @@ name = "kitchen_sink"
 path = "examples/kitchen_sink/main.rs"
 </file>
 
-<file path="CONTRIBUTING.md">
-# Contributing to TUI Framework
-
-Thank you for your interest in contributing to TUI Framework! This document provides guidelines and instructions for contributing.
-
-## Development Setup
-
-1. Clone the repository
-2. Install Rust toolchain (latest stable)
-3. Run tests: `cargo test`
-4. Build: `cargo build`
-
-## Code Style
-
-- Follow Rust standard formatting: `cargo fmt`
-- Run clippy: `cargo clippy`
-- Ensure all tests pass: `cargo test`
-- Ensure examples compile: `cargo build --examples`
-
-## Testing
-
-The project follows a test-first approach:
-
-- **Unit Tests**: Test individual components in `src/`
-- **Integration Tests**: Test component interactions in `tests/`
-- **Contract Tests**: Verify trait implementations comply with contracts in `tests/contract/`
-- **Examples**: Serve as integration tests and documentation
-
-Run all tests:
-```bash
-cargo test
-```
-
-Run specific test suites:
-```bash
-cargo test --lib              # Unit tests only
-cargo test --test keymap      # Integration tests
-cargo test contract           # Contract tests
-```
-
-## Project Structure
-
-```
-cli-framework/
-├── src/              # Source code
-│   ├── app/         # Application builder and runtime
-│   ├── command/     # Command system
-│   ├── data_source/ # Data source trait
-│   ├── keymap/      # Keybinding system
-│   ├── view/        # View trait and theme
-│   ├── widget/      # Standard widgets (GridView, LogView, etc.)
-│   ├── message/     # Message system
-│   ├── auth/        # Optional authentication
-│   ├── retry/       # Retry policies
-│   └── observability/ # OpenTelemetry integration
-├── tests/           # Test suites
-│   ├── unit/        # Unit tests
-│   ├── integration/ # Integration tests
-│   └── contract/    # Contract tests
-├── examples/        # Example applications
-└── specs/           # Specification documents
-```
-
-## Making Changes
-
-1. **Create a branch**: `git checkout -b feature/your-feature-name`
-2. **Write tests first** (test-first approach)
-3. **Implement the feature**
-4. **Ensure all tests pass**
-5. **Update documentation** if needed
-6. **Commit with clear messages**
-
-## Commit Messages
-
-Follow conventional commit format:
-- `feat: add new feature`
-- `fix: fix bug`
-- `docs: update documentation`
-- `test: add tests`
-- `refactor: refactor code`
-
-## Pull Request Process
-
-1. Ensure all tests pass
-2. Ensure examples compile
-3. Update documentation if needed
-4. Create a pull request with a clear description
-5. Reference any related issues
-
-## Design Principles
-
-The framework follows these principles:
-
-1. **Opinionated Defaults**: Provide sensible defaults that work for most cases
-2. **Flexibility**: Allow customization where needed
-3. **Test-First**: Write tests before implementation
-4. **Documentation**: Public API must be documented
-5. **Error Handling**: Use `anyhow::Result` for framework operations
-
-## Areas for Contribution
-
-- Bug fixes
-- Performance improvements
-- Additional widgets
-- Documentation improvements
-- Example applications
-- Test coverage improvements
-
-## Questions?
-
-Open an issue for questions or discussions about contributions.
+<file path="repomix.config.json">
+{
+  "$schema": "https://repomix.com/schemas/latest/schema.json",
+  "input": {
+    "maxFileSize": 52428800
+  },
+  "output": {
+    "filePath": "repomix-output.xml",
+    "style": "xml",
+    "parsableStyle": false,
+    "fileSummary": true,
+    "directoryStructure": true,
+    "files": true,
+    "removeComments": false,
+    "removeEmptyLines": false,
+    "compress": false,
+    "topFilesLength": 15,
+    "showLineNumbers": false,
+    "truncateBase64": false,
+    "copyToClipboard": false,
+    "includeFullDirectoryStructure": false,
+    "tokenCountTree": false,
+    "git": {
+      "sortByChanges": true,
+      "sortByChangesMaxCommits": 100,
+      "includeDiffs": false,
+      "includeLogs": false,
+      "includeLogsCount": 50
+    }
+  },
+  "include": [],
+  "ignore": {
+    "useGitignore": true,
+    "useDotIgnore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": []
+  },
+  "security": {
+    "enableSecurityCheck": true
+  },
+  "tokenCount": {
+    "encoding": "o200k_base"
+  }
+}
 </file>
 
 <file path="src/app/builder.rs">
@@ -2843,13 +3007,15 @@ Open an issue for questions or discussions about contributions.
 //!
 //! Provides a builder pattern for constructing TUI applications.
 
+use crate::app::background_tasks::BackgroundTaskManager;
 use crate::app::context::AppContext;
 use crate::app::module::Module;
 use crate::app::runtime::Runtime;
-use crate::command::{Command, CommandArgs, CommandRegistry, CommandPaletteResult};
+use crate::command::{Command, CommandArgs, CommandPaletteResult, CommandRegistry};
+use crate::data_source::DataSource;
 use crate::keymap::{AppCommand, KeymapConfig, KeymapRegistry, KeymapResolver, ViewSlot};
 use crate::message::AppMessage;
-use crate::view::{View, ViewResult, ViewRegistry};
+use crate::view::{View, ViewRegistry, ViewResult};
 use anyhow::Result;
 use crossterm::event::{Event as CrosstermEvent, KeyCode, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -2946,7 +3112,11 @@ impl AppBuilder {
         runtime.set_help_overlay_enabled(self.help_overlay_enabled);
         runtime.set_command_palette_enabled(self.command_palette_enabled);
         runtime.set_commands(commands);
-        
+
+        // Note: Tokio runtime is managed by the async runtime that calls run()
+        // We don't need to store it here since we're already in an async context
+        // The framework uses tokio::spawn and tokio::select! which work with the current runtime
+
         Ok(App {
             view_registry: self.view_registry,
             command_registry: self.command_registry,
@@ -2954,6 +3124,7 @@ impl AppBuilder {
             keymap_resolver,
             ctx,
             runtime,
+            background_tasks: BackgroundTaskManager::new(),
             current_view_id: None,
         })
     }
@@ -2973,140 +3144,70 @@ pub struct App<C: AppContext> {
     keymap_resolver: KeymapResolver,
     ctx: C,
     runtime: Runtime,
+    background_tasks: BackgroundTaskManager,
     current_view_id: Option<String>,
 }
 
 impl<C: AppContext> App<C> {
-    /// Run the application
-    pub fn run(&mut self) -> Result<()> {
+    /// Run the application (async)
+    ///
+    /// This method must be called from an async context (e.g., `#[tokio::main]`).
+    /// The framework manages the Tokio runtime internally.
+    pub async fn run(&mut self) -> Result<()> {
         // Set initial view if any views are registered
         if let Some((first_id, _)) = self.view_registry.views().next() {
             self.current_view_id = Some(first_id.clone());
         }
 
         self.runtime.init()?;
-        
+
+        // Create a tick interval for rendering (target 60 FPS = ~16ms per frame)
+        let mut render_interval = tokio::time::interval(tokio::time::Duration::from_millis(16));
+        render_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
-            // Render - use unsafe to work around borrow checker for v1
-            // TODO: Refactor in v2 to use better patterns (Rc<RefCell>, etc.)
-            let current_view_id = self.current_view_id.clone();
-            let status_bar_enabled = self.runtime.status_bar_enabled;
-            
-            unsafe {
-                let runtime_ptr = &mut self.runtime as *mut Runtime;
-                let view_registry = &mut self.view_registry;
-                let ctx = &self.ctx;
-                
-                if let Some(ref mut terminal) = (*runtime_ptr).terminal_mut() {
-                    terminal.draw(|f| {
-                        let mut area = f.size();
-                        
-                        // Validate and adjust area for minimum terminal size (80x24)
-                        // Gracefully degrade for smaller terminals
-                        area = (*runtime_ptr).validate_area(area);
-                        
-                        // Ensure minimum functional area
-                        // For very small terminals, preserve status bar and minimum view area
-                        let min_view_height = if area.height < 24 {
-                            area.height.saturating_sub(if status_bar_enabled { 1 } else { 0 })
-                        } else {
-                            area.height.saturating_sub(if status_bar_enabled { 1 } else { 0 })
-                        };
-                        
-                        // Calculate main area and status area
-                        let chunks: Vec<Rect> = if status_bar_enabled {
-                            Layout::vertical([
-                                Constraint::Min(min_view_height.max(1)),
-                                Constraint::Length(1),
-                            ])
-                            .split(area)
-                            .to_vec()
-                        } else {
-                            vec![area]
-                        };
-                        let main_area = chunks[0];
-                        let status_area = if chunks.len() > 1 { Some(chunks[1]) } else { None };
-                        
-                        // Render overlays (access widgets through raw pointer)
-                        let modal_visible = (*runtime_ptr).modal.is_visible();
-                        let palette_visible = (*runtime_ptr).command_palette.is_visible();
-                        let help_visible = (*runtime_ptr).help_overlay.is_visible();
-                        
-                        if modal_visible {
-                            (*runtime_ptr).modal.render(f, main_area);
-                        } else if palette_visible {
-                            (*runtime_ptr).command_palette.render(f, main_area);
-                        } else if help_visible {
-                            (*runtime_ptr).help_overlay.render(f, main_area);
-                        } else {
-                            // Render current view if no overlay is active
-                            if let Some(ref view_id) = current_view_id {
-                                if let Some(view) = view_registry.get_mut(view_id) {
-                                    // Get header info and help once
-                                    let header_info = view.header_info();
-                                    let header_help = view.header_help();
-                                    let has_header = header_info.is_some() || header_help.is_some();
-                                    
-                                    if has_header {
-                                        // Calculate header height dynamically
-                                        let header_height = {
-                                            let info_lines = header_info.as_ref().map(|i| i.len() as u16).unwrap_or(0);
-                                            let help_lines = header_help.as_ref().map(|h| h.len().min(5) as u16).unwrap_or(0);
-                                            info_lines.max(help_lines).max(1) + 1
-                                        };
-                                        
-                                        // Split main area into header and content
-                                        let chunks = ratatui::layout::Layout::vertical([
-                                            ratatui::layout::Constraint::Length(header_height),
-                                            ratatui::layout::Constraint::Min(0),
-                                        ])
-                                        .split(main_area);
-                                        
-                                        let header_area = chunks[0];
-                                        let content_area = chunks[1];
-                                        
-                                        // Build and render header
-                                        let mut header = crate::widget::ViewHeader::new(
-                                            view.title().to_string(),
-                                            crate::view::Theme::default(),
-                                        );
-                                        
-                                        if let Some(info) = header_info {
-                                            header = header.with_info(info);
-                                        }
-                                        
-                                        if let Some(help) = header_help {
-                                            header = header.with_help(help);
-                                        }
-                                        
-                                        header.render(f, header_area);
-                                        
-                                        // Render view content in remaining area
-                                        view.render(f, content_area, ctx);
-                                    } else {
-                                        // No header, render view directly
-                                        view.render(f, main_area, ctx);
-                                    }
+            // Use tokio::select! to handle multiple async operations concurrently
+            tokio::select! {
+                // Render tick (every ~16ms for 60 FPS)
+                _ = render_interval.tick() => {
+                    self.render_frame()?;
+                }
+
+                // Terminal event
+                event_result = self.runtime.read_event_async() => {
+                    if let Ok(Some(event)) = event_result {
+                        if let CrosstermEvent::Key(key) = event {
+                            if key.kind == KeyEventKind::Press {
+                                if !self.handle_key(key.code).await {
+                                    break;
                                 }
                             }
                         }
-                        
-                        // Render status bar
-                        if let Some(status_rect) = status_area {
-                            (*runtime_ptr).status_bar.render(f, status_rect);
-                        }
-                    })?;
+                    }
                 }
-            }
 
-            // Handle events
-            if crossterm::event::poll(std::time::Duration::from_millis(16))? {
-                if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
-                    if key.kind == KeyEventKind::Press {
-                        if !self.handle_key(key.code) {
-                            break;
+                // Process background task results (non-blocking check)
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(1)) => {
+                    // Check for background task results periodically
+                    while let Some(result) = self.background_tasks.try_recv_result() {
+                        match result {
+                            Ok(()) => {
+                                // Task completed successfully
+                                self.runtime.finish_operation();
+                            }
+                            Err(e) => {
+                                // Error handling for async operations (T028)
+                                self.runtime.finish_operation();
+                                let error_msg = AppMessage::error(format!("Operation failed: {}", e))
+                                    .with_details(e.to_string());
+                                self.runtime.set_status_message(error_msg.clone());
+                                self.runtime.modal_mut().show(error_msg);
+                            }
                         }
                     }
+
+                    // Clean up completed background tasks
+                    self.background_tasks.cleanup_completed();
                 }
             }
         }
@@ -3115,8 +3216,163 @@ impl<C: AppContext> App<C> {
         Ok(())
     }
 
-    /// Handle key event
-    fn handle_key(&mut self, key: KeyCode) -> bool {
+    /// Render a single frame
+    fn render_frame(&mut self) -> Result<()> {
+        // Render - use unsafe to work around borrow checker for v1
+        // TODO: Refactor in v2 to use better patterns (Rc<RefCell>, etc.)
+        let current_view_id = self.current_view_id.clone();
+        let status_bar_enabled = self.runtime.status_bar_enabled;
+
+        unsafe {
+            let runtime_ptr = &mut self.runtime as *mut Runtime;
+            let view_registry = &mut self.view_registry;
+            let ctx = &self.ctx;
+
+            if let Some(ref mut terminal) = (*runtime_ptr).terminal_mut() {
+                terminal.draw(|f| {
+                    let mut area = f.size();
+
+                    // Validate and adjust area for minimum terminal size (80x24)
+                    // Gracefully degrade for smaller terminals
+                    area = (*runtime_ptr).validate_area(area);
+
+                    // Ensure minimum functional area
+                    // For very small terminals, preserve status bar and minimum view area
+                    let min_view_height = if area.height < 24 {
+                        area.height
+                            .saturating_sub(if status_bar_enabled { 1 } else { 0 })
+                    } else {
+                        area.height
+                            .saturating_sub(if status_bar_enabled { 1 } else { 0 })
+                    };
+
+                    // Calculate main area and status area
+                    let chunks: Vec<Rect> = if status_bar_enabled {
+                        Layout::vertical([
+                            Constraint::Min(min_view_height.max(1)),
+                            Constraint::Length(1),
+                        ])
+                        .split(area)
+                        .to_vec()
+                    } else {
+                        vec![area]
+                    };
+                    let main_area = chunks[0];
+                    let status_area = if chunks.len() > 1 {
+                        Some(chunks[1])
+                    } else {
+                        None
+                    };
+
+                    // Render overlays (access widgets through raw pointer)
+                    let modal_visible = (*runtime_ptr).modal.is_visible();
+                    let palette_visible = (*runtime_ptr).command_palette.is_visible();
+                    let help_visible = (*runtime_ptr).help_overlay.is_visible();
+
+                    if modal_visible {
+                        (*runtime_ptr).modal.render(f, main_area);
+                    } else if palette_visible {
+                        (*runtime_ptr).command_palette.render(f, main_area);
+                    } else if help_visible {
+                        (*runtime_ptr).help_overlay.render(f, main_area);
+                    } else {
+                        // Render current view if no overlay is active
+                        if let Some(ref view_id) = current_view_id {
+                            if let Some(view) = view_registry.get_mut(view_id) {
+                                // Get header info and help once
+                                let header_info = view.header_info();
+                                let header_help = view.header_help();
+                                let has_header = header_info.is_some() || header_help.is_some();
+
+                                if has_header {
+                                    // Calculate header height dynamically
+                                    let header_height = {
+                                        let info_lines = header_info
+                                            .as_ref()
+                                            .map(|i| i.len() as u16)
+                                            .unwrap_or(0);
+                                        let help_lines = header_help
+                                            .as_ref()
+                                            .map(|h| h.len().min(5) as u16)
+                                            .unwrap_or(0);
+                                        info_lines.max(help_lines).max(1) + 1
+                                    };
+
+                                    // Split main area into header and content
+                                    let chunks = ratatui::layout::Layout::vertical([
+                                        ratatui::layout::Constraint::Length(header_height),
+                                        ratatui::layout::Constraint::Min(0),
+                                    ])
+                                    .split(main_area);
+
+                                    let header_area = chunks[0];
+                                    let content_area = chunks[1];
+
+                                    // Build and render header
+                                    let mut header = crate::widget::ViewHeader::new(
+                                        view.title().to_string(),
+                                        crate::view::Theme::default(),
+                                    );
+
+                                    if let Some(info) = header_info {
+                                        header = header.with_info(info);
+                                    }
+
+                                    if let Some(help) = header_help {
+                                        header = header.with_help(help);
+                                    }
+
+                                    header.render(f, header_area);
+
+                                    // Render view content in remaining area
+                                    view.render(f, content_area, ctx);
+                                } else {
+                                    // No header, render view directly
+                                    view.render(f, main_area, ctx);
+                                }
+                            }
+                        }
+                    }
+
+                    // Render status bar
+                    if let Some(status_rect) = status_area {
+                        // T054: Pass loading state to status bar
+                        let is_loading = (*runtime_ptr).has_active_operations();
+                        (*runtime_ptr).status_bar.render(f, status_rect, is_loading);
+                    }
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Refresh a DataSource asynchronously
+    ///
+    /// This helper method allows views or commands to trigger DataSource refresh
+    /// operations that will be handled asynchronously without blocking the UI.
+    pub async fn refresh_data_source<D: DataSource>(&mut self, data_source: &mut D) -> Result<()> {
+        self.runtime.start_operation();
+        let result = data_source.refresh(&self.ctx).await;
+        self.runtime.finish_operation();
+
+        match result {
+            Ok(()) => {
+                self.runtime
+                    .set_status_message(AppMessage::info("Data refreshed successfully"));
+                Ok(())
+            }
+            Err(e) => {
+                let error_msg =
+                    AppMessage::error("Failed to refresh data").with_details(e.to_string());
+                self.runtime.set_status_message(error_msg.clone());
+                self.runtime.modal_mut().show(error_msg);
+                Err(e)
+            }
+        }
+    }
+
+    /// Handle key event (async)
+    async fn handle_key(&mut self, key: KeyCode) -> bool {
         // Handle command palette
         if self.runtime.is_command_palette_visible() {
             match self.runtime.command_palette_mut().handle_key(key) {
@@ -3126,10 +3382,14 @@ impl<C: AppContext> App<C> {
                 }
                 CommandPaletteResult::Execute(command_id) => {
                     self.runtime.command_palette_mut().hide();
-                    self.execute_command(&command_id, CommandArgs {
-                        positional: vec![],
-                        named: std::collections::HashMap::new(),
-                    });
+                    self.execute_command(
+                        &command_id,
+                        CommandArgs {
+                            positional: vec![],
+                            named: std::collections::HashMap::new(),
+                        },
+                    )
+                    .await;
                 }
             }
             return true;
@@ -3172,8 +3432,11 @@ impl<C: AppContext> App<C> {
         // Handle numeric keys (1-9) for view switching
         if let Some(slot) = self.key_to_view_slot(key) {
             if let Some(view_id) = self.view_slots.get(&slot) {
+                // T034: Cancel background tasks when switching views
+                self.background_tasks.cancel_all();
                 self.current_view_id = Some(view_id.clone());
-                self.runtime.set_status_message(AppMessage::info(format!("Switched to view: {}", view_id)));
+                self.runtime
+                    .set_status_message(AppMessage::info(format!("Switched to view: {}", view_id)));
                 return true;
             }
         }
@@ -3186,13 +3449,19 @@ impl<C: AppContext> App<C> {
         ) {
             match app_cmd {
                 AppCommand::SwitchView(view_id) => {
+                    // T034: Cancel background tasks when switching views
+                    self.background_tasks.cancel_all();
                     self.current_view_id = Some(view_id);
                 }
                 AppCommand::RunCommand(cmd_id, named_args) => {
-                    self.execute_command(&cmd_id, CommandArgs {
-                        positional: vec![],
-                        named: named_args,
-                    });
+                    self.execute_command(
+                        &cmd_id,
+                        CommandArgs {
+                            positional: vec![],
+                            named: named_args,
+                        },
+                    )
+                    .await;
                 }
                 AppCommand::InvokeAction(_) => {
                     // Actions will be implemented later
@@ -3201,7 +3470,7 @@ impl<C: AppContext> App<C> {
             return true;
         }
 
-        // Pass to current view
+        // Pass to current view (async)
         if let Some(ref view_id) = self.current_view_id {
             if let Some(view) = self.view_registry.get_mut(view_id) {
                 let event = CrosstermEvent::Key(crossterm::event::KeyEvent {
@@ -3210,9 +3479,12 @@ impl<C: AppContext> App<C> {
                     modifiers: crossterm::event::KeyModifiers::empty(),
                     state: crossterm::event::KeyEventState::empty(),
                 });
-                match view.handle_event(&event, &mut self.ctx) {
+                // Error handling for async View operations (T028)
+                match view.handle_event(&event, &mut self.ctx).await {
                     ViewResult::Exit => return false,
                     ViewResult::SwitchView(new_view_id) => {
+                        // T034: Cancel background tasks when switching views
+                        self.background_tasks.cancel_all();
                         self.current_view_id = Some(new_view_id);
                     }
                     ViewResult::ShowModal(msg) => {
@@ -3226,18 +3498,46 @@ impl<C: AppContext> App<C> {
         true
     }
 
-    /// Execute a command
-    fn execute_command(&mut self, command_id: &str, args: CommandArgs) {
+    /// Execute a command (async)
+    ///
+    /// Error handling for async operations (T028)
+    /// Timeout handling (T037): Commands timeout after default_timeout_seconds
+    async fn execute_command(&mut self, command_id: &str, args: CommandArgs) {
         if let Some(command) = self.command_registry.get(command_id) {
-            match (command.execute)(&mut self.ctx, args) {
-                Ok(()) => {
-                    self.runtime.set_status_message(AppMessage::info(format!("Command '{}' executed successfully", command_id)));
+            // Track operation for loading indicators
+            self.runtime.start_operation();
+
+            // T037: Add timeout handling (default 30s)
+            let timeout_duration =
+                std::time::Duration::from_secs(self.runtime.default_timeout_seconds());
+            let command_future = (command.execute)(&mut self.ctx, args);
+
+            match tokio::time::timeout(timeout_duration, command_future).await {
+                Ok(Ok(())) => {
+                    self.runtime.finish_operation();
+                    self.runtime.set_status_message(AppMessage::info(format!(
+                        "Command '{}' executed successfully",
+                        command_id
+                    )));
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
+                    // Error handling for async operations
+                    self.runtime.finish_operation();
                     let error_msg = AppMessage::error(format!("Command '{}' failed", command_id))
                         .with_details(e.to_string());
                     self.runtime.set_status_message(error_msg.clone());
                     self.runtime.modal_mut().show(error_msg);
+                }
+                Err(_) => {
+                    // Timeout
+                    self.runtime.finish_operation();
+                    let timeout_msg = AppMessage::error(format!(
+                        "Command '{}' timed out after {} seconds",
+                        command_id,
+                        self.runtime.default_timeout_seconds()
+                    ));
+                    self.runtime.set_status_message(timeout_msg.clone());
+                    self.runtime.modal_mut().show(timeout_msg);
                 }
             }
         }
@@ -3353,7 +3653,10 @@ impl KeymapConfig {
 
     /// Add a per-view keybinding
     pub fn add_view_binding(mut self, view_id: String, binding: KeyBinding) -> Self {
-        self.per_view.entry(view_id).or_insert_with(Vec::new).push(binding);
+        self.per_view
+            .entry(view_id)
+            .or_insert_with(Vec::new)
+            .push(binding);
         self
     }
 }
@@ -3366,6 +3669,7 @@ impl KeymapConfig {
 
 use crate::app::context::AppContext;
 use crate::message::AppMessage;
+use async_trait::async_trait;
 use crossterm::event::Event;
 use ratatui::layout::Rect;
 use ratatui::Frame;
@@ -3395,7 +3699,13 @@ pub struct HelpItem {
 }
 
 /// View trait that all views must implement
-pub trait View {
+///
+/// # Async Operations
+///
+/// The `handle_event` method is async, allowing views to trigger async operations
+/// during user interactions without blocking the UI.
+#[async_trait]
+pub trait View: Send + Sync {
     /// Stable identifier for this view. Literal, compile-time string.
     fn id(&self) -> &'static str;
 
@@ -3403,10 +3713,16 @@ pub trait View {
     fn title(&self) -> &'static str;
 
     /// Called every frame to draw this view.
+    ///
+    /// Note: Rendering remains synchronous for performance. This method is called
+    /// from the async event loop but rendering itself is fast and non-blocking.
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &dyn AppContext);
 
     /// Handles view-specific events (arrows, enter, letters, etc.).
-    fn handle_event(&mut self, event: &Event, ctx: &mut dyn AppContext) -> ViewResult;
+    ///
+    /// This method is async, allowing views to perform async operations (e.g., data refresh,
+    /// service calls) in response to user interactions without blocking the UI.
+    async fn handle_event(&mut self, event: &Event, ctx: &mut dyn AppContext) -> ViewResult;
 
     /// Help items specific to this view (used by '?').
     fn help_items(&self) -> Vec<HelpItem>;
@@ -3436,23 +3752,24 @@ use crate::data_source::DataSource;
 use crate::view::Theme;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Row, Table, TableState};
 use ratatui::Frame;
 use std::fmt::Debug;
 
 /// GridView widget for displaying tabular data
-pub struct GridView<D: DataSource> 
+pub struct GridView<D: DataSource>
 where
     D::Row: Debug,
 {
     data_source: D,
     state: TableState,
     theme: Theme,
-    formatter: Option<Box<dyn Fn(&D::Row) -> Vec<String>>>,
+    // T061: Formatter must be Send + Sync for async compatibility
+    formatter: Option<Box<dyn Fn(&D::Row) -> Vec<String> + Send + Sync>>,
 }
 
-impl<D: DataSource> GridView<D> 
+impl<D: DataSource> GridView<D>
 where
     D::Row: Debug,
 {
@@ -3468,9 +3785,10 @@ where
 
     /// Set a custom formatter function for rows
     /// The formatter should return a Vec<String> representing the columns
+    /// T061: Formatter must be Send + Sync for async compatibility
     pub fn with_formatter<F>(mut self, formatter: F) -> Self
     where
-        F: Fn(&D::Row) -> Vec<String> + 'static,
+        F: Fn(&D::Row) -> Vec<String> + Send + Sync + 'static,
     {
         self.formatter = Some(Box::new(formatter));
         self
@@ -3512,19 +3830,20 @@ where
         if len == 0 {
             return;
         }
-        let i = self.state.selected().map_or(0, |i| if i == 0 { len - 1 } else { i - 1 });
+        let i = self
+            .state
+            .selected()
+            .map_or(0, |i| if i == 0 { len - 1 } else { i - 1 });
         self.state.select(Some(i));
     }
 
     /// Render the grid view
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
         let len = self.data_source.len();
-        
+
         if len == 0 {
             // Show empty state
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .title("No Data");
+            let block = Block::default().borders(Borders::ALL).title("No Data");
             f.render_widget(block, area);
             return;
         }
@@ -3533,7 +3852,7 @@ where
         let mut rows = Vec::new();
         let visible_rows = (area.height.saturating_sub(2)) as usize;
         let mut num_cols = 1;
-        
+
         for i in 0..len.min(visible_rows) {
             if let Some(row) = self.data_source.get(i) {
                 let cells = if let Some(ref formatter) = self.formatter {
@@ -3550,7 +3869,7 @@ where
                         let name = if let Some(start) = debug_str.find("name: \"") {
                             let start = start + 7;
                             if let Some(end) = debug_str[start..].find('"') {
-                                debug_str[start..start+end].to_string()
+                                debug_str[start..start + end].to_string()
                             } else {
                                 format!("Item {}", i + 1)
                             }
@@ -3563,7 +3882,7 @@ where
                         vec![debug_str.chars().take(area.width as usize - 4).collect()]
                     }
                 };
-                
+
                 num_cols = num_cols.max(cells.len());
                 let spans: Vec<Span> = cells.iter().map(|s| Span::raw(s.clone())).collect();
                 rows.push(Row::new(spans));
@@ -3574,13 +3893,15 @@ where
         let widths: Vec<ratatui::layout::Constraint> = (0..num_cols)
             .map(|_| ratatui::layout::Constraint::Percentage(100 / num_cols.max(1) as u16))
             .collect();
-        
+
         let table = Table::new(rows, widths)
             .block(Block::default().borders(Borders::ALL).title("Data"))
             .highlight_style(
-                Style::default()
-                    .add_modifier(Modifier::REVERSED)
-                    .fg(self.theme.primary_style.fg.unwrap_or(ratatui::style::Color::Cyan)),
+                Style::default().add_modifier(Modifier::REVERSED).fg(self
+                    .theme
+                    .primary_style
+                    .fg
+                    .unwrap_or(ratatui::style::Color::Cyan)),
             );
 
         f.render_stateful_widget(table, area, &mut self.state);
@@ -3589,20 +3910,20 @@ where
 </file>
 
 <file path="src/widget/mod.rs">
+pub mod empty_state;
 pub mod grid;
+pub mod help;
 pub mod log;
 pub mod modal;
 pub mod status_bar;
-pub mod help;
-pub mod empty_state;
 pub mod view_header;
 
+pub use empty_state::{EmptyState, LoadingIndicator};
 pub use grid::GridView;
+pub use help::HelpOverlay;
 pub use log::LogView;
 pub use modal::ModalView;
 pub use status_bar::StatusBar;
-pub use help::HelpOverlay;
-pub use empty_state::{EmptyState, LoadingIndicator};
 pub use view_header::ViewHeader;
 </file>
 
@@ -3611,14 +3932,23 @@ pub use view_header::ViewHeader;
 //!
 //! An opinionated TUI framework library for building terminal user interfaces.
 //!
-//! This framework provides a complete event loop, layout system, navigation, status bar,
+//! This framework provides a complete async event loop, layout system, navigation, status bar,
 //! help overlay, command palette, and standard widgets (GridView, LogView, ModalView)
 //! so application authors can focus on implementing views, datasources, and commands
 //! rather than terminal management.
 //!
+//! ## Async Runtime
+//!
+//! The framework uses [Tokio](https://tokio.rs/) as its async runtime and manages the runtime
+//! internally. Applications do not need to initialize Tokio themselves - the framework handles
+//! all async runtime setup automatically. All trait methods (DataSource, View, Command) support
+//! async operations using `.await`, enabling direct integration with async service clients
+//! (e.g., reqwest, tokio-postgres) without blocking the UI.
+//!
 //! ## Example
 //!
 //! ```no_run
+//! use async_trait::async_trait;
 //! use tui_framework::prelude::*;
 //! use tui_framework::view::{View, ViewResult, HelpItem};
 //! use crossterm::event::Event;
@@ -3627,11 +3957,12 @@ pub use view_header::ViewHeader;
 //!
 //! // Define a simple view
 //! struct MyView;
+//! #[async_trait]
 //! impl View for MyView {
 //!     fn id(&self) -> &'static str { "my.view" }
 //!     fn title(&self) -> &'static str { "My View" }
 //!     fn render(&mut self, _f: &mut Frame, _area: Rect, _ctx: &dyn AppContext) {}
-//!     fn handle_event(&mut self, _event: &Event, _ctx: &mut dyn AppContext) -> ViewResult {
+//!     async fn handle_event(&mut self, _event: &Event, _ctx: &mut dyn AppContext) -> ViewResult {
 //!         ViewResult::Ignored
 //!     }
 //!     fn help_items(&self) -> Vec<HelpItem> { vec![] }
@@ -3641,13 +3972,14 @@ pub use view_header::ViewHeader;
 //! struct MyContext;
 //! impl AppContext for MyContext {}
 //!
-//! # fn main() -> anyhow::Result<()> {
+//! # #[tokio::main]
+//! # async fn main() -> anyhow::Result<()> {
 //! let mut builder = AppBuilder::new();
 //! builder = builder
 //!     .register_view(MyView)
 //!     .map_view_slot(ViewSlot::Slot1, "my.view");
 //! let mut app = builder.build(MyContext)?;
-//! app.run()?;
+//! app.run().await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -3676,262 +4008,6 @@ pub mod prelude {
     pub use crate::message::{AppMessage, AppMessageKind};
     pub use crate::view::View;
 }
-</file>
-
-<file path="EXAMPLES.md">
-# TUI Framework Examples
-
-This document describes the three example applications included with the framework.
-
-## Example 1: Simple
-
-**Command**: `cargo run --example simple`
-
-**Purpose**: Demonstrates the minimal setup required to create a working TUI.
-
-**Features Shown**:
-- Basic view registration
-- GridView widget with DataSource
-- Status bar (bottom of screen)
-- Help overlay (press `?`)
-- Basic navigation
-
-**What You'll See**:
-- A simple grid view displaying 3 items (Item 1, Item 2, Item 3)
-- Status bar at the bottom
-- Press `?` to see help overlay
-- Press `q` to quit
-
-**Code Highlights**:
-- Minimal AppContext implementation
-- Simple DataSource with in-memory data
-- Basic View implementation
-
-## Example 2: With Commands
-
-**Command**: `cargo run --example with_commands`
-
-**Purpose**: Demonstrates command execution, command palette, and multiple views.
-
-**Features Shown**:
-- Multiple views (Services view, Logs view)
-- View headers with contextual information and keybindings
-- Numeric key view switching (1 → Services, 2 → Logs)
-- Command palette (press `:`)
-- Command registration and execution
-- Modal dialogs for command feedback
-- Error handling demonstration
-
-**What You'll See**:
-- Services view showing 3 services (web-server, api-server, db-server)
-- Logs view with placeholder content
-- Press `:` to open command palette with 4 commands:
-  - `restart` - Restart a service
-  - `stop` - Stop a service
-  - `info` - Show application information
-  - `fail` - Demonstrate error handling (intentionally fails)
-- Press 1/2 to switch between views
-- Commands show success/error messages in status bar and modals
-
-**Code Highlights**:
-- Command registration
-- Command execution with AppContext
-- Multiple views with numeric key mapping
-- Error handling with modals
-
-## Example 3: Kitchen Sink
-
-**Command**: `cargo run --example kitchen_sink`
-
-**Purpose**: Comprehensive demonstration of all framework features.
-
-**Features Shown**:
-- View headers with dynamic contextual information
-- GridView with interactive navigation (j/k keys)
-- LogView with **live streaming logs** (updates every 500ms)
-- Log filtering (press `/` in logs view)
-- Follow mode toggle (press `f` in logs view)
-- Scrolling controls (j/k, g/G, PageUp/PageDown)
-- Command palette
-- View switching
-- All UI components working together
-
-**What You'll See**:
-
-### Resources View (1)
-- Grid of 3 resources (web-server, api-server, db-server)
-- Use `j`/`↓` or `k`/`↑` to navigate
-- Selection highlighting
-
-### Logs View (2)
-- **Live streaming logs** - new log lines appear every 500ms
-- Log levels: INFO, WARN, ERROR
-- Timestamps on each line
-- **Filtering**: Press `/` to enter filter mode, type keyword (e.g., "ERROR"), press Enter
-- **Follow mode**: Press `f` to toggle auto-scroll to bottom
-- **Scrolling**:
-  - `j`/`↓`: Scroll down one line
-  - `k`/`↑`: Scroll up one line
-  - `g`: Jump to top
-  - `G`: Jump to bottom
-  - `PageUp`/`PageDown`: Page navigation
-- When follow mode is ON, new logs automatically scroll into view
-- When follow mode is OFF, you can scroll to review older logs
-
-**Code Highlights**:
-- SharedLogBuffer for thread-safe log streaming
-- Background thread simulating log generation
-- Interactive log filtering
-- Follow mode implementation
-- Complete integration of all framework features
-
-## Running the Examples
-
-All examples are interactive TUI applications. Here's how to use them:
-
-1. **Start an example**: `cargo run --example <name>`
-2. **Navigate**: Use the keys shown in help (press `?`)
-3. **Quit**: Press `q`
-
-### Common Controls (All Examples)
-- `q`: Quit application
-- `?`: Toggle help overlay
-- `:`: Open command palette (if available)
-- `Esc`: Close modals/overlays
-- `1-9`: Switch views (if mapped)
-
-### LogView Controls (Kitchen Sink)
-- `/`: Enter filter mode (type keyword, press Enter)
-- `f`: Toggle follow mode
-- `j`/`↓`: Scroll down
-- `k`/`↑`: Scroll up
-- `g`: Scroll to top
-- `G`: Scroll to bottom
-- `PageUp`/`PageDown`: Page navigation
-
-## Tips
-
-- The examples will show startup messages in your terminal before entering TUI mode
-- If the terminal is too small (< 80x24), the framework will gracefully degrade
-- All examples demonstrate real framework features - the code can be used as reference
-- The kitchen_sink example is the most comprehensive and shows all features working together
-</file>
-
-<file path="README.md">
-# TUI Framework
-
-An opinionated TUI framework library for building terminal user interfaces in Rust.
-
-This framework provides a complete event loop, layout system, navigation, status bar, help overlay, command palette, and standard widgets (GridView, LogView, ModalView) so application authors can focus on implementing views, datasources, and commands rather than terminal management.
-
-## Features
-
-- **View System**: Register views, switch between them with numeric keys (1-9)
-- **View Headers**: Optional contextual information and keybindings displayed in view headers
-- **Command Palette**: Execute commands via `:` key with filtering
-- **Keybindings**: Global and per-view keybindings with conflict resolution
-- **GridView**: Paginated data display with DataSource trait
-- **LogView**: Streaming logs with filtering and follow mode
-- **UI Components**: Status bar, help overlay, modal dialogs, view headers
-- **Customization**: Toggle UI elements, configure keybindings, add view headers
-- **Resilience**: Retry policies for network operations
-- **Optional Features**: Authentication hooks, OpenTelemetry integration
-
-## Quick Start
-
-Add to your `Cargo.toml`:
-
-```toml
-[dependencies]
-tui-framework = { path = "../tui-framework" }  # or from crates.io when published
-anyhow = "1.0"
-```
-
-Basic example:
-
-```rust
-use tui_framework::prelude::*;
-use tui_framework::view::{View, ViewResult, HelpItem};
-use crossterm::event::Event;
-use ratatui::layout::Rect;
-use ratatui::Frame;
-
-// Define a simple view
-struct MyView;
-impl View for MyView {
-    fn id(&self) -> &'static str { "my.view" }
-    fn title(&self) -> &'static str { "My View" }
-    fn render(&mut self, _f: &mut Frame, _area: Rect, _ctx: &dyn AppContext) {}
-    fn handle_event(&mut self, _event: &Event, _ctx: &mut dyn AppContext) -> ViewResult {
-        ViewResult::Ignored
-    }
-    fn help_items(&self) -> Vec<HelpItem> { vec![] }
-}
-
-// Build and run
-struct MyContext;
-impl AppContext for MyContext {}
-
-fn main() -> anyhow::Result<()> {
-    let mut builder = AppBuilder::new();
-    builder = builder
-        .register_view(MyView)
-        .map_view_slot(ViewSlot::Slot1, "my.view");
-    let mut app = builder.build(MyContext)?;
-    app.run()?;
-    Ok(())
-}
-```
-
-## Running Examples
-
-The framework includes several examples demonstrating different features:
-
-### Simple Example
-Basic TUI with a single grid view:
-```bash
-cargo run --example simple
-```
-
-### With Commands Example
-Demonstrates command palette, keybindings, and multiple views:
-```bash
-cargo run --example with_commands
-```
-
-### Kitchen Sink Example
-Comprehensive example showing all framework features:
-```bash
-cargo run --example kitchen_sink
-```
-
-## Key Bindings
-
-Default keybindings:
-- `1-9`: Switch to mapped views
-- `:`: Open command palette
-- `?`: Toggle help overlay
-- `q`: Quit application
-- `Esc`: Close modals/overlays
-
-## Documentation
-
-- [Quickstart Guide](specs/001-cli-framework-spec/quickstart.md) - Detailed getting started guide
-- [Specification](specs/001-cli-framework-spec/spec.md) - Full specification
-- [API Documentation](https://docs.rs/tui-framework) - Generated API docs (when published)
-
-## Requirements
-
-- Rust 1.70+ (2021 edition)
-- Terminal with at least 80x24 characters (gracefully degrades for smaller terminals)
-
-## License
-
-MIT OR Apache-2.0
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on contributing to this project.
 </file>
 
 </files>

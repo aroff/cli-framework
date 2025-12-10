@@ -89,8 +89,10 @@ impl KeymapConfig {
 
     /// Add a per-view keybinding
     pub fn add_view_binding(mut self, view_id: String, binding: KeyBinding) -> Self {
-        self.per_view.entry(view_id).or_insert_with(Vec::new).push(binding);
+        self.per_view
+            .entry(view_id)
+            .or_insert_with(Vec::new)
+            .push(binding);
         self
     }
 }
-

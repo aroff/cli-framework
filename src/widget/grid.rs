@@ -6,23 +6,24 @@ use crate::data_source::DataSource;
 use crate::view::Theme;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Row, Table, TableState};
 use ratatui::Frame;
 use std::fmt::Debug;
 
 /// GridView widget for displaying tabular data
-pub struct GridView<D: DataSource> 
+pub struct GridView<D: DataSource>
 where
     D::Row: Debug,
 {
     data_source: D,
     state: TableState,
     theme: Theme,
-    formatter: Option<Box<dyn Fn(&D::Row) -> Vec<String>>>,
+    // T061: Formatter must be Send + Sync for async compatibility
+    formatter: Option<Box<dyn Fn(&D::Row) -> Vec<String> + Send + Sync>>,
 }
 
-impl<D: DataSource> GridView<D> 
+impl<D: DataSource> GridView<D>
 where
     D::Row: Debug,
 {
@@ -38,9 +39,10 @@ where
 
     /// Set a custom formatter function for rows
     /// The formatter should return a Vec<String> representing the columns
+    /// T061: Formatter must be Send + Sync for async compatibility
     pub fn with_formatter<F>(mut self, formatter: F) -> Self
     where
-        F: Fn(&D::Row) -> Vec<String> + 'static,
+        F: Fn(&D::Row) -> Vec<String> + Send + Sync + 'static,
     {
         self.formatter = Some(Box::new(formatter));
         self
@@ -82,19 +84,20 @@ where
         if len == 0 {
             return;
         }
-        let i = self.state.selected().map_or(0, |i| if i == 0 { len - 1 } else { i - 1 });
+        let i = self
+            .state
+            .selected()
+            .map_or(0, |i| if i == 0 { len - 1 } else { i - 1 });
         self.state.select(Some(i));
     }
 
     /// Render the grid view
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
         let len = self.data_source.len();
-        
+
         if len == 0 {
             // Show empty state
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .title("No Data");
+            let block = Block::default().borders(Borders::ALL).title("No Data");
             f.render_widget(block, area);
             return;
         }
@@ -103,7 +106,7 @@ where
         let mut rows = Vec::new();
         let visible_rows = (area.height.saturating_sub(2)) as usize;
         let mut num_cols = 1;
-        
+
         for i in 0..len.min(visible_rows) {
             if let Some(row) = self.data_source.get(i) {
                 let cells = if let Some(ref formatter) = self.formatter {
@@ -120,7 +123,7 @@ where
                         let name = if let Some(start) = debug_str.find("name: \"") {
                             let start = start + 7;
                             if let Some(end) = debug_str[start..].find('"') {
-                                debug_str[start..start+end].to_string()
+                                debug_str[start..start + end].to_string()
                             } else {
                                 format!("Item {}", i + 1)
                             }
@@ -133,7 +136,7 @@ where
                         vec![debug_str.chars().take(area.width as usize - 4).collect()]
                     }
                 };
-                
+
                 num_cols = num_cols.max(cells.len());
                 let spans: Vec<Span> = cells.iter().map(|s| Span::raw(s.clone())).collect();
                 rows.push(Row::new(spans));
@@ -144,13 +147,15 @@ where
         let widths: Vec<ratatui::layout::Constraint> = (0..num_cols)
             .map(|_| ratatui::layout::Constraint::Percentage(100 / num_cols.max(1) as u16))
             .collect();
-        
+
         let table = Table::new(rows, widths)
             .block(Block::default().borders(Borders::ALL).title("Data"))
             .highlight_style(
-                Style::default()
-                    .add_modifier(Modifier::REVERSED)
-                    .fg(self.theme.primary_style.fg.unwrap_or(ratatui::style::Color::Cyan)),
+                Style::default().add_modifier(Modifier::REVERSED).fg(self
+                    .theme
+                    .primary_style
+                    .fg
+                    .unwrap_or(ratatui::style::Color::Cyan)),
             );
 
         f.render_stateful_widget(table, area, &mut self.state);

@@ -1,0 +1,4 @@
+---
+alwaysApply: false
+---
+when done creating files, run cargo fmt and clippy to check. once completed ensure tests are passing and building.

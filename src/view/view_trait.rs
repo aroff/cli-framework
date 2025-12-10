@@ -4,6 +4,7 @@
 
 use crate::app::context::AppContext;
 use crate::message::AppMessage;
+use async_trait::async_trait;
 use crossterm::event::Event;
 use ratatui::layout::Rect;
 use ratatui::Frame;
@@ -33,7 +34,13 @@ pub struct HelpItem {
 }
 
 /// View trait that all views must implement
-pub trait View {
+///
+/// # Async Operations
+///
+/// The `handle_event` method is async, allowing views to trigger async operations
+/// during user interactions without blocking the UI.
+#[async_trait]
+pub trait View: Send + Sync {
     /// Stable identifier for this view. Literal, compile-time string.
     fn id(&self) -> &'static str;
 
@@ -41,10 +48,16 @@ pub trait View {
     fn title(&self) -> &'static str;
 
     /// Called every frame to draw this view.
+    ///
+    /// Note: Rendering remains synchronous for performance. This method is called
+    /// from the async event loop but rendering itself is fast and non-blocking.
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &dyn AppContext);
 
     /// Handles view-specific events (arrows, enter, letters, etc.).
-    fn handle_event(&mut self, event: &Event, ctx: &mut dyn AppContext) -> ViewResult;
+    ///
+    /// This method is async, allowing views to perform async operations (e.g., data refresh,
+    /// service calls) in response to user interactions without blocking the UI.
+    async fn handle_event(&mut self, event: &Event, ctx: &mut dyn AppContext) -> ViewResult;
 
     /// Help items specific to this view (used by '?').
     fn help_items(&self) -> Vec<HelpItem>;
@@ -63,4 +76,3 @@ pub trait View {
         None
     }
 }
-
