@@ -9,12 +9,21 @@ use std::sync::{Arc, Mutex};
 ///
 /// Applications implement this trait to provide log streaming functionality.
 /// The framework uses this to connect log sources to LogView widgets.
-pub trait LogSource {
+pub trait LogSource: Send + Sync {
     /// Get the next batch of log lines (non-blocking)
     ///
     /// Returns new lines since the last call, or empty if no new lines.
     fn poll_lines(&mut self) -> Vec<String>;
-    
+
+    /// Optional async poll for streaming sources
+    ///
+    /// Default implementation delegates to the sync `poll_lines`.
+    fn poll_lines_async<'a>(
+        &'a mut self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
+        Box::pin(async move { self.poll_lines() })
+    }
+
     /// Check if the log source is still active
     fn is_active(&self) -> bool;
 }
@@ -108,4 +117,3 @@ pub fn sync_log_buffer_to_view(buffer: &SharedLogBuffer, view: &mut LogView) {
         view.add_lines(lines);
     }
 }
-

@@ -31,15 +31,9 @@ impl Default for Theme {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
             secondary_style: Style::default().fg(Color::White),
-            error_style: Style::default()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD),
-            status_bar_style: Style::default()
-                .fg(Color::Black)
-                .bg(Color::White),
-            modal_style: Style::default()
-                .fg(Color::White)
-                .bg(Color::Blue),
+            error_style: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            status_bar_style: Style::default().fg(Color::Black).bg(Color::White),
+            modal_style: Style::default().fg(Color::White).bg(Color::Blue),
         }
     }
 }
@@ -67,4 +61,3 @@ impl Theme {
         }
     }
 }
-

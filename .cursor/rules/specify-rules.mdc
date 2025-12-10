@@ -3,6 +3,8 @@
 Auto-generated from all feature plans. Last updated: 2025-11-19
 
 ## Active Technologies
+- Rust 1.75+ (edition 2021) (002-async-migration)
+- N/A (framework library, no persistent storage) (002-async-migration)
 
 - Rust (latest stable, minimum 1.75+) (001-cli-framework-spec)
 
@@ -22,6 +24,7 @@ cargo test [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECH
 Rust (latest stable, minimum 1.75+): Follow standard conventions
 
 ## Recent Changes
+- 002-async-migration: Added Rust 1.75+ (edition 2021)
 
 - 001-cli-framework-spec: Added Rust (latest stable, minimum 1.75+)
 

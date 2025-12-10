@@ -2,14 +2,23 @@
 //!
 //! An opinionated TUI framework library for building terminal user interfaces.
 //!
-//! This framework provides a complete event loop, layout system, navigation, status bar,
+//! This framework provides a complete async event loop, layout system, navigation, status bar,
 //! help overlay, command palette, and standard widgets (GridView, LogView, ModalView)
 //! so application authors can focus on implementing views, datasources, and commands
 //! rather than terminal management.
 //!
+//! ## Async Runtime
+//!
+//! The framework uses [Tokio](https://tokio.rs/) as its async runtime and manages the runtime
+//! internally. Applications do not need to initialize Tokio themselves - the framework handles
+//! all async runtime setup automatically. All trait methods (DataSource, View, Command) support
+//! async operations using `.await`, enabling direct integration with async service clients
+//! (e.g., reqwest, tokio-postgres) without blocking the UI.
+//!
 //! ## Example
 //!
 //! ```no_run
+//! use async_trait::async_trait;
 //! use tui_framework::prelude::*;
 //! use tui_framework::view::{View, ViewResult, HelpItem};
 //! use crossterm::event::Event;
@@ -18,11 +27,12 @@
 //!
 //! // Define a simple view
 //! struct MyView;
+//! #[async_trait]
 //! impl View for MyView {
 //!     fn id(&self) -> &'static str { "my.view" }
 //!     fn title(&self) -> &'static str { "My View" }
 //!     fn render(&mut self, _f: &mut Frame, _area: Rect, _ctx: &dyn AppContext) {}
-//!     fn handle_event(&mut self, _event: &Event, _ctx: &mut dyn AppContext) -> ViewResult {
+//!     async fn handle_event(&mut self, _event: &Event, _ctx: &mut dyn AppContext) -> ViewResult {
 //!         ViewResult::Ignored
 //!     }
 //!     fn help_items(&self) -> Vec<HelpItem> { vec![] }
@@ -32,13 +42,14 @@
 //! struct MyContext;
 //! impl AppContext for MyContext {}
 //!
-//! # fn main() -> anyhow::Result<()> {
+//! # #[tokio::main]
+//! # async fn main() -> anyhow::Result<()> {
 //! let mut builder = AppBuilder::new();
 //! builder = builder
 //!     .register_view(MyView)
 //!     .map_view_slot(ViewSlot::Slot1, "my.view");
 //! let mut app = builder.build(MyContext)?;
-//! app.run()?;
+//! app.run().await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -67,4 +78,3 @@ pub mod prelude {
     pub use crate::message::{AppMessage, AppMessageKind};
     pub use crate::view::View;
 }
-

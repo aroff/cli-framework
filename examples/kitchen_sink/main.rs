@@ -2,20 +2,24 @@
 //!
 //! This example implements all framework features (auth, grid, logs, commands)
 //! to serve as the primary integration test bench and demonstrate best practices.
+//!
+//! **Note**: As of version 0.2.0, this framework is async and requires Tokio.
 
-use tui_framework::prelude::*;
-use tui_framework::data_source::{DataSource, SharedLogBuffer, sync_log_buffer_to_view};
-use tui_framework::view::{View, ViewResult, HelpItem, Theme};
-use tui_framework::widget::{GridView, LogView};
-use tui_framework::message::AppMessage;
-use tui_framework::command::{Command, CommandArgs};
-use tui_framework::keymap::ViewSlot;
 use anyhow::Result;
+use async_trait::async_trait;
 use crossterm::event::{Event, KeyCode};
 use ratatui::layout::Rect;
 use ratatui::Frame;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::future::Future;
+use std::pin::Pin;
+use tokio::time::{Duration, Instant};
+use tui_framework::command::{Command, CommandArgs};
+use tui_framework::data_source::{sync_log_buffer_to_view, DataSource, SharedLogBuffer};
+use tui_framework::keymap::ViewSlot;
+use tui_framework::message::AppMessage;
+use tui_framework::prelude::*;
+use tui_framework::view::{HelpItem, Theme, View, ViewResult};
+use tui_framework::widget::{GridView, LogView};
 
 // Data models
 #[derive(Clone, Debug)]
@@ -30,6 +34,7 @@ struct ResourceDataSource {
     resources: Vec<Resource>,
 }
 
+#[async_trait]
 impl DataSource for ResourceDataSource {
     type Row = Resource;
 
@@ -41,7 +46,8 @@ impl DataSource for ResourceDataSource {
         self.resources.get(index)
     }
 
-    fn refresh(&mut self, _ctx: &dyn AppContext) -> Result<()> {
+    async fn refresh(&mut self, _ctx: &dyn AppContext) -> Result<()> {
+        // Simulate async data refresh
         Ok(())
     }
 }
@@ -54,23 +60,32 @@ struct ResourcesView {
 impl ResourcesView {
     fn new() -> Self {
         let resources = vec![
-            Resource { id: 1, name: "web-server".to_string(), status: "running".to_string() },
-            Resource { id: 2, name: "api-server".to_string(), status: "running".to_string() },
-            Resource { id: 3, name: "db-server".to_string(), status: "stopped".to_string() },
+            Resource {
+                id: 1,
+                name: "web-server".to_string(),
+                status: "running".to_string(),
+            },
+            Resource {
+                id: 2,
+                name: "api-server".to_string(),
+                status: "running".to_string(),
+            },
+            Resource {
+                id: 3,
+                name: "db-server".to_string(),
+                status: "stopped".to_string(),
+            },
         ];
         let data_source = ResourceDataSource { resources };
         let theme = Theme::default();
-        let grid = GridView::new(data_source, theme)
-            .with_formatter(|resource: &Resource| {
-                vec![
-                    resource.name.clone(),
-                    resource.status.clone(),
-                ]
-            });
+        let grid = GridView::new(data_source, theme).with_formatter(|resource: &Resource| {
+            vec![resource.name.clone(), resource.status.clone()]
+        });
         Self { grid }
     }
 }
 
+#[async_trait]
 impl View for ResourcesView {
     fn id(&self) -> &'static str {
         "resources.view"
@@ -84,7 +99,7 @@ impl View for ResourcesView {
         self.grid.render(f, area);
     }
 
-    fn handle_event(&mut self, event: &Event, _ctx: &mut dyn AppContext) -> ViewResult {
+    async fn handle_event(&mut self, event: &Event, _ctx: &mut dyn AppContext) -> ViewResult {
         if let Event::Key(key) = event {
             match key.code {
                 KeyCode::Down | KeyCode::Char('j') => {
@@ -152,23 +167,25 @@ impl LogsView {
         let theme = Theme::default();
         let log_view = LogView::new(theme);
         let log_buffer = SharedLogBuffer::new(10000);
-        
-        // Start a background thread to simulate log streaming
+
+        // Start a background task to simulate async log streaming
         let buffer_clone = log_buffer.clone();
-        thread::spawn(move || {
+        tokio::spawn(async move {
             let mut counter = 0;
             loop {
-                thread::sleep(Duration::from_millis(500));
+                tokio::time::sleep(Duration::from_millis(500)).await;
                 counter += 1;
-                
+
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_secs();
-                let timestamp = format!("{:02}:{:02}:{:02}", 
+                let timestamp = format!(
+                    "{:02}:{:02}:{:02}",
                     (now / 3600) % 24,
                     (now / 60) % 60,
-                    now % 60);
+                    now % 60
+                );
                 let level = if counter % 10 == 0 {
                     "ERROR"
                 } else if counter % 5 == 0 {
@@ -176,12 +193,12 @@ impl LogsView {
                 } else {
                     "INFO"
                 };
-                
+
                 let message = format!("[{}] {}: Log message #{}", timestamp, level, counter);
                 buffer_clone.push(message);
             }
         });
-        
+
         Self {
             log_view,
             log_buffer,
@@ -191,6 +208,7 @@ impl LogsView {
     }
 }
 
+#[async_trait]
 impl View for LogsView {
     fn id(&self) -> &'static str {
         "logs.view"
@@ -203,7 +221,6 @@ impl View for LogsView {
     fn render(&mut self, f: &mut Frame, area: Rect, _ctx: &dyn AppContext) {
         // Sync log buffer to view
         sync_log_buffer_to_view(&self.log_buffer, &mut self.log_view);
-        
         // Render log view
         self.log_view.render(f, area);
     }
@@ -211,7 +228,15 @@ impl View for LogsView {
     fn header_info(&self) -> Option<Vec<(String, String)>> {
         Some(vec![
             ("Logs".to_string(), "streaming".to_string()),
-            ("Follow".to_string(), if self.log_view.is_follow_mode() { "ON" } else { "OFF" }.to_string()),
+            (
+                "Follow".to_string(),
+                if self.log_view.is_follow_mode() {
+                    "ON"
+                } else {
+                    "OFF"
+                }
+                .to_string(),
+            ),
         ])
     }
 
@@ -236,7 +261,7 @@ impl View for LogsView {
         ])
     }
 
-    fn handle_event(&mut self, event: &Event, _ctx: &mut dyn AppContext) -> ViewResult {
+    async fn handle_event(&mut self, event: &Event, _ctx: &mut dyn AppContext) -> ViewResult {
         if let Event::Key(key) = event {
             match key.code {
                 KeyCode::Char('/') => {
@@ -346,28 +371,34 @@ struct KitchenSinkContext;
 
 impl AppContext for KitchenSinkContext {}
 
-// Command implementations
-fn clear_logs(_ctx: &mut dyn AppContext, _args: CommandArgs) -> Result<()> {
-    // This would clear logs in a real application
-    Ok(())
+// Command implementations (async)
+fn clear_logs(
+    _ctx: &mut dyn AppContext,
+    _args: CommandArgs,
+) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
+    Box::pin(async move {
+        // This would clear logs in a real application
+        Ok(())
+    })
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let ctx = KitchenSinkContext;
 
     // Build application
     let mut builder = AppBuilder::new();
-    
+
     // Register views
     builder = builder
         .register_view(ResourcesView::new())
         .register_view(LogsView::new());
-    
+
     // Map views to numeric keys
     builder = builder
         .map_view_slot(ViewSlot::Slot1, "resources.view")
         .map_view_slot(ViewSlot::Slot2, "logs.view");
-    
+
     // Register commands
     builder = builder.register_command(Command {
         id: "clear-logs",
@@ -376,10 +407,10 @@ fn main() -> Result<()> {
         category: Some("logs"),
         execute: clear_logs,
     });
-    
+
     // Build and run
     let mut app = builder.build(ctx)?;
-    
+
     println!("TUI Framework - Kitchen Sink Example");
     println!("=====================================");
     println!("This example demonstrates:");
@@ -397,8 +428,9 @@ fn main() -> Result<()> {
     println!("  g - Scroll to top");
     println!("  G - Scroll to bottom");
     println!("");
-    
-    app.run()?;
-    
+
+    // T063: App::run() is now async
+    app.run().await?;
+
     Ok(())
 }

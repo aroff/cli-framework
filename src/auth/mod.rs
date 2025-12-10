@@ -4,10 +4,9 @@
 //! Applications can also implement their own authentication via AppContext.
 
 pub mod login;
-pub mod token;
 pub mod rbac;
+pub mod token;
 
 pub use login::LoginScreen;
-pub use token::TokenManager;
 pub use rbac::RbacManager;
-
+pub use token::TokenManager;

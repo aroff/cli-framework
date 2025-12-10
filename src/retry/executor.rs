@@ -26,10 +26,10 @@ impl RetryExecutor {
         F: FnMut() -> Result<T>,
     {
         let mut last_error = None;
-        
+
         for attempt in 0..=self.policy.max_attempts {
             // Execute the operation
-            let result = if let Some(timeout) = self.policy.timeout {
+            let result = if self.policy.timeout.is_some() {
                 // TODO: Implement actual timeout in v2
                 // For v1, we'll just execute without timeout
                 operation()
@@ -41,12 +41,12 @@ impl RetryExecutor {
                 Ok(value) => return Ok(value),
                 Err(e) => {
                     last_error = Some(e);
-                    
+
                     // Don't retry if this was the last attempt
                     if attempt >= self.policy.max_attempts {
                         break;
                     }
-                    
+
                     // Calculate delay for next retry
                     let delay = self.policy.delay_for_attempt(attempt);
                     if delay > Duration::ZERO {
@@ -59,7 +59,9 @@ impl RetryExecutor {
         // Return the last error
         match last_error {
             Some(e) => Err(e),
-            None => Err(anyhow::anyhow!("Operation failed but no error was recorded")),
+            None => Err(anyhow::anyhow!(
+                "Operation failed but no error was recorded"
+            )),
         }
     }
 
