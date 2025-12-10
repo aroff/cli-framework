@@ -55,6 +55,7 @@
 //! ```
 
 pub mod app;
+pub mod cli_output;
 pub mod command;
 pub mod data_source;
 pub mod keymap;
