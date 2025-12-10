@@ -53,10 +53,10 @@ impl LoginScreen {
             .borders(Borders::ALL)
             .title("Login")
             .style(self.theme.modal_style);
-        
-        let paragraph = Paragraph::new("Login screen - implement authentication logic here")
-            .block(block);
-        
+
+        let paragraph =
+            Paragraph::new("Login screen - implement authentication logic here").block(block);
+
         f.render_widget(paragraph, area);
     }
 }

@@ -78,23 +78,19 @@ impl HelpOverlay {
             .iter()
             .map(|item| {
                 ListItem::new(Line::from(vec![
-                    Span::styled(
-                        format!("{:20}", item.key),
-                        self.theme.primary_style,
-                    ),
+                    Span::styled(format!("{:20}", item.key), self.theme.primary_style),
                     Span::raw(" "),
                     Span::styled(item.description.clone(), self.theme.secondary_style),
                 ]))
             })
             .collect();
 
-        let list = List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Help")
-                    .style(self.theme.modal_style),
-            );
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Help")
+                .style(self.theme.modal_style),
+        );
 
         f.render_widget(list, modal_area);
     }

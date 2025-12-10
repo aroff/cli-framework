@@ -2,7 +2,7 @@
 //!
 //! Provides token storage and validation helpers
 
-use std::time::{SystemTime, Duration};
+use std::time::{Duration, SystemTime};
 
 /// Token manager for handling authentication tokens
 pub struct TokenManager {

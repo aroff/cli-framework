@@ -4,7 +4,7 @@
 
 use crate::view::Theme;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+// Modifier and Style not currently used in this file
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Scrollbar, ScrollbarState};
 use ratatui::Frame;
@@ -57,17 +57,17 @@ impl LogView {
     pub fn add_line(&mut self, line: String) {
         // Add line to buffer
         self.lines.push_back(line);
-        
+
         // Trim buffer if it exceeds max_lines
         while self.lines.len() > self.max_lines {
             self.lines.pop_front();
         }
-        
+
         // Update filtered lines if filter is active
         if self.filter.is_some() {
             self.update_filtered_lines();
         }
-        
+
         // Auto-scroll to bottom if follow mode is enabled
         if self.follow_mode {
             self.scroll_to_bottom();
@@ -81,11 +81,21 @@ impl LogView {
         }
     }
 
+    /// Ingest streaming lines pushed from background tasks
+    pub fn ingest_stream_lines<I>(&mut self, lines: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        for line in lines {
+            self.add_line(line);
+        }
+    }
+
     /// Set the filter string (case-insensitive substring match)
     pub fn set_filter(&mut self, filter: Option<String>) {
         self.filter = filter;
         self.update_filtered_lines();
-        
+
         // If follow mode is on, scroll to bottom after filtering
         if self.follow_mode {
             self.scroll_to_bottom();
@@ -181,12 +191,12 @@ impl LogView {
         self.update_scrollbar_state(visible_lines);
     }
 
-
     /// Update filtered lines based on current filter
     fn update_filtered_lines(&mut self) {
         if let Some(ref filter) = self.filter {
             let filter_lower = filter.to_lowercase();
-            self.filtered_lines = self.lines
+            self.filtered_lines = self
+                .lines
                 .iter()
                 .filter(|line| line.to_lowercase().contains(&filter_lower))
                 .cloned()
@@ -210,7 +220,7 @@ impl LogView {
         } else {
             self.lines.len()
         };
-        
+
         if total_lines <= visible_lines {
             0
         } else {
@@ -225,7 +235,7 @@ impl LogView {
         } else {
             self.lines.len()
         };
-        
+
         self.scrollbar_state = ScrollbarState::new(total_lines)
             .position(self.scroll_position)
             .viewport_content_length(visible_lines);
@@ -249,28 +259,28 @@ impl LogView {
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
         // Update visible lines count based on actual area
         let visible_lines = (area.height.saturating_sub(2)) as usize; // Account for borders
-        
+
         // Update filtered lines if needed
         if self.filter.is_some() && self.filtered_lines.is_empty() && !self.lines.is_empty() {
             self.update_filtered_lines();
         }
-        
+
         // Get lines to display
         let display_lines: Vec<String> = if self.filter.is_some() {
             self.filtered_lines.clone()
         } else {
             self.lines.iter().cloned().collect()
         };
-        
+
         // Calculate visible range
         let total_lines = display_lines.len();
         let max_scroll = self.get_max_scroll_position(visible_lines);
-        
+
         // Ensure scroll position is valid
         if self.scroll_position > max_scroll {
             self.scroll_position = max_scroll;
         }
-        
+
         // Get visible slice
         let start = self.scroll_position;
         let end = (start + visible_lines).min(total_lines);
@@ -279,7 +289,7 @@ impl LogView {
         } else {
             &[]
         };
-        
+
         // Build list items
         let items: Vec<ListItem> = visible_slice
             .iter()
@@ -291,11 +301,11 @@ impl LogView {
                 } else {
                     line.as_str()
                 };
-                
+
                 ListItem::new(Line::from(Span::raw(display_line)))
             })
             .collect();
-        
+
         // Create block with title showing filter and follow mode status
         let mut title = "Logs".to_string();
         if let Some(ref filter) = self.filter {
@@ -304,18 +314,17 @@ impl LogView {
         if self.follow_mode {
             title.push_str(" [follow]");
         }
-        
-        let list = List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(title)
-                    .style(self.theme.secondary_style),
-            );
-        
+
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .style(self.theme.secondary_style),
+        );
+
         // Render list
         f.render_widget(list, area);
-        
+
         // Render scrollbar if needed
         if total_lines > visible_lines {
             self.update_scrollbar_state(visible_lines);

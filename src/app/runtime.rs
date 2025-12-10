@@ -2,19 +2,25 @@
 //!
 //! Provides the main event loop for the TUI application.
 
-use crate::command::{CommandPalette, CommandPaletteResult};
-use crate::keymap::ViewSlot;
+use crate::command::CommandPalette;
+use crate::data_source::log::SharedLogBuffer;
 use crate::message::AppMessage;
-use crate::widget::{HelpOverlay, ModalView, StatusBar};
 use crate::view::Theme;
+use crate::widget::{HelpOverlay, ModalView, StatusBar};
 use anyhow::Result;
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event as CrosstermEvent, KeyCode, KeyEventKind};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event as CrosstermEvent, KeyEventKind,
+};
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::Terminal;
 use std::io;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 /// Runtime for the TUI application
 pub struct Runtime {
@@ -23,10 +29,17 @@ pub struct Runtime {
     pub(crate) help_overlay: HelpOverlay,
     pub(crate) command_palette: CommandPalette,
     pub(crate) modal: ModalView,
+    #[allow(dead_code)] // Theme stored for potential future use
     theme: Theme,
     pub(crate) status_bar_enabled: bool,
     pub(crate) help_overlay_enabled: bool,
     pub(crate) command_palette_enabled: bool,
+    /// Number of active async operations (for loading indicators)
+    active_operations: Arc<AtomicUsize>,
+    /// Default timeout for async operations (in seconds)
+    default_timeout_seconds: u64,
+    /// Shared buffer for streaming log lines
+    pub(crate) stream_buffer: SharedLogBuffer,
 }
 
 impl Runtime {
@@ -43,6 +56,9 @@ impl Runtime {
             status_bar_enabled: true,
             help_overlay_enabled: true,
             command_palette_enabled: true,
+            active_operations: Arc::new(AtomicUsize::new(0)),
+            default_timeout_seconds: 30, // Default 30 seconds per FR-017
+            stream_buffer: SharedLogBuffer::new(10_000),
         }
     }
 
@@ -107,14 +123,14 @@ impl Runtime {
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
-        
+
         // Check terminal size and warn if too small
         let size = terminal.size()?;
         if size.width < Self::MIN_WIDTH || size.height < Self::MIN_HEIGHT {
             // Note: We don't fail here, but gracefully degrade
             // The render loop will handle small terminals
         }
-        
+
         self.terminal = Some(terminal);
         Ok(())
     }
@@ -127,7 +143,7 @@ impl Runtime {
     pub fn validate_area(&self, area: Rect) -> Rect {
         let min_width = Self::MIN_WIDTH.min(area.width);
         let min_height = Self::MIN_HEIGHT.min(area.height);
-        
+
         // Ensure we have at least minimum size
         // If terminal is smaller, we use what we have but ensure
         // status bar and essential UI elements remain accessible
@@ -161,26 +177,90 @@ impl Runtime {
     /// Get main area after accounting for status bar
     pub fn get_main_area(&self, area: Rect) -> (Rect, Option<Rect>) {
         let chunks: Vec<Rect> = if self.status_bar_enabled {
-            Layout::vertical([
-                Constraint::Min(0),
-                Constraint::Length(1),
-            ])
-            .split(area)
-            .to_vec()
+            Layout::vertical([Constraint::Min(0), Constraint::Length(1)])
+                .split(area)
+                .to_vec()
         } else {
             vec![area]
         };
 
         let main_area = chunks[0];
-        let status_area = if chunks.len() > 1 { Some(chunks[1]) } else { None };
+        let status_area = if chunks.len() > 1 {
+            Some(chunks[1])
+        } else {
+            None
+        };
         (main_area, status_area)
     }
 
     /// Render status bar
+    /// T054: Includes loading indicator
     pub fn render_status_bar(&self, f: &mut ratatui::Frame, area: Rect) {
         if self.status_bar_enabled {
-            self.status_bar.render(f, area);
+            let is_loading = self.has_active_operations();
+            self.status_bar.render(f, area, is_loading);
         }
+    }
+
+    /// Read a terminal event asynchronously using spawn_blocking
+    ///
+    /// This prevents blocking the async runtime while waiting for terminal input.
+    /// Returns `None` if no event is ready, `Some(event)` if an event is available.
+    pub async fn read_event_async(&self) -> Result<Option<CrosstermEvent>> {
+        tokio::task::spawn_blocking(|| {
+            if event::poll(std::time::Duration::from_millis(16))? {
+                let evt = event::read()?;
+                if let CrosstermEvent::Key(key) = evt {
+                    if key.kind == KeyEventKind::Press {
+                        return Ok(Some(CrosstermEvent::Key(key)));
+                    }
+                }
+            }
+            Ok(None)
+        })
+        .await?
+    }
+
+    /// Increment active operations count (for loading indicators)
+    pub fn start_operation(&self) {
+        self.active_operations.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Decrement active operations count
+    pub fn finish_operation(&self) {
+        self.active_operations.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// Check if any operations are active (for loading indicators)
+    pub fn has_active_operations(&self) -> bool {
+        self.active_operations.load(Ordering::Relaxed) > 0
+    }
+
+    /// Get the number of active operations
+    pub fn active_operations_count(&self) -> usize {
+        self.active_operations.load(Ordering::Relaxed)
+    }
+
+    /// Get default timeout in seconds
+    pub fn default_timeout_seconds(&self) -> u64 {
+        self.default_timeout_seconds
+    }
+
+    /// Set default timeout in seconds
+    pub fn set_default_timeout_seconds(&mut self, seconds: u64) {
+        self.default_timeout_seconds = seconds;
+    }
+
+    /// Append streaming log lines into the shared buffer
+    pub fn append_stream_lines(&self, lines: Vec<String>) {
+        for line in lines {
+            self.stream_buffer.push(line);
+        }
+    }
+
+    /// Access the streaming buffer (shared clone)
+    pub fn stream_buffer(&self) -> SharedLogBuffer {
+        self.stream_buffer.clone()
     }
 }
 

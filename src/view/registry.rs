@@ -1,7 +1,7 @@
 //! ViewRegistry for managing registered views
 
-use std::collections::HashMap;
 use crate::view::View;
+use std::collections::HashMap;
 
 /// Registry for managing views
 pub struct ViewRegistry {
@@ -42,4 +42,3 @@ impl Default for ViewRegistry {
         Self::new()
     }
 }
-

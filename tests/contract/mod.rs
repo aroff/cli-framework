@@ -8,3 +8,8 @@ pub mod data_source_trait;
 pub mod module_trait;
 pub mod app_builder_api;
 
+// Async contract tests
+mod test_async_data_source;
+mod test_async_view;
+mod test_async_command;
+

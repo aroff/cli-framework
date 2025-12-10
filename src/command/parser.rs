@@ -27,10 +27,7 @@ pub fn parse_command(input: &str) -> Option<(String, CommandArgs)> {
         }
     }
 
-    Some((
-        command_name,
-        CommandArgs { positional, named },
-    ))
+    Some((command_name, CommandArgs { positional, named }))
 }
 
 #[cfg(test)]
@@ -57,4 +54,3 @@ mod tests {
         assert_eq!(args.named.get("env"), Some(&"prod".to_string()));
     }
 }
-
