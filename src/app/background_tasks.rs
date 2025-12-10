@@ -2,13 +2,70 @@
 //!
 //! Provides a system for spawning and managing long-running async operations
 //! that update the UI when complete, without blocking the event loop.
+//!
+//! ## Batch Task Management
+//!
+//! The framework supports batch task operations for processing multiple tasks concurrently
+//! with configurable concurrency limits and comprehensive result aggregation.
+//!
+//! ### Basic Usage
+//!
+//! ```rust,no_run
+//! use tui_framework::app::background_tasks::{BackgroundTaskManager, task_definition};
+//!
+//! # async fn example() -> anyhow::Result<()> {
+//! let mut manager = BackgroundTaskManager::new();
+//!
+//! // Create a batch of tasks
+//! let tasks = vec![
+//!     task_definition(
+//!         || async { Ok("result1") },
+//!         Some("task1".to_string()),
+//!     ),
+//!     task_definition(
+//!         || async { Ok("result2") },
+//!         Some("task2".to_string()),
+//!     ),
+//! ];
+//!
+//! // Spawn batch with concurrency limit of 5
+//! let result = manager.spawn_batch(tasks, Some(5)).await;
+//!
+//! println!("Processed {} tasks: {} succeeded, {} failed",
+//!     result.total, result.successful, result.failed);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ### Concurrency Control
+//!
+//! The framework automatically detects CPU cores and uses a default concurrency limit
+//! of `CPU cores * 2`. You can override this with a custom limit (maximum 100):
+//!
+//! ```rust,no_run
+//! # use tui_framework::app::background_tasks::{BackgroundTaskManager, task_definition};
+//! # async fn example() -> anyhow::Result<()> {
+//! # let mut manager = BackgroundTaskManager::new();
+//! # let tasks = vec![];
+//! // Use default limit (CPU-based)
+//! let result = manager.spawn_batch(tasks.clone(), None).await;
+//!
+//! // Use custom limit
+//! let result = manager.spawn_batch(tasks, Some(10)).await;
+//! # Ok(())
+//! # }
+//! ```
 
 use anyhow::Result;
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
+use std::any::Any;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Semaphore};
+use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 
-/// Result type for background tasks
+/// Result type for background tasks (legacy single-task API)
 pub type TaskResult = Result<()>;
 
 /// Progress update from a background task
@@ -138,6 +195,211 @@ impl ProgressReporter {
             Some(total) => self.current >= total,
         }
     }
+}
+
+// ============================================================================
+// Batch Task Management Types
+// ============================================================================
+
+/// Identifier for a task in batch operations
+///
+/// Tasks can be identified by an application-provided string or by their
+/// positional index in the batch (0-based).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskIdentifier {
+    /// Application-provided identifier (e.g., "file: image.jpg")
+    Provided(String),
+    /// Positional index in batch (0-based)
+    Index(usize),
+}
+
+impl TaskIdentifier {
+    /// Get display string for identifier
+    pub fn display(&self) -> String {
+        match self {
+            TaskIdentifier::Provided(s) => s.clone(),
+            TaskIdentifier::Index(i) => format!("task[{}]", i),
+        }
+    }
+}
+
+/// Execution status of a task
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskStatus {
+    /// Task completed successfully
+    Success,
+    /// Task failed with an error
+    Failure,
+    /// Task was cancelled before completion
+    Cancelled,
+}
+
+/// Result of a single task execution in a batch
+#[derive(Debug)]
+pub struct BatchTaskResult {
+    /// Task identifier (provided or positional index)
+    pub identifier: TaskIdentifier,
+    /// Execution status
+    pub status: TaskStatus,
+    /// Optional return value for successful tasks
+    pub value: Option<Box<dyn Any + Send>>,
+    /// Error information for failed tasks
+    pub error: Option<anyhow::Error>,
+}
+
+impl BatchTaskResult {
+    /// Check if task succeeded
+    pub fn is_success(&self) -> bool {
+        matches!(self.status, TaskStatus::Success)
+    }
+
+    /// Check if task failed
+    pub fn is_failure(&self) -> bool {
+        matches!(self.status, TaskStatus::Failure)
+    }
+
+    /// Check if task was cancelled
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self.status, TaskStatus::Cancelled)
+    }
+
+    /// Get error if task failed
+    pub fn error(&self) -> Option<&anyhow::Error> {
+        self.error.as_ref()
+    }
+
+    /// Get value if task succeeded (requires type downcast)
+    pub fn value<T: 'static>(&self) -> Option<&T> {
+        self.value.as_ref().and_then(|v| v.downcast_ref::<T>())
+    }
+}
+
+/// Aggregated result of a batch operation
+#[derive(Debug)]
+pub struct BatchResult {
+    /// Total number of tasks executed
+    pub total: usize,
+    /// Number of successful tasks
+    pub successful: usize,
+    /// Number of failed tasks
+    pub failed: usize,
+    /// Number of cancelled tasks
+    pub cancelled: usize,
+    /// Success rate as percentage (successful / (successful + failed))
+    pub success_rate: f64,
+    /// Collection of errors from failed tasks
+    pub errors: Vec<(TaskIdentifier, anyhow::Error)>,
+    /// Individual task results in completion order
+    pub results: Vec<BatchTaskResult>,
+}
+
+impl BatchResult {
+    /// Check if all tasks succeeded
+    pub fn all_succeeded(&self) -> bool {
+        self.failed == 0 && self.cancelled == 0
+    }
+
+    /// Check if any tasks failed
+    pub fn has_failures(&self) -> bool {
+        self.failed > 0
+    }
+
+    /// Check if any tasks were cancelled
+    pub fn has_cancellations(&self) -> bool {
+        self.cancelled > 0
+    }
+
+    /// Get errors from failed tasks
+    pub fn errors(&self) -> &[(TaskIdentifier, anyhow::Error)] {
+        &self.errors
+    }
+
+    /// Get individual task results
+    pub fn results(&self) -> &[BatchTaskResult] {
+        &self.results
+    }
+}
+
+/// Definition of a task for batch processing
+///
+/// Contains the task closure and optional identifier for error reporting.
+pub struct TaskDefinition {
+    /// The async task to execute, returning a result with optional value
+    task: Box<
+        dyn FnOnce() -> Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send>>> + Send>>
+            + Send
+            + 'static,
+    >,
+    /// Optional task identifier for error reporting
+    identifier: Option<String>,
+}
+
+impl TaskDefinition {
+    /// Create a new task definition
+    ///
+    /// # Arguments
+    /// * `task` - Async task function returning `Result<T>` where T: Send + 'static
+    /// * `identifier` - Optional task identifier for error reporting
+    pub fn new<F, Fut, T>(task: F, identifier: Option<String>) -> Self
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+        T: Send + 'static,
+    {
+        Self {
+            task: Box::new(move || {
+                Box::pin(async move {
+                    task()
+                        .await
+                        .map(|value| Box::new(value) as Box<dyn Any + Send>)
+                })
+            }),
+            identifier,
+        }
+    }
+
+    /// Get the task identifier, if provided
+    pub fn identifier(&self) -> Option<&String> {
+        self.identifier.as_ref()
+    }
+
+    /// Take the task closure (consumes self)
+    pub fn into_task(
+        self,
+    ) -> Box<
+        dyn FnOnce() -> Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send>>> + Send>>
+            + Send
+            + 'static,
+    > {
+        self.task
+    }
+}
+
+/// Create a task definition for batch processing
+///
+/// # Arguments
+/// * `task` - Async task function returning `Result<T>` where T: Send + 'static
+/// * `identifier` - Optional task identifier for error reporting
+///
+/// # Returns
+/// `TaskDefinition` ready for batch execution
+///
+/// # Example
+/// ```rust,no_run
+/// use tui_framework::app::background_tasks::task_definition;
+///
+/// let task = task_definition(
+///     || async { Ok(42) },
+///     Some("task-1".to_string()),
+/// );
+/// ```
+pub fn task_definition<F, Fut, T>(task: F, identifier: Option<String>) -> TaskDefinition
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T>> + Send + 'static,
+    T: Send + 'static,
+{
+    TaskDefinition::new(task, identifier)
 }
 
 /// Background task manager for spawning and tracking async operations
@@ -414,6 +676,354 @@ impl BackgroundTaskManager {
     /// Get the number of active tasks
     pub fn active_task_count(&self) -> usize {
         self.active_tasks.len()
+    }
+
+    /// Detect available CPU parallelism
+    ///
+    /// Returns the number of available CPU cores, or 4 as a fallback if detection fails.
+    fn detect_cpu_cores() -> usize {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+    }
+
+    /// Calculate default concurrency limit based on CPU cores
+    ///
+    /// Returns CPU cores * 2, with a minimum of 1.
+    fn default_concurrency_limit() -> usize {
+        Self::detect_cpu_cores() * 2
+    }
+
+    /// Calculate effective concurrency limit
+    ///
+    /// # Arguments
+    /// * `requested` - User-requested limit (None means use default)
+    ///
+    /// # Returns
+    /// Effective limit: min(requested.unwrap_or(default), max_limit)
+    fn effective_concurrency_limit(requested: Option<usize>) -> usize {
+        const MAX_LIMIT: usize = 100;
+        let default = Self::default_concurrency_limit();
+        let requested = requested.unwrap_or(default);
+        requested.min(MAX_LIMIT).max(1) // Ensure at least 1
+    }
+
+    /// Spawn a batch of tasks with optional concurrency limit
+    ///
+    /// # Arguments
+    /// * `tasks` - Collection of task definitions with optional identifiers
+    /// * `concurrency_limit` - Optional maximum concurrent tasks (defaults to CPU-based limit, max 100)
+    ///
+    /// # Returns
+    /// `BatchResult` containing aggregated statistics and individual task results
+    ///
+    /// # Behavior
+    /// - Tasks are spawned concurrently (not sequentially)
+    /// - Framework waits for all tasks to complete before returning
+    /// - Empty task collections return empty `BatchResult` immediately
+    /// - Results are returned in completion order
+    pub async fn spawn_batch(
+        &mut self,
+        tasks: Vec<TaskDefinition>,
+        concurrency_limit: Option<usize>,
+    ) -> BatchResult {
+        // Handle empty batch
+        if tasks.is_empty() {
+            return BatchResult {
+                total: 0,
+                successful: 0,
+                failed: 0,
+                cancelled: 0,
+                success_rate: 0.0,
+                errors: Vec::new(),
+                results: Vec::new(),
+            };
+        }
+
+        // Calculate effective concurrency limit
+        let effective_limit = Self::effective_concurrency_limit(concurrency_limit);
+        let semaphore = Arc::new(Semaphore::new(effective_limit));
+        let mut join_set = JoinSet::new();
+        let task_count = tasks.len();
+
+        // Create cancellation token for this batch
+        let batch_token = CancellationToken::new();
+        let batch_token_clone = batch_token.clone();
+
+        // Spawn all tasks with concurrency control and cancellation support
+        for (index, task_def) in tasks.into_iter().enumerate() {
+            let identifier = task_def
+                .identifier()
+                .map(|s| TaskIdentifier::Provided(s.clone()))
+                .unwrap_or_else(|| TaskIdentifier::Index(index));
+            let task = task_def.into_task();
+            let semaphore_clone = semaphore.clone();
+            let cancel_token = batch_token_clone.clone();
+
+            join_set.spawn(async move {
+                // Acquire permit before executing task
+                let _permit = semaphore_clone.acquire().await.expect("Semaphore closed");
+                // Permit is held during task execution and released when dropped
+
+                // Check for cancellation and timeout during task execution
+                // Note: Timeout handling would be added here if timeout parameter is provided
+                // For now, we only handle cancellation
+                let result = tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        // Task was cancelled
+                        Err(anyhow::anyhow!("Task cancelled"))
+                    }
+                    result = task() => {
+                        result
+                    }
+                };
+
+                (identifier, result)
+            });
+        }
+
+        // Collect results in completion order
+        let mut results = Vec::new();
+        let mut successful = 0;
+        let mut failed = 0;
+        let mut cancelled = 0;
+        let mut errors = Vec::new();
+
+        while let Some(join_result) = join_set.join_next().await {
+            match join_result {
+                Ok((identifier, task_result)) => {
+                    match task_result {
+                        Ok(value) => {
+                            // Task succeeded
+                            successful += 1;
+                            results.push(BatchTaskResult {
+                                identifier: identifier.clone(),
+                                status: TaskStatus::Success,
+                                value: Some(value),
+                                error: None,
+                            });
+                        }
+                        Err(err) => {
+                            // Check if error is cancellation
+                            if err.to_string().contains("cancelled")
+                                || batch_token_clone.is_cancelled()
+                            {
+                                cancelled += 1;
+                                results.push(BatchTaskResult {
+                                    identifier,
+                                    status: TaskStatus::Cancelled,
+                                    value: None,
+                                    error: None,
+                                });
+                            } else {
+                                // Task failed
+                                failed += 1;
+                                let error_msg =
+                                    format!("Task {} failed: {}", identifier.display(), err);
+                                let formatted_error = anyhow::anyhow!(error_msg.clone());
+                                errors.push((identifier.clone(), anyhow::anyhow!(error_msg)));
+                                results.push(BatchTaskResult {
+                                    identifier,
+                                    status: TaskStatus::Failure,
+                                    value: None,
+                                    error: Some(formatted_error),
+                                });
+                            }
+                        }
+                    }
+                }
+                Err(join_err) => {
+                    // Join error (task panicked)
+                    failed += 1;
+                    let identifier = TaskIdentifier::Index(results.len());
+                    let error_msg = format!("Task {} panicked: {}", identifier.display(), join_err);
+                    let formatted_error = anyhow::anyhow!(error_msg.clone());
+                    errors.push((identifier.clone(), anyhow::anyhow!(error_msg)));
+                    results.push(BatchTaskResult {
+                        identifier,
+                        status: TaskStatus::Failure,
+                        value: None,
+                        error: Some(formatted_error),
+                    });
+                }
+            }
+        }
+
+        // Calculate success rate (excluding cancelled tasks)
+        let success_rate = if successful + failed > 0 {
+            (successful as f64 / (successful + failed) as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        BatchResult {
+            total: task_count,
+            successful,
+            failed,
+            cancelled,
+            success_rate,
+            errors,
+            results,
+        }
+    }
+
+    /// Wait for all currently active tasks to complete
+    ///
+    /// This includes tasks spawned individually (via `spawn()`, `spawn_streaming()`, `spawn_periodic()`)
+    /// and waits for them to finish. Results are returned in completion order.
+    ///
+    /// # Returns
+    /// `BatchResult` containing results from all active tasks
+    ///
+    /// # Behavior
+    /// - Blocks until all tasks finish
+    /// - Returns immediately with empty results if no tasks are active
+    /// - Results are in completion order (not spawn order)
+    pub async fn wait_for_all(&mut self) -> BatchResult {
+        if self.active_tasks.is_empty() {
+            return BatchResult {
+                total: 0,
+                successful: 0,
+                failed: 0,
+                cancelled: 0,
+                success_rate: 0.0,
+                errors: Vec::new(),
+                results: Vec::new(),
+            };
+        }
+
+        let mut results = Vec::new();
+        let mut successful = 0;
+        let mut failed = 0;
+        let mut cancelled = 0;
+        let mut errors = Vec::new();
+
+        // Collect results from all active tasks
+        let mut join_set = JoinSet::new();
+        let mut task_tokens = Vec::new();
+
+        // Move all active tasks to JoinSet for collection
+        for (handle, token) in self.active_tasks.drain(..) {
+            task_tokens.push(token.clone());
+            join_set.spawn(async move {
+                let result = handle.await;
+                (token, result)
+            });
+        }
+
+        // Collect results in completion order
+        while let Some(join_result) = join_set.join_next().await {
+            match join_result {
+                Ok((token, task_result)) => {
+                    let identifier = TaskIdentifier::Index(results.len());
+
+                    match task_result {
+                        Ok(Ok(())) => {
+                            // Task succeeded
+                            successful += 1;
+                            results.push(BatchTaskResult {
+                                identifier: identifier.clone(),
+                                status: TaskStatus::Success,
+                                value: None, // Individual tasks return ()
+                                error: None,
+                            });
+                        }
+                        Ok(Err(err)) => {
+                            // Task failed
+                            failed += 1;
+                            let error_msg =
+                                format!("Task {} failed: {}", identifier.display(), err);
+                            let formatted_error = anyhow::anyhow!(error_msg.clone());
+                            errors.push((identifier.clone(), anyhow::anyhow!(error_msg)));
+                            results.push(BatchTaskResult {
+                                identifier,
+                                status: TaskStatus::Failure,
+                                value: None,
+                                error: Some(formatted_error),
+                            });
+                        }
+                        Err(join_err) => {
+                            // Check if task was cancelled
+                            if token.is_cancelled() {
+                                cancelled += 1;
+                                results.push(BatchTaskResult {
+                                    identifier,
+                                    status: TaskStatus::Cancelled,
+                                    value: None,
+                                    error: None,
+                                });
+                            } else {
+                                // Task panicked
+                                failed += 1;
+                                let error_msg =
+                                    format!("Task {} panicked: {}", identifier.display(), join_err);
+                                let formatted_error = anyhow::anyhow!(error_msg.clone());
+                                errors.push((identifier.clone(), anyhow::anyhow!(error_msg)));
+                                results.push(BatchTaskResult {
+                                    identifier,
+                                    status: TaskStatus::Failure,
+                                    value: None,
+                                    error: Some(formatted_error),
+                                });
+                            }
+                        }
+                    }
+                }
+                Err(_) => {
+                    // JoinSet error (shouldn't happen)
+                    failed += 1;
+                    let identifier = TaskIdentifier::Index(results.len());
+                    let error_msg = format!("Task {} join error", identifier.display());
+                    let formatted_error = anyhow::anyhow!(error_msg.clone());
+                    errors.push((identifier.clone(), anyhow::anyhow!(error_msg)));
+                    results.push(BatchTaskResult {
+                        identifier,
+                        status: TaskStatus::Failure,
+                        value: None,
+                        error: Some(formatted_error),
+                    });
+                }
+            }
+        }
+
+        // Calculate success rate (excluding cancelled tasks)
+        let success_rate = if successful + failed > 0 {
+            (successful as f64 / (successful + failed) as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        BatchResult {
+            total: results.len(),
+            successful,
+            failed,
+            cancelled,
+            success_rate,
+            errors,
+            results,
+        }
+    }
+
+    /// Cancel all tasks in a batch
+    ///
+    /// # Arguments
+    /// * `batch_token` - Cancellation token for the batch (returned from spawn_batch)
+    ///
+    /// # Behavior
+    /// - Cancels all tasks associated with the batch token
+    /// - Other tasks (not in this batch) continue executing
+    /// - Cancelled tasks are tracked separately in results
+    ///
+    /// # Note
+    /// Currently, batch cancellation tokens are not returned from spawn_batch.
+    /// This method is provided for future API compatibility. To cancel a batch,
+    /// you would need to store the cancellation token returned from a modified
+    /// spawn_batch API.
+    pub fn cancel_batch(&mut self, batch_token: &CancellationToken) {
+        batch_token.cancel();
+        // Note: Batch tasks handle cancellation internally via the token
+        // Individual tasks spawned via spawn() are tracked in active_tasks
+        // and can be cancelled via cancel_task()
     }
 }
 
