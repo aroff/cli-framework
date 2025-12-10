@@ -1,7 +1,7 @@
 //! CommandRegistry for managing commands
 
-use std::collections::HashMap;
 use crate::command::Command;
+use std::collections::HashMap;
 
 /// Registry for managing commands
 pub struct CommandRegistry {
@@ -37,4 +37,3 @@ impl Default for CommandRegistry {
         Self::new()
     }
 }
-

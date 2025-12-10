@@ -74,11 +74,7 @@ impl RetryPolicy {
     }
 
     /// Create a policy with exponential backoff
-    pub fn exponential_backoff(
-        max_attempts: u32,
-        initial: Duration,
-        max: Duration,
-    ) -> Self {
+    pub fn exponential_backoff(max_attempts: u32, initial: Duration, max: Duration) -> Self {
         Self {
             max_attempts,
             strategy: RetryStrategy::Exponential { initial, max },
@@ -126,9 +122,6 @@ impl RetryPolicy {
 
 impl Default for RetryPolicy {
     fn default() -> Self {
-        Self::fixed_delay(
-            3,
-            Duration::from_millis(500),
-        )
+        Self::fixed_delay(3, Duration::from_millis(500))
     }
 }

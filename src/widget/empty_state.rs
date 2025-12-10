@@ -42,20 +42,15 @@ impl EmptyState {
 
     /// Render the empty state
     pub fn render(&self, f: &mut Frame, area: Rect) {
-        let mut lines = vec![
-            Line::from(Span::styled(
-                self.message.clone(),
-                self.theme.secondary_style,
-            )),
-        ];
+        let mut lines = vec![Line::from(Span::styled(
+            self.message.clone(),
+            self.theme.secondary_style,
+        ))];
 
         if let Some(ref details) = self.details {
             lines.push(Line::from(""));
             for line in details.lines() {
-                lines.push(Line::from(Span::styled(
-                    line,
-                    self.theme.secondary_style,
-                )));
+                lines.push(Line::from(Span::styled(line, self.theme.secondary_style)));
             }
         }
 
@@ -111,17 +106,14 @@ impl LoadingIndicator {
         let spinner = self.spinner_chars[self.spinner_index];
         let text = format!("{} {}", spinner, self.message);
 
-        let paragraph = Paragraph::new(Line::from(Span::styled(
-            text,
-            self.theme.secondary_style,
-        )))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Loading")
-                .style(self.theme.secondary_style),
-        )
-        .alignment(Alignment::Center);
+        let paragraph = Paragraph::new(Line::from(Span::styled(text, self.theme.secondary_style)))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Loading")
+                    .style(self.theme.secondary_style),
+            )
+            .alignment(Alignment::Center);
 
         f.render_widget(paragraph, area);
     }

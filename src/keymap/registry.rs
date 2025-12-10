@@ -1,6 +1,6 @@
 //! KeymapRegistry for managing keybindings
 
-use crate::keymap::config::{AppCommand, KeyBinding, KeymapConfig};
+use crate::keymap::config::{KeyBinding, KeymapConfig};
 use crossterm::event::KeyCode;
 use std::collections::HashMap;
 

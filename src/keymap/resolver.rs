@@ -18,7 +18,12 @@ impl KeymapResolver {
     }
 
     /// Resolve a key press (priority: modal > view-specific > global)
-    pub fn resolve(&self, key: KeyCode, view_id: Option<&str>, modal_active: bool) -> Option<AppCommand> {
+    pub fn resolve(
+        &self,
+        key: KeyCode,
+        view_id: Option<&str>,
+        modal_active: bool,
+    ) -> Option<AppCommand> {
         // If modal is active, modals should handle all keys
         // For now, we'll let modals handle their own keys
         // and only check view/global if modal is not active

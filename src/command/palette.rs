@@ -2,13 +2,12 @@
 
 use crate::command::Command;
 use crate::view::Theme;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
-use std::collections::HashMap;
 
 /// CommandPalette widget for displaying and executing commands
 pub struct CommandPalette {
@@ -115,7 +114,10 @@ impl CommandPalette {
             .iter()
             .filter(|cmd| {
                 cmd.id.contains(&self.input)
-                    || cmd.summary.to_lowercase().contains(&self.input.to_lowercase())
+                    || cmd
+                        .summary
+                        .to_lowercase()
+                        .contains(&self.input.to_lowercase())
             })
             .collect()
     }
@@ -150,21 +152,17 @@ impl CommandPalette {
         let modal_area = horizontal[1];
 
         // Split modal into input and command list
-        let chunks = Layout::vertical([
-            Constraint::Length(3),
-            Constraint::Min(5),
-        ])
-        .split(modal_area);
+        let chunks =
+            Layout::vertical([Constraint::Length(3), Constraint::Min(5)]).split(modal_area);
 
         // Render input field
         let input_text = format!(":{}", self.input);
-        let input_paragraph = Paragraph::new(input_text)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Command")
-                    .style(self.theme.modal_style),
-            );
+        let input_paragraph = Paragraph::new(input_text).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Command")
+                .style(self.theme.modal_style),
+        );
         f.render_widget(input_paragraph, chunks[0]);
 
         // Render command list
@@ -198,13 +196,12 @@ impl CommandPalette {
             })
             .collect();
 
-        let list = List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Commands")
-                    .style(self.theme.modal_style),
-            );
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Commands")
+                .style(self.theme.modal_style),
+        );
 
         f.render_widget(list, chunks[1]);
     }

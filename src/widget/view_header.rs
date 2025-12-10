@@ -4,7 +4,7 @@
 
 use crate::view::{HelpItem, Theme};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -38,7 +38,11 @@ impl ViewHeader {
     pub fn with_help(mut self, help: Vec<HelpItem>) -> Self {
         // Limit to 5 items max
         let limited: Vec<HelpItem> = help.into_iter().take(5).collect();
-        self.help = if limited.is_empty() { None } else { Some(limited) };
+        self.help = if limited.is_empty() {
+            None
+        } else {
+            Some(limited)
+        };
         self
     }
 
@@ -73,14 +77,8 @@ impl ViewHeader {
             let mut lines = Vec::new();
             for (key, value) in info {
                 let line = Line::from(vec![
-                    Span::styled(
-                        format!("{}: ", key),
-                        self.theme.primary_style,
-                    ),
-                    Span::styled(
-                        value.clone(),
-                        self.theme.secondary_style,
-                    ),
+                    Span::styled(format!("{}: ", key), self.theme.primary_style),
+                    Span::styled(value.clone(), self.theme.secondary_style),
                 ]);
                 lines.push(line);
             }
@@ -93,8 +91,8 @@ impl ViewHeader {
             self.title.clone(),
             self.theme.primary_style.add_modifier(Modifier::BOLD),
         )]);
-        let title_paragraph = Paragraph::new(title_line)
-            .alignment(ratatui::layout::Alignment::Center);
+        let title_paragraph =
+            Paragraph::new(title_line).alignment(ratatui::layout::Alignment::Center);
         f.render_widget(title_paragraph, center_area);
 
         // Render right side: help items
@@ -102,21 +100,13 @@ impl ViewHeader {
             let mut lines = Vec::new();
             for item in help {
                 let line = Line::from(vec![
-                    Span::styled(
-                        format!("<{}> ", item.key),
-                        self.theme.primary_style,
-                    ),
-                    Span::styled(
-                        item.description.clone(),
-                        self.theme.secondary_style,
-                    ),
+                    Span::styled(format!("<{}> ", item.key), self.theme.primary_style),
+                    Span::styled(item.description.clone(), self.theme.secondary_style),
                 ]);
                 lines.push(line);
             }
-            let paragraph = Paragraph::new(lines)
-                .alignment(ratatui::layout::Alignment::Right);
+            let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Right);
             f.render_widget(paragraph, right_area);
         }
     }
 }
-

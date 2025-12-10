@@ -35,20 +35,31 @@ impl StatusBar {
     }
 
     /// Render the status bar
-    pub fn render(&self, f: &mut Frame, area: Rect) {
-        let text = if let Some(ref msg) = self.message {
+    /// T054: Includes loading indicator display
+    pub fn render(&self, f: &mut Frame, area: Rect, is_loading: bool) {
+        let mut spans = Vec::new();
+
+        // T054: Add loading indicator if operations are active
+        if is_loading {
+            spans.push(Span::styled("⏳ ", self.theme.secondary_style));
+        }
+
+        // Add message if present
+        if let Some(ref msg) = self.message {
             let style = match msg.kind {
                 AppMessageKind::Info => self.theme.secondary_style,
                 AppMessageKind::Warning => self.theme.error_style,
                 AppMessageKind::Error => self.theme.error_style,
             };
-            Line::from(Span::styled(msg.short.clone(), style))
-        } else {
-            Line::from(Span::raw(""))
-        };
+            spans.push(Span::styled(msg.short.clone(), style));
+        } else if !is_loading {
+            // Empty if no message and not loading
+            spans.push(Span::raw(""));
+        }
 
-        let paragraph = Paragraph::new(text)
-            .block(Block::default().style(self.theme.status_bar_style));
+        let text = Line::from(spans);
+        let paragraph =
+            Paragraph::new(text).block(Block::default().style(self.theme.status_bar_style));
 
         f.render_widget(paragraph, area);
     }
