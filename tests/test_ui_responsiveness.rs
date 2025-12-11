@@ -16,8 +16,11 @@ use tui_framework::view::{HelpItem, View, ViewResult};
 
 /// Test context
 struct TestContext {
+    #[allow(dead_code)]
     operation_started: Arc<AtomicBool>,
+    #[allow(dead_code)]
     operation_completed: Arc<AtomicBool>,
+    #[allow(dead_code)]
     interaction_count: Arc<AtomicUsize>,
 }
 

@@ -8,8 +8,7 @@ use crossterm::event::{Event, KeyCode};
 use ratatui::layout::Rect;
 use ratatui::Frame;
 use std::collections::HashMap;
-use tui_framework::keymap::{AppCommand, KeyBinding, KeymapConfig, ViewSlot};
-use tui_framework::message::AppMessage;
+use tui_framework::keymap::{AppCommand, KeyBinding, KeymapConfig};
 use tui_framework::prelude::*;
 use tui_framework::view::{HelpItem, View, ViewResult};
 
@@ -57,6 +56,7 @@ impl View for TestView {
 }
 
 // Test app context
+#[allow(dead_code)]
 struct TestContext;
 
 impl AppContext for TestContext {}
@@ -124,15 +124,14 @@ fn test_keymap_configuration_preserved_through_builder() {
         AppCommand::SwitchView("target.view".to_string()),
     ));
 
-    let mut builder = AppBuilder::new();
-    builder = builder
+    let _builder = AppBuilder::new()
         .register_view(TestView::new("test.view"))
         .configure_keymap(keymap_config.clone());
 
     // Verify the keymap config is stored (we can't directly access it, but
     // we can verify the builder was created successfully)
     // In a real scenario, we'd build the app and test that the keybinding works
-    assert!(true); // Builder creation succeeded
+    // Builder creation succeeded - no assertion needed as we'd get a compile error if it failed
 }
 
 #[test]

@@ -11,16 +11,14 @@
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use crossterm::event::{Event, KeyCode};
+use crossterm::event::Event;
 use ratatui::layout::Rect;
 use ratatui::Frame;
-use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use tui_framework::command::{Command, CommandArgs};
 use tui_framework::data_source::DataSource;
-use tui_framework::keymap::{AppCommand, KeyBinding, KeymapConfig, ViewSlot};
-use tui_framework::message::AppMessage;
+use tui_framework::keymap::{KeymapConfig, ViewSlot};
 use tui_framework::prelude::*;
 use tui_framework::view::{HelpItem, Theme, View, ViewResult};
 use tui_framework::widget::GridView;
@@ -28,6 +26,7 @@ use tui_framework::widget::GridView;
 // Data models
 #[derive(Clone, Debug)]
 struct Service {
+    #[allow(dead_code)]
     id: u32,
     name: String,
     status: String,
@@ -208,7 +207,9 @@ impl View for LogsView {
 
 // App context with state
 struct MyAppContext {
+    #[allow(dead_code)]
     service_count: u32,
+    #[allow(dead_code)]
     last_command: Option<String>,
 }
 
@@ -218,13 +219,13 @@ impl tui_framework::app::context::AppContext for MyAppContext {
 
 // Command implementations (async)
 fn restart_service(
-    ctx: &mut dyn AppContext,
+    _ctx: &mut dyn AppContext,
     args: CommandArgs,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
     Box::pin(async move {
-        let service_name = args
+        let _service_name = args
             .positional
-            .get(0)
+            .first()
             .map(|s| s.as_str())
             .unwrap_or("default-service");
 
@@ -242,7 +243,7 @@ fn stop_service(
     Box::pin(async move {
         let _service_name = args
             .positional
-            .get(0)
+            .first()
             .map(|s| s.as_str())
             .unwrap_or("default-service");
 
@@ -342,7 +343,6 @@ async fn main() -> Result<()> {
     println!("Press '1' to switch to Services view");
     println!("Press '2' to switch to Logs view");
     println!("Press 'q' to quit");
-    println!("");
 
     // T062: App::run() is now async
     app.run().await?;

@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 use tui_framework::app::background_tasks::{BackgroundTaskManager, ProgressReporter};
-use tui_framework::cli_output;
+use tui_framework::progress_formatting;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -38,7 +38,7 @@ async fn main() -> anyhow::Result<()> {
     println!("\nExample 2: Progress with contextual messages");
     let (_token2, mut progress_rx2) = manager.spawn_with_progress(|progress_tx, cancel_token| {
         Box::pin(async move {
-            let files = vec!["file1.jpg", "file2.jpg", "file3.jpg"];
+            let files = ["file1.jpg", "file2.jpg", "file3.jpg"];
             for (i, file) in files.iter().enumerate() {
                 if cancel_token.is_cancelled() {
                     break;
@@ -100,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
         let mut all_done = true;
         for (task_id, progress_rx) in &mut receivers {
             while let Ok(progress) = progress_rx.try_recv() {
-                if cli_output::should_display_progress(
+                if progress_formatting::should_display_progress(
                     progress.current,
                     last_displayed[*task_id as usize],
                 ) {
