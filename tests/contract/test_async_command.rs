@@ -3,15 +3,15 @@
 //! Verifies that Command implementations correctly execute async operations.
 
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 use tokio::time::{sleep, Duration};
 use tui_framework::app::AppContext;
-use tui_framework::command::{Command, CommandArgs, CommandResult};
+use tui_framework::command::{Command, CommandArgs};
 
 /// Test context for async Command tests
 struct TestContext {
+    #[allow(dead_code)]
     command_executed: bool,
+    #[allow(dead_code)]
     result: String,
 }
 

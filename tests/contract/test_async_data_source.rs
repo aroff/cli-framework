@@ -12,6 +12,7 @@ use tui_framework::data_source::DataSource;
 
 /// Test context for async DataSource tests
 struct TestContext {
+    #[allow(dead_code)]
     refresh_count: Arc<AtomicUsize>,
 }
 
