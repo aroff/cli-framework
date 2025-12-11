@@ -16,6 +16,9 @@ serde_json = "1.0"
 tokio = { version = "1.0", features = ["full"] }
 async-trait = "0.1"
 tokio-util = { version = "0.7", features = ["time"] }
+reqwest = { version = "0.12", features = ["json"] }
+httpdate = "1.0"
+log = "0.4"
 
 # Optional OpenTelemetry dependencies (applications can enable)
 # Note: Applications should add these dependencies themselves when using observability feature
@@ -25,6 +28,9 @@ tokio-util = { version = "0.7", features = ["time"] }
 
 [dev-dependencies]
 ratatui = { version = "0.27", features = ["crossterm"] }
+reqwest = { version = "0.12", features = ["json"] }
+wiremock = "0.6"
+env_logger = "0.11"
 
 [features]
 default = []
@@ -48,4 +54,8 @@ path = "examples/multi_view/main.rs"
 [[example]]
 name = "kitchen_sink"
 path = "examples/kitchen_sink/main.rs"
+
+[[example]]
+name = "http_retry_demo"
+path = "examples/http_retry_demo/main.rs"
 
