@@ -8,11 +8,11 @@ use ratatui::layout::Rect;
 use ratatui::Frame;
 use tokio::time::{sleep, Duration};
 use tui_framework::app::AppContext;
-use tui_framework::message::AppMessage;
 use tui_framework::view::{HelpItem, View, ViewResult};
 
 /// Test context for async View tests
 struct TestContext {
+    #[allow(dead_code)]
     event_handled: bool,
 }
 

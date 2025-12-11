@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 use tui_framework::app::background_tasks::{BackgroundTaskManager, ProgressReporter};
-use tui_framework::cli_output;
+use tui_framework::progress_formatting;
 
 #[tokio::test]
 async fn test_basic_progress_reporting() {
@@ -126,14 +126,14 @@ async fn test_in_place_progress_updates() {
     let progress = ProgressReporter::with_message(45, 200, "Processing file.jpg");
 
     // Verify format_progress_with_percentage produces correct output
-    let formatted = cli_output::format_progress_with_percentage(&progress);
+    let formatted = progress_formatting::format_progress_with_percentage(&progress);
     assert!(formatted.contains("45"));
     assert!(formatted.contains("200"));
     assert!(formatted.contains("22.5%"));
     assert!(formatted.contains("Processing file.jpg"));
 
     // Verify print_progress_update doesn't panic (best-effort test)
-    cli_output::print_progress_update(&progress);
+    progress_formatting::print_progress_update(&progress);
 }
 
 #[tokio::test]
@@ -142,12 +142,12 @@ async fn test_final_progress_summary_with_newline() {
     let progress = ProgressReporter::new(200, 200);
 
     // Verify format_progress_with_percentage produces correct final output
-    let formatted = cli_output::format_progress_with_percentage(&progress);
+    let formatted = progress_formatting::format_progress_with_percentage(&progress);
     assert!(formatted.contains("200"));
     assert!(formatted.contains("100.0%"));
 
     // Verify print_progress_complete doesn't panic (best-effort test)
-    cli_output::print_progress_complete(&progress);
+    progress_formatting::print_progress_complete(&progress);
 }
 
 #[tokio::test]
@@ -158,24 +158,25 @@ async fn test_multiple_concurrent_operations() {
 
     // Spawn 5 concurrent tasks
     for task_id in 0..5 {
-        let (token, progress_rx) = manager.spawn_with_progress(move |progress_tx, cancel_token| {
-            let task_id = task_id;
-            Box::pin(async move {
-                for i in 1..=10 {
-                    if cancel_token.is_cancelled() {
-                        break;
+        let (_token, progress_rx) =
+            manager.spawn_with_progress(move |progress_tx, cancel_token| {
+                let task_id = task_id;
+                Box::pin(async move {
+                    for i in 1..=10 {
+                        if cancel_token.is_cancelled() {
+                            break;
+                        }
+                        let progress = ProgressReporter::with_message(
+                            i,
+                            10,
+                            format!("Task {}: item {}", task_id, i),
+                        );
+                        let _ = progress_tx.send(progress).await;
+                        tokio::time::sleep(Duration::from_millis(10)).await;
                     }
-                    let progress = ProgressReporter::with_message(
-                        i,
-                        10,
-                        format!("Task {}: item {}", task_id, i),
-                    );
-                    let _ = progress_tx.send(progress).await;
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-                Ok(())
-            })
-        });
+                    Ok(())
+                })
+            });
         receivers.push((task_id, progress_rx));
     }
 
@@ -274,7 +275,7 @@ async fn test_out_of_order_progress_updates() {
     while start.elapsed() < Duration::from_secs(1) {
         if let Ok(progress) = progress_rx.try_recv() {
             // Use should_display_progress to filter backwards updates
-            if cli_output::should_display_progress(progress.current, last_displayed) {
+            if progress_formatting::should_display_progress(progress.current, last_displayed) {
                 updates.push(progress.clone());
                 last_displayed = progress.current;
             }
@@ -358,19 +359,20 @@ async fn test_100_concurrent_operations() {
 
     // Spawn 100 concurrent tasks
     for task_id in 0..100 {
-        let (_token, progress_rx) = manager.spawn_with_progress(move |progress_tx, cancel_token| {
-            Box::pin(async move {
-                for i in 1..=5 {
-                    if cancel_token.is_cancelled() {
-                        break;
+        let (_token, progress_rx) =
+            manager.spawn_with_progress(move |progress_tx, cancel_token| {
+                Box::pin(async move {
+                    for i in 1..=5 {
+                        if cancel_token.is_cancelled() {
+                            break;
+                        }
+                        let progress = ProgressReporter::new(i, 5);
+                        let _ = progress_tx.send(progress).await;
+                        tokio::time::sleep(Duration::from_millis(1)).await;
                     }
-                    let progress = ProgressReporter::new(i, 5);
-                    let _ = progress_tx.send(progress).await;
-                    tokio::time::sleep(Duration::from_millis(1)).await;
-                }
-                Ok(())
-            })
-        });
+                    Ok(())
+                })
+            });
         receivers.push((task_id, progress_rx));
     }
 
