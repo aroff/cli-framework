@@ -420,6 +420,922 @@ async fn test_backward_compatibility_spawn() {
     manager.cancel_task(&token);
 }
 
+#[test]
+fn test_format_errors_provided_identifiers() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use anyhow::anyhow;
+    
+    let result = BatchResult {
+        total: 3,
+        successful: 0,
+        failed: 3,
+        cancelled: 0,
+        success_rate: 0.0,
+        errors: vec![
+            (TaskIdentifier::Provided("file: image.jpg".to_string()), anyhow!("permission denied")),
+            (TaskIdentifier::Provided("file: data.json".to_string()), anyhow!("invalid JSON")),
+            (TaskIdentifier::Provided("file: script.sh".to_string()), anyhow!("execution failed")),
+        ],
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let formatted = result.format_errors();
+    assert!(formatted.contains("Errors (3)"));
+    assert!(formatted.contains("[file: image.jpg]"));
+    assert!(formatted.contains("[file: data.json]"));
+    assert!(formatted.contains("[file: script.sh]"));
+    assert!(formatted.contains("permission denied"));
+}
+
+#[test]
+fn test_format_errors_positional_index() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use anyhow::anyhow;
+    
+    let result = BatchResult {
+        total: 2,
+        successful: 0,
+        failed: 2,
+        cancelled: 0,
+        success_rate: 0.0,
+        errors: vec![
+            (TaskIdentifier::Index(0), anyhow!("Network timeout")),
+            (TaskIdentifier::Index(5), anyhow!("Connection refused")),
+        ],
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let formatted = result.format_errors();
+    assert!(formatted.contains("Errors (2)"));
+    assert!(formatted.contains("[Task 0]"));
+    assert!(formatted.contains("[Task 5]"));
+    assert!(formatted.contains("Network timeout"));
+}
+
+#[test]
+fn test_format_errors_empty() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    
+    let result = BatchResult {
+        total: 5,
+        successful: 5,
+        failed: 0,
+        cancelled: 0,
+        success_rate: 100.0,
+        errors: Vec::new(),
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let formatted = result.format_errors();
+    assert_eq!(formatted, "");
+}
+
+#[test]
+fn test_with_summary() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    
+    let result = BatchResult {
+        total: 10,
+        successful: 8,
+        failed: 2,
+        cancelled: 0,
+        success_rate: 80.0,
+        errors: Vec::new(),
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let custom = result.with_summary("Custom summary message");
+    assert_eq!(custom.custom_summary, Some("Custom summary message".to_string()));
+    assert_eq!(custom.generate_summary(), "Custom summary message");
+}
+
+#[test]
+fn test_aggregate_results() {
+    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use anyhow::anyhow;
+    
+    let results = vec![
+        BatchTaskResult {
+            identifier: TaskIdentifier::Provided("task1".to_string()),
+            status: TaskStatus::Success,
+            value: Some(Box::new(1)),
+            error: None,
+        },
+        BatchTaskResult {
+            identifier: TaskIdentifier::Provided("task2".to_string()),
+            status: TaskStatus::Failure,
+            value: None,
+            error: Some(anyhow!("Error 2")),
+        },
+        BatchTaskResult {
+            identifier: TaskIdentifier::Provided("task3".to_string()),
+            status: TaskStatus::Success,
+            value: Some(Box::new(3)),
+            error: None,
+        },
+        BatchTaskResult {
+            identifier: TaskIdentifier::Provided("task4".to_string()),
+            status: TaskStatus::Cancelled,
+            value: None,
+            error: None,
+        },
+    ];
+    
+    let aggregated = aggregate_results(results);
+    
+    assert_eq!(aggregated.total, 4);
+    assert_eq!(aggregated.successful, 2);
+    assert_eq!(aggregated.failed, 1);
+    assert_eq!(aggregated.cancelled, 1);
+    assert_eq!(aggregated.errors.len(), 1);
+    assert!((aggregated.success_rate - 66.67).abs() < 0.1);
+}
+
+#[test]
+fn test_merge_results() {
+    use tui_framework::app::background_tasks::{merge_results, BatchResult, TaskIdentifier};
+    use anyhow::anyhow;
+    
+    let result1 = BatchResult {
+        total: 10,
+        successful: 8,
+        failed: 2,
+        cancelled: 0,
+        success_rate: 80.0,
+        errors: vec![
+            (TaskIdentifier::Index(0), anyhow!("Error 1")),
+            (TaskIdentifier::Index(1), anyhow!("Error 2")),
+        ],
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let result2 = BatchResult {
+        total: 5,
+        successful: 4,
+        failed: 1,
+        cancelled: 0,
+        success_rate: 80.0,
+        errors: vec![
+            (TaskIdentifier::Index(0), anyhow!("Error 3")),
+        ],
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let merged = merge_results(&[result1, result2]);
+    
+    assert_eq!(merged.total, 15);
+    assert_eq!(merged.successful, 12);
+    assert_eq!(merged.failed, 3);
+    assert_eq!(merged.errors.len(), 3);
+    assert!((merged.success_rate - 80.0).abs() < 0.1);
+}
+
+#[test]
+fn test_merge_results_empty() {
+    use tui_framework::app::background_tasks::merge_results;
+    
+    let merged = merge_results(&[]);
+    
+    assert_eq!(merged.total, 0);
+    assert_eq!(merged.successful, 0);
+    assert_eq!(merged.failed, 0);
+    assert_eq!(merged.errors.len(), 0);
+}
+
+#[test]
+fn test_aggregate_with_filter() {
+    use tui_framework::app::background_tasks::{aggregate_with_filter, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use anyhow::anyhow;
+    
+    let results = vec![
+        BatchTaskResult {
+            identifier: TaskIdentifier::Index(0),
+            status: TaskStatus::Success,
+            value: None,
+            error: None,
+        },
+        BatchTaskResult {
+            identifier: TaskIdentifier::Index(1),
+            status: TaskStatus::Failure,
+            value: None,
+            error: Some(anyhow!("Network error")),
+        },
+        BatchTaskResult {
+            identifier: TaskIdentifier::Index(2),
+            status: TaskStatus::Failure,
+            value: None,
+            error: Some(anyhow!("Timeout")),
+        },
+    ];
+    
+    // Filter out "Timeout" errors
+    let filtered = aggregate_with_filter(results, |err| {
+        !err.to_string().contains("Timeout")
+    });
+    
+    assert_eq!(filtered.total, 3);
+    assert_eq!(filtered.successful, 1);
+    assert_eq!(filtered.failed, 1); // Only Network error counted
+    assert_eq!(filtered.errors.len(), 1);
+    assert_eq!(filtered.filtered_errors.len(), 1); // Timeout filtered
+}
+
+#[test]
+fn test_aggregate_with_limit() {
+    use tui_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use anyhow::anyhow;
+    
+    let results: Vec<_> = (0..10)
+        .map(|i| BatchTaskResult {
+            identifier: TaskIdentifier::Index(i),
+            status: TaskStatus::Failure,
+            value: None,
+            error: Some(anyhow!("Error {}", i)),
+        })
+        .collect();
+    
+    let limited = aggregate_with_limit(results, Some(3));
+    
+    assert_eq!(limited.total, 10);
+    assert_eq!(limited.failed, 10);
+    assert_eq!(limited.errors.len(), 3); // Limited to 3
+    assert!(limited.truncated); // Should be truncated
+}
+
+#[test]
+fn test_aggregate_with_limit_no_limit() {
+    use tui_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use anyhow::anyhow;
+    
+    let results: Vec<_> = (0..5)
+        .map(|i| BatchTaskResult {
+            identifier: TaskIdentifier::Index(i),
+            status: TaskStatus::Failure,
+            value: None,
+            error: Some(anyhow!("Error {}", i)),
+        })
+        .collect();
+    
+    let unlimited = aggregate_with_limit(results, None);
+    
+    assert_eq!(unlimited.total, 5);
+    assert_eq!(unlimited.errors.len(), 5); // All errors collected
+    assert!(!unlimited.truncated);
+}
+
+#[test]
+fn test_edge_case_empty_results() {
+    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    
+    let result = aggregate_results(Vec::new());
+    
+    assert_eq!(result.total, 0);
+    assert_eq!(result.successful, 0);
+    assert_eq!(result.failed, 0);
+    assert_eq!(result.cancelled, 0);
+    assert_eq!(result.success_rate, 0.0);
+    assert_eq!(result.errors.len(), 0);
+}
+
+#[test]
+fn test_edge_case_all_cancelled() {
+    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    
+    let results: Vec<_> = (0..5)
+        .map(|i| BatchTaskResult {
+            identifier: TaskIdentifier::Index(i),
+            status: TaskStatus::Cancelled,
+            value: None,
+            error: None,
+        })
+        .collect();
+    
+    let result = aggregate_results(results);
+    
+    assert_eq!(result.total, 5);
+    assert_eq!(result.successful, 0);
+    assert_eq!(result.failed, 0);
+    assert_eq!(result.cancelled, 5);
+    // Success rate should be 0 when no successful or failed tasks
+    assert_eq!(result.success_rate, 0.0);
+}
+
+#[test]
+fn test_edge_case_zero_total() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    
+    let result = BatchResult {
+        total: 0,
+        successful: 0,
+        failed: 0,
+        cancelled: 0,
+        success_rate: 0.0,
+        errors: Vec::new(),
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let summary = result.generate_summary();
+    assert!(summary.contains("No tasks executed"));
+    
+    let errors = result.format_errors();
+    assert_eq!(errors, "");
+    
+    assert!(result.all_succeeded()); // Empty batch is considered successful
+}
+
+#[test]
+fn test_performance_summary_generation() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use std::time::Instant;
+    
+    // Create a large batch result (10,000 tasks)
+    let result = BatchResult {
+        total: 10_000,
+        successful: 9_500,
+        failed: 500,
+        cancelled: 0,
+        success_rate: 95.0,
+        errors: Vec::new(), // Empty errors for performance test
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let start = Instant::now();
+    let _summary = result.generate_summary();
+    let duration = start.elapsed();
+    
+    // Should complete in under 10ms (SC-005)
+    assert!(duration.as_millis() < 10, "Summary generation took {}ms, expected < 10ms", duration.as_millis());
+}
+
+#[test]
+fn test_performance_error_formatting() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use anyhow::anyhow;
+    use std::time::Instant;
+    
+    // Create result with many errors (1,000 errors)
+    let errors: Vec<_> = (0..1_000)
+        .map(|i| (TaskIdentifier::Index(i), anyhow!("Error {}", i)))
+        .collect();
+    
+    let result = BatchResult {
+        total: 1_000,
+        successful: 0,
+        failed: 1_000,
+        cancelled: 0,
+        success_rate: 0.0,
+        errors,
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let start = Instant::now();
+    let _formatted = result.format_errors();
+    let duration = start.elapsed();
+    
+    // Should complete reasonably quickly (linear time complexity)
+    assert!(duration.as_millis() < 100, "Error formatting took {}ms", duration.as_millis());
+}
+
+// ============================================================================
+// Task Result Aggregation Tests
+// ============================================================================
+
+#[test]
+fn test_generate_summary_all_success() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    
+    let result = BatchResult {
+        total: 45,
+        successful: 45,
+        failed: 0,
+        cancelled: 0,
+        success_rate: 100.0,
+        errors: Vec::new(),
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let summary = result.generate_summary();
+    assert!(summary.contains("All 45 tasks completed successfully") || summary.contains("45"));
+    assert!(summary.contains("successfully"));
+}
+
+#[test]
+fn test_generate_summary_mixed_results() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use anyhow::anyhow;
+    
+    let result = BatchResult {
+        total: 45,
+        successful: 42,
+        failed: 3,
+        cancelled: 0,
+        success_rate: 93.33,
+        errors: vec![
+            (TaskIdentifier::Provided("file1".to_string()), anyhow!("Error 1")),
+            (TaskIdentifier::Provided("file2".to_string()), anyhow!("Error 2")),
+            (TaskIdentifier::Provided("file3".to_string()), anyhow!("Error 3")),
+        ],
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let summary = result.generate_summary();
+    assert!(summary.contains("45"));
+    assert!(summary.contains("42"));
+    assert!(summary.contains("3"));
+    assert!(summary.contains("93") || summary.contains("success rate"));
+}
+
+#[test]
+fn test_generate_summary_all_failure() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use anyhow::anyhow;
+    
+    let result = BatchResult {
+        total: 5,
+        successful: 0,
+        failed: 5,
+        cancelled: 0,
+        success_rate: 0.0,
+        errors: vec![
+            (TaskIdentifier::Index(0), anyhow!("Error 1")),
+            (TaskIdentifier::Index(1), anyhow!("Error 2")),
+            (TaskIdentifier::Index(2), anyhow!("Error 3")),
+            (TaskIdentifier::Index(3), anyhow!("Error 4")),
+            (TaskIdentifier::Index(4), anyhow!("Error 5")),
+        ],
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let summary = result.generate_summary();
+    assert!(summary.contains("5"));
+    assert!(summary.contains("0") || summary.contains("failed"));
+    assert!(summary.contains("0%") || summary.contains("success rate"));
+}
+
+#[test]
+fn test_generate_summary_empty_results() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    
+    let result = BatchResult {
+        total: 0,
+        successful: 0,
+        failed: 0,
+        cancelled: 0,
+        success_rate: 0.0,
+        errors: Vec::new(),
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let summary = result.generate_summary();
+    assert!(summary.contains("No tasks executed") || summary.contains("0"));
+}
+
+#[test]
+fn test_format_errors_provided_identifiers() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use anyhow::anyhow;
+    
+    let result = BatchResult {
+        total: 3,
+        successful: 0,
+        failed: 3,
+        cancelled: 0,
+        success_rate: 0.0,
+        errors: vec![
+            (TaskIdentifier::Provided("file: image.jpg".to_string()), anyhow!("permission denied")),
+            (TaskIdentifier::Provided("file: data.json".to_string()), anyhow!("invalid JSON")),
+            (TaskIdentifier::Provided("file: script.sh".to_string()), anyhow!("execution failed")),
+        ],
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let formatted = result.format_errors();
+    assert!(formatted.contains("Errors (3)"));
+    assert!(formatted.contains("[file: image.jpg]"));
+    assert!(formatted.contains("[file: data.json]"));
+    assert!(formatted.contains("[file: script.sh]"));
+    assert!(formatted.contains("permission denied"));
+}
+
+#[test]
+fn test_format_errors_positional_index() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use anyhow::anyhow;
+    
+    let result = BatchResult {
+        total: 2,
+        successful: 0,
+        failed: 2,
+        cancelled: 0,
+        success_rate: 0.0,
+        errors: vec![
+            (TaskIdentifier::Index(0), anyhow!("Network timeout")),
+            (TaskIdentifier::Index(5), anyhow!("Connection refused")),
+        ],
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let formatted = result.format_errors();
+    assert!(formatted.contains("Errors (2)"));
+    assert!(formatted.contains("[Task 0]"));
+    assert!(formatted.contains("[Task 5]"));
+    assert!(formatted.contains("Network timeout"));
+}
+
+#[test]
+fn test_format_errors_empty() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    
+    let result = BatchResult {
+        total: 5,
+        successful: 5,
+        failed: 0,
+        cancelled: 0,
+        success_rate: 100.0,
+        errors: Vec::new(),
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let formatted = result.format_errors();
+    assert_eq!(formatted, "");
+}
+
+#[test]
+fn test_with_summary() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    
+    let result = BatchResult {
+        total: 10,
+        successful: 8,
+        failed: 2,
+        cancelled: 0,
+        success_rate: 80.0,
+        errors: Vec::new(),
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let custom = result.with_summary("Custom summary message");
+    assert_eq!(custom.custom_summary, Some("Custom summary message".to_string()));
+    assert_eq!(custom.generate_summary(), "Custom summary message");
+}
+
+#[test]
+fn test_aggregate_results() {
+    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use anyhow::anyhow;
+    
+    let results = vec![
+        BatchTaskResult {
+            identifier: TaskIdentifier::Provided("task1".to_string()),
+            status: TaskStatus::Success,
+            value: Some(Box::new(1)),
+            error: None,
+        },
+        BatchTaskResult {
+            identifier: TaskIdentifier::Provided("task2".to_string()),
+            status: TaskStatus::Failure,
+            value: None,
+            error: Some(anyhow!("Error 2")),
+        },
+        BatchTaskResult {
+            identifier: TaskIdentifier::Provided("task3".to_string()),
+            status: TaskStatus::Success,
+            value: Some(Box::new(3)),
+            error: None,
+        },
+        BatchTaskResult {
+            identifier: TaskIdentifier::Provided("task4".to_string()),
+            status: TaskStatus::Cancelled,
+            value: None,
+            error: None,
+        },
+    ];
+    
+    let aggregated = aggregate_results(results);
+    
+    assert_eq!(aggregated.total, 4);
+    assert_eq!(aggregated.successful, 2);
+    assert_eq!(aggregated.failed, 1);
+    assert_eq!(aggregated.cancelled, 1);
+    assert_eq!(aggregated.errors.len(), 1);
+    assert!((aggregated.success_rate - 66.67).abs() < 0.1);
+}
+
+#[test]
+fn test_merge_results() {
+    use tui_framework::app::background_tasks::{merge_results, BatchResult, TaskIdentifier};
+    use anyhow::anyhow;
+    
+    let result1 = BatchResult {
+        total: 10,
+        successful: 8,
+        failed: 2,
+        cancelled: 0,
+        success_rate: 80.0,
+        errors: vec![
+            (TaskIdentifier::Index(0), anyhow!("Error 1")),
+            (TaskIdentifier::Index(1), anyhow!("Error 2")),
+        ],
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let result2 = BatchResult {
+        total: 5,
+        successful: 4,
+        failed: 1,
+        cancelled: 0,
+        success_rate: 80.0,
+        errors: vec![
+            (TaskIdentifier::Index(0), anyhow!("Error 3")),
+        ],
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let merged = merge_results(&[result1, result2]);
+    
+    assert_eq!(merged.total, 15);
+    assert_eq!(merged.successful, 12);
+    assert_eq!(merged.failed, 3);
+    assert_eq!(merged.errors.len(), 3);
+    assert!((merged.success_rate - 80.0).abs() < 0.1);
+}
+
+#[test]
+fn test_merge_results_empty() {
+    use tui_framework::app::background_tasks::merge_results;
+    
+    let merged = merge_results(&[]);
+    
+    assert_eq!(merged.total, 0);
+    assert_eq!(merged.successful, 0);
+    assert_eq!(merged.failed, 0);
+    assert_eq!(merged.errors.len(), 0);
+}
+
+#[test]
+fn test_aggregate_with_filter() {
+    use tui_framework::app::background_tasks::{aggregate_with_filter, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use anyhow::anyhow;
+    
+    let results = vec![
+        BatchTaskResult {
+            identifier: TaskIdentifier::Index(0),
+            status: TaskStatus::Success,
+            value: None,
+            error: None,
+        },
+        BatchTaskResult {
+            identifier: TaskIdentifier::Index(1),
+            status: TaskStatus::Failure,
+            value: None,
+            error: Some(anyhow!("Network error")),
+        },
+        BatchTaskResult {
+            identifier: TaskIdentifier::Index(2),
+            status: TaskStatus::Failure,
+            value: None,
+            error: Some(anyhow!("Timeout")),
+        },
+    ];
+    
+    // Filter out "Timeout" errors
+    let filtered = aggregate_with_filter(results, |err| {
+        !err.to_string().contains("Timeout")
+    });
+    
+    assert_eq!(filtered.total, 3);
+    assert_eq!(filtered.successful, 1);
+    assert_eq!(filtered.failed, 1); // Only Network error counted
+    assert_eq!(filtered.errors.len(), 1);
+    assert_eq!(filtered.filtered_errors.len(), 1); // Timeout filtered
+}
+
+#[test]
+fn test_aggregate_with_limit() {
+    use tui_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use anyhow::anyhow;
+    
+    let results: Vec<_> = (0..10)
+        .map(|i| BatchTaskResult {
+            identifier: TaskIdentifier::Index(i),
+            status: TaskStatus::Failure,
+            value: None,
+            error: Some(anyhow!("Error {}", i)),
+        })
+        .collect();
+    
+    let limited = aggregate_with_limit(results, Some(3));
+    
+    assert_eq!(limited.total, 10);
+    assert_eq!(limited.failed, 10);
+    assert_eq!(limited.errors.len(), 3); // Limited to 3
+    assert!(limited.truncated); // Should be truncated
+}
+
+#[test]
+fn test_aggregate_with_limit_no_limit() {
+    use tui_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use anyhow::anyhow;
+    
+    let results: Vec<_> = (0..5)
+        .map(|i| BatchTaskResult {
+            identifier: TaskIdentifier::Index(i),
+            status: TaskStatus::Failure,
+            value: None,
+            error: Some(anyhow!("Error {}", i)),
+        })
+        .collect();
+    
+    let unlimited = aggregate_with_limit(results, None);
+    
+    assert_eq!(unlimited.total, 5);
+    assert_eq!(unlimited.errors.len(), 5); // All errors collected
+    assert!(!unlimited.truncated);
+}
+
+#[test]
+fn test_edge_case_empty_results() {
+    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    
+    let result = aggregate_results(Vec::new());
+    
+    assert_eq!(result.total, 0);
+    assert_eq!(result.successful, 0);
+    assert_eq!(result.failed, 0);
+    assert_eq!(result.cancelled, 0);
+    assert_eq!(result.success_rate, 0.0);
+    assert_eq!(result.errors.len(), 0);
+}
+
+#[test]
+fn test_edge_case_all_cancelled() {
+    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    
+    let results: Vec<_> = (0..5)
+        .map(|i| BatchTaskResult {
+            identifier: TaskIdentifier::Index(i),
+            status: TaskStatus::Cancelled,
+            value: None,
+            error: None,
+        })
+        .collect();
+    
+    let result = aggregate_results(results);
+    
+    assert_eq!(result.total, 5);
+    assert_eq!(result.successful, 0);
+    assert_eq!(result.failed, 0);
+    assert_eq!(result.cancelled, 5);
+    // Success rate should be 0 when no successful or failed tasks
+    assert_eq!(result.success_rate, 0.0);
+}
+
+#[test]
+fn test_edge_case_zero_total() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    
+    let result = BatchResult {
+        total: 0,
+        successful: 0,
+        failed: 0,
+        cancelled: 0,
+        success_rate: 0.0,
+        errors: Vec::new(),
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let summary = result.generate_summary();
+    assert!(summary.contains("No tasks executed"));
+    
+    let errors = result.format_errors();
+    assert_eq!(errors, "");
+    
+    assert!(result.all_succeeded()); // Empty batch is considered successful
+}
+
+#[test]
+fn test_performance_summary_generation() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use std::time::Instant;
+    
+    // Create a large batch result (10,000 tasks)
+    let result = BatchResult {
+        total: 10_000,
+        successful: 9_500,
+        failed: 500,
+        cancelled: 0,
+        success_rate: 95.0,
+        errors: Vec::new(), // Empty errors for performance test
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let start = Instant::now();
+    let _summary = result.generate_summary();
+    let duration = start.elapsed();
+    
+    // Should complete in under 10ms (SC-005)
+    assert!(duration.as_millis() < 10, "Summary generation took {}ms, expected < 10ms", duration.as_millis());
+}
+
+#[test]
+fn test_performance_error_formatting() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use anyhow::anyhow;
+    use std::time::Instant;
+    
+    // Create result with many errors (1,000 errors)
+    let errors: Vec<_> = (0..1_000)
+        .map(|i| (TaskIdentifier::Index(i), anyhow!("Error {}", i)))
+        .collect();
+    
+    let result = BatchResult {
+        total: 1_000,
+        successful: 0,
+        failed: 1_000,
+        cancelled: 0,
+        success_rate: 0.0,
+        errors,
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let start = Instant::now();
+    let _formatted = result.format_errors();
+    let duration = start.elapsed();
+    
+    // Should complete reasonably quickly (linear time complexity)
+    assert!(duration.as_millis() < 100, "Error formatting took {}ms", duration.as_millis());
+}
+
+// ============================================================================
+// Task Result Aggregation Tests
+// ============================================================================
+
 #[tokio::test]
 async fn test_backward_compatibility_spawn_streaming() {
     use tokio::sync::mpsc;
@@ -446,4 +1362,920 @@ async fn test_backward_compatibility_spawn_streaming() {
     // Clean up
     manager.cancel_task(&token);
 }
+
+#[test]
+fn test_format_errors_provided_identifiers() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use anyhow::anyhow;
+    
+    let result = BatchResult {
+        total: 3,
+        successful: 0,
+        failed: 3,
+        cancelled: 0,
+        success_rate: 0.0,
+        errors: vec![
+            (TaskIdentifier::Provided("file: image.jpg".to_string()), anyhow!("permission denied")),
+            (TaskIdentifier::Provided("file: data.json".to_string()), anyhow!("invalid JSON")),
+            (TaskIdentifier::Provided("file: script.sh".to_string()), anyhow!("execution failed")),
+        ],
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let formatted = result.format_errors();
+    assert!(formatted.contains("Errors (3)"));
+    assert!(formatted.contains("[file: image.jpg]"));
+    assert!(formatted.contains("[file: data.json]"));
+    assert!(formatted.contains("[file: script.sh]"));
+    assert!(formatted.contains("permission denied"));
+}
+
+#[test]
+fn test_format_errors_positional_index() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use anyhow::anyhow;
+    
+    let result = BatchResult {
+        total: 2,
+        successful: 0,
+        failed: 2,
+        cancelled: 0,
+        success_rate: 0.0,
+        errors: vec![
+            (TaskIdentifier::Index(0), anyhow!("Network timeout")),
+            (TaskIdentifier::Index(5), anyhow!("Connection refused")),
+        ],
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let formatted = result.format_errors();
+    assert!(formatted.contains("Errors (2)"));
+    assert!(formatted.contains("[Task 0]"));
+    assert!(formatted.contains("[Task 5]"));
+    assert!(formatted.contains("Network timeout"));
+}
+
+#[test]
+fn test_format_errors_empty() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    
+    let result = BatchResult {
+        total: 5,
+        successful: 5,
+        failed: 0,
+        cancelled: 0,
+        success_rate: 100.0,
+        errors: Vec::new(),
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let formatted = result.format_errors();
+    assert_eq!(formatted, "");
+}
+
+#[test]
+fn test_with_summary() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    
+    let result = BatchResult {
+        total: 10,
+        successful: 8,
+        failed: 2,
+        cancelled: 0,
+        success_rate: 80.0,
+        errors: Vec::new(),
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let custom = result.with_summary("Custom summary message");
+    assert_eq!(custom.custom_summary, Some("Custom summary message".to_string()));
+    assert_eq!(custom.generate_summary(), "Custom summary message");
+}
+
+#[test]
+fn test_aggregate_results() {
+    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use anyhow::anyhow;
+    
+    let results = vec![
+        BatchTaskResult {
+            identifier: TaskIdentifier::Provided("task1".to_string()),
+            status: TaskStatus::Success,
+            value: Some(Box::new(1)),
+            error: None,
+        },
+        BatchTaskResult {
+            identifier: TaskIdentifier::Provided("task2".to_string()),
+            status: TaskStatus::Failure,
+            value: None,
+            error: Some(anyhow!("Error 2")),
+        },
+        BatchTaskResult {
+            identifier: TaskIdentifier::Provided("task3".to_string()),
+            status: TaskStatus::Success,
+            value: Some(Box::new(3)),
+            error: None,
+        },
+        BatchTaskResult {
+            identifier: TaskIdentifier::Provided("task4".to_string()),
+            status: TaskStatus::Cancelled,
+            value: None,
+            error: None,
+        },
+    ];
+    
+    let aggregated = aggregate_results(results);
+    
+    assert_eq!(aggregated.total, 4);
+    assert_eq!(aggregated.successful, 2);
+    assert_eq!(aggregated.failed, 1);
+    assert_eq!(aggregated.cancelled, 1);
+    assert_eq!(aggregated.errors.len(), 1);
+    assert!((aggregated.success_rate - 66.67).abs() < 0.1);
+}
+
+#[test]
+fn test_merge_results() {
+    use tui_framework::app::background_tasks::{merge_results, BatchResult, TaskIdentifier};
+    use anyhow::anyhow;
+    
+    let result1 = BatchResult {
+        total: 10,
+        successful: 8,
+        failed: 2,
+        cancelled: 0,
+        success_rate: 80.0,
+        errors: vec![
+            (TaskIdentifier::Index(0), anyhow!("Error 1")),
+            (TaskIdentifier::Index(1), anyhow!("Error 2")),
+        ],
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let result2 = BatchResult {
+        total: 5,
+        successful: 4,
+        failed: 1,
+        cancelled: 0,
+        success_rate: 80.0,
+        errors: vec![
+            (TaskIdentifier::Index(0), anyhow!("Error 3")),
+        ],
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let merged = merge_results(&[result1, result2]);
+    
+    assert_eq!(merged.total, 15);
+    assert_eq!(merged.successful, 12);
+    assert_eq!(merged.failed, 3);
+    assert_eq!(merged.errors.len(), 3);
+    assert!((merged.success_rate - 80.0).abs() < 0.1);
+}
+
+#[test]
+fn test_merge_results_empty() {
+    use tui_framework::app::background_tasks::merge_results;
+    
+    let merged = merge_results(&[]);
+    
+    assert_eq!(merged.total, 0);
+    assert_eq!(merged.successful, 0);
+    assert_eq!(merged.failed, 0);
+    assert_eq!(merged.errors.len(), 0);
+}
+
+#[test]
+fn test_aggregate_with_filter() {
+    use tui_framework::app::background_tasks::{aggregate_with_filter, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use anyhow::anyhow;
+    
+    let results = vec![
+        BatchTaskResult {
+            identifier: TaskIdentifier::Index(0),
+            status: TaskStatus::Success,
+            value: None,
+            error: None,
+        },
+        BatchTaskResult {
+            identifier: TaskIdentifier::Index(1),
+            status: TaskStatus::Failure,
+            value: None,
+            error: Some(anyhow!("Network error")),
+        },
+        BatchTaskResult {
+            identifier: TaskIdentifier::Index(2),
+            status: TaskStatus::Failure,
+            value: None,
+            error: Some(anyhow!("Timeout")),
+        },
+    ];
+    
+    // Filter out "Timeout" errors
+    let filtered = aggregate_with_filter(results, |err| {
+        !err.to_string().contains("Timeout")
+    });
+    
+    assert_eq!(filtered.total, 3);
+    assert_eq!(filtered.successful, 1);
+    assert_eq!(filtered.failed, 1); // Only Network error counted
+    assert_eq!(filtered.errors.len(), 1);
+    assert_eq!(filtered.filtered_errors.len(), 1); // Timeout filtered
+}
+
+#[test]
+fn test_aggregate_with_limit() {
+    use tui_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use anyhow::anyhow;
+    
+    let results: Vec<_> = (0..10)
+        .map(|i| BatchTaskResult {
+            identifier: TaskIdentifier::Index(i),
+            status: TaskStatus::Failure,
+            value: None,
+            error: Some(anyhow!("Error {}", i)),
+        })
+        .collect();
+    
+    let limited = aggregate_with_limit(results, Some(3));
+    
+    assert_eq!(limited.total, 10);
+    assert_eq!(limited.failed, 10);
+    assert_eq!(limited.errors.len(), 3); // Limited to 3
+    assert!(limited.truncated); // Should be truncated
+}
+
+#[test]
+fn test_aggregate_with_limit_no_limit() {
+    use tui_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use anyhow::anyhow;
+    
+    let results: Vec<_> = (0..5)
+        .map(|i| BatchTaskResult {
+            identifier: TaskIdentifier::Index(i),
+            status: TaskStatus::Failure,
+            value: None,
+            error: Some(anyhow!("Error {}", i)),
+        })
+        .collect();
+    
+    let unlimited = aggregate_with_limit(results, None);
+    
+    assert_eq!(unlimited.total, 5);
+    assert_eq!(unlimited.errors.len(), 5); // All errors collected
+    assert!(!unlimited.truncated);
+}
+
+#[test]
+fn test_edge_case_empty_results() {
+    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    
+    let result = aggregate_results(Vec::new());
+    
+    assert_eq!(result.total, 0);
+    assert_eq!(result.successful, 0);
+    assert_eq!(result.failed, 0);
+    assert_eq!(result.cancelled, 0);
+    assert_eq!(result.success_rate, 0.0);
+    assert_eq!(result.errors.len(), 0);
+}
+
+#[test]
+fn test_edge_case_all_cancelled() {
+    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    
+    let results: Vec<_> = (0..5)
+        .map(|i| BatchTaskResult {
+            identifier: TaskIdentifier::Index(i),
+            status: TaskStatus::Cancelled,
+            value: None,
+            error: None,
+        })
+        .collect();
+    
+    let result = aggregate_results(results);
+    
+    assert_eq!(result.total, 5);
+    assert_eq!(result.successful, 0);
+    assert_eq!(result.failed, 0);
+    assert_eq!(result.cancelled, 5);
+    // Success rate should be 0 when no successful or failed tasks
+    assert_eq!(result.success_rate, 0.0);
+}
+
+#[test]
+fn test_edge_case_zero_total() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    
+    let result = BatchResult {
+        total: 0,
+        successful: 0,
+        failed: 0,
+        cancelled: 0,
+        success_rate: 0.0,
+        errors: Vec::new(),
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let summary = result.generate_summary();
+    assert!(summary.contains("No tasks executed"));
+    
+    let errors = result.format_errors();
+    assert_eq!(errors, "");
+    
+    assert!(result.all_succeeded()); // Empty batch is considered successful
+}
+
+#[test]
+fn test_performance_summary_generation() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use std::time::Instant;
+    
+    // Create a large batch result (10,000 tasks)
+    let result = BatchResult {
+        total: 10_000,
+        successful: 9_500,
+        failed: 500,
+        cancelled: 0,
+        success_rate: 95.0,
+        errors: Vec::new(), // Empty errors for performance test
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let start = Instant::now();
+    let _summary = result.generate_summary();
+    let duration = start.elapsed();
+    
+    // Should complete in under 10ms (SC-005)
+    assert!(duration.as_millis() < 10, "Summary generation took {}ms, expected < 10ms", duration.as_millis());
+}
+
+#[test]
+fn test_performance_error_formatting() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use anyhow::anyhow;
+    use std::time::Instant;
+    
+    // Create result with many errors (1,000 errors)
+    let errors: Vec<_> = (0..1_000)
+        .map(|i| (TaskIdentifier::Index(i), anyhow!("Error {}", i)))
+        .collect();
+    
+    let result = BatchResult {
+        total: 1_000,
+        successful: 0,
+        failed: 1_000,
+        cancelled: 0,
+        success_rate: 0.0,
+        errors,
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let start = Instant::now();
+    let _formatted = result.format_errors();
+    let duration = start.elapsed();
+    
+    // Should complete reasonably quickly (linear time complexity)
+    assert!(duration.as_millis() < 100, "Error formatting took {}ms", duration.as_millis());
+}
+
+// ============================================================================
+// Task Result Aggregation Tests
+// ============================================================================
+
+#[test]
+fn test_generate_summary_all_success() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    
+    let result = BatchResult {
+        total: 45,
+        successful: 45,
+        failed: 0,
+        cancelled: 0,
+        success_rate: 100.0,
+        errors: Vec::new(),
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let summary = result.generate_summary();
+    assert!(summary.contains("All 45 tasks completed successfully") || summary.contains("45"));
+    assert!(summary.contains("successfully"));
+}
+
+#[test]
+fn test_generate_summary_mixed_results() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use anyhow::anyhow;
+    
+    let result = BatchResult {
+        total: 45,
+        successful: 42,
+        failed: 3,
+        cancelled: 0,
+        success_rate: 93.33,
+        errors: vec![
+            (TaskIdentifier::Provided("file1".to_string()), anyhow!("Error 1")),
+            (TaskIdentifier::Provided("file2".to_string()), anyhow!("Error 2")),
+            (TaskIdentifier::Provided("file3".to_string()), anyhow!("Error 3")),
+        ],
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let summary = result.generate_summary();
+    assert!(summary.contains("45"));
+    assert!(summary.contains("42"));
+    assert!(summary.contains("3"));
+    assert!(summary.contains("93") || summary.contains("success rate"));
+}
+
+#[test]
+fn test_generate_summary_all_failure() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use anyhow::anyhow;
+    
+    let result = BatchResult {
+        total: 5,
+        successful: 0,
+        failed: 5,
+        cancelled: 0,
+        success_rate: 0.0,
+        errors: vec![
+            (TaskIdentifier::Index(0), anyhow!("Error 1")),
+            (TaskIdentifier::Index(1), anyhow!("Error 2")),
+            (TaskIdentifier::Index(2), anyhow!("Error 3")),
+            (TaskIdentifier::Index(3), anyhow!("Error 4")),
+            (TaskIdentifier::Index(4), anyhow!("Error 5")),
+        ],
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let summary = result.generate_summary();
+    assert!(summary.contains("5"));
+    assert!(summary.contains("0") || summary.contains("failed"));
+    assert!(summary.contains("0%") || summary.contains("success rate"));
+}
+
+#[test]
+fn test_generate_summary_empty_results() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    
+    let result = BatchResult {
+        total: 0,
+        successful: 0,
+        failed: 0,
+        cancelled: 0,
+        success_rate: 0.0,
+        errors: Vec::new(),
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let summary = result.generate_summary();
+    assert!(summary.contains("No tasks executed") || summary.contains("0"));
+}
+
+#[test]
+fn test_format_errors_provided_identifiers() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use anyhow::anyhow;
+    
+    let result = BatchResult {
+        total: 3,
+        successful: 0,
+        failed: 3,
+        cancelled: 0,
+        success_rate: 0.0,
+        errors: vec![
+            (TaskIdentifier::Provided("file: image.jpg".to_string()), anyhow!("permission denied")),
+            (TaskIdentifier::Provided("file: data.json".to_string()), anyhow!("invalid JSON")),
+            (TaskIdentifier::Provided("file: script.sh".to_string()), anyhow!("execution failed")),
+        ],
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let formatted = result.format_errors();
+    assert!(formatted.contains("Errors (3)"));
+    assert!(formatted.contains("[file: image.jpg]"));
+    assert!(formatted.contains("[file: data.json]"));
+    assert!(formatted.contains("[file: script.sh]"));
+    assert!(formatted.contains("permission denied"));
+}
+
+#[test]
+fn test_format_errors_positional_index() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use anyhow::anyhow;
+    
+    let result = BatchResult {
+        total: 2,
+        successful: 0,
+        failed: 2,
+        cancelled: 0,
+        success_rate: 0.0,
+        errors: vec![
+            (TaskIdentifier::Index(0), anyhow!("Network timeout")),
+            (TaskIdentifier::Index(5), anyhow!("Connection refused")),
+        ],
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let formatted = result.format_errors();
+    assert!(formatted.contains("Errors (2)"));
+    assert!(formatted.contains("[Task 0]"));
+    assert!(formatted.contains("[Task 5]"));
+    assert!(formatted.contains("Network timeout"));
+}
+
+#[test]
+fn test_format_errors_empty() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    
+    let result = BatchResult {
+        total: 5,
+        successful: 5,
+        failed: 0,
+        cancelled: 0,
+        success_rate: 100.0,
+        errors: Vec::new(),
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let formatted = result.format_errors();
+    assert_eq!(formatted, "");
+}
+
+#[test]
+fn test_with_summary() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    
+    let result = BatchResult {
+        total: 10,
+        successful: 8,
+        failed: 2,
+        cancelled: 0,
+        success_rate: 80.0,
+        errors: Vec::new(),
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let custom = result.with_summary("Custom summary message");
+    assert_eq!(custom.custom_summary, Some("Custom summary message".to_string()));
+    assert_eq!(custom.generate_summary(), "Custom summary message");
+}
+
+#[test]
+fn test_aggregate_results() {
+    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use anyhow::anyhow;
+    
+    let results = vec![
+        BatchTaskResult {
+            identifier: TaskIdentifier::Provided("task1".to_string()),
+            status: TaskStatus::Success,
+            value: Some(Box::new(1)),
+            error: None,
+        },
+        BatchTaskResult {
+            identifier: TaskIdentifier::Provided("task2".to_string()),
+            status: TaskStatus::Failure,
+            value: None,
+            error: Some(anyhow!("Error 2")),
+        },
+        BatchTaskResult {
+            identifier: TaskIdentifier::Provided("task3".to_string()),
+            status: TaskStatus::Success,
+            value: Some(Box::new(3)),
+            error: None,
+        },
+        BatchTaskResult {
+            identifier: TaskIdentifier::Provided("task4".to_string()),
+            status: TaskStatus::Cancelled,
+            value: None,
+            error: None,
+        },
+    ];
+    
+    let aggregated = aggregate_results(results);
+    
+    assert_eq!(aggregated.total, 4);
+    assert_eq!(aggregated.successful, 2);
+    assert_eq!(aggregated.failed, 1);
+    assert_eq!(aggregated.cancelled, 1);
+    assert_eq!(aggregated.errors.len(), 1);
+    assert!((aggregated.success_rate - 66.67).abs() < 0.1);
+}
+
+#[test]
+fn test_merge_results() {
+    use tui_framework::app::background_tasks::{merge_results, BatchResult, TaskIdentifier};
+    use anyhow::anyhow;
+    
+    let result1 = BatchResult {
+        total: 10,
+        successful: 8,
+        failed: 2,
+        cancelled: 0,
+        success_rate: 80.0,
+        errors: vec![
+            (TaskIdentifier::Index(0), anyhow!("Error 1")),
+            (TaskIdentifier::Index(1), anyhow!("Error 2")),
+        ],
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let result2 = BatchResult {
+        total: 5,
+        successful: 4,
+        failed: 1,
+        cancelled: 0,
+        success_rate: 80.0,
+        errors: vec![
+            (TaskIdentifier::Index(0), anyhow!("Error 3")),
+        ],
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let merged = merge_results(&[result1, result2]);
+    
+    assert_eq!(merged.total, 15);
+    assert_eq!(merged.successful, 12);
+    assert_eq!(merged.failed, 3);
+    assert_eq!(merged.errors.len(), 3);
+    assert!((merged.success_rate - 80.0).abs() < 0.1);
+}
+
+#[test]
+fn test_merge_results_empty() {
+    use tui_framework::app::background_tasks::merge_results;
+    
+    let merged = merge_results(&[]);
+    
+    assert_eq!(merged.total, 0);
+    assert_eq!(merged.successful, 0);
+    assert_eq!(merged.failed, 0);
+    assert_eq!(merged.errors.len(), 0);
+}
+
+#[test]
+fn test_aggregate_with_filter() {
+    use tui_framework::app::background_tasks::{aggregate_with_filter, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use anyhow::anyhow;
+    
+    let results = vec![
+        BatchTaskResult {
+            identifier: TaskIdentifier::Index(0),
+            status: TaskStatus::Success,
+            value: None,
+            error: None,
+        },
+        BatchTaskResult {
+            identifier: TaskIdentifier::Index(1),
+            status: TaskStatus::Failure,
+            value: None,
+            error: Some(anyhow!("Network error")),
+        },
+        BatchTaskResult {
+            identifier: TaskIdentifier::Index(2),
+            status: TaskStatus::Failure,
+            value: None,
+            error: Some(anyhow!("Timeout")),
+        },
+    ];
+    
+    // Filter out "Timeout" errors
+    let filtered = aggregate_with_filter(results, |err| {
+        !err.to_string().contains("Timeout")
+    });
+    
+    assert_eq!(filtered.total, 3);
+    assert_eq!(filtered.successful, 1);
+    assert_eq!(filtered.failed, 1); // Only Network error counted
+    assert_eq!(filtered.errors.len(), 1);
+    assert_eq!(filtered.filtered_errors.len(), 1); // Timeout filtered
+}
+
+#[test]
+fn test_aggregate_with_limit() {
+    use tui_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use anyhow::anyhow;
+    
+    let results: Vec<_> = (0..10)
+        .map(|i| BatchTaskResult {
+            identifier: TaskIdentifier::Index(i),
+            status: TaskStatus::Failure,
+            value: None,
+            error: Some(anyhow!("Error {}", i)),
+        })
+        .collect();
+    
+    let limited = aggregate_with_limit(results, Some(3));
+    
+    assert_eq!(limited.total, 10);
+    assert_eq!(limited.failed, 10);
+    assert_eq!(limited.errors.len(), 3); // Limited to 3
+    assert!(limited.truncated); // Should be truncated
+}
+
+#[test]
+fn test_aggregate_with_limit_no_limit() {
+    use tui_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use anyhow::anyhow;
+    
+    let results: Vec<_> = (0..5)
+        .map(|i| BatchTaskResult {
+            identifier: TaskIdentifier::Index(i),
+            status: TaskStatus::Failure,
+            value: None,
+            error: Some(anyhow!("Error {}", i)),
+        })
+        .collect();
+    
+    let unlimited = aggregate_with_limit(results, None);
+    
+    assert_eq!(unlimited.total, 5);
+    assert_eq!(unlimited.errors.len(), 5); // All errors collected
+    assert!(!unlimited.truncated);
+}
+
+#[test]
+fn test_edge_case_empty_results() {
+    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    
+    let result = aggregate_results(Vec::new());
+    
+    assert_eq!(result.total, 0);
+    assert_eq!(result.successful, 0);
+    assert_eq!(result.failed, 0);
+    assert_eq!(result.cancelled, 0);
+    assert_eq!(result.success_rate, 0.0);
+    assert_eq!(result.errors.len(), 0);
+}
+
+#[test]
+fn test_edge_case_all_cancelled() {
+    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    
+    let results: Vec<_> = (0..5)
+        .map(|i| BatchTaskResult {
+            identifier: TaskIdentifier::Index(i),
+            status: TaskStatus::Cancelled,
+            value: None,
+            error: None,
+        })
+        .collect();
+    
+    let result = aggregate_results(results);
+    
+    assert_eq!(result.total, 5);
+    assert_eq!(result.successful, 0);
+    assert_eq!(result.failed, 0);
+    assert_eq!(result.cancelled, 5);
+    // Success rate should be 0 when no successful or failed tasks
+    assert_eq!(result.success_rate, 0.0);
+}
+
+#[test]
+fn test_edge_case_zero_total() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    
+    let result = BatchResult {
+        total: 0,
+        successful: 0,
+        failed: 0,
+        cancelled: 0,
+        success_rate: 0.0,
+        errors: Vec::new(),
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let summary = result.generate_summary();
+    assert!(summary.contains("No tasks executed"));
+    
+    let errors = result.format_errors();
+    assert_eq!(errors, "");
+    
+    assert!(result.all_succeeded()); // Empty batch is considered successful
+}
+
+#[test]
+fn test_performance_summary_generation() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use std::time::Instant;
+    
+    // Create a large batch result (10,000 tasks)
+    let result = BatchResult {
+        total: 10_000,
+        successful: 9_500,
+        failed: 500,
+        cancelled: 0,
+        success_rate: 95.0,
+        errors: Vec::new(), // Empty errors for performance test
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let start = Instant::now();
+    let _summary = result.generate_summary();
+    let duration = start.elapsed();
+    
+    // Should complete in under 10ms (SC-005)
+    assert!(duration.as_millis() < 10, "Summary generation took {}ms, expected < 10ms", duration.as_millis());
+}
+
+#[test]
+fn test_performance_error_formatting() {
+    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use anyhow::anyhow;
+    use std::time::Instant;
+    
+    // Create result with many errors (1,000 errors)
+    let errors: Vec<_> = (0..1_000)
+        .map(|i| (TaskIdentifier::Index(i), anyhow!("Error {}", i)))
+        .collect();
+    
+    let result = BatchResult {
+        total: 1_000,
+        successful: 0,
+        failed: 1_000,
+        cancelled: 0,
+        success_rate: 0.0,
+        errors,
+        results: Vec::new(),
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    };
+    
+    let start = Instant::now();
+    let _formatted = result.format_errors();
+    let duration = start.elapsed();
+    
+    // Should complete reasonably quickly (linear time complexity)
+    assert!(duration.as_millis() < 100, "Error formatting took {}ms", duration.as_millis());
+}
+
+// ============================================================================
+// Task Result Aggregation Tests
+// ============================================================================
 
