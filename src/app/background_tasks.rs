@@ -215,10 +215,14 @@ pub enum TaskIdentifier {
 
 impl TaskIdentifier {
     /// Get display string for identifier
+    ///
+    /// Formats the identifier for display in error messages.
+    /// - Provided identifiers: "[identifier]"
+    /// - Index identifiers: "[Task N]"
     pub fn display(&self) -> String {
         match self {
-            TaskIdentifier::Provided(s) => s.clone(),
-            TaskIdentifier::Index(i) => format!("task[{}]", i),
+            TaskIdentifier::Provided(s) => format!("[{}]", s),
+            TaskIdentifier::Index(i) => format!("[Task {}]", i),
         }
     }
 }
@@ -291,6 +295,12 @@ pub struct BatchResult {
     pub errors: Vec<(TaskIdentifier, anyhow::Error)>,
     /// Individual task results in completion order
     pub results: Vec<BatchTaskResult>,
+    /// Collection of errors excluded from failure count (when filtering is used)
+    pub filtered_errors: Vec<(TaskIdentifier, anyhow::Error)>,
+    /// Indicates if error collection was truncated due to limit
+    pub truncated: bool,
+    /// Optional custom summary message override
+    pub custom_summary: Option<String>,
 }
 
 impl BatchResult {
@@ -318,11 +328,418 @@ impl BatchResult {
     pub fn results(&self) -> &[BatchTaskResult] {
         &self.results
     }
+
+    /// Generate a formatted summary message
+    ///
+    /// Creates a human-readable summary of the batch operation results,
+    /// including total count, success/failure/cancelled counts, and success rate.
+    ///
+    /// # Returns
+    /// Formatted string summary. Examples:
+    /// - "No tasks executed" (when total == 0)
+    /// - "All 45 tasks completed successfully" (when all succeeded)
+    /// - "Completed 45 tasks: 42 successful, 3 failed (93.3% success rate)"
+    ///
+    /// # Behavior
+    /// - Uses custom_summary if set, otherwise generates auto-summary
+    /// - Handles all edge cases (empty, all success, all failure, all cancelled)
+    /// - Includes cancelled count in summary when > 0
+    pub fn generate_summary(&self) -> String {
+        // Use custom summary if provided
+        if let Some(ref summary) = self.custom_summary {
+            return summary.clone();
+        }
+
+        // Handle empty batch
+        if self.total == 0 {
+            return "No tasks executed".to_string();
+        }
+
+        // Handle all success
+        if self.failed == 0 && self.cancelled == 0 {
+            return format!("All {} tasks completed successfully", self.total);
+        }
+
+        // Build summary with counts
+        let mut parts = Vec::new();
+        parts.push(format!("Completed {} tasks", self.total));
+
+        if self.successful > 0 {
+            parts.push(format!("{} successful", self.successful));
+        }
+        if self.failed > 0 {
+            parts.push(format!("{} failed", self.failed));
+        }
+        if self.cancelled > 0 {
+            parts.push(format!("{} cancelled", self.cancelled));
+        }
+
+        // Add success rate if there are successes or failures
+        if self.successful + self.failed > 0 {
+            parts.push(format!("({:.1}% success rate)", self.success_rate));
+        }
+
+        parts.join(", ")
+    }
+
+    /// Format errors for display with task identification
+    ///
+    /// Creates a formatted string listing all errors with task identification
+    /// and clear numbering for user-friendly display.
+    ///
+    /// # Returns
+    /// Formatted string with numbered error list. Example output format:
+    /// ```text
+    /// Errors (3):
+    ///   1. [file: image.jpg] Failed to process: permission denied
+    ///   2. [Task 5] Network error: connection timeout
+    ///   3. [file: data.json] Parse error: invalid JSON
+    /// ```
+    ///
+    /// # Behavior
+    /// - Returns empty string if no errors
+    /// - Includes task identifier in each error line
+    /// - Uses provided identifier if available, otherwise positional index
+    /// - Formats TaskIdentifier::Provided as "[identifier]"
+    /// - Formats TaskIdentifier::Index as "[Task N]"
+    pub fn format_errors(&self) -> String {
+        if self.errors.is_empty() {
+            return String::new();
+        }
+
+        let mut lines = Vec::new();
+        lines.push(format!("Errors ({}):", self.errors.len()));
+
+        for (index, (identifier, error)) in self.errors.iter().enumerate() {
+            let task_id = identifier.display();
+            lines.push(format!("  {}. {} {}", index + 1, task_id, error));
+        }
+
+        lines.join("\n")
+    }
+
+    /// Set a custom summary message
+    ///
+    /// Builder method to override the auto-generated summary message.
+    ///
+    /// # Arguments
+    /// * `summary` - Custom summary message
+    ///
+    /// # Returns
+    /// New `BatchResult` instance with custom summary set
+    ///
+    /// # Behavior
+    /// - Creates a new instance with custom_summary set
+    /// - Custom summary takes precedence over auto-generated summary
+    pub fn with_summary(mut self, summary: impl Into<String>) -> Self {
+        self.custom_summary = Some(summary.into());
+        self
+    }
+}
+
+// ============================================================================
+// Aggregation Utility Functions
+// ============================================================================
+
+/// Aggregate task results into summary statistics
+///
+/// Takes a collection of task results and creates an aggregated `BatchResult`
+/// with statistics and error collection.
+///
+/// # Arguments
+/// * `results` - Collection of task results from batch operations
+///
+/// # Returns
+/// `BatchResult` with aggregated statistics
+///
+/// # Behavior
+/// - Counts successful, failed, and cancelled tasks
+/// - Collects all errors from failed tasks
+/// - Calculates success rate (excluding cancelled tasks)
+/// - Preserves task identification in error collection
+pub fn aggregate_results(results: Vec<BatchTaskResult>) -> BatchResult {
+    let total = results.len();
+    let mut successful = 0;
+    let mut failed = 0;
+    let mut cancelled = 0;
+    let mut errors = Vec::new();
+
+    for result in &results {
+        match result.status {
+            TaskStatus::Success => successful += 1,
+            TaskStatus::Failure => {
+                failed += 1;
+                if let Some(err) = result.error() {
+                    // Clone the error by converting to string and back
+                    // This is necessary because anyhow::Error doesn't implement Clone
+                    let error_msg = err.to_string();
+                    errors.push((result.identifier.clone(), anyhow::anyhow!(error_msg)));
+                }
+            }
+            TaskStatus::Cancelled => cancelled += 1,
+        }
+    }
+
+    // Calculate success rate (excluding cancelled tasks)
+    let success_rate = if successful + failed > 0 {
+        (successful as f64 / (successful + failed) as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    BatchResult {
+        total,
+        successful,
+        failed,
+        cancelled,
+        success_rate,
+        errors,
+        results,
+        filtered_errors: Vec::new(),
+        truncated: false,
+        custom_summary: None,
+    }
+}
+
+/// Merge multiple batch results into a single aggregated result
+///
+/// Combines results from multiple batch operations into a single
+/// aggregated result with combined statistics and error collections.
+///
+/// # Arguments
+/// * `results` - Slice of `BatchResult` to merge
+///
+/// # Returns
+/// New `BatchResult` with:
+/// - Combined counts (total, successful, failed, cancelled)
+/// - Merged error collections from all batches
+/// - Recalculated success rate from combined statistics
+/// - All errors preserved with task identification
+///
+/// # Behavior
+/// - Combines all counts by summing
+/// - Merges all error collections (preserves all errors)
+/// - Recalculates success rate from combined counts
+/// - Handles empty slice gracefully (returns empty result)
+pub fn merge_results(results: &[BatchResult]) -> BatchResult {
+    if results.is_empty() {
+        return BatchResult {
+            total: 0,
+            successful: 0,
+            failed: 0,
+            cancelled: 0,
+            success_rate: 0.0,
+            errors: Vec::new(),
+            results: Vec::new(),
+            filtered_errors: Vec::new(),
+            truncated: false,
+            custom_summary: None,
+        };
+    }
+
+    let mut total = 0;
+    let mut successful = 0;
+    let mut failed = 0;
+    let mut cancelled = 0;
+    let mut errors = Vec::new();
+    let mut filtered_errors = Vec::new();
+    let mut truncated = false;
+
+    for result in results {
+        total += result.total;
+        successful += result.successful;
+        failed += result.failed;
+        cancelled += result.cancelled;
+        errors.extend(result.errors.iter().map(|(id, err)| {
+            let msg = err.to_string();
+            (id.clone(), anyhow::anyhow!(msg))
+        }));
+        filtered_errors.extend(result.filtered_errors.iter().map(|(id, err)| {
+            let msg = err.to_string();
+            (id.clone(), anyhow::anyhow!(msg))
+        }));
+        // Note: We can't clone BatchTaskResult due to Any and Error types
+        // For merging, we'll just collect the counts and errors, not individual results
+        // The results field will be empty in merged results
+        truncated = truncated || result.truncated;
+    }
+
+    // Recalculate success rate from combined statistics
+    let success_rate = if successful + failed > 0 {
+        (successful as f64 / (successful + failed) as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    BatchResult {
+        total,
+        successful,
+        failed,
+        cancelled,
+        success_rate,
+        errors,
+        results: Vec::new(), // Individual results not preserved in merged results
+        filtered_errors,
+        truncated,
+        custom_summary: None,
+    }
+}
+
+/// Aggregate results with custom error filtering
+///
+/// Filters errors based on a predicate before including in aggregation.
+/// Filtered errors are excluded from failure counts but preserved separately
+/// for auditability.
+///
+/// # Arguments
+/// * `results` - Collection of task results from batch operations
+/// * `error_filter` - Predicate function that returns true for errors to include in failure count
+///
+/// # Returns
+/// `BatchResult` with:
+/// - `failed` count includes only non-filtered errors
+/// - `errors` collection contains only non-filtered errors
+/// - `filtered_errors` collection contains filtered errors
+/// - Success rate calculated based on non-filtered failures
+///
+/// # Behavior
+/// - Errors where filter returns `true` are counted as failures
+/// - Errors where filter returns `false` are excluded from failure count but collected in `filtered_errors`
+/// - Filtered errors don't affect success rate calculation
+/// - All errors (filtered and non-filtered) are preserved for auditability
+pub fn aggregate_with_filter<F>(results: Vec<BatchTaskResult>, error_filter: F) -> BatchResult
+where
+    F: Fn(&anyhow::Error) -> bool,
+{
+    let total = results.len();
+    let mut successful = 0;
+    let mut failed = 0;
+    let mut cancelled = 0;
+    let mut errors = Vec::new();
+    let mut filtered_errors = Vec::new();
+
+    for result in &results {
+        match result.status {
+            TaskStatus::Success => successful += 1,
+            TaskStatus::Failure => {
+                if let Some(err) = result.error() {
+                    if error_filter(err) {
+                        // Include in failure count
+                        failed += 1;
+                        let error_msg = err.to_string();
+                        errors.push((result.identifier.clone(), anyhow::anyhow!(error_msg)));
+                    } else {
+                        // Exclude from failure count but preserve
+                        let error_msg = err.to_string();
+                        filtered_errors
+                            .push((result.identifier.clone(), anyhow::anyhow!(error_msg)));
+                    }
+                }
+            }
+            TaskStatus::Cancelled => cancelled += 1,
+        }
+    }
+
+    // Calculate success rate (excluding cancelled tasks and filtered errors)
+    let success_rate = if successful + failed > 0 {
+        (successful as f64 / (successful + failed) as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    BatchResult {
+        total,
+        successful,
+        failed,
+        cancelled,
+        success_rate,
+        errors,
+        results,
+        filtered_errors,
+        truncated: false,
+        custom_summary: None,
+    }
+}
+
+/// Aggregate results with optional error collection limit
+///
+/// Collects errors up to a specified limit for memory efficiency with
+/// very large batches. Indicates if truncation occurred.
+///
+/// # Arguments
+/// * `results` - Collection of task results from batch operations
+/// * `max_errors` - Optional limit on error collection (None = unlimited)
+///
+/// # Returns
+/// `BatchResult` with:
+/// - `errors` collection limited to `max_errors` if specified
+/// - `truncated` flag set to `true` if errors were truncated
+///
+/// # Behavior
+/// - If `max_errors` is `None`, collects all errors (default behavior)
+/// - If `max_errors` is `Some(limit)`, collects first N errors
+/// - Sets `truncated = true` if more errors exist than limit
+/// - Statistics (counts, success rate) are always accurate regardless of truncation
+pub fn aggregate_with_limit(
+    results: Vec<BatchTaskResult>,
+    max_errors: Option<usize>,
+) -> BatchResult {
+    let total = results.len();
+    let mut successful = 0;
+    let mut failed = 0;
+    let mut cancelled = 0;
+    let mut errors = Vec::new();
+    let mut truncated = false;
+
+    for result in &results {
+        match result.status {
+            TaskStatus::Success => successful += 1,
+            TaskStatus::Failure => {
+                failed += 1;
+                if let Some(err) = result.error() {
+                    if let Some(limit) = max_errors {
+                        if errors.len() < limit {
+                            let error_msg = err.to_string();
+                            errors.push((result.identifier.clone(), anyhow::anyhow!(error_msg)));
+                        } else {
+                            truncated = true;
+                        }
+                    } else {
+                        // No limit, collect all errors
+                        let error_msg = err.to_string();
+                        errors.push((result.identifier.clone(), anyhow::anyhow!(error_msg)));
+                    }
+                }
+            }
+            TaskStatus::Cancelled => cancelled += 1,
+        }
+    }
+
+    // Calculate success rate (excluding cancelled tasks)
+    let success_rate = if successful + failed > 0 {
+        (successful as f64 / (successful + failed) as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    BatchResult {
+        total,
+        successful,
+        failed,
+        cancelled,
+        success_rate,
+        errors,
+        results,
+        filtered_errors: Vec::new(),
+        truncated,
+        custom_summary: None,
+    }
 }
 
 /// Definition of a task for batch processing
 ///
 /// Contains the task closure and optional identifier for error reporting.
+#[allow(clippy::type_complexity)]
 pub struct TaskDefinition {
     /// The async task to execute, returning a result with optional value
     task: Box<
@@ -364,6 +781,7 @@ impl TaskDefinition {
     }
 
     /// Take the task closure (consumes self)
+    #[allow(clippy::type_complexity)]
     pub fn into_task(
         self,
     ) -> Box<
@@ -705,7 +1123,7 @@ impl BackgroundTaskManager {
         const MAX_LIMIT: usize = 100;
         let default = Self::default_concurrency_limit();
         let requested = requested.unwrap_or(default);
-        requested.min(MAX_LIMIT).max(1) // Ensure at least 1
+        requested.clamp(1, MAX_LIMIT) // Ensure at least 1
     }
 
     /// Spawn a batch of tasks with optional concurrency limit
@@ -737,6 +1155,9 @@ impl BackgroundTaskManager {
                 success_rate: 0.0,
                 errors: Vec::new(),
                 results: Vec::new(),
+                filtered_errors: Vec::new(),
+                truncated: false,
+                custom_summary: None,
             };
         }
 
@@ -864,6 +1285,9 @@ impl BackgroundTaskManager {
             success_rate,
             errors,
             results,
+            filtered_errors: Vec::new(),
+            truncated: false,
+            custom_summary: None,
         }
     }
 
@@ -889,6 +1313,9 @@ impl BackgroundTaskManager {
                 success_rate: 0.0,
                 errors: Vec::new(),
                 results: Vec::new(),
+                filtered_errors: Vec::new(),
+                truncated: false,
+                custom_summary: None,
             };
         }
 
@@ -1001,6 +1428,9 @@ impl BackgroundTaskManager {
             success_rate,
             errors,
             results,
+            filtered_errors: Vec::new(),
+            truncated: false,
+            custom_summary: None,
         }
     }
 
