@@ -3,7 +3,8 @@
 //! An opinionated TUI framework library for building terminal user interfaces.
 //!
 //! This framework provides a complete async event loop, layout system, navigation, status bar,
-//! help overlay, command palette, and standard widgets (GridView, LogView, ModalView)
+//! help overlay, command palette, standard widgets (GridView, LogView, ModalView), and
+//! CLI output utilities (tables, JSON, messages, progress indicators)
 //! so application authors can focus on implementing views, datasources, and commands
 //! rather than terminal management.
 //!
@@ -55,6 +56,7 @@
 //! ```
 
 pub mod app;
+pub mod cli_mode;
 pub mod cli_output;
 pub mod command;
 pub mod data_source;
@@ -68,7 +70,13 @@ pub mod widget;
 pub mod observability;
 
 pub mod auth;
+pub mod progress_formatting;
 pub mod retry;
+
+// HTTP retry integration module
+// Note: This module requires applications to provide `reqwest` dependency
+// Applications should add reqwest to their Cargo.toml when using this module
+pub mod http_retry;
 
 /// Prelude module for convenient imports
 pub mod prelude {
