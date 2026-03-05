@@ -8,3 +8,4 @@ specs
 tests
 examples
 *.md
+scripts/*
