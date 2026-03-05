@@ -2,8 +2,8 @@
 
 use reqwest::Client;
 use std::time::{Duration, Instant};
-use tui_framework::http_retry::http_errors::is_retryable_http_error;
-use tui_framework::http_retry::RetryableHttpClient;
+use cli_framework::http_retry::http_errors::is_retryable_http_error;
+use cli_framework::http_retry::RetryableHttpClient;
 
 #[tokio::test]
 async fn test_is_retryable_http_error_classifies_all_error_types() {
@@ -624,7 +624,7 @@ async fn test_connection_refused_error_should_retry() {
 #[tokio::test]
 async fn test_error_classification_edge_cases() {
     // T054: Unit test for error classification edge cases (invalid status codes, missing status)
-    use tui_framework::http_retry::http_errors::is_retryable_http_error;
+    use cli_framework::http_retry::http_errors::is_retryable_http_error;
 
     // Test with a response error that has no status (network error)
     let client = Client::builder()
@@ -647,7 +647,7 @@ async fn test_error_classification_edge_cases() {
 async fn test_100_percent_error_classification_accuracy() {
     // T054A: Integration test for SC-006: Verify 100% error classification accuracy
     // across all standard HTTP error scenarios (network errors, 4xx, 5xx, 429)
-    use tui_framework::http_retry::http_errors::is_retryable_http_error;
+    use cli_framework::http_retry::http_errors::is_retryable_http_error;
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1153,7 +1153,7 @@ async fn test_custom_error_classifier_only_retries_on_503() {
 async fn test_custom_retry_policy_exponential_backoff() {
     // T039: Integration test for custom retry policy with exponential backoff
     use std::time::Duration;
-    use tui_framework::retry::policy::RetryPolicy;
+    use cli_framework::retry::policy::RetryPolicy;
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1197,7 +1197,7 @@ async fn test_custom_retry_policy_exponential_backoff() {
 async fn test_custom_retry_policy_fixed_delay() {
     // T040: Integration test for custom retry policy with fixed delay
     use std::time::Duration;
-    use tui_framework::retry::policy::RetryPolicy;
+    use cli_framework::retry::policy::RetryPolicy;
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1242,7 +1242,7 @@ async fn test_custom_retry_policy_fixed_delay() {
 #[tokio::test]
 async fn test_custom_retry_policy_no_retries() {
     // T041: Integration test for custom retry policy with no retries
-    use tui_framework::retry::policy::RetryPolicy;
+    use cli_framework::retry::policy::RetryPolicy;
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1271,7 +1271,7 @@ async fn test_custom_retry_policy_no_retries() {
 async fn test_per_request_policy_override() {
     // T042: Integration test for per-request policy override
     use std::time::Duration;
-    use tui_framework::retry::policy::RetryPolicy;
+    use cli_framework::retry::policy::RetryPolicy;
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

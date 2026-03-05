@@ -78,7 +78,7 @@ impl Default for FormattingOptions {
 /// # Examples
 ///
 /// ```no_run
-/// use tui_framework::cli_output;
+/// use cli_framework::cli_output;
 ///
 /// if cli_output::should_use_color() {
 ///     println!("\x1b[32mColored text\x1b[0m");
@@ -88,6 +88,7 @@ pub fn should_use_color() -> bool {
     crate::cli_mode::should_color_output()
 }
 
+pub mod ask;
 pub mod json;
 pub mod message;
 #[cfg(feature = "progress")]
@@ -95,6 +96,7 @@ pub mod progress;
 pub mod table;
 
 // Re-export commonly used types
+pub use ask::*;
 pub use json::{format_json, format_json_compact, print_json};
 pub use message::{format_message, format_message_with_details, print_message};
 #[cfg(feature = "progress")]

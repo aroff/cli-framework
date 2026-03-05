@@ -2,8 +2,8 @@
 //!
 //! Tests for User Story 3: Display Formatted Messages with Appropriate Severity
 
-use tui_framework::cli_output::message::{format_message, format_message_with_details};
-use tui_framework::message::AppMessage;
+use cli_framework::cli_output::message::{format_message, format_message_with_details};
+use cli_framework::message::AppMessage;
 
 #[test]
 fn test_format_message_info() {

@@ -1,8 +1,8 @@
-pub mod palette;
+pub mod ask;
 pub mod parser;
 pub mod registry;
 
-pub use palette::{CommandPalette, CommandPaletteResult};
+pub use ask::create_ask_command;
 pub use registry::CommandRegistry;
 
 use crate::app::context::AppContext;
@@ -15,7 +15,7 @@ use std::pin::Pin;
 pub type CommandId = &'static str;
 
 /// Command arguments (positional and named)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CommandArgs {
     /// Positional arguments
     pub positional: Vec<String>,
@@ -45,6 +45,7 @@ pub struct Command {
     /// Execution function (async)
     ///
     /// Returns a boxed future that will be awaited by the framework.
+    #[allow(clippy::type_complexity)]
     pub execute:
         fn(&mut dyn AppContext, CommandArgs) -> Pin<Box<dyn Future<Output = CommandResult> + Send>>,
 }

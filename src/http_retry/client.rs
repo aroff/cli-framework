@@ -19,7 +19,7 @@ use super::http_errors::is_retryable_http_error;
 ///
 /// ```rust,no_run
 /// use reqwest::Client;
-/// use tui_framework::http_retry::RetryableHttpClient;
+/// use cli_framework::http_retry::RetryableHttpClient;
 ///
 /// # async fn example() -> anyhow::Result<()> {
 /// let client = Client::new();
@@ -46,7 +46,7 @@ impl RetryableHttpClient {
     ///
     /// ```rust,no_run
     /// use reqwest::Client;
-    /// use tui_framework::http_retry::RetryableHttpClient;
+    /// use cli_framework::http_retry::RetryableHttpClient;
     ///
     /// let client = Client::new();
     /// let retry_client = RetryableHttpClient::new(client);
@@ -70,8 +70,8 @@ impl RetryableHttpClient {
     ///
     /// ```rust,no_run
     /// use reqwest::Client;
-    /// use tui_framework::http_retry::RetryableHttpClient;
-    /// use tui_framework::retry::RetryPolicy;
+    /// use cli_framework::http_retry::RetryableHttpClient;
+    /// use cli_framework::retry::RetryPolicy;
     /// use std::time::Duration;
     ///
     /// let client = Client::new();
@@ -111,7 +111,7 @@ impl RetryableHttpClient {
     /// # Example
     ///
     /// ```rust,no_run
-    /// # use tui_framework::http_retry::RetryableHttpClient;
+    /// # use cli_framework::http_retry::RetryableHttpClient;
     /// # use reqwest::Client;
     /// # async fn example() -> anyhow::Result<()> {
     /// # let retry_client = RetryableHttpClient::new(Client::new());
@@ -143,7 +143,7 @@ impl RetryableHttpClient {
     /// # Example
     ///
     /// ```rust,no_run
-    /// # use tui_framework::http_retry::RetryableHttpClient;
+    /// # use cli_framework::http_retry::RetryableHttpClient;
     /// # use reqwest::Client;
     /// # async fn example() -> anyhow::Result<()> {
     /// # let retry_client = RetryableHttpClient::new(Client::new());
@@ -286,9 +286,9 @@ impl RetryableHttpClient {
     /// # Example
     ///
     /// ```rust,no_run
-    /// # use tui_framework::http_retry::RetryableHttpClient;
+    /// # use cli_framework::http_retry::RetryableHttpClient;
     /// # use reqwest::Client;
-    /// # use tui_framework::retry::RetryPolicy;
+    /// # use cli_framework::retry::RetryPolicy;
     /// # use std::time::Duration;
     /// # async fn example() -> anyhow::Result<()> {
     /// # let retry_client = RetryableHttpClient::new(Client::new());
@@ -447,7 +447,7 @@ impl RetryableHttpClient {
     /// # Example
     ///
     /// ```rust,no_run
-    /// # use tui_framework::http_retry::RetryableHttpClient;
+    /// # use cli_framework::http_retry::RetryableHttpClient;
     /// # use reqwest::Client;
     /// # async fn example() -> anyhow::Result<()> {
     /// # let retry_client = RetryableHttpClient::new(Client::new());
@@ -464,7 +464,7 @@ impl RetryableHttpClient {
     /// # Example
     ///
     /// ```rust,no_run
-    /// # use tui_framework::http_retry::RetryableHttpClient;
+    /// # use cli_framework::http_retry::RetryableHttpClient;
     /// # use reqwest::Client;
     /// # async fn example() -> anyhow::Result<()> {
     /// # let retry_client = RetryableHttpClient::new(Client::new());
@@ -491,7 +491,7 @@ impl RetryableHttpClient {
     /// # Example
     ///
     /// ```rust,no_run
-    /// # use tui_framework::http_retry::RetryableHttpClient;
+    /// # use cli_framework::http_retry::RetryableHttpClient;
     /// # use reqwest::Client;
     /// # async fn example() -> anyhow::Result<()> {
     /// # let retry_client = RetryableHttpClient::new(Client::new());
@@ -508,7 +508,7 @@ impl RetryableHttpClient {
     /// # Example
     ///
     /// ```rust,no_run
-    /// # use tui_framework::http_retry::RetryableHttpClient;
+    /// # use cli_framework::http_retry::RetryableHttpClient;
     /// # use reqwest::Client;
     /// # async fn example() -> anyhow::Result<()> {
     /// # let retry_client = RetryableHttpClient::new(Client::new());
@@ -525,7 +525,7 @@ impl RetryableHttpClient {
     /// # Example
     ///
     /// ```rust,no_run
-    /// # use tui_framework::http_retry::RetryableHttpClient;
+    /// # use cli_framework::http_retry::RetryableHttpClient;
     /// # use reqwest::Client;
     /// # async fn example() -> anyhow::Result<()> {
     /// # let retry_client = RetryableHttpClient::new(Client::new());
@@ -562,7 +562,7 @@ pub(crate) fn parse_retry_after_header(headers: &reqwest::header::HeaderMap) -> 
     if let Ok(http_date) = httpdate::parse_http_date(retry_after_str) {
         let now = std::time::SystemTime::now();
         // Convert HttpDate to SystemTime for duration calculation
-        let future_time = std::time::SystemTime::from(http_date);
+        let future_time = http_date;
         if let Ok(duration) = future_time.duration_since(now) {
             return Some(duration);
         }

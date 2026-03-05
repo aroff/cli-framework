@@ -4,8 +4,8 @@
 
 use std::collections::HashMap;
 use tokio::time::{sleep, Duration};
-use tui_framework::app::AppContext;
-use tui_framework::command::{Command, CommandArgs};
+use cli_framework::app::AppContext;
+use cli_framework::command::{Command, CommandArgs};
 
 /// Test context for async Command tests
 struct TestContext {

@@ -1,7 +1,7 @@
 //! Tests for output format detection
 
 use std::env;
-use tui_framework::cli_mode;
+use cli_framework::cli_mode;
 
 #[test]
 fn test_output_format_from_env_table() {

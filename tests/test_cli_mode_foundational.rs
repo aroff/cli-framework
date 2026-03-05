@@ -3,7 +3,7 @@
 //! Tests for terminal detection and environment variable support.
 
 use std::env;
-use tui_framework::cli_mode;
+use cli_framework::cli_mode;
 
 #[cfg(test)]
 mod cross_platform {
