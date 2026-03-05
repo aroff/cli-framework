@@ -1,6 +1,7 @@
 //! CommandRegistry for managing commands
 
 use crate::command::Command;
+use crate::llm::CommandMetadata;
 use std::collections::HashMap;
 
 /// Registry for managing commands
@@ -29,6 +30,16 @@ impl CommandRegistry {
     /// Get all commands
     pub fn commands(&self) -> impl Iterator<Item = &Command> {
         self.commands.values()
+    }
+
+    /// Collect metadata for all commands for LLM context
+    pub fn collect_metadata(&self) -> Vec<CommandMetadata> {
+        self.commands.values().map(|cmd| CommandMetadata {
+            id: cmd.id.to_string(),
+            summary: cmd.summary.to_string(),
+            syntax: cmd.syntax.map(|s| s.to_string()),
+            category: cmd.category.map(|c| c.to_string()),
+        }).collect()
     }
 }
 

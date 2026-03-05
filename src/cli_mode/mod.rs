@@ -31,7 +31,7 @@
 //! ## Basic Usage
 //!
 //! ```no_run
-//! use tui_framework::cli_mode;
+//! use cli_framework::cli_mode;
 //!
 //! // Check if running in interactive terminal
 //! if cli_mode::is_interactive() {
@@ -67,7 +67,7 @@
 //! ## Stream-Specific Detection
 //!
 //! ```no_run
-//! use tui_framework::cli_mode;
+//! use cli_framework::cli_mode;
 //!
 //! // Check specific streams independently
 //! if cli_mode::is_stdout_tty() {
@@ -92,7 +92,7 @@
 //! ## Progress Indicators
 //!
 //! ```no_run
-//! use tui_framework::cli_mode;
+//! use cli_framework::cli_mode;
 //!
 //! if cli_mode::should_show_progress() {
 //!     // Show progress bar
@@ -105,7 +105,7 @@
 //! ## Terminal Dimensions
 //!
 //! ```no_run
-//! use tui_framework::cli_mode;
+//! use cli_framework::cli_mode;
 //!
 //! if let Some(width) = cli_mode::terminal_width() {
 //!     println!("Terminal width: {} characters", width);
@@ -129,7 +129,7 @@ use std::panic;
 /// # Examples
 ///
 /// ```no_run
-/// use tui_framework::cli_mode;
+/// use cli_framework::cli_mode;
 ///
 /// if cli_mode::is_stdout_tty() {
 ///     println!("Outputting to terminal");
@@ -149,7 +149,7 @@ pub fn is_stdout_tty() -> bool {
 /// # Examples
 ///
 /// ```no_run
-/// use tui_framework::cli_mode;
+/// use cli_framework::cli_mode;
 ///
 /// if cli_mode::is_stderr_tty() {
 ///     eprintln!("Error outputting to terminal");
@@ -169,7 +169,7 @@ pub fn is_stderr_tty() -> bool {
 /// # Examples
 ///
 /// ```no_run
-/// use tui_framework::cli_mode;
+/// use cli_framework::cli_mode;
 ///
 /// if cli_mode::is_stdin_tty() {
 ///     println!("Reading from terminal");
@@ -205,7 +205,7 @@ where
 /// # Examples
 ///
 /// ```no_run
-/// use tui_framework::cli_mode;
+/// use cli_framework::cli_mode;
 ///
 /// if let Some(value) = cli_mode::read_env_var("OUTPUT_FORMAT") {
 ///     println!("OUTPUT_FORMAT is set to: {}", value);
@@ -225,7 +225,7 @@ pub fn read_env_var(name: &str) -> Option<String> {
 /// # Examples
 ///
 /// ```no_run
-/// use tui_framework::cli_mode;
+/// use cli_framework::cli_mode;
 ///
 /// if cli_mode::is_no_color_set() {
 ///     println!("Colors disabled by NO_COLOR");
@@ -243,7 +243,7 @@ pub fn is_no_color_set() -> bool {
 /// # Examples
 ///
 /// ```no_run
-/// use tui_framework::cli_mode;
+/// use cli_framework::cli_mode;
 ///
 /// if cli_mode::is_force_color_set() {
 ///     println!("Colors forced by FORCE_COLOR");
@@ -265,7 +265,7 @@ pub fn is_force_color_set() -> bool {
 /// # Examples
 ///
 /// ```no_run
-/// use tui_framework::cli_mode;
+/// use cli_framework::cli_mode;
 ///
 /// if cli_mode::should_color_output() {
 ///     println!("\x1b[32mGreen text\x1b[0m");
@@ -300,7 +300,7 @@ pub fn should_color_output() -> bool {
 /// # Examples
 ///
 /// ```no_run
-/// use tui_framework::cli_mode;
+/// use cli_framework::cli_mode;
 ///
 /// if cli_mode::should_color_stderr() {
 ///     eprintln!("\x1b[31mRed error text\x1b[0m");
@@ -332,7 +332,7 @@ pub fn should_color_stderr() -> bool {
 /// # Examples
 ///
 /// ```no_run
-/// use tui_framework::cli_mode;
+/// use cli_framework::cli_mode;
 ///
 /// if cli_mode::is_interactive() {
 ///     // Show prompts, progress bars, etc.
@@ -353,7 +353,7 @@ pub fn is_interactive() -> bool {
 /// # Examples
 ///
 /// ```no_run
-/// use tui_framework::cli_mode;
+/// use cli_framework::cli_mode;
 ///
 /// if !cli_mode::is_quiet() {
 ///     println!("Verbose output");
@@ -374,7 +374,7 @@ pub fn is_quiet() -> bool {
 /// # Examples
 ///
 /// ```no_run
-/// use tui_framework::cli_mode;
+/// use cli_framework::cli_mode;
 ///
 /// if cli_mode::should_show_progress() {
 ///     // Show progress bar
@@ -412,7 +412,7 @@ impl OutputFormat {
     /// # Examples
     ///
     /// ```no_run
-    /// use tui_framework::cli_mode;
+    /// use cli_framework::cli_mode;
     ///
     /// if let Some(format) = cli_mode::OutputFormat::from_env() {
     ///     println!("Using format: {:?}", format);
@@ -435,7 +435,7 @@ impl OutputFormat {
     /// # Examples
     ///
     /// ```no_run
-    /// use tui_framework::cli_mode;
+    /// use cli_framework::cli_mode;
     ///
     /// let format = cli_mode::OutputFormat::default_for_tty();
     /// ```
@@ -460,7 +460,7 @@ impl OutputFormat {
 /// # Examples
 ///
 /// ```no_run
-/// use tui_framework::cli_mode;
+/// use cli_framework::cli_mode;
 ///
 /// let format = cli_mode::get_output_format();
 /// match format {
@@ -483,7 +483,7 @@ pub fn get_output_format() -> OutputFormat {
 /// # Examples
 ///
 /// ```no_run
-/// use tui_framework::cli_mode;
+/// use cli_framework::cli_mode;
 ///
 /// if let Some(width) = cli_mode::terminal_width() {
 ///     println!("Terminal width: {} characters", width);
@@ -515,7 +515,7 @@ pub fn terminal_width() -> Option<usize> {
 /// # Examples
 ///
 /// ```no_run
-/// use tui_framework::cli_mode;
+/// use cli_framework::cli_mode;
 ///
 /// if let Some(height) = cli_mode::terminal_height() {
 ///     println!("Terminal height: {} characters", height);

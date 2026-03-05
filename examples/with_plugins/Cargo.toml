@@ -1,0 +1,9 @@
+[package]
+name = "with_plugins"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cli-framework = { path = "../../" }
+anyhow = "1.0"
+tokio = { version = "1.0", features = ["full"] }

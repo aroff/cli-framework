@@ -3,7 +3,7 @@
 //! Tests that verify CLI mode detection works correctly in various
 //! execution contexts and stream combinations.
 
-use tui_framework::cli_mode;
+use cli_framework::cli_mode;
 use std::env;
 
 #[test]

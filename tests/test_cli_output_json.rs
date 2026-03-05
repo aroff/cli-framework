@@ -3,7 +3,7 @@
 //! Tests for User Story 2: Provide JSON Output for Script Integration
 
 use serde::Serialize;
-use tui_framework::cli_output::json::{format_json, format_json_compact};
+use cli_framework::cli_output::json::{format_json, format_json_compact};
 
 #[derive(Serialize)]
 struct Config {

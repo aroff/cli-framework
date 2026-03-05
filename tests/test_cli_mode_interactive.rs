@@ -1,6 +1,6 @@
 //! Tests for interactive mode detection
 
-use tui_framework::cli_mode;
+use cli_framework::cli_mode;
 
 #[test]
 fn test_is_interactive_both_tty() {

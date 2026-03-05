@@ -1,7 +1,7 @@
 //! Integration tests for batch task operations
 
 use std::time::Duration;
-use tui_framework::app::background_tasks::{
+use cli_framework::app::background_tasks::{
     task_definition, BackgroundTaskManager,
 };
 use tokio::time::sleep;

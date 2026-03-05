@@ -39,7 +39,7 @@ impl RbacManager {
     pub fn grant_permission(&mut self, role: Role, permission: Permission) {
         self.role_permissions
             .entry(role)
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(permission);
     }
 

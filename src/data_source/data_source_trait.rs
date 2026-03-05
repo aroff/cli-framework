@@ -20,6 +20,11 @@ pub trait DataSource: Send + Sync {
     /// Total number of rows (logical length)
     fn len(&self) -> usize;
 
+    /// Check if the data source is empty
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Access a row by index (0-based). Behind the scenes this may fetch a page.
     fn get(&self, index: usize) -> Option<&Self::Row>;
 

@@ -9,7 +9,7 @@
 //!
 //! ```rust,no_run
 //! use reqwest::Client;
-//! use tui_framework::http_retry::RetryableHttpClient;
+//! use cli_framework::http_retry::RetryableHttpClient;
 //!
 //! # async fn example() -> anyhow::Result<()> {
 //! let client = Client::new();

@@ -1,6 +1,6 @@
 //! Integration tests for task result aggregation utilities
 
-use tui_framework::app::background_tasks::{
+use cli_framework::app::background_tasks::{
     task_definition, BackgroundTaskManager, BatchResult, aggregate_results, merge_results,
 };
 
