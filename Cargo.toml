@@ -1,15 +1,13 @@
 [package]
-name = "tui-framework"
-version = "0.2.0"
+name = "cli-framework"
+version = "0.3.0"
 edition = "2021"
 authors = ["CLI Framework Team"]
-description = "An opinionated TUI framework library for building terminal user interfaces"
+description = "A pure CLI framework with AI-powered command resolution and plugin system"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/your-org/tui-framework"
+repository = "https://github.com/your-org/cli-framework"
 
 [dependencies]
-ratatui = "0.27"
-crossterm = "0.28"
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -19,6 +17,20 @@ tokio-util = { version = "0.7", features = ["time"] }
 reqwest = { version = "0.12", features = ["json"] }
 httpdate = "1.0"
 log = "0.4"
+clap = { version = "4.0", features = ["derive"] }
+toml = "0.8"
+dirs = "5.0"
+uuid = { version = "1.0", features = ["v4"] }
+crossterm = "0.28"
+# ailoop-core integration
+ailoop-core = { path = "../../goailoop/ailoop/ailoop-core" }
+# LLM providers
+async-openai = "0.20"
+anthropic-sdk = "0.1"
+
+# Optional dependencies for CLI output utilities
+comfy-table = { version = "7.0", optional = true }
+indicatif = { version = "0.17", optional = true }
 
 # Optional OpenTelemetry dependencies (applications can enable)
 # Note: Applications should add these dependencies themselves when using observability feature
@@ -27,10 +39,10 @@ log = "0.4"
 # opentelemetry-sdk = { version = "0.24", optional = true }
 
 [dev-dependencies]
-ratatui = { version = "0.27", features = ["crossterm"] }
 reqwest = { version = "0.12", features = ["json"] }
 wiremock = "0.6"
 env_logger = "0.11"
+tempfile = "3.0"
 
 [features]
 default = []
@@ -38,24 +50,31 @@ default = []
 # Note: OpenTelemetry integration will be implemented in src/observability/mod.rs
 # Applications should add opentelemetry crates to their own Cargo.toml when using this feature
 observability = []
+# CLI output utilities optional features
+table-advanced = ["comfy-table"]
+progress = ["indicatif"]
 
 [lib]
-name = "tui_framework"
+name = "cli_framework"
 path = "src/lib.rs"
-
-[[example]]
-name = "simple"
-path = "examples/simple/main.rs"
-
-[[example]]
-name = "multi_view"
-path = "examples/multi_view/main.rs"
-
-[[example]]
-name = "kitchen_sink"
-path = "examples/kitchen_sink/main.rs"
 
 [[example]]
 name = "http_retry_demo"
 path = "examples/http_retry_demo/main.rs"
+
+[[example]]
+name = "basic_cli"
+path = "examples/basic_cli/src/main.rs"
+
+[[example]]
+name = "with_ask"
+path = "examples/with_ask/src/main.rs"
+
+[[example]]
+name = "with_plugins"
+path = "examples/with_plugins/src/main.rs"
+
+[[example]]
+name = "with_ailoop"
+path = "examples/with_ailoop/src/main.rs"
 
