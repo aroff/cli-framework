@@ -18,7 +18,7 @@ use reqwest::Error;
 /// # Example
 ///
 /// ```rust,no_run
-/// use tui_framework::http_retry::http_errors::is_retryable_http_error;
+/// use cli_framework::http_retry::http_errors::is_retryable_http_error;
 /// use reqwest::Error;
 ///
 /// # async fn example() -> anyhow::Result<()> {
@@ -44,7 +44,7 @@ pub fn is_retryable_http_error(error: &Error) -> bool {
 /// # Example
 ///
 /// ```rust,no_run
-/// use tui_framework::http_retry::http_errors::is_timeout;
+/// use cli_framework::http_retry::http_errors::is_timeout;
 /// use reqwest::Error;
 ///
 /// # async fn example() -> anyhow::Result<()> {
@@ -64,7 +64,7 @@ pub fn is_timeout(error: &Error) -> bool {
 /// # Example
 ///
 /// ```rust,no_run
-/// use tui_framework::http_retry::http_errors::is_connection_error;
+/// use cli_framework::http_retry::http_errors::is_connection_error;
 /// use reqwest::Error;
 ///
 /// # async fn example() -> anyhow::Result<()> {

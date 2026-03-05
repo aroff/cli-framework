@@ -1,7 +1,7 @@
 //! Unit tests for RetryableHttpClient
 
-use tui_framework::http_retry::RetryableHttpClient;
-use tui_framework::retry::policy::RetryPolicy;
+use cli_framework::http_retry::RetryableHttpClient;
+use cli_framework::retry::policy::RetryPolicy;
 use reqwest::Client;
 use std::time::Duration;
 
@@ -36,7 +36,7 @@ fn test_retryable_http_client_creation() {
 #[test]
 fn test_retryable_http_client_policy_cloning_for_per_request_overrides() {
     // T043: Unit test for RetryableHttpClient policy cloning for per-request overrides
-    use tui_framework::retry::policy::RetryPolicy;
+    use cli_framework::retry::policy::RetryPolicy;
     use std::time::Duration;
     
     let client = Client::new();
@@ -55,7 +55,7 @@ fn test_retryable_http_client_policy_cloning_for_per_request_overrides() {
 #[test]
 fn test_custom_error_classifier_thread_safety() {
     // T061: Unit test for custom error classifier thread safety (Send + Sync)
-    use tui_framework::http_retry::RetryableHttpClient;
+    use cli_framework::http_retry::RetryableHttpClient;
     use reqwest::Client;
     use std::sync::Arc;
     
@@ -89,7 +89,7 @@ fn test_retry_after_header_parsing_seconds_integer() {
     // T069: Unit test for Retry-After header parsing (seconds integer)
     // Note: parse_retry_after_header is crate-private, so we test through integration tests
     // This test verifies the behavior through the client API
-    use tui_framework::http_retry::RetryableHttpClient;
+    use cli_framework::http_retry::RetryableHttpClient;
     use reqwest::Client;
     
     let client = Client::new();
@@ -120,7 +120,7 @@ fn test_retry_attempt_logging_at_debug_level() {
     // T076: Unit test for retry attempt logging at debug level
     // Note: Actual logging behavior is tested via integration tests with env_logger
     // This test verifies that logging calls are present in the code
-    use tui_framework::http_retry::RetryableHttpClient;
+    use cli_framework::http_retry::RetryableHttpClient;
     use reqwest::Client;
     
     let client = Client::new();
@@ -135,7 +135,7 @@ fn test_retry_attempt_logging_at_debug_level() {
 fn test_retry_start_completion_logging_at_info_level() {
     // T077: Unit test for retry start/completion logging at info level
     // Note: Actual logging behavior is tested via integration tests with env_logger
-    use tui_framework::http_retry::RetryableHttpClient;
+    use cli_framework::http_retry::RetryableHttpClient;
     use reqwest::Client;
     
     let client = Client::new();
@@ -150,7 +150,7 @@ fn test_retry_start_completion_logging_at_info_level() {
 fn test_retry_exhaustion_logging_at_warn_level() {
     // T078: Unit test for retry exhaustion logging at warn level
     // Note: Actual logging behavior is tested via integration tests with env_logger
-    use tui_framework::http_retry::RetryableHttpClient;
+    use cli_framework::http_retry::RetryableHttpClient;
     use reqwest::Client;
     
     let client = Client::new();

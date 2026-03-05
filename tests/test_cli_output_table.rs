@@ -2,7 +2,7 @@
 //!
 //! Tests for User Story 1: Display Tabular Data in CLI Output
 
-use tui_framework::cli_output::table::{format_table, Alignment, ColumnDef, GridData};
+use cli_framework::cli_output::table::{format_table, Alignment, ColumnDef, GridData};
 
 #[derive(Clone, Debug, serde::Serialize)]
 struct User {

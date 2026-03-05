@@ -1,58 +1,52 @@
-//! # TUI Framework
+//! # CLI Framework
 //!
-//! An opinionated TUI framework library for building terminal user interfaces.
+//! A pure CLI framework with AI-powered command resolution and plugin system.
 //!
-//! This framework provides a complete async event loop, layout system, navigation, status bar,
-//! help overlay, command palette, standard widgets (GridView, LogView, ModalView), and
+//! This framework provides command execution, LLM-powered natural language command resolution,
+//! plugin system, ailoop-core integration for human-in-the-loop interactions, and
 //! CLI output utilities (tables, JSON, messages, progress indicators)
-//! so application authors can focus on implementing views, datasources, and commands
-//! rather than terminal management.
+//! so application authors can focus on implementing commands and data sources
+//! rather than CLI infrastructure.
 //!
-//! ## Async Runtime
+//! ## Features
 //!
-//! The framework uses [Tokio](https://tokio.rs/) as its async runtime and manages the runtime
-//! internally. Applications do not need to initialize Tokio themselves - the framework handles
-//! all async runtime setup automatically. All trait methods (DataSource, View, Command) support
-//! async operations using `.await`, enabling direct integration with async service clients
-//! (e.g., reqwest, tokio-postgres) without blocking the UI.
+//! - **AI Ask Command**: Natural language command resolution using LLM providers (OpenAI, Anthropic)
+//! - **Plugin System**: Registry-based plugin loading with manifest files
+//! - **ailoop-core Integration**: Human-in-the-loop confirmations and interactions
+//! - **Command Registry**: Centralized command management with metadata collection
+//! - **CLI Output**: Rich formatting for tables, JSON, progress, and interactive prompts
 //!
 //! ## Example
 //!
 //! ```no_run
-//! use async_trait::async_trait;
-//! use tui_framework::prelude::*;
-//! use tui_framework::view::{View, ViewResult, HelpItem};
-//! use crossterm::event::Event;
-//! use ratatui::layout::Rect;
-//! use ratatui::Frame;
+//! use cli_framework::prelude::*;
 //!
-//! // Define a simple view
-//! struct MyView;
-//! #[async_trait]
-//! impl View for MyView {
-//!     fn id(&self) -> &'static str { "my.view" }
-//!     fn title(&self) -> &'static str { "My View" }
-//!     fn render(&mut self, _f: &mut Frame, _area: Rect, _ctx: &dyn AppContext) {}
-//!     async fn handle_event(&mut self, _event: &Event, _ctx: &mut dyn AppContext) -> ViewResult {
-//!         ViewResult::Ignored
-//!     }
-//!     fn help_items(&self) -> Vec<HelpItem> { vec![] }
+//! // Define a simple command
+//! async fn hello_command(_ctx: &mut dyn AppContext, args: CommandArgs) -> CommandResult {
+//!     let name = args.named.get("name").unwrap_or(&"World".to_string());
+//!     println!("Hello, {}!", name);
+//!     Ok(())
 //! }
 //!
-//! // Build and run the app
+//! #[tokio::main]
+//! async fn main() -> anyhow::Result<()> {
+//!     let mut builder = AppBuilder::new();
+//!     builder = builder
+//!         .register_command(Command {
+//!             id: "hello",
+//!             summary: "Say hello",
+//!             syntax: Some("hello --name <name>"),
+//!             category: Some("greetings"),
+//!             execute: hello_command,
+//!         });
+//!
+//!     let mut app = builder.build(MyContext)?;
+//!     app.run().await?;
+//!     Ok(())
+//! }
+//!
 //! struct MyContext;
 //! impl AppContext for MyContext {}
-//!
-//! # #[tokio::main]
-//! # async fn main() -> anyhow::Result<()> {
-//! let mut builder = AppBuilder::new();
-//! builder = builder
-//!     .register_view(MyView)
-//!     .map_view_slot(ViewSlot::Slot1, "my.view");
-//! let mut app = builder.build(MyContext)?;
-//! app.run().await?;
-//! # Ok(())
-//! # }
 //! ```
 
 pub mod app;
@@ -60,17 +54,18 @@ pub mod cli_mode;
 pub mod cli_output;
 pub mod command;
 pub mod data_source;
-pub mod keymap;
 pub mod message;
-pub mod view;
-pub mod widget;
+
+// New modules for CLI framework
+pub mod ailoop;
+pub mod llm;
+pub mod plugin;
 
 // Optional modules
 #[cfg(feature = "observability")]
 pub mod observability;
 
 pub mod auth;
-pub mod progress_formatting;
 pub mod retry;
 
 // HTTP retry integration module
@@ -83,7 +78,7 @@ pub mod prelude {
     pub use crate::app::{AppBuilder, AppContext};
     pub use crate::command::{Command, CommandArgs};
     pub use crate::data_source::DataSource;
-    pub use crate::keymap::{KeyBinding, KeymapConfig, ViewSlot};
+    pub use crate::llm::{LlmProvider, CommandMetadata, CommandResolution};
     pub use crate::message::{AppMessage, AppMessageKind};
-    pub use crate::view::View;
+    pub use crate::plugin::PluginRegistryManager;
 }

@@ -5,7 +5,7 @@
 
 use reqwest::Client;
 use std::time::Duration;
-use tui_framework::http_retry::RetryableHttpClient;
+use cli_framework::http_retry::RetryableHttpClient;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -91,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Example 5: Custom retry policy
     println!("\nExample 5: Custom retry policy");
-    use tui_framework::retry::RetryPolicy;
+    use cli_framework::retry::RetryPolicy;
 
     let custom_policy = RetryPolicy::fixed_delay(5, Duration::from_millis(200));
     let client_with_policy = RetryableHttpClient::with_policy(Client::new(), custom_policy);
@@ -195,7 +195,7 @@ async fn main() -> anyhow::Result<()> {
     println!("  The HTTP retry client uses standard Rust logging (log crate)");
     println!("  To enable logging, set the RUST_LOG environment variable:");
     println!("    RUST_LOG=debug cargo run --example http_retry_demo");
-    println!("    RUST_LOG=tui_framework::http_retry=debug cargo run --example http_retry_demo");
+    println!("    RUST_LOG=cli_framework::http_retry=debug cargo run --example http_retry_demo");
     println!("  Log levels:");
     println!("    - debug: Retry attempts, delays, and detailed information");
     println!("    - info: Retry completion (when request succeeds after retries)");

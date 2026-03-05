@@ -1,6 +1,6 @@
 //! Unit tests for background task management, including batch operations
 
-use tui_framework::app::background_tasks::{
+use cli_framework::app::background_tasks::{
     task_definition, BackgroundTaskManager, BatchResult, TaskStatus,
 };
 
@@ -422,7 +422,7 @@ async fn test_backward_compatibility_spawn() {
 
 #[test]
 fn test_format_errors_provided_identifiers() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     use anyhow::anyhow;
     
     let result = BatchResult {
@@ -452,7 +452,7 @@ fn test_format_errors_provided_identifiers() {
 
 #[test]
 fn test_format_errors_positional_index() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     use anyhow::anyhow;
     
     let result = BatchResult {
@@ -480,7 +480,7 @@ fn test_format_errors_positional_index() {
 
 #[test]
 fn test_format_errors_empty() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     
     let result = BatchResult {
         total: 5,
@@ -501,7 +501,7 @@ fn test_format_errors_empty() {
 
 #[test]
 fn test_with_summary() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     
     let result = BatchResult {
         total: 10,
@@ -523,7 +523,7 @@ fn test_with_summary() {
 
 #[test]
 fn test_aggregate_results() {
-    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
     use anyhow::anyhow;
     
     let results = vec![
@@ -565,7 +565,7 @@ fn test_aggregate_results() {
 
 #[test]
 fn test_merge_results() {
-    use tui_framework::app::background_tasks::{merge_results, BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{merge_results, BatchResult, TaskIdentifier};
     use anyhow::anyhow;
     
     let result1 = BatchResult {
@@ -610,7 +610,7 @@ fn test_merge_results() {
 
 #[test]
 fn test_merge_results_empty() {
-    use tui_framework::app::background_tasks::merge_results;
+    use cli_framework::app::background_tasks::merge_results;
     
     let merged = merge_results(&[]);
     
@@ -622,7 +622,7 @@ fn test_merge_results_empty() {
 
 #[test]
 fn test_aggregate_with_filter() {
-    use tui_framework::app::background_tasks::{aggregate_with_filter, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_with_filter, BatchTaskResult, TaskIdentifier, TaskStatus};
     use anyhow::anyhow;
     
     let results = vec![
@@ -660,7 +660,7 @@ fn test_aggregate_with_filter() {
 
 #[test]
 fn test_aggregate_with_limit() {
-    use tui_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
     use anyhow::anyhow;
     
     let results: Vec<_> = (0..10)
@@ -682,7 +682,7 @@ fn test_aggregate_with_limit() {
 
 #[test]
 fn test_aggregate_with_limit_no_limit() {
-    use tui_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
     use anyhow::anyhow;
     
     let results: Vec<_> = (0..5)
@@ -703,7 +703,7 @@ fn test_aggregate_with_limit_no_limit() {
 
 #[test]
 fn test_edge_case_empty_results() {
-    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
     
     let result = aggregate_results(Vec::new());
     
@@ -717,7 +717,7 @@ fn test_edge_case_empty_results() {
 
 #[test]
 fn test_edge_case_all_cancelled() {
-    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
     
     let results: Vec<_> = (0..5)
         .map(|i| BatchTaskResult {
@@ -740,7 +740,7 @@ fn test_edge_case_all_cancelled() {
 
 #[test]
 fn test_edge_case_zero_total() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     
     let result = BatchResult {
         total: 0,
@@ -766,7 +766,7 @@ fn test_edge_case_zero_total() {
 
 #[test]
 fn test_performance_summary_generation() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     use std::time::Instant;
     
     // Create a large batch result (10,000 tasks)
@@ -793,7 +793,7 @@ fn test_performance_summary_generation() {
 
 #[test]
 fn test_performance_error_formatting() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     use anyhow::anyhow;
     use std::time::Instant;
     
@@ -829,7 +829,7 @@ fn test_performance_error_formatting() {
 
 #[test]
 fn test_generate_summary_all_success() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     
     let result = BatchResult {
         total: 45,
@@ -851,7 +851,7 @@ fn test_generate_summary_all_success() {
 
 #[test]
 fn test_generate_summary_mixed_results() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     use anyhow::anyhow;
     
     let result = BatchResult {
@@ -880,7 +880,7 @@ fn test_generate_summary_mixed_results() {
 
 #[test]
 fn test_generate_summary_all_failure() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     use anyhow::anyhow;
     
     let result = BatchResult {
@@ -910,7 +910,7 @@ fn test_generate_summary_all_failure() {
 
 #[test]
 fn test_generate_summary_empty_results() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     
     let result = BatchResult {
         total: 0,
@@ -931,7 +931,7 @@ fn test_generate_summary_empty_results() {
 
 #[test]
 fn test_format_errors_provided_identifiers() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     use anyhow::anyhow;
     
     let result = BatchResult {
@@ -961,7 +961,7 @@ fn test_format_errors_provided_identifiers() {
 
 #[test]
 fn test_format_errors_positional_index() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     use anyhow::anyhow;
     
     let result = BatchResult {
@@ -989,7 +989,7 @@ fn test_format_errors_positional_index() {
 
 #[test]
 fn test_format_errors_empty() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     
     let result = BatchResult {
         total: 5,
@@ -1010,7 +1010,7 @@ fn test_format_errors_empty() {
 
 #[test]
 fn test_with_summary() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     
     let result = BatchResult {
         total: 10,
@@ -1032,7 +1032,7 @@ fn test_with_summary() {
 
 #[test]
 fn test_aggregate_results() {
-    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
     use anyhow::anyhow;
     
     let results = vec![
@@ -1074,7 +1074,7 @@ fn test_aggregate_results() {
 
 #[test]
 fn test_merge_results() {
-    use tui_framework::app::background_tasks::{merge_results, BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{merge_results, BatchResult, TaskIdentifier};
     use anyhow::anyhow;
     
     let result1 = BatchResult {
@@ -1119,7 +1119,7 @@ fn test_merge_results() {
 
 #[test]
 fn test_merge_results_empty() {
-    use tui_framework::app::background_tasks::merge_results;
+    use cli_framework::app::background_tasks::merge_results;
     
     let merged = merge_results(&[]);
     
@@ -1131,7 +1131,7 @@ fn test_merge_results_empty() {
 
 #[test]
 fn test_aggregate_with_filter() {
-    use tui_framework::app::background_tasks::{aggregate_with_filter, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_with_filter, BatchTaskResult, TaskIdentifier, TaskStatus};
     use anyhow::anyhow;
     
     let results = vec![
@@ -1169,7 +1169,7 @@ fn test_aggregate_with_filter() {
 
 #[test]
 fn test_aggregate_with_limit() {
-    use tui_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
     use anyhow::anyhow;
     
     let results: Vec<_> = (0..10)
@@ -1191,7 +1191,7 @@ fn test_aggregate_with_limit() {
 
 #[test]
 fn test_aggregate_with_limit_no_limit() {
-    use tui_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
     use anyhow::anyhow;
     
     let results: Vec<_> = (0..5)
@@ -1212,7 +1212,7 @@ fn test_aggregate_with_limit_no_limit() {
 
 #[test]
 fn test_edge_case_empty_results() {
-    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
     
     let result = aggregate_results(Vec::new());
     
@@ -1226,7 +1226,7 @@ fn test_edge_case_empty_results() {
 
 #[test]
 fn test_edge_case_all_cancelled() {
-    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
     
     let results: Vec<_> = (0..5)
         .map(|i| BatchTaskResult {
@@ -1249,7 +1249,7 @@ fn test_edge_case_all_cancelled() {
 
 #[test]
 fn test_edge_case_zero_total() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     
     let result = BatchResult {
         total: 0,
@@ -1275,7 +1275,7 @@ fn test_edge_case_zero_total() {
 
 #[test]
 fn test_performance_summary_generation() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     use std::time::Instant;
     
     // Create a large batch result (10,000 tasks)
@@ -1302,7 +1302,7 @@ fn test_performance_summary_generation() {
 
 #[test]
 fn test_performance_error_formatting() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     use anyhow::anyhow;
     use std::time::Instant;
     
@@ -1365,7 +1365,7 @@ async fn test_backward_compatibility_spawn_streaming() {
 
 #[test]
 fn test_format_errors_provided_identifiers() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     use anyhow::anyhow;
     
     let result = BatchResult {
@@ -1395,7 +1395,7 @@ fn test_format_errors_provided_identifiers() {
 
 #[test]
 fn test_format_errors_positional_index() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     use anyhow::anyhow;
     
     let result = BatchResult {
@@ -1423,7 +1423,7 @@ fn test_format_errors_positional_index() {
 
 #[test]
 fn test_format_errors_empty() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     
     let result = BatchResult {
         total: 5,
@@ -1444,7 +1444,7 @@ fn test_format_errors_empty() {
 
 #[test]
 fn test_with_summary() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     
     let result = BatchResult {
         total: 10,
@@ -1466,7 +1466,7 @@ fn test_with_summary() {
 
 #[test]
 fn test_aggregate_results() {
-    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
     use anyhow::anyhow;
     
     let results = vec![
@@ -1508,7 +1508,7 @@ fn test_aggregate_results() {
 
 #[test]
 fn test_merge_results() {
-    use tui_framework::app::background_tasks::{merge_results, BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{merge_results, BatchResult, TaskIdentifier};
     use anyhow::anyhow;
     
     let result1 = BatchResult {
@@ -1553,7 +1553,7 @@ fn test_merge_results() {
 
 #[test]
 fn test_merge_results_empty() {
-    use tui_framework::app::background_tasks::merge_results;
+    use cli_framework::app::background_tasks::merge_results;
     
     let merged = merge_results(&[]);
     
@@ -1565,7 +1565,7 @@ fn test_merge_results_empty() {
 
 #[test]
 fn test_aggregate_with_filter() {
-    use tui_framework::app::background_tasks::{aggregate_with_filter, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_with_filter, BatchTaskResult, TaskIdentifier, TaskStatus};
     use anyhow::anyhow;
     
     let results = vec![
@@ -1603,7 +1603,7 @@ fn test_aggregate_with_filter() {
 
 #[test]
 fn test_aggregate_with_limit() {
-    use tui_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
     use anyhow::anyhow;
     
     let results: Vec<_> = (0..10)
@@ -1625,7 +1625,7 @@ fn test_aggregate_with_limit() {
 
 #[test]
 fn test_aggregate_with_limit_no_limit() {
-    use tui_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
     use anyhow::anyhow;
     
     let results: Vec<_> = (0..5)
@@ -1646,7 +1646,7 @@ fn test_aggregate_with_limit_no_limit() {
 
 #[test]
 fn test_edge_case_empty_results() {
-    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
     
     let result = aggregate_results(Vec::new());
     
@@ -1660,7 +1660,7 @@ fn test_edge_case_empty_results() {
 
 #[test]
 fn test_edge_case_all_cancelled() {
-    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
     
     let results: Vec<_> = (0..5)
         .map(|i| BatchTaskResult {
@@ -1683,7 +1683,7 @@ fn test_edge_case_all_cancelled() {
 
 #[test]
 fn test_edge_case_zero_total() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     
     let result = BatchResult {
         total: 0,
@@ -1709,7 +1709,7 @@ fn test_edge_case_zero_total() {
 
 #[test]
 fn test_performance_summary_generation() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     use std::time::Instant;
     
     // Create a large batch result (10,000 tasks)
@@ -1736,7 +1736,7 @@ fn test_performance_summary_generation() {
 
 #[test]
 fn test_performance_error_formatting() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     use anyhow::anyhow;
     use std::time::Instant;
     
@@ -1772,7 +1772,7 @@ fn test_performance_error_formatting() {
 
 #[test]
 fn test_generate_summary_all_success() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     
     let result = BatchResult {
         total: 45,
@@ -1794,7 +1794,7 @@ fn test_generate_summary_all_success() {
 
 #[test]
 fn test_generate_summary_mixed_results() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     use anyhow::anyhow;
     
     let result = BatchResult {
@@ -1823,7 +1823,7 @@ fn test_generate_summary_mixed_results() {
 
 #[test]
 fn test_generate_summary_all_failure() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     use anyhow::anyhow;
     
     let result = BatchResult {
@@ -1853,7 +1853,7 @@ fn test_generate_summary_all_failure() {
 
 #[test]
 fn test_generate_summary_empty_results() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     
     let result = BatchResult {
         total: 0,
@@ -1874,7 +1874,7 @@ fn test_generate_summary_empty_results() {
 
 #[test]
 fn test_format_errors_provided_identifiers() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     use anyhow::anyhow;
     
     let result = BatchResult {
@@ -1904,7 +1904,7 @@ fn test_format_errors_provided_identifiers() {
 
 #[test]
 fn test_format_errors_positional_index() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     use anyhow::anyhow;
     
     let result = BatchResult {
@@ -1932,7 +1932,7 @@ fn test_format_errors_positional_index() {
 
 #[test]
 fn test_format_errors_empty() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     
     let result = BatchResult {
         total: 5,
@@ -1953,7 +1953,7 @@ fn test_format_errors_empty() {
 
 #[test]
 fn test_with_summary() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     
     let result = BatchResult {
         total: 10,
@@ -1975,7 +1975,7 @@ fn test_with_summary() {
 
 #[test]
 fn test_aggregate_results() {
-    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
     use anyhow::anyhow;
     
     let results = vec![
@@ -2017,7 +2017,7 @@ fn test_aggregate_results() {
 
 #[test]
 fn test_merge_results() {
-    use tui_framework::app::background_tasks::{merge_results, BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{merge_results, BatchResult, TaskIdentifier};
     use anyhow::anyhow;
     
     let result1 = BatchResult {
@@ -2062,7 +2062,7 @@ fn test_merge_results() {
 
 #[test]
 fn test_merge_results_empty() {
-    use tui_framework::app::background_tasks::merge_results;
+    use cli_framework::app::background_tasks::merge_results;
     
     let merged = merge_results(&[]);
     
@@ -2074,7 +2074,7 @@ fn test_merge_results_empty() {
 
 #[test]
 fn test_aggregate_with_filter() {
-    use tui_framework::app::background_tasks::{aggregate_with_filter, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_with_filter, BatchTaskResult, TaskIdentifier, TaskStatus};
     use anyhow::anyhow;
     
     let results = vec![
@@ -2112,7 +2112,7 @@ fn test_aggregate_with_filter() {
 
 #[test]
 fn test_aggregate_with_limit() {
-    use tui_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
     use anyhow::anyhow;
     
     let results: Vec<_> = (0..10)
@@ -2134,7 +2134,7 @@ fn test_aggregate_with_limit() {
 
 #[test]
 fn test_aggregate_with_limit_no_limit() {
-    use tui_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_with_limit, BatchTaskResult, TaskIdentifier, TaskStatus};
     use anyhow::anyhow;
     
     let results: Vec<_> = (0..5)
@@ -2155,7 +2155,7 @@ fn test_aggregate_with_limit_no_limit() {
 
 #[test]
 fn test_edge_case_empty_results() {
-    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
     
     let result = aggregate_results(Vec::new());
     
@@ -2169,7 +2169,7 @@ fn test_edge_case_empty_results() {
 
 #[test]
 fn test_edge_case_all_cancelled() {
-    use tui_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
+    use cli_framework::app::background_tasks::{aggregate_results, BatchTaskResult, TaskIdentifier, TaskStatus};
     
     let results: Vec<_> = (0..5)
         .map(|i| BatchTaskResult {
@@ -2192,7 +2192,7 @@ fn test_edge_case_all_cancelled() {
 
 #[test]
 fn test_edge_case_zero_total() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     
     let result = BatchResult {
         total: 0,
@@ -2218,7 +2218,7 @@ fn test_edge_case_zero_total() {
 
 #[test]
 fn test_performance_summary_generation() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     use std::time::Instant;
     
     // Create a large batch result (10,000 tasks)
@@ -2245,7 +2245,7 @@ fn test_performance_summary_generation() {
 
 #[test]
 fn test_performance_error_formatting() {
-    use tui_framework::app::background_tasks::{BatchResult, TaskIdentifier};
+    use cli_framework::app::background_tasks::{BatchResult, TaskIdentifier};
     use anyhow::anyhow;
     use std::time::Instant;
     
