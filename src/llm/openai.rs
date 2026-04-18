@@ -4,7 +4,7 @@ use crate::command::CommandArgs;
 use crate::llm::{CommandMetadata, CommandResolution, LlmProvider};
 use anyhow::Result;
 use async_openai::{
-    types::{ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPart, CreateChatCompletionRequestArgs},
+    types::{ChatCompletionRequestMessage, CreateChatCompletionRequestArgs},
     Client,
 };
 use async_trait::async_trait;
@@ -77,8 +77,13 @@ If no command matches the query, set confidence to 0.0 and command_id to \"\"."
     /// Parse the LLM response into a CommandResolution
     fn parse_response(&self, response: &str) -> Result<CommandResolution> {
         // Try to extract JSON from the response
-        let json_start = response.find('{').unwrap_or(0);
-        let json_end = response.rfind('}').unwrap_or(response.len());
+        let json_start = response.find('{').ok_or_else(|| anyhow::anyhow!("No JSON found in response"))?;
+        let json_end = response.rfind('}').ok_or_else(|| anyhow::anyhow!("No JSON found in response"))?;
+        
+        if json_start > json_end {
+            return Err(anyhow::anyhow!("Invalid JSON range in response"));
+        }
+        
         let json_str = &response[json_start..=json_end];
 
         let parsed: serde_json::Value = serde_json::from_str(json_str)?;

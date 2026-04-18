@@ -3,7 +3,6 @@
 //! Provides specialized formatting for displaying command resolution results,
 //! confidence scores, retry attempts, and error messages.
 
-use crate::command::CommandArgs;
 use crate::llm::CommandResolution;
 
 /// Display command resolution result
@@ -14,9 +13,11 @@ pub fn display_resolution(resolution: &CommandResolution) {
 
     // Show confidence with color coding
     let confidence_color = get_confidence_color(resolution.confidence);
-    println!("🎯 Resolved: {} (confidence: {:.1}%)",
+    println!("🎯 Resolved: {} (confidence: {}{:.1}%{})",
              resolution.command_id,
-             resolution.confidence * 100.0);
+             confidence_color,
+             resolution.confidence * 100.0,
+             reset_color());
 
     // Show arguments if any
     if !resolution.args.positional.is_empty() || !resolution.args.named.is_empty() {
