@@ -5,10 +5,13 @@ use crate::llm::{CommandMetadata, CommandResolution, LlmProvider};
 use anyhow::Result;
 use anthropic_sdk::Client;
 use async_trait::async_trait;
+use serde_json::json;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// Anthropic LLM provider for command resolution
 pub struct AnthropicProvider {
-    client: Client,
+    api_key: String,
     model: String,
 }
 
@@ -20,9 +23,7 @@ impl AnthropicProvider {
     /// * `api_key` - Anthropic API key
     /// * `model` - Model name (e.g., "claude-3-sonnet-20240229", "claude-3-haiku-20240307")
     pub fn new(api_key: String, model: String) -> Self {
-        let client = Client::new();
-
-        Self { client, model }
+        Self { api_key, model }
     }
 
     /// Generate the prompt for command resolution
@@ -71,8 +72,13 @@ If no command matches the query, set confidence to 0.0 and command_id to \"\"."
     /// Parse the LLM response into a CommandResolution
     fn parse_response(&self, response: &str) -> Result<CommandResolution> {
         // Try to extract JSON from the response
-        let json_start = response.find('{').unwrap_or(0);
-        let json_end = response.rfind('}').unwrap_or(response.len());
+        let json_start = response.find('{').ok_or_else(|| anyhow::anyhow!("No JSON found in response"))?;
+        let json_end = response.rfind('}').ok_or_else(|| anyhow::anyhow!("No JSON found in response"))?;
+        
+        if json_start > json_end {
+            return Err(anyhow::anyhow!("Invalid JSON range in response"));
+        }
+        
         let json_str = &response[json_start..=json_end];
 
         let parsed: serde_json::Value = serde_json::from_str(json_str)?;
@@ -131,12 +137,34 @@ If no command matches the query, set confidence to 0.0 and command_id to \"\"."
 impl LlmProvider for AnthropicProvider {
     async fn resolve_command(
         &self,
-        _query: &str,
-        _available_commands: &[CommandMetadata],
+        query: &str,
+        available_commands: &[CommandMetadata],
     ) -> Result<CommandResolution> {
-        // TODO: Implement Anthropic API integration
-        // For now, return a low confidence result
-        Err(anyhow::anyhow!("Anthropic provider not yet implemented"))
+        let prompt = self.create_prompt(query, available_commands);
+
+        let request = Client::new()
+            .auth(&self.api_key)
+            .model(&self.model)
+            .messages(&json!([
+                {"role": "user", "content": prompt}
+            ]))
+            .max_tokens(1024)
+            .build()
+            .map_err(|e| anyhow::anyhow!("Failed to build Anthropic request: {}", e))?;
+
+        let content = Arc::new(Mutex::new(String::new()));
+        let content_clone = content.clone();
+
+        let _ = request.execute(move |text: String| {
+            let c = content_clone.clone();
+            async move {
+                let mut locked = c.lock().await;
+                locked.push_str(&text);
+            }
+        }).await;
+
+        let final_content = content.lock().await.clone();
+        self.parse_response(&final_content)
     }
 }
 
