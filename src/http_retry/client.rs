@@ -206,14 +206,15 @@ impl RetryableHttpClient {
 
                         // Convert to error and check with classifier
                         let error = response.error_for_status().unwrap_err();
-                        last_error = Some(error);
-
+                        
                         // Check if error is retryable using the classifier
-                        if !classifier(last_error.as_ref().unwrap()) {
+                        if !classifier(&error) {
                             // Not retryable, return immediately
-                            return Err(anyhow::anyhow!(last_error.unwrap())
+                            return Err(anyhow::anyhow!(error)
                                 .context("Non-retryable HTTP error"));
                         }
+
+                        last_error = Some(error);
 
                         // Error is retryable, but check if we've exhausted retries
                         if attempt >= self.default_policy.max_attempts {
@@ -240,14 +241,14 @@ impl RetryableHttpClient {
                     }
                 }
                 Err(e) => {
-                    last_error = Some(e);
-
                     // Check if error is retryable
-                    if !classifier(last_error.as_ref().unwrap()) {
+                    if !classifier(&e) {
                         // Not retryable, return immediately
-                        return Err(anyhow::anyhow!(last_error.unwrap())
+                        return Err(anyhow::anyhow!(e)
                             .context("Non-retryable HTTP error"));
                     }
+
+                    last_error = Some(e);
 
                     // Error is retryable, but check if we've exhausted retries
                     if attempt >= self.default_policy.max_attempts {
@@ -370,14 +371,15 @@ impl RetryableHttpClient {
 
                         // This is a retryable error status, convert to error
                         let error = response.error_for_status().unwrap_err();
-                        last_error = Some(error);
 
                         // Check if error is retryable (should be, but verify)
-                        if !classifier(last_error.as_ref().unwrap()) {
+                        if !classifier(&error) {
                             // Not retryable, return immediately
-                            return Err(anyhow::anyhow!(last_error.unwrap())
+                            return Err(anyhow::anyhow!(error)
                                 .context("Non-retryable HTTP error"));
                         }
+
+                        last_error = Some(error);
 
                         // Error is retryable, but check if we've exhausted retries
                         if attempt >= policy.max_attempts {
@@ -404,14 +406,14 @@ impl RetryableHttpClient {
                     }
                 }
                 Err(e) => {
-                    last_error = Some(e);
-
                     // Check if error is retryable
-                    if !classifier(last_error.as_ref().unwrap()) {
+                    if !classifier(&e) {
                         // Not retryable, return immediately
-                        return Err(anyhow::anyhow!(last_error.unwrap())
+                        return Err(anyhow::anyhow!(e)
                             .context("Non-retryable HTTP error"));
                     }
+
+                    last_error = Some(e);
 
                     // Error is retryable, but check if we've exhausted retries
                     if attempt >= policy.max_attempts {

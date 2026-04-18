@@ -2,7 +2,7 @@
 //!
 //! Provides a builder pattern for constructing CLI applications.
 
-use crate::ailoop::{AiloopClient, AiloopConfig, AiloopContext};
+use crate::ailoop::{AiloopClient, AiloopConfig};
 use crate::app::context::AppContext;
 use crate::app::module::Module;
 use crate::command::{Command, CommandRegistry};
@@ -16,7 +16,7 @@ use std::sync::Arc;
 pub struct AppBuilder {
     command_registry: CommandRegistry,
     plugin_registry_manager: Option<PluginRegistryManager>,
-    llm_provider: Option<Box<dyn LlmProvider>>,
+    llm_provider: Option<Arc<dyn LlmProvider>>,
     ailoop_config: Option<AiloopConfig>,
     plugin_registry_path: Option<PathBuf>,
 }
@@ -49,7 +49,7 @@ impl AppBuilder {
     }
 
     /// Configure LLM provider for ask command
-    pub fn with_llm_provider(mut self, provider: Box<dyn LlmProvider>) -> Self {
+    pub fn with_llm_provider(mut self, provider: Arc<dyn LlmProvider>) -> Self {
         self.llm_provider = Some(provider);
         self
     }
@@ -94,11 +94,15 @@ impl AppBuilder {
         };
 
         // Initialize plugin registry manager if configured
-        let mut plugin_registry_manager = self.plugin_registry_manager;
+        let plugin_registry_manager = self.plugin_registry_manager;
 
         // Note: Plugin loading is deferred until App::run() is called
 
-        // Note: Ask command registration is deferred until proper LLM provider handling is implemented
+        // Register "ask" command if LLM provider is configured
+        if let Some(ref provider) = self.llm_provider {
+            let ask_command = crate::command::create_ask_command(provider.clone());
+            self.command_registry.register(ask_command);
+        }
 
         Ok(App {
             command_registry: self.command_registry,
@@ -119,7 +123,7 @@ impl Default for AppBuilder {
 /// Built CLI application
 pub struct App<C: AppContext> {
     command_registry: CommandRegistry,
-    llm_provider: Option<Box<dyn LlmProvider>>,
+    llm_provider: Option<Arc<dyn LlmProvider>>,
     ailoop_client: Option<AiloopClient>,
     plugin_registry_manager: Option<PluginRegistryManager>,
     ctx: C,
@@ -127,15 +131,93 @@ pub struct App<C: AppContext> {
 
 /// Context wrapper that provides access to CLI framework services
 struct CliAppContextWrapper<'a, C: AppContext> {
-    inner: &'a mut C,
+    _inner: &'a mut C,
     ailoop_client: &'a Option<AiloopClient>,
+    command_registry: &'a CommandRegistry,
+    llm_provider: &'a Option<Arc<dyn LlmProvider>>,
 }
 
 impl<'a, C: AppContext> AppContext for CliAppContextWrapper<'a, C> {
     // Delegate to inner context for any custom methods
 }
 
+impl<'a, C: AppContext> crate::app::context::LlmContext for CliAppContextWrapper<'a, C> {
+    fn llm_provider(&self) -> &dyn crate::llm::LlmProvider {
+        self.llm_provider.as_ref().expect("LLM provider not configured").as_ref()
+    }
+}
+
+impl<'a, C: AppContext> crate::app::context::CommandRegistryContext for CliAppContextWrapper<'a, C> {
+    fn command_registry(&self) -> &crate::command::CommandRegistry {
+        self.command_registry
+    }
+
+    fn execute_command_sync(&self, _command_id: &str, _args: crate::command::CommandArgs) -> anyhow::Result<()> {
+        // In a real implementation, this would execute the command synchronously or spawn it
+        // For now, this is a placeholder to satisfy the trait
+        Err(anyhow::anyhow!("Synchronous command execution not yet implemented"))
+    }
+}
+
+impl<'a, C: AppContext> crate::ailoop::AiloopContext for CliAppContextWrapper<'a, C> {
+    fn ailoop_client(&self) -> &AiloopClient {
+        self.ailoop_client.as_ref().expect("Ailoop client not configured")
+    }
+}
+
 impl<C: AppContext> App<C> {
+    /// Run the CLI application
+    ///
+    /// This parses command-line arguments and executes the corresponding command.
+    pub async fn run(&mut self) -> Result<()> {
+        let args: Vec<String> = std::env::args().collect();
+
+        if args.len() < 2 {
+            self.show_help();
+            return Ok(());
+        }
+
+        let command_id = &args[1];
+        let remaining_args = &args[2..];
+
+        // Basic argument parsing
+        let mut positional = Vec::new();
+        let mut named = std::collections::HashMap::new();
+
+        let mut i = 0;
+        while i < remaining_args.len() {
+            let arg = &remaining_args[i];
+            if arg.starts_with("--") {
+                let key = arg.trim_start_matches("--").to_string();
+                if i + 1 < remaining_args.len() && !remaining_args[i + 1].starts_with("--") {
+                    named.insert(key, remaining_args[i + 1].clone());
+                    i += 2;
+                } else {
+                    named.insert(key, "true".to_string());
+                    i += 1;
+                }
+            } else {
+                positional.push(arg.clone());
+                i += 1;
+            }
+        }
+
+        let cmd_args = crate::command::CommandArgs { positional, named };
+        self.execute_command(command_id, cmd_args).await
+    }
+
+    /// Show help information
+    pub fn show_help(&self) {
+        println!("Available commands:");
+        for cmd in self.command_registry.collect_metadata() {
+            print!("  {}", cmd.id);
+            if let Some(syntax) = &cmd.syntax {
+                print!(" {}", syntax);
+            }
+            println!(" - {}", cmd.summary);
+        }
+    }
+
     /// Execute a command by ID
     ///
     /// This method looks up and executes a command with the given arguments.
@@ -145,8 +227,10 @@ impl<C: AppContext> App<C> {
 
         // Create a context wrapper that includes CLI app services
         let mut ctx_wrapper = CliAppContextWrapper {
-            inner: &mut self.ctx,
+            _inner: &mut self.ctx,
             ailoop_client: &self.ailoop_client,
+            command_registry: &self.command_registry,
+            llm_provider: &self.llm_provider,
         };
 
         // Execute the command

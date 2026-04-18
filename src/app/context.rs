@@ -15,3 +15,20 @@ pub trait AppContext: Send + Sync {
     // Applications define their own structure
     // Framework only requires the trait to exist
 }
+
+/// Extension trait for AppContext to provide LLM provider access
+pub trait LlmContext {
+    /// Get the LLM provider for command resolution
+    fn llm_provider(&self) -> &dyn crate::llm::LlmProvider;
+}
+
+/// Extension trait for AppContext to provide command registry access
+pub trait CommandRegistryContext {
+    /// Get the command registry for command lookup and metadata
+    fn command_registry(&self) -> &crate::command::CommandRegistry;
+    
+    /// Execute another command by ID
+    /// 
+    /// This allows commands (like "ask") to trigger other commands.
+    fn execute_command_sync(&self, command_id: &str, args: crate::command::CommandArgs) -> anyhow::Result<()>;
+}

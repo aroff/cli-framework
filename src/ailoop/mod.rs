@@ -58,7 +58,6 @@
 //! ```
 
 use ailoop_core::channel::ChannelIsolation;
-use ailoop_core::models::{Message, MessageContent, NotificationPriority, ResponseType, SenderType};
 use ailoop_core::services::interaction::InteractionService;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -148,9 +147,6 @@ impl AiloopClient {
     ) -> Result<bool> {
         let service = self.interaction_service.lock().await;
 
-        // For now, this queues the message but doesn't wait for response
-        // In a real implementation, this would integrate with the ailoop server
-        // to wait for actual human response
         let result = service
             .handle_authorization(
                 action.to_string(),
@@ -161,22 +157,19 @@ impl AiloopClient {
 
         match result {
             Ok(_) => {
-                // TODO: In a real implementation, this would:
-                // 1. Send the request to ailoop server
-                // 2. Wait for human response
-                // 3. Return true/false based on approval
-                //
-                // For now, we simulate approval for development
-                // This should be replaced with actual server integration
-                println!("⚠️  Confirmation requested: {}", action);
+                println!("\n⚠️  Confirmation requested: {}", action);
                 if let Some(ctx) = context {
                     println!("   Context: {}", ctx);
                 }
-                println!("   Awaiting human approval on channel '{}'...", self.config.channel);
+                println!("   (Waiting for human approval on channel '{}')", self.config.channel);
+                print!("   Approve? (y/N): ");
+                use std::io::{self, Write};
+                io::stdout().flush()?;
 
-                // Simulate user approval for now
-                // In production, this would wait for actual user input
-                Ok(true)
+                let mut input = String::new();
+                io::stdin().read_line(&mut input)?;
+                let input = input.trim().to_lowercase();
+                Ok(matches!(input.as_str(), "y" | "yes"))
             }
             Err(e) => Err(anyhow!("Failed to request confirmation: {}", e)),
         }
@@ -218,24 +211,18 @@ impl AiloopClient {
 
         match result {
             Ok(_) => {
-                // TODO: Similar to confirmation, this should wait for actual response
-                println!("❓ Question: {}", question);
+                println!("\n❓ Question: {}", question);
                 if let Some(choices) = &choices {
                     println!("   Choices: {}", choices.join(", "));
                 }
-                println!("   Awaiting response on channel '{}'...", self.config.channel);
+                println!("   (Waiting for response on channel '{}')", self.config.channel);
+                print!("   Response: ");
+                use std::io::{self, Write};
+                io::stdout().flush()?;
 
-                // Simulate a response for now
-                // In production, this would wait for actual user input
-                if let Some(choices) = choices {
-                    if !choices.is_empty() {
-                        Ok(choices[0].clone()) // Return first choice as default
-                    } else {
-                        Ok("Sample response".to_string())
-                    }
-                } else {
-                    Ok("Sample response".to_string())
-                }
+                let mut input = String::new();
+                io::stdin().read_line(&mut input)?;
+                Ok(input.trim().to_string())
             }
             Err(e) => Err(anyhow!("Failed to ask question: {}", e)),
         }

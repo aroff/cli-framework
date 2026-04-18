@@ -3,7 +3,6 @@
 //! Defines the structure for plugin manifests that describe available commands
 //! and their metadata.
 
-use crate::command::CommandArgs;
 use crate::llm::CommandMetadata;
 use serde::{Deserialize, Serialize};
 
