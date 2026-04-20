@@ -3,9 +3,9 @@
 //! These tests verify that HTTP error classification functions and RetryableHttpClient
 //! comply with the API contract as defined in the specification.
 
-use reqwest::Client;
 use cli_framework::http_retry::http_errors::is_retryable_http_error;
 use cli_framework::http_retry::RetryableHttpClient;
+use reqwest::Client;
 
 #[tokio::test]
 async fn test_is_retryable_http_error_with_network_errors() {
@@ -200,8 +200,8 @@ async fn test_retryable_http_client_get_method_signature() {
 #[tokio::test]
 async fn test_retryable_http_client_with_policy_constructor() {
     // T037: Contract test for RetryableHttpClient::with_policy() constructor
-    use std::time::Duration;
     use cli_framework::retry::policy::RetryPolicy;
+    use std::time::Duration;
 
     let client = Client::new();
     let policy =
@@ -215,8 +215,8 @@ async fn test_retryable_http_client_with_policy_constructor() {
 #[tokio::test]
 async fn test_retryable_http_client_execute_with_policy_method() {
     // T038: Contract test for RetryableHttpClient::execute_with_policy() method
-    use std::time::Duration;
     use cli_framework::retry::policy::RetryPolicy;
+    use std::time::Duration;
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

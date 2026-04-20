@@ -7,9 +7,7 @@ use cli_framework::prelude::*;
 use std::io::{self, Write};
 
 // Custom application context
-struct MyApp {
-    counter: std::sync::Mutex<i32>,
-}
+struct MyApp;
 
 impl AppContext for MyApp {}
 
@@ -21,14 +19,18 @@ async fn main() -> anyhow::Result<()> {
         summary: "Print a greeting message",
         syntax: Some("hello [name]"),
         category: Some("utilities"),
-        execute: |ctx, args| Box::pin(async move {
-            let name = args.positional.get(0)
-                .unwrap_or(&"World".to_string())
-                .clone();
+        execute: |_ctx, args| {
+            Box::pin(async move {
+                let name = args
+                    .positional
+                    .get(0)
+                    .map(String::as_str)
+                    .unwrap_or("World");
 
-            println!("Hello, {}!", name);
-            Ok(())
-        }),
+                println!("Hello, {}!", name);
+                Ok(())
+            })
+        },
     };
 
     // Create an "increment" command that uses app context
@@ -37,11 +39,13 @@ async fn main() -> anyhow::Result<()> {
         summary: "Increment and display counter",
         syntax: Some("increment"),
         category: Some("utilities"),
-        execute: |ctx, _args| Box::pin(async move {
-            // This is a simplified example - in practice, you'd need proper context access
-            println!("Counter incremented!");
-            Ok(())
-        }),
+        execute: |_ctx, _args| {
+            Box::pin(async move {
+                // This is a simplified example - in practice, you'd need proper context access
+                println!("Counter incremented!");
+                Ok(())
+            })
+        },
     };
 
     // Build the CLI application
@@ -50,9 +54,7 @@ async fn main() -> anyhow::Result<()> {
         .register_command(hello_command)
         .register_command(increment_command);
 
-    let app = builder.build(MyApp {
-        counter: std::sync::Mutex::new(0),
-    })?;
+    let mut app = builder.build(MyApp)?;
 
     // Simple CLI loop for demonstration
     println!("CLI Framework - Basic Example");

@@ -117,20 +117,18 @@ mod tests {
             version: "1.0.0".to_string(),
             description: Some("Test plugin".to_string()),
             author: Some("Test Author".to_string()),
-            commands: vec![
-                PluginCommand {
-                    id: "hello".to_string(),
-                    name: "Hello World".to_string(),
-                    description: "Print hello world".to_string(),
-                    syntax: Some("hello".to_string()),
-                    category: Some("demo".to_string()),
-                    execution: CommandExecution::Subprocess {
-                        command: "echo".to_string(),
-                        args: vec!["hello world".to_string()],
-                        cwd: None,
-                    },
-                }
-            ],
+            commands: vec![PluginCommand {
+                id: "hello".to_string(),
+                name: "Hello World".to_string(),
+                description: "Print hello world".to_string(),
+                syntax: Some("hello".to_string()),
+                category: Some("demo".to_string()),
+                execution: CommandExecution::Subprocess {
+                    command: "echo".to_string(),
+                    args: vec!["hello world".to_string()],
+                    cwd: None,
+                },
+            }],
         };
 
         let json = serde_json::to_string_pretty(&manifest).unwrap();
@@ -148,20 +146,18 @@ mod tests {
             version: "1.0.0".to_string(),
             description: None,
             author: None,
-            commands: vec![
-                PluginCommand {
-                    id: "cmd1".to_string(),
-                    name: "Command 1".to_string(),
-                    description: "Description 1".to_string(),
-                    syntax: Some("cmd1 <arg>".to_string()),
-                    category: Some("cat1".to_string()),
-                    execution: CommandExecution::Subprocess {
-                        command: "echo".to_string(),
-                        args: vec![],
-                        cwd: None,
-                    },
-                }
-            ],
+            commands: vec![PluginCommand {
+                id: "cmd1".to_string(),
+                name: "Command 1".to_string(),
+                description: "Description 1".to_string(),
+                syntax: Some("cmd1 <arg>".to_string()),
+                category: Some("cat1".to_string()),
+                execution: CommandExecution::Subprocess {
+                    command: "echo".to_string(),
+                    args: vec![],
+                    cwd: None,
+                },
+            }],
         };
 
         let metadata = manifest.get_command_metadata("test-plugin");

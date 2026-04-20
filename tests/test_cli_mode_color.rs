@@ -1,7 +1,7 @@
 //! Tests for color output detection
 
-use std::env;
 use cli_framework::cli_mode;
+use std::env;
 
 #[test]
 fn test_color_detection_no_color_set() {

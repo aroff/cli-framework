@@ -4,11 +4,11 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
+use cli_framework::app::AppContext;
+use cli_framework::data_source::DataSource;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::time::{sleep, Duration, Instant};
-use cli_framework::app::AppContext;
-use cli_framework::data_source::DataSource;
 
 /// Test context
 struct TestContext;

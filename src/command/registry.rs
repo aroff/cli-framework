@@ -34,12 +34,15 @@ impl CommandRegistry {
 
     /// Collect metadata for all commands for LLM context
     pub fn collect_metadata(&self) -> Vec<CommandMetadata> {
-        self.commands.values().map(|cmd| CommandMetadata {
-            id: cmd.id.to_string(),
-            summary: cmd.summary.to_string(),
-            syntax: cmd.syntax.map(|s| s.to_string()),
-            category: cmd.category.map(|c| c.to_string()),
-        }).collect()
+        self.commands
+            .values()
+            .map(|cmd| CommandMetadata {
+                id: cmd.id.to_string(),
+                summary: cmd.summary.to_string(),
+                syntax: cmd.syntax.map(|s| s.to_string()),
+                category: cmd.category.map(|c| c.to_string()),
+            })
+            .collect()
     }
 }
 

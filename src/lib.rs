@@ -21,13 +21,6 @@
 //! ```no_run
 //! use cli_framework::prelude::*;
 //!
-//! // Define a simple command
-//! async fn hello_command(_ctx: &mut dyn AppContext, args: CommandArgs) -> CommandResult {
-//!     let name = args.named.get("name").unwrap_or(&"World".to_string());
-//!     println!("Hello, {}!", name);
-//!     Ok(())
-//! }
-//!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
 //!     let mut builder = AppBuilder::new();
@@ -37,7 +30,15 @@
 //!             summary: "Say hello",
 //!             syntax: Some("hello --name <name>"),
 //!             category: Some("greetings"),
-//!             execute: hello_command,
+//!             execute: |_ctx, args| Box::pin(async move {
+//!                 let name = args
+//!                     .named
+//!                     .get("name")
+//!                     .map(String::as_str)
+//!                     .unwrap_or("World");
+//!                 println!("Hello, {}!", name);
+//!                 Ok(())
+//!             }),
 //!         });
 //!
 //!     let mut app = builder.build(MyContext)?;
@@ -78,7 +79,7 @@ pub mod prelude {
     pub use crate::app::{AppBuilder, AppContext};
     pub use crate::command::{Command, CommandArgs};
     pub use crate::data_source::DataSource;
-    pub use crate::llm::{LlmProvider, CommandMetadata, CommandResolution};
+    pub use crate::llm::{CommandMetadata, CommandResolution, LlmProvider};
     pub use crate::message::{AppMessage, AppMessageKind};
     pub use crate::plugin::PluginRegistryManager;
 }

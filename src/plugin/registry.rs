@@ -65,7 +65,8 @@ impl PluginRegistryConfig {
 
     /// Get enabled plugins sorted by priority
     pub fn get_enabled_plugins(&self) -> Vec<(&String, &PluginEntry)> {
-        let mut plugins: Vec<_> = self.plugins
+        let mut plugins: Vec<_> = self
+            .plugins
             .iter()
             .filter(|(_, entry)| entry.enabled)
             .collect();
@@ -208,7 +209,8 @@ impl PluginRegistryManager {
                 if let Some(entry) = self.config.plugins.get(plugin_id) {
                     let manifest_path = PathBuf::from(&entry.manifest_path);
                     let manifest = PluginManifest::from_file(&manifest_path)?;
-                    self.loaded_manifests.insert(plugin_id.to_string(), manifest);
+                    self.loaded_manifests
+                        .insert(plugin_id.to_string(), manifest);
                 }
             } else {
                 // Unload the plugin if it's being disabled
@@ -231,7 +233,7 @@ mod tests {
         let config = PluginRegistryConfig::default();
         assert_eq!(config.metadata.name, "CLI Framework Plugins");
 
-        let mut temp_dir = TempDir::new().unwrap();
+        let temp_dir = TempDir::new().unwrap();
         let config_path = temp_dir.path().join("registry.toml");
 
         config.save_to_file(&config_path).await.unwrap();
@@ -242,7 +244,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_registration() {
-        let mut temp_dir = TempDir::new().unwrap();
+        let temp_dir = TempDir::new().unwrap();
         let config_path = temp_dir.path().join("registry.toml");
 
         let mut manager = PluginRegistryManager::new(config_path.clone());
@@ -259,12 +261,15 @@ mod tests {
         manifest.save_to_file(&manifest_path).await.unwrap();
 
         // Register the plugin
-        manager.register_plugin(
-            "test".to_string(),
-            "Test Plugin".to_string(),
-            "1.0.0".to_string(),
-            manifest_path.to_string_lossy().to_string(),
-        ).await.unwrap();
+        manager
+            .register_plugin(
+                "test".to_string(),
+                "Test Plugin".to_string(),
+                "1.0.0".to_string(),
+                manifest_path.to_string_lossy().to_string(),
+            )
+            .await
+            .unwrap();
 
         assert!(manager.get_manifest("test").is_some());
         assert_eq!(manager.manifests().len(), 1);

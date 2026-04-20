@@ -20,10 +20,10 @@ pub fn create_ask_command(_llm_provider: Arc<dyn LlmProvider>) -> Command {
                 // In a real framework, this would be:
                 // let provider = ctx.llm_provider();
                 // But we need to be able to call it on the trait.
-                
+
                 println!("🤖 AI resolution starting...");
                 println!("✅ AI resolution complete (simulated)");
-                
+
                 Ok(())
             })
         },
@@ -49,17 +49,18 @@ async fn _execute_ask(
     println!("🤔 Thinking about: \"{}\"...", query);
 
     // Placeholder commands
-    let available_commands = vec![
-        CommandMetadata {
-            id: "hello".to_string(),
-            summary: "Say hello to someone".to_string(),
-            syntax: Some("hello <name>".to_string()),
-            category: Some("utilities".to_string()),
-        },
-    ];
+    let available_commands = vec![CommandMetadata {
+        id: "hello".to_string(),
+        summary: "Say hello to someone".to_string(),
+        syntax: Some("hello <name>".to_string()),
+        category: Some("utilities".to_string()),
+    }];
 
     // Resolve the query using LLM
-    let resolution = match llm_provider.resolve_command(&query, &available_commands).await {
+    let resolution = match llm_provider
+        .resolve_command(&query, &available_commands)
+        .await
+    {
         Ok(resolution) => resolution,
         Err(e) => {
             println!("❌ Failed to resolve query: {}", e);
@@ -86,7 +87,10 @@ async fn _execute_ask(
         return Ok(());
     }
 
-    println!("🔧 Executing command: {} with args {:?}", resolution.command_id, resolution.args);
+    println!(
+        "🔧 Executing command: {} with args {:?}",
+        resolution.command_id, resolution.args
+    );
     println!("✅ Command execution simulated");
 
     Ok(())

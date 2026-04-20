@@ -2,8 +2,8 @@
 //!
 //! Tests for terminal detection and environment variable support.
 
-use std::env;
 use cli_framework::cli_mode;
+use std::env;
 
 #[cfg(test)]
 mod cross_platform {
