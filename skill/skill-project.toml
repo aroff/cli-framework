@@ -1,0 +1,13 @@
+[metadata]
+name = "tools-cli-framework"
+version = "0.1.0"
+description = "Guidance for building Rust CLI tools with cli-framework, including modular command architecture, subcommand conventions, and mandatory operational commands."
+author = "aroff"
+tags = ["cli", "rust", "cli-framework", "architecture", "commands", "best-practices"]
+capabilities = [
+    "framework-integration",
+    "command-architecture",
+    "subcommand-design",
+    "mandatory-command-baseline",
+    "testing-guidelines"
+]
