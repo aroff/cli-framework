@@ -143,25 +143,38 @@ impl<'a, C: AppContext> AppContext for CliAppContextWrapper<'a, C> {
 
 impl<'a, C: AppContext> crate::app::context::LlmContext for CliAppContextWrapper<'a, C> {
     fn llm_provider(&self) -> &dyn crate::llm::LlmProvider {
-        self.llm_provider.as_ref().expect("LLM provider not configured").as_ref()
+        self.llm_provider
+            .as_ref()
+            .expect("LLM provider not configured")
+            .as_ref()
     }
 }
 
-impl<'a, C: AppContext> crate::app::context::CommandRegistryContext for CliAppContextWrapper<'a, C> {
+impl<'a, C: AppContext> crate::app::context::CommandRegistryContext
+    for CliAppContextWrapper<'a, C>
+{
     fn command_registry(&self) -> &crate::command::CommandRegistry {
         self.command_registry
     }
 
-    fn execute_command_sync(&self, _command_id: &str, _args: crate::command::CommandArgs) -> anyhow::Result<()> {
+    fn execute_command_sync(
+        &self,
+        _command_id: &str,
+        _args: crate::command::CommandArgs,
+    ) -> anyhow::Result<()> {
         // In a real implementation, this would execute the command synchronously or spawn it
         // For now, this is a placeholder to satisfy the trait
-        Err(anyhow::anyhow!("Synchronous command execution not yet implemented"))
+        Err(anyhow::anyhow!(
+            "Synchronous command execution not yet implemented"
+        ))
     }
 }
 
 impl<'a, C: AppContext> crate::ailoop::AiloopContext for CliAppContextWrapper<'a, C> {
     fn ailoop_client(&self) -> &AiloopClient {
-        self.ailoop_client.as_ref().expect("Ailoop client not configured")
+        self.ailoop_client
+            .as_ref()
+            .expect("Ailoop client not configured")
     }
 }
 
@@ -221,8 +234,14 @@ impl<C: AppContext> App<C> {
     /// Execute a command by ID
     ///
     /// This method looks up and executes a command with the given arguments.
-    pub async fn execute_command(&mut self, command_id: &str, args: crate::command::CommandArgs) -> Result<()> {
-        let command = self.command_registry.get(command_id)
+    pub async fn execute_command(
+        &mut self,
+        command_id: &str,
+        args: crate::command::CommandArgs,
+    ) -> Result<()> {
+        let command = self
+            .command_registry
+            .get(command_id)
             .ok_or_else(|| anyhow::anyhow!("Command '{}' not found", command_id))?;
 
         // Create a context wrapper that includes CLI app services
@@ -258,4 +277,3 @@ impl<C: AppContext> App<C> {
         self.plugin_registry_manager.is_some()
     }
 }
-

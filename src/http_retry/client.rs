@@ -206,12 +206,11 @@ impl RetryableHttpClient {
 
                         // Convert to error and check with classifier
                         let error = response.error_for_status().unwrap_err();
-                        
+
                         // Check if error is retryable using the classifier
                         if !classifier(&error) {
                             // Not retryable, return immediately
-                            return Err(anyhow::anyhow!(error)
-                                .context("Non-retryable HTTP error"));
+                            return Err(anyhow::anyhow!(error).context("Non-retryable HTTP error"));
                         }
 
                         last_error = Some(error);
@@ -244,8 +243,7 @@ impl RetryableHttpClient {
                     // Check if error is retryable
                     if !classifier(&e) {
                         // Not retryable, return immediately
-                        return Err(anyhow::anyhow!(e)
-                            .context("Non-retryable HTTP error"));
+                        return Err(anyhow::anyhow!(e).context("Non-retryable HTTP error"));
                     }
 
                     last_error = Some(e);
@@ -375,8 +373,7 @@ impl RetryableHttpClient {
                         // Check if error is retryable (should be, but verify)
                         if !classifier(&error) {
                             // Not retryable, return immediately
-                            return Err(anyhow::anyhow!(error)
-                                .context("Non-retryable HTTP error"));
+                            return Err(anyhow::anyhow!(error).context("Non-retryable HTTP error"));
                         }
 
                         last_error = Some(error);
@@ -409,8 +406,7 @@ impl RetryableHttpClient {
                     // Check if error is retryable
                     if !classifier(&e) {
                         // Not retryable, return immediately
-                        return Err(anyhow::anyhow!(e)
-                            .context("Non-retryable HTTP error"));
+                        return Err(anyhow::anyhow!(e).context("Non-retryable HTTP error"));
                     }
 
                     last_error = Some(e);

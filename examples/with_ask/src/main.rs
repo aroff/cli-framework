@@ -19,16 +19,22 @@ async fn main() -> anyhow::Result<()> {
         summary: "Deploy application to specified environment",
         syntax: Some("deploy --env <environment> --version <version>"),
         category: Some("deployment"),
-        execute: |_ctx, args| Box::pin(async move {
-            let env = args.named.get("env").unwrap_or(&"dev".to_string());
-            let version = args.named.get("version").unwrap_or(&"latest".to_string());
+        execute: |_ctx, args| {
+            Box::pin(async move {
+                let env = args.named.get("env").map(String::as_str).unwrap_or("dev");
+                let version = args
+                    .named
+                    .get("version")
+                    .map(String::as_str)
+                    .unwrap_or("latest");
 
-            println!("🚀 Deploying version {} to {} environment...", version, env);
-            // Simulate deployment
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-            println!("✅ Deployment completed successfully!");
-            Ok(())
-        }),
+                println!("🚀 Deploying version {} to {} environment...", version, env);
+                // Simulate deployment
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                println!("✅ Deployment completed successfully!");
+                Ok(())
+            })
+        },
     };
 
     let status_command = Command {
@@ -36,14 +42,16 @@ async fn main() -> anyhow::Result<()> {
         summary: "Show system status and health information",
         syntax: Some("status"),
         category: Some("monitoring"),
-        execute: |_ctx, _args| Box::pin(async move {
-            println!("📊 System Status:");
-            println!("   Services: ✅ All running");
-            println!("   Database: ✅ Connected");
-            println!("   Network:  ✅ Healthy");
-            println!("   Uptime:   99.9%");
-            Ok(())
-        }),
+        execute: |_ctx, _args| {
+            Box::pin(async move {
+                println!("📊 System Status:");
+                println!("   Services: ✅ All running");
+                println!("   Database: ✅ Connected");
+                println!("   Network:  ✅ Healthy");
+                println!("   Uptime:   99.9%");
+                Ok(())
+            })
+        },
     };
 
     let logs_command = Command {
@@ -51,18 +59,26 @@ async fn main() -> anyhow::Result<()> {
         summary: "Show application logs",
         syntax: Some("logs --service <service> --lines <count>"),
         category: Some("monitoring"),
-        execute: |_ctx, args| Box::pin(async move {
-            let service = args.named.get("service").unwrap_or(&"app".to_string());
-            let lines = args.named.get("lines")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(10);
+        execute: |_ctx, args| {
+            Box::pin(async move {
+                let service = args
+                    .named
+                    .get("service")
+                    .map(String::as_str)
+                    .unwrap_or("app");
+                let lines = args
+                    .named
+                    .get("lines")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(10);
 
-            println!("📋 Last {} lines of {} logs:", lines, service);
-            for i in 1..=lines {
-                println!("   {}  [INFO] Log message {}", chrono::Utc::now().format("%H:%M:%S"), i);
-            }
-            Ok(())
-        }),
+                println!("📋 Last {} lines of {} logs:", lines, service);
+                for i in 1..=lines {
+                    println!("   {}  [INFO] Log message {}", "00:00:00", i);
+                }
+                Ok(())
+            })
+        },
     };
 
     // Build the CLI application with LLM support
@@ -85,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
         .register_command(status_command)
         .register_command(logs_command);
 
-    let app = builder.build(MyApp)?;
+    let mut app = builder.build(MyApp)?;
 
     // Interactive CLI loop
     println!("CLI Framework - AI Ask Example");

@@ -13,11 +13,13 @@ pub fn display_resolution(resolution: &CommandResolution) {
 
     // Show confidence with color coding
     let confidence_color = get_confidence_color(resolution.confidence);
-    println!("🎯 Resolved: {} (confidence: {}{:.1}%{})",
-             resolution.command_id,
-             confidence_color,
-             resolution.confidence * 100.0,
-             reset_color());
+    println!(
+        "🎯 Resolved: {} (confidence: {}{:.1}%{})",
+        resolution.command_id,
+        confidence_color,
+        resolution.confidence * 100.0,
+        reset_color()
+    );
 
     // Show arguments if any
     if !resolution.args.positional.is_empty() || !resolution.args.named.is_empty() {
@@ -71,11 +73,13 @@ pub fn display_retry(attempt: usize, max_attempts: usize, error: &str) {
         yellow_color()
     };
 
-    println!("{}🔄 Retry {} of {}{}",
-             attempt_color,
-             attempt,
-             max_attempts,
-             reset_color());
+    println!(
+        "{}🔄 Retry {} of {}{}",
+        attempt_color,
+        attempt,
+        max_attempts,
+        reset_color()
+    );
 
     println!("❌ Previous attempt failed: {}", error);
     println!();
@@ -99,10 +103,12 @@ pub fn display_failure(command_id: &str, error: &str) {
 ///
 /// Shows when all retry attempts have been exhausted.
 pub fn display_max_retries_exceeded(command_id: &str) {
-    println!("{}💥 Max retries exceeded for command: {}{}",
-             red_color(),
-             command_id,
-             reset_color());
+    println!(
+        "{}💥 Max retries exceeded for command: {}{}",
+        red_color(),
+        command_id,
+        reset_color()
+    );
 }
 
 /// Display suggested alternative command
@@ -126,12 +132,15 @@ pub fn display_command_help(commands: &[crate::llm::CommandMetadata]) {
     println!();
 
     // Group commands by category
-    let mut categorized: std::collections::HashMap<Option<String>, Vec<&crate::llm::CommandMetadata>> =
-        std::collections::HashMap::new();
+    let mut categorized: std::collections::HashMap<
+        Option<String>,
+        Vec<&crate::llm::CommandMetadata>,
+    > = std::collections::HashMap::new();
 
     for cmd in commands {
-        categorized.entry(cmd.category.clone())
-            .or_insert_with(Vec::new)
+        categorized
+            .entry(cmd.category.clone())
+            .or_default()
             .push(cmd);
     }
 
@@ -223,7 +232,9 @@ mod tests {
             command_id: "deploy".to_string(),
             args: CommandArgs {
                 positional: vec!["app".to_string()],
-                named: [("env".to_string(), "prod".to_string())].into_iter().collect(),
+                named: [("env".to_string(), "prod".to_string())]
+                    .into_iter()
+                    .collect(),
             },
             confidence: 0.85,
             reasoning: Some("User wants to deploy to production".to_string()),

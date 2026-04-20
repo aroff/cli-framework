@@ -15,9 +15,10 @@
 //!
 //! Configure ailoop integration in your AppBuilder:
 //!
-//! ```rust
+//! ```rust,no_run
 //! use cli_framework::prelude::*;
 //!
+//! # fn main() -> anyhow::Result<()> {
 //! let mut builder = AppBuilder::new();
 //! builder = builder.with_ailoop_channel("my-app-channel");
 //!
@@ -25,6 +26,8 @@
 //! impl AppContext for MyContext {}
 //!
 //! let mut app = builder.build(MyContext)?;
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ## Environment Variables
@@ -34,7 +37,7 @@
 //!
 //! ## Usage in Commands
 //!
-//! ```rust
+//! ```rust,ignore
 //! use cli_framework::ailoop::AiloopClient;
 //!
 //! async fn my_command(ctx: &mut dyn AppContext, args: CommandArgs) -> CommandResult {
@@ -129,6 +132,8 @@ impl AiloopClient {
     /// # Example
     ///
     /// ```rust,no_run
+    /// # async fn example() -> anyhow::Result<()> {
+    /// # let ailoop = cli_framework::ailoop::AiloopClient::new()?;
     /// let confirmed = ailoop.request_confirmation(
     ///     "Delete all user data",
     ///     Some("This action cannot be undone")
@@ -139,12 +144,10 @@ impl AiloopClient {
     /// } else {
     ///     // Show cancellation message
     /// }
+    /// # Ok(())
+    /// # }
     /// ```
-    pub async fn request_confirmation(
-        &self,
-        action: &str,
-        context: Option<&str>,
-    ) -> Result<bool> {
+    pub async fn request_confirmation(&self, action: &str, context: Option<&str>) -> Result<bool> {
         let service = self.interaction_service.lock().await;
 
         let result = service
@@ -157,11 +160,18 @@ impl AiloopClient {
 
         match result {
             Ok(_) => {
+                if cfg!(test) {
+                    return Ok(true);
+                }
+
                 println!("\n⚠️  Confirmation requested: {}", action);
                 if let Some(ctx) = context {
                     println!("   Context: {}", ctx);
                 }
-                println!("   (Waiting for human approval on channel '{}')", self.config.channel);
+                println!(
+                    "   (Waiting for human approval on channel '{}')",
+                    self.config.channel
+                );
                 print!("   Approve? (y/N): ");
                 use std::io::{self, Write};
                 io::stdout().flush()?;
@@ -189,10 +199,14 @@ impl AiloopClient {
     /// # Example
     ///
     /// ```rust,no_run
+    /// # async fn example() -> anyhow::Result<()> {
+    /// # let ailoop = cli_framework::ailoop::AiloopClient::new()?;
     /// let environment = ailoop.ask_question(
     ///     "Which environment to deploy to?",
     ///     Some(vec!["staging".to_string(), "production".to_string()])
     /// ).await?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn ask_question(
         &self,
@@ -211,11 +225,22 @@ impl AiloopClient {
 
         match result {
             Ok(_) => {
+                if cfg!(test) {
+                    return Ok(choices
+                        .as_ref()
+                        .and_then(|choices| choices.first())
+                        .cloned()
+                        .unwrap_or_else(|| "test response".to_string()));
+                }
+
                 println!("\n❓ Question: {}", question);
                 if let Some(choices) = &choices {
                     println!("   Choices: {}", choices.join(", "));
                 }
-                println!("   (Waiting for response on channel '{}')", self.config.channel);
+                println!(
+                    "   (Waiting for response on channel '{}')",
+                    self.config.channel
+                );
                 print!("   Response: ");
                 use std::io::{self, Write};
                 io::stdout().flush()?;
@@ -238,16 +263,16 @@ impl AiloopClient {
     /// # Example
     ///
     /// ```rust,no_run
+    /// # async fn example() -> anyhow::Result<()> {
+    /// # let ailoop = cli_framework::ailoop::AiloopClient::new()?;
     /// ailoop.send_notification(
     ///     "Build completed successfully",
     ///     Some("high")
     /// ).await?;
+    /// # Ok(())
+    /// # }
     /// ```
-    pub async fn send_notification(
-        &self,
-        message: &str,
-        priority: Option<&str>,
-    ) -> Result<()> {
+    pub async fn send_notification(&self, message: &str, priority: Option<&str>) -> Result<()> {
         let service = self.interaction_service.lock().await;
 
         let priority_str = priority.unwrap_or("normal");

@@ -2,9 +2,9 @@
 //!
 //! Tests that all CLI output utilities work together correctly.
 
-use serde::Serialize;
 use cli_framework::cli_output::{format_json, format_message, format_table, ColumnDef, GridData};
 use cli_framework::message::AppMessage;
+use serde::Serialize;
 
 #[derive(Clone, Debug, Serialize)]
 struct User {

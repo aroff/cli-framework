@@ -26,9 +26,13 @@ pub trait LlmContext {
 pub trait CommandRegistryContext {
     /// Get the command registry for command lookup and metadata
     fn command_registry(&self) -> &crate::command::CommandRegistry;
-    
+
     /// Execute another command by ID
-    /// 
+    ///
     /// This allows commands (like "ask") to trigger other commands.
-    fn execute_command_sync(&self, command_id: &str, args: crate::command::CommandArgs) -> anyhow::Result<()>;
+    fn execute_command_sync(
+        &self,
+        command_id: &str,
+        args: crate::command::CommandArgs,
+    ) -> anyhow::Result<()>;
 }

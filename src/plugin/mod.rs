@@ -7,4 +7,4 @@ pub mod manifest;
 pub mod registry;
 
 pub use manifest::PluginManifest;
-pub use registry::{PluginRegistryConfig, PluginRegistryManager, PluginEntry};
+pub use registry::{PluginEntry, PluginRegistryConfig, PluginRegistryManager};

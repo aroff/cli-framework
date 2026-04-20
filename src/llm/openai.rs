@@ -23,10 +23,8 @@ impl OpenAiProvider {
     /// * `api_key` - OpenAI API key
     /// * `model` - Model name (e.g., "gpt-4", "gpt-3.5-turbo")
     pub fn new(api_key: String, model: String) -> Self {
-        let client = Client::with_config(
-            async_openai::config::OpenAIConfig::new()
-                .with_api_key(api_key)
-        );
+        let client =
+            Client::with_config(async_openai::config::OpenAIConfig::new().with_api_key(api_key));
 
         Self { client, model }
     }
@@ -68,7 +66,7 @@ Example response:
   \"reasoning\": \"The user wants to deploy to production environment\"
 }
 
-If no command matches the query, set confidence to 0.0 and command_id to \"\"."
+If no command matches the query, set confidence to 0.0 and command_id to \"\".",
         );
 
         prompt
@@ -77,13 +75,17 @@ If no command matches the query, set confidence to 0.0 and command_id to \"\"."
     /// Parse the LLM response into a CommandResolution
     fn parse_response(&self, response: &str) -> Result<CommandResolution> {
         // Try to extract JSON from the response
-        let json_start = response.find('{').ok_or_else(|| anyhow::anyhow!("No JSON found in response"))?;
-        let json_end = response.rfind('}').ok_or_else(|| anyhow::anyhow!("No JSON found in response"))?;
-        
+        let json_start = response
+            .find('{')
+            .ok_or_else(|| anyhow::anyhow!("No JSON found in response"))?;
+        let json_end = response
+            .rfind('}')
+            .ok_or_else(|| anyhow::anyhow!("No JSON found in response"))?;
+
         if json_start > json_end {
             return Err(anyhow::anyhow!("Invalid JSON range in response"));
         }
-        
+
         let json_str = &response[json_start..=json_end];
 
         let parsed: serde_json::Value = serde_json::from_str(json_str)?;
@@ -118,16 +120,12 @@ If no command matches the query, set confidence to 0.0 and command_id to \"\"."
             .as_object()
             .unwrap_or(&serde_json::Map::new())
             .iter()
-            .filter_map(|(k, v)| {
-                v.as_str().map(|s| (k.clone(), s.to_string()))
-            })
+            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
             .collect();
 
         let args = CommandArgs { positional, named };
 
-        let reasoning = parsed["reasoning"]
-            .as_str()
-            .map(|s| s.to_string());
+        let reasoning = parsed["reasoning"].as_str().map(|s| s.to_string());
 
         Ok(CommandResolution {
             command_id,
@@ -149,20 +147,21 @@ impl LlmProvider for OpenAiProvider {
 
         let request = CreateChatCompletionRequestArgs::default()
             .model(&self.model)
-            .messages(vec![
-                ChatCompletionRequestMessage::User(
-                    async_openai::types::ChatCompletionRequestUserMessage {
-                        content: async_openai::types::ChatCompletionRequestUserMessageContent::Text(prompt),
-                        ..Default::default()
-                    }
-                )
-            ])
+            .messages(vec![ChatCompletionRequestMessage::User(
+                async_openai::types::ChatCompletionRequestUserMessage {
+                    content: async_openai::types::ChatCompletionRequestUserMessageContent::Text(
+                        prompt,
+                    ),
+                    ..Default::default()
+                },
+            )])
             .max_tokens(1000u16)
             .temperature(0.1) // Low temperature for consistent results
             .build()?;
 
         let response = self.client.chat().create(request).await?;
-        let content = response.choices
+        let content = response
+            .choices
             .first()
             .and_then(|choice| choice.message.content.as_ref())
             .ok_or_else(|| anyhow::anyhow!("No response from OpenAI"))?;
@@ -179,14 +178,12 @@ mod tests {
     fn test_prompt_creation() {
         let provider = OpenAiProvider::new("test-key".to_string(), "gpt-4".to_string());
 
-        let commands = vec![
-            CommandMetadata {
-                id: "deploy".to_string(),
-                summary: "Deploy application".to_string(),
-                syntax: Some("deploy --env <env>".to_string()),
-                category: Some("deployment".to_string()),
-            }
-        ];
+        let commands = vec![CommandMetadata {
+            id: "deploy".to_string(),
+            summary: "Deploy application".to_string(),
+            syntax: Some("deploy --env <env>".to_string()),
+            category: Some("deployment".to_string()),
+        }];
 
         let prompt = provider.create_prompt("deploy to production", &commands);
         assert!(prompt.contains("deploy to production"));
@@ -211,7 +208,13 @@ mod tests {
         let resolution = provider.parse_response(response).unwrap();
         assert_eq!(resolution.command_id, "deploy");
         assert_eq!(resolution.confidence, 0.95);
-        assert_eq!(resolution.args.named.get("env"), Some(&"production".to_string()));
-        assert_eq!(resolution.reasoning, Some("User wants to deploy to production".to_string()));
+        assert_eq!(
+            resolution.args.named.get("env"),
+            Some(&"production".to_string())
+        );
+        assert_eq!(
+            resolution.reasoning,
+            Some("User wants to deploy to production".to_string())
+        );
     }
 }

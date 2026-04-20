@@ -1,7 +1,7 @@
 //! Tests for terminal dimension detection
 
-use std::env;
 use cli_framework::cli_mode;
+use std::env;
 
 #[test]
 fn test_terminal_width_from_env() {

@@ -7,23 +7,9 @@ use cli_framework::prelude::*;
 use std::io::{self, Write};
 
 // Custom application context with ailoop support
-struct MyApp {
-    counter: std::sync::Mutex<i32>,
-}
+struct MyApp;
 
 impl AppContext for MyApp {}
-
-// Implement ailoop context for confirmations
-impl cli_framework::ailoop::AiloopContext for MyApp {
-    fn ailoop_client(&self) -> &cli_framework::ailoop::AiloopClient {
-        // In a real application, this would be stored in the context
-        // For this example, we'll create a static client
-        static CLIENT: once_cell::sync::OnceCell<cli_framework::ailoop::AiloopClient> = once_cell::sync::OnceCell::new();
-        CLIENT.get_or_init(|| {
-            cli_framework::ailoop::AiloopClient::new().unwrap()
-        })
-    }
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -33,17 +19,21 @@ async fn main() -> anyhow::Result<()> {
         summary: "Deploy application (requires confirmation)",
         syntax: Some("deploy --env <environment>"),
         category: Some("deployment"),
-        execute: |ctx, args| Box::pin(async move {
-            let env = args.named.get("env").unwrap_or(&"staging".to_string());
+        execute: |_ctx, args| {
+            Box::pin(async move {
+                let env = args
+                    .named
+                    .get("env")
+                    .map(String::as_str)
+                    .unwrap_or("staging");
 
-            println!("🚀 Preparing to deploy to {} environment...", env);
+                println!("🚀 Preparing to deploy to {} environment...", env);
 
-            // This would use ailoop for confirmation if available
-            if let Some(ailoop_ctx) = ctx.as_any().downcast_ref::<dyn cli_framework::ailoop::AiloopContext>() {
-                let confirmed = ailoop_ctx.ailoop_client()
+                let ailoop = cli_framework::ailoop::AiloopClient::new()?;
+                let confirmed = ailoop
                     .request_confirmation(
                         &format!("Deploy application to {} environment", env),
-                        Some("This will update live systems and may cause downtime")
+                        Some("This will update live systems and may cause downtime"),
                     )
                     .await?;
 
@@ -51,14 +41,14 @@ async fn main() -> anyhow::Result<()> {
                     println!("❌ Deployment cancelled by user");
                     return Ok(());
                 }
-            }
 
-            println!("✅ Deployment confirmed and started!");
-            // Simulate deployment
-            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-            println!("🎉 Deployment completed successfully!");
-            Ok(())
-        }),
+                println!("✅ Deployment confirmed and started!");
+                // Simulate deployment
+                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                println!("🎉 Deployment completed successfully!");
+                Ok(())
+            })
+        },
     };
 
     // Create a command that asks questions
@@ -67,41 +57,44 @@ async fn main() -> anyhow::Result<()> {
         summary: "Configure application settings",
         syntax: Some("configure"),
         category: Some("setup"),
-        execute: |ctx, _args| Box::pin(async move {
-            println!("⚙️  Configuring application...");
+        execute: |_ctx, _args| {
+            Box::pin(async move {
+                println!("⚙️  Configuring application...");
 
-            // Ask for configuration preferences
-            if let Some(ailoop_ctx) = ctx.as_any().downcast_ref::<dyn cli_framework::ailoop::AiloopContext>() {
-                let db_type = ailoop_ctx.ailoop_client()
+                let ailoop = cli_framework::ailoop::AiloopClient::new()?;
+                let db_type = ailoop
                     .ask_question(
                         "Which database type would you like to use?",
-                        Some(vec!["PostgreSQL".to_string(), "MySQL".to_string(), "SQLite".to_string()])
+                        Some(vec![
+                            "PostgreSQL".to_string(),
+                            "MySQL".to_string(),
+                            "SQLite".to_string(),
+                        ]),
                     )
                     .await?;
 
-                let cache_enabled = ailoop_ctx.ailoop_client()
+                let cache_enabled = ailoop
                     .request_confirmation(
                         "Enable Redis caching?",
-                        Some("Caching improves performance but requires Redis server")
+                        Some("Caching improves performance but requires Redis server"),
                     )
                     .await?;
 
                 println!("📝 Configuration:");
                 println!("   Database: {}", db_type);
-                println!("   Caching: {}", if cache_enabled { "Enabled" } else { "Disabled" });
+                println!(
+                    "   Caching: {}",
+                    if cache_enabled { "Enabled" } else { "Disabled" }
+                );
 
-                // Send notification
-                ailoop_ctx.ailoop_client()
-                    .send_notification(
-                        "Application configuration completed",
-                        Some("normal")
-                    )
+                ailoop
+                    .send_notification("Application configuration completed", Some("normal"))
                     .await?;
-            }
 
-            println!("✅ Configuration completed!");
-            Ok(())
-        }),
+                println!("✅ Configuration completed!");
+                Ok(())
+            })
+        },
     };
 
     // Build the CLI application with ailoop integration
@@ -114,9 +107,7 @@ async fn main() -> anyhow::Result<()> {
         .register_command(deploy_command)
         .register_command(configure_command);
 
-    let app = builder.build(MyApp {
-        counter: std::sync::Mutex::new(0),
-    })?;
+    let mut app = builder.build(MyApp)?;
 
     // Interactive CLI loop
     println!("CLI Framework - ailoop Integration Example");
