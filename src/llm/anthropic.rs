@@ -2,8 +2,8 @@
 
 use crate::command::CommandArgs;
 use crate::llm::{CommandMetadata, CommandResolution, LlmProvider};
-use anyhow::Result;
 use anthropic_sdk::Client;
+use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
@@ -63,7 +63,7 @@ Example response:
   \"reasoning\": \"The user wants to deploy to production environment\"
 }
 
-If no command matches the query, set confidence to 0.0 and command_id to \"\"."
+If no command matches the query, set confidence to 0.0 and command_id to \"\".",
         );
 
         prompt
@@ -72,13 +72,17 @@ If no command matches the query, set confidence to 0.0 and command_id to \"\"."
     /// Parse the LLM response into a CommandResolution
     fn parse_response(&self, response: &str) -> Result<CommandResolution> {
         // Try to extract JSON from the response
-        let json_start = response.find('{').ok_or_else(|| anyhow::anyhow!("No JSON found in response"))?;
-        let json_end = response.rfind('}').ok_or_else(|| anyhow::anyhow!("No JSON found in response"))?;
-        
+        let json_start = response
+            .find('{')
+            .ok_or_else(|| anyhow::anyhow!("No JSON found in response"))?;
+        let json_end = response
+            .rfind('}')
+            .ok_or_else(|| anyhow::anyhow!("No JSON found in response"))?;
+
         if json_start > json_end {
             return Err(anyhow::anyhow!("Invalid JSON range in response"));
         }
-        
+
         let json_str = &response[json_start..=json_end];
 
         let parsed: serde_json::Value = serde_json::from_str(json_str)?;
@@ -113,16 +117,12 @@ If no command matches the query, set confidence to 0.0 and command_id to \"\"."
             .as_object()
             .unwrap_or(&serde_json::Map::new())
             .iter()
-            .filter_map(|(k, v)| {
-                v.as_str().map(|s| (k.clone(), s.to_string()))
-            })
+            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
             .collect();
 
         let args = CommandArgs { positional, named };
 
-        let reasoning = parsed["reasoning"]
-            .as_str()
-            .map(|s| s.to_string());
+        let reasoning = parsed["reasoning"].as_str().map(|s| s.to_string());
 
         Ok(CommandResolution {
             command_id,
@@ -155,13 +155,15 @@ impl LlmProvider for AnthropicProvider {
         let content = Arc::new(Mutex::new(String::new()));
         let content_clone = content.clone();
 
-        let _ = request.execute(move |text: String| {
-            let c = content_clone.clone();
-            async move {
-                let mut locked = c.lock().await;
-                locked.push_str(&text);
-            }
-        }).await;
+        let _ = request
+            .execute(move |text: String| {
+                let c = content_clone.clone();
+                async move {
+                    let mut locked = c.lock().await;
+                    locked.push_str(&text);
+                }
+            })
+            .await;
 
         let final_content = content.lock().await.clone();
         self.parse_response(&final_content)
@@ -174,16 +176,17 @@ mod tests {
 
     #[test]
     fn test_prompt_creation() {
-        let provider = AnthropicProvider::new("test-key".to_string(), "claude-3-sonnet-20240229".to_string());
+        let provider = AnthropicProvider::new(
+            "test-key".to_string(),
+            "claude-3-sonnet-20240229".to_string(),
+        );
 
-        let commands = vec![
-            CommandMetadata {
-                id: "deploy".to_string(),
-                summary: "Deploy application".to_string(),
-                syntax: Some("deploy --env <env>".to_string()),
-                category: Some("deployment".to_string()),
-            }
-        ];
+        let commands = vec![CommandMetadata {
+            id: "deploy".to_string(),
+            summary: "Deploy application".to_string(),
+            syntax: Some("deploy --env <env>".to_string()),
+            category: Some("deployment".to_string()),
+        }];
 
         let prompt = provider.create_prompt("deploy to production", &commands);
         assert!(prompt.contains("deploy to production"));
@@ -193,7 +196,10 @@ mod tests {
 
     #[test]
     fn test_response_parsing() {
-        let provider = AnthropicProvider::new("test-key".to_string(), "claude-3-sonnet-20240229".to_string());
+        let provider = AnthropicProvider::new(
+            "test-key".to_string(),
+            "claude-3-sonnet-20240229".to_string(),
+        );
 
         let response = r#"{
             "command_id": "deploy",
@@ -208,7 +214,13 @@ mod tests {
         let resolution = provider.parse_response(response).unwrap();
         assert_eq!(resolution.command_id, "deploy");
         assert_eq!(resolution.confidence, 0.95);
-        assert_eq!(resolution.args.named.get("env"), Some(&"production".to_string()));
-        assert_eq!(resolution.reasoning, Some("User wants to deploy to production".to_string()));
+        assert_eq!(
+            resolution.args.named.get("env"),
+            Some(&"production".to_string())
+        );
+        assert_eq!(
+            resolution.reasoning,
+            Some("User wants to deploy to production".to_string())
+        );
     }
 }

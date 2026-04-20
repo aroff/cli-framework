@@ -3,6 +3,7 @@
 //! Demonstrates how to create a CLI application that loads third-party commands
 //! from plugin manifests and registry files.
 
+use cli_framework::plugin::manifest::{CommandExecution, PluginCommand};
 use cli_framework::prelude::*;
 use std::io::{self, Write};
 
@@ -19,12 +20,17 @@ async fn main() -> anyhow::Result<()> {
         summary: "Execute a built-in command",
         syntax: Some("builtin <message>"),
         category: Some("builtins"),
-        execute: |_ctx, args| Box::pin(async move {
-            let message = args.positional.get(0)
-                .unwrap_or(&"Hello from built-in command!".to_string());
-            println!("🔧 Built-in: {}", message);
-            Ok(())
-        }),
+        execute: |_ctx, args| {
+            Box::pin(async move {
+                let message = args
+                    .positional
+                    .get(0)
+                    .map(String::as_str)
+                    .unwrap_or("Hello from built-in command!");
+                println!("🔧 Built-in: {}", message);
+                Ok(())
+            })
+        },
     };
 
     // Build the CLI application with plugin support
@@ -37,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
 
     builder = builder.register_command(builtin_command);
 
-    let app = builder.build(MyApp)?;
+    let mut app = builder.build(MyApp)?;
 
     // Interactive CLI loop
     println!("CLI Framework - Plugins Example");
@@ -100,20 +106,18 @@ async fn create_sample_registry(path: &std::path::Path) -> anyhow::Result<()> {
         version: "1.0.0".to_string(),
         description: Some("Sample plugin for demonstration".to_string()),
         author: Some("CLI Framework".to_string()),
-        commands: vec![
-            cli_framework::plugin::PluginCommand {
-                id: "sample-hello".to_string(),
-                name: "Sample Hello".to_string(),
-                description: "Print a hello message from plugin".to_string(),
-                syntax: Some("sample-hello".to_string()),
-                category: Some("samples".to_string()),
-                execution: cli_framework::plugin::CommandExecution::Subprocess {
-                    command: "echo".to_string(),
-                    args: vec!["Hello from plugin!".to_string()],
-                    cwd: None,
-                },
-            }
-        ],
+        commands: vec![PluginCommand {
+            id: "sample-hello".to_string(),
+            name: "Sample Hello".to_string(),
+            description: "Print a hello message from plugin".to_string(),
+            syntax: Some("sample-hello".to_string()),
+            category: Some("samples".to_string()),
+            execution: CommandExecution::Subprocess {
+                command: "echo".to_string(),
+                args: vec!["Hello from plugin!".to_string()],
+                cwd: None,
+            },
+        }],
     };
 
     // Save the manifest
@@ -130,7 +134,7 @@ async fn create_sample_registry(path: &std::path::Path) -> anyhow::Result<()> {
             manifest_path: manifest_path.to_string_lossy().to_string(),
             enabled: true,
             priority: 0,
-        }
+        },
     );
 
     // Save registry

@@ -57,24 +57,34 @@ impl LlmProviderFactory {
 
         match provider.as_str() {
             "openai" => {
-                let api_key = std::env::var("OPENAI_API_KEY")
-                    .map_err(|_| anyhow::anyhow!("OPENAI_API_KEY environment variable is required for OpenAI provider"))?;
+                let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| {
+                    anyhow::anyhow!(
+                        "OPENAI_API_KEY environment variable is required for OpenAI provider"
+                    )
+                })?;
                 let model = std::env::var("LLM_MODEL").unwrap_or_else(|_| "gpt-4".to_string());
                 Ok(Arc::new(OpenAiProvider::new(api_key, model)))
             }
             "anthropic" => {
-                let api_key = std::env::var("ANTHROPIC_API_KEY")
-                    .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY environment variable is required for Anthropic provider"))?;
-                let model = std::env::var("LLM_MODEL").unwrap_or_else(|_| "claude-3-sonnet-20240229".to_string());
+                let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
+                    anyhow::anyhow!(
+                        "ANTHROPIC_API_KEY environment variable is required for Anthropic provider"
+                    )
+                })?;
+                let model = std::env::var("LLM_MODEL")
+                    .unwrap_or_else(|_| "claude-3-sonnet-20240229".to_string());
                 Ok(Arc::new(AnthropicProvider::new(api_key, model)))
             }
-            _ => Err(anyhow::anyhow!("Unsupported LLM provider: {}. Supported: openai, anthropic", provider)),
+            _ => Err(anyhow::anyhow!(
+                "Unsupported LLM provider: {}. Supported: openai, anthropic",
+                provider
+            )),
         }
     }
 }
 
-pub mod openai;
 pub mod anthropic;
+pub mod openai;
 
-pub use openai::OpenAiProvider;
 pub use anthropic::AnthropicProvider;
+pub use openai::OpenAiProvider;

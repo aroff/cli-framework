@@ -3,9 +3,9 @@
 //! This example shows how to use RetryableHttpClient to make HTTP requests
 //! with automatic retry logic.
 
+use cli_framework::http_retry::RetryableHttpClient;
 use reqwest::Client;
 use std::time::Duration;
-use cli_framework::http_retry::RetryableHttpClient;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
