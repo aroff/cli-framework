@@ -23,7 +23,7 @@ dirs = "5.0"
 uuid = { version = "1.0", features = ["v4"] }
 crossterm = "0.28"
 # ailoop-core integration
-ailoop-core = { path = "../../goailoop/ailoop/ailoop-core" }
+ailoop-core = { git = "https://github.com/goailoop/ailoop.git", rev = "83508e764a18b9073bfc5f34a9060247634b3833" }
 # LLM providers
 async-openai = "0.20"
 anthropic-sdk = "0.1"
