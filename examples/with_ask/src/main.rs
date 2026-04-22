@@ -5,6 +5,7 @@
 
 use cli_framework::prelude::*;
 use std::io::{self, Write};
+use std::sync::Arc;
 
 // Custom application context
 struct MyApp;
@@ -19,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
         summary: "Deploy application to specified environment",
         syntax: Some("deploy --env <environment> --version <version>"),
         category: Some("deployment"),
-        execute: |_ctx, args| {
+        execute: Arc::new(|_ctx, args| {
             Box::pin(async move {
                 let env = args.named.get("env").map(String::as_str).unwrap_or("dev");
                 let version = args
@@ -34,7 +35,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("✅ Deployment completed successfully!");
                 Ok(())
             })
-        },
+        }),
     };
 
     let status_command = Command {
@@ -42,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
         summary: "Show system status and health information",
         syntax: Some("status"),
         category: Some("monitoring"),
-        execute: |_ctx, _args| {
+        execute: Arc::new(|_ctx, _args| {
             Box::pin(async move {
                 println!("📊 System Status:");
                 println!("   Services: ✅ All running");
@@ -51,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("   Uptime:   99.9%");
                 Ok(())
             })
-        },
+        }),
     };
 
     let logs_command = Command {
@@ -59,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
         summary: "Show application logs",
         syntax: Some("logs --service <service> --lines <count>"),
         category: Some("monitoring"),
-        execute: |_ctx, args| {
+        execute: Arc::new(|_ctx, args| {
             Box::pin(async move {
                 let service = args
                     .named
@@ -78,7 +79,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 Ok(())
             })
-        },
+        }),
     };
 
     // Build the CLI application with LLM support

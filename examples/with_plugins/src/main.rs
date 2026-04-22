@@ -6,6 +6,7 @@
 use cli_framework::plugin::manifest::{CommandExecution, PluginCommand};
 use cli_framework::prelude::*;
 use std::io::{self, Write};
+use std::sync::Arc;
 
 // Custom application context
 struct MyApp;
@@ -20,7 +21,7 @@ async fn main() -> anyhow::Result<()> {
         summary: "Execute a built-in command",
         syntax: Some("builtin <message>"),
         category: Some("builtins"),
-        execute: |_ctx, args| {
+        execute: Arc::new(|_ctx, args| {
             Box::pin(async move {
                 let message = args
                     .positional
@@ -30,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("🔧 Built-in: {}", message);
                 Ok(())
             })
-        },
+        }),
     };
 
     // Build the CLI application with plugin support

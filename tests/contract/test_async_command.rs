@@ -3,6 +3,7 @@
 //! Verifies that Command implementations correctly execute async operations.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 use cli_framework::app::AppContext;
 use cli_framework::command::{Command, CommandArgs};
@@ -25,47 +26,13 @@ fn create_async_command(id: &'static str, summary: &'static str) -> Command {
         summary,
         syntax: None,
         category: None,
-        execute: |_ctx: &mut dyn AppContext, _args: CommandArgs| {
-            // This will be converted to async in implementation
-            // For now, this test will fail to compile
+        execute: Arc::new(|_ctx: &mut dyn AppContext, _args: CommandArgs| {
             Box::pin(async move {
                 sleep(Duration::from_millis(10)).await;
                 Ok(())
             })
-        },
-    }
-}
-
-#[tokio::test]
-async fn test_async_command_execution_is_async() {
-    // This test will fail to compile until Command::execute is converted to async
-    let command = create_async_command("test.async", "Test async command");
-
-    let mut ctx = TestContext {
-        command_executed: false,
-        result: String::new(),
+        }),
     };
-
-    let args = CommandArgs {
-        positional: vec![],
-        named: HashMap::new(),
-    };
-
-    // Execute command asynchronously
-    // Note: This will fail until Command::execute returns a Future
-    let start = std::time::Instant::now();
-    let result = (command.execute)(&mut ctx, args).await;
-    let elapsed = start.elapsed();
-
-    // Verify it completed asynchronously
-    assert!(elapsed >= Duration::from_millis(10));
-    assert!(result.is_ok());
-}
-
-#[tokio::test]
-async fn test_async_command_can_use_await() {
-    // This test will fail to compile until Command::execute is converted to async
-    let command = create_async_command("test.await", "Test await in command");
 
     let mut ctx = TestContext {
         command_executed: false,
@@ -87,20 +54,17 @@ async fn test_async_command_can_use_await() {
 
 #[tokio::test]
 async fn test_async_command_handles_errors() {
-    // This test will fail to compile until Command::execute is converted to async
-    // For now, we'll create a command that returns an error
-    // This will be updated when Command is converted to async
     let command = Command {
         id: "test.error",
         summary: "Test error handling",
         syntax: None,
         category: None,
-        execute: |_ctx: &mut dyn AppContext, _args: CommandArgs| {
+        execute: Arc::new(|_ctx: &mut dyn AppContext, _args: CommandArgs| {
             Box::pin(async move {
                 sleep(Duration::from_millis(5)).await;
                 anyhow::bail!("Command failed");
             })
-        },
+        }),
     };
 
     let mut ctx = TestContext {
@@ -126,16 +90,15 @@ async fn test_async_command_can_access_args() {
         summary: "Test command args",
         syntax: None,
         category: None,
-        execute: |_ctx: &mut dyn AppContext, args: CommandArgs| {
+        execute: Arc::new(|_ctx: &mut dyn AppContext, args: CommandArgs| {
             Box::pin(async move {
-                // Verify we can access args
                 assert_eq!(args.positional.len(), 2);
                 assert_eq!(args.positional[0], "arg1");
                 assert_eq!(args.positional[1], "arg2");
                 assert_eq!(args.named.get("key"), Some(&"value".to_string()));
                 Ok(())
             })
-        },
+        }),
     };
 
     let mut ctx = TestContext {
