@@ -228,7 +228,7 @@ impl<C: AppContext> App<C> {
     /// an explicit argument list instead of reading `std::env::args()`.
     pub async fn run_with_args(&mut self, args: Vec<String>) -> Result<()> {
         if Self::should_show_help(&args) {
-            HelpRenderer::new(self.meta.as_ref(), &self.command_registry).print();
+            self.show_help();
             return Ok(());
         }
 
