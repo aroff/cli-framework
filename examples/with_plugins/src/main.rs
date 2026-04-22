@@ -41,7 +41,9 @@ async fn main() -> anyhow::Result<()> {
     create_sample_registry(&registry_path).await?;
     builder = builder.with_plugin_registry_path(registry_path);
 
-    builder = builder.register_command(builtin_command);
+    builder = builder
+        .with_version(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
+        .register_command(builtin_command);
 
     let mut app = builder.build(MyApp)?;
 

@@ -97,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     builder = builder
+        .with_version(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
         .register_command(deploy_command)
         .register_command(status_command)
         .register_command(logs_command);
