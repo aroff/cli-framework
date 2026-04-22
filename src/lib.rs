@@ -30,7 +30,7 @@
 //!             summary: "Say hello",
 //!             syntax: Some("hello --name <name>"),
 //!             category: Some("greetings"),
-//!             execute: |_ctx, args| Box::pin(async move {
+//!             execute: std::sync::Arc::new(|_ctx, args| Box::pin(async move {
 //!                 let name = args
 //!                     .named
 //!                     .get("name")
@@ -38,7 +38,7 @@
 //!                     .unwrap_or("World");
 //!                 println!("Hello, {}!", name);
 //!                 Ok(())
-//!             }),
+//!             })),
 //!         });
 //!
 //!     let mut app = builder.build(MyContext)?;

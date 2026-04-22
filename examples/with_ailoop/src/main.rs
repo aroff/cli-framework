@@ -5,6 +5,7 @@
 
 use cli_framework::prelude::*;
 use std::io::{self, Write};
+use std::sync::Arc;
 
 // Custom application context with ailoop support
 struct MyApp;
@@ -19,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
         summary: "Deploy application (requires confirmation)",
         syntax: Some("deploy --env <environment>"),
         category: Some("deployment"),
-        execute: |_ctx, args| {
+        execute: Arc::new(|_ctx, args| {
             Box::pin(async move {
                 let env = args
                     .named
@@ -48,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("🎉 Deployment completed successfully!");
                 Ok(())
             })
-        },
+        }),
     };
 
     // Create a command that asks questions
@@ -57,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
         summary: "Configure application settings",
         syntax: Some("configure"),
         category: Some("setup"),
-        execute: |_ctx, _args| {
+        execute: Arc::new(|_ctx, _args| {
             Box::pin(async move {
                 println!("⚙️  Configuring application...");
 
@@ -94,7 +95,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("✅ Configuration completed!");
                 Ok(())
             })
-        },
+        }),
     };
 
     // Build the CLI application with ailoop integration

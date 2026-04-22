@@ -139,7 +139,7 @@ fn show_help_version_appears_before_registered_commands() {
         summary: "Alpha command",
         syntax: None,
         category: Some("test"),
-        execute: |_ctx, _args| Box::pin(async move { Ok(()) }),
+        execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
     };
 
     let app = AppBuilder::new()

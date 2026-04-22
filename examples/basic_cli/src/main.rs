@@ -5,6 +5,7 @@
 
 use cli_framework::prelude::*;
 use std::io::{self, Write};
+use std::sync::Arc;
 
 // Custom application context
 struct MyApp;
@@ -19,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
         summary: "Print a greeting message",
         syntax: Some("hello [name]"),
         category: Some("utilities"),
-        execute: |_ctx, args| {
+        execute: Arc::new(|_ctx, args| {
             Box::pin(async move {
                 let name = args
                     .positional
@@ -30,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("Hello, {}!", name);
                 Ok(())
             })
-        },
+        }),
     };
 
     // Create an "increment" command that uses app context
@@ -39,13 +40,13 @@ async fn main() -> anyhow::Result<()> {
         summary: "Increment and display counter",
         syntax: Some("increment"),
         category: Some("utilities"),
-        execute: |_ctx, _args| {
+        execute: Arc::new(|_ctx, _args| {
             Box::pin(async move {
                 // This is a simplified example - in practice, you'd need proper context access
                 println!("Counter incremented!");
                 Ok(())
             })
-        },
+        }),
     };
 
     // Build the CLI application
