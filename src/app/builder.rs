@@ -5,6 +5,8 @@
 use crate::ailoop::{AiloopClient, AiloopConfig};
 use crate::app::context::AppContext;
 use crate::app::module::Module;
+use crate::app::AppMeta;
+use crate::cli_output::HelpRenderer;
 use crate::command::{Command, CommandRegistry};
 use crate::llm::LlmProvider;
 use crate::plugin::PluginRegistryManager;
@@ -19,6 +21,7 @@ pub struct AppBuilder {
     llm_provider: Option<Arc<dyn LlmProvider>>,
     ailoop_config: Option<AiloopConfig>,
     plugin_registry_path: Option<PathBuf>,
+    meta: Option<AppMeta>,
 }
 
 impl AppBuilder {
@@ -30,6 +33,7 @@ impl AppBuilder {
             llm_provider: None,
             ailoop_config: None,
             plugin_registry_path: None,
+            meta: None,
         }
     }
 
@@ -84,6 +88,12 @@ impl AppBuilder {
         self
     }
 
+    /// Set application-level metadata used in the help header.
+    pub fn with_meta(mut self, meta: AppMeta) -> Self {
+        self.meta = Some(meta);
+        self
+    }
+
     /// Build the CLI application
     pub fn build<C: AppContext + 'static>(mut self, ctx: C) -> Result<App<C>> {
         // Initialize ailoop client if configured
@@ -110,6 +120,7 @@ impl AppBuilder {
             ailoop_client,
             plugin_registry_manager,
             ctx,
+            meta: self.meta,
         })
     }
 }
@@ -127,6 +138,7 @@ pub struct App<C: AppContext> {
     ailoop_client: Option<AiloopClient>,
     plugin_registry_manager: Option<PluginRegistryManager>,
     ctx: C,
+    meta: Option<AppMeta>,
 }
 
 /// Context wrapper that provides access to CLI framework services
@@ -179,14 +191,19 @@ impl<'a, C: AppContext> crate::ailoop::AiloopContext for CliAppContextWrapper<'a
 }
 
 impl<C: AppContext> App<C> {
+    #[doc(hidden)]
+    pub fn should_show_help(args: &[String]) -> bool {
+        args.len() < 2 || args.get(1).is_some_and(|s| s == "--help" || s == "-h")
+    }
+
     /// Run the CLI application
     ///
     /// This parses command-line arguments and executes the corresponding command.
     pub async fn run(&mut self) -> Result<()> {
         let args: Vec<String> = std::env::args().collect();
 
-        if args.len() < 2 {
-            self.show_help();
+        if Self::should_show_help(&args) {
+            HelpRenderer::new(self.meta.as_ref(), &self.command_registry).print();
             return Ok(());
         }
 
@@ -221,14 +238,7 @@ impl<C: AppContext> App<C> {
 
     /// Show help information
     pub fn show_help(&self) {
-        println!("Available commands:");
-        for cmd in self.command_registry.collect_metadata() {
-            print!("  {}", cmd.id);
-            if let Some(syntax) = &cmd.syntax {
-                print!(" {}", syntax);
-            }
-            println!(" - {}", cmd.summary);
-        }
+        HelpRenderer::new(self.meta.as_ref(), &self.command_registry).print();
     }
 
     /// Execute a command by ID
