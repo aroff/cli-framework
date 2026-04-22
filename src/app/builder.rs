@@ -22,6 +22,8 @@ pub struct AppBuilder {
     ailoop_config: Option<AiloopConfig>,
     plugin_registry_path: Option<PathBuf>,
     meta: Option<AppMeta>,
+    app_name: &'static str,
+    app_version: &'static str,
 }
 
 impl AppBuilder {
@@ -34,6 +36,8 @@ impl AppBuilder {
             ailoop_config: None,
             plugin_registry_path: None,
             meta: None,
+            app_name: "unknown",
+            app_version: "unknown",
         }
     }
 
@@ -94,6 +98,16 @@ impl AppBuilder {
         self
     }
 
+    /// Set the application name and version reported by the `version` command.
+    ///
+    /// Recommended: pass `env!("CARGO_PKG_NAME")` and `env!("CARGO_PKG_VERSION")`
+    /// so the values are resolved at the *calling crate's* compile time.
+    pub fn with_version(mut self, name: &'static str, version: &'static str) -> Self {
+        self.app_name = name;
+        self.app_version = version;
+        self
+    }
+
     /// Build the CLI application
     pub fn build<C: AppContext + 'static>(mut self, ctx: C) -> Result<App<C>> {
         // Initialize ailoop client if configured
@@ -121,6 +135,8 @@ impl AppBuilder {
             plugin_registry_manager,
             ctx,
             meta: self.meta,
+            app_name: self.app_name,
+            app_version: self.app_version,
         })
     }
 }
@@ -139,6 +155,8 @@ pub struct App<C: AppContext> {
     plugin_registry_manager: Option<PluginRegistryManager>,
     ctx: C,
     meta: Option<AppMeta>,
+    app_name: &'static str,
+    app_version: &'static str,
 }
 
 /// Context wrapper that provides access to CLI framework services
@@ -201,16 +219,33 @@ impl<C: AppContext> App<C> {
     /// This parses command-line arguments and executes the corresponding command.
     pub async fn run(&mut self) -> Result<()> {
         let args: Vec<String> = std::env::args().collect();
+        self.run_with_args(args).await
+    }
 
+    /// Run the CLI application with the given arguments.
+    ///
+    /// This is the testable equivalent of [`run`](Self::run) that accepts
+    /// an explicit argument list instead of reading `std::env::args()`.
+    pub async fn run_with_args(&mut self, args: Vec<String>) -> Result<()> {
         if Self::should_show_help(&args) {
-            HelpRenderer::new(self.meta.as_ref(), &self.command_registry).print();
+            self.show_help();
             return Ok(());
+        }
+
+        match args[1].as_str() {
+            "version" | "--version" => {
+                if self.app_name == "unknown" {
+                    log::warn!("version called but with_version() was not configured");
+                }
+                println!("{} {}", self.app_name, self.app_version);
+                return Ok(());
+            }
+            _ => {}
         }
 
         let command_id = &args[1];
         let remaining_args = &args[2..];
 
-        // Basic argument parsing
         let mut positional = Vec::new();
         let mut named = std::collections::HashMap::new();
 
@@ -238,7 +273,20 @@ impl<C: AppContext> App<C> {
 
     /// Show help information
     pub fn show_help(&self) {
+        println!("  version - Print version information");
         HelpRenderer::new(self.meta.as_ref(), &self.command_registry).print();
+    }
+
+    /// Return the full help output as a String (for testing).
+    pub fn render_help(&self) -> String {
+        let mut out = String::from("  version - Print version information\n");
+        out.push_str(&HelpRenderer::new(self.meta.as_ref(), &self.command_registry).render());
+        out
+    }
+
+    /// Return the version string that would be printed by the version command.
+    pub fn version_string(&self) -> String {
+        format!("{} {}", self.app_name, self.app_version)
     }
 
     /// Execute a command by ID
