@@ -96,9 +96,11 @@ cargo run
 cargo run -- hello Alice
 ```
 
-## Step 7: Adding AI "Ask" Support (Optional)
+## Step 7: AI Ask Command
 
-To enable natural language commands, you just need to configure an LLM provider:
+To enable natural language command resolution, configure an LLM provider.
+
+### Setup
 
 ```rust
 #[tokio::main]
@@ -120,11 +122,51 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-Now you can use natural language:
+### Usage
+
+The `ask` command resolves natural language queries to registered commands:
 
 ```bash
+# Positional query
 cargo run -- ask say hello to Bob
+
+# Named query
+cargo run -- ask --query "say hello to Bob"
+
+# Skip confirmation (for CI/scripts)
+cargo run -- ask "say hello to Bob" --yes
 ```
+
+### Confirmation
+
+After resolution, the command displays the result and prompts for confirmation:
+
+```
+🎯 Resolved to command:
+   Command: hello
+   Confidence: 95.0%
+   Reasoning: The user wants to greet Bob
+
+Execute this command? (y/N):
+```
+
+### Non-interactive mode
+
+Set `ASK_ASSUME_YES=1` in the environment to skip the confirmation prompt:
+
+```bash
+ASK_ASSUME_YES=1 cargo run -- ask "say hello to Bob"
+```
+
+### Environment Variables
+
+| Variable | Purpose |
+|----------|---------|
+| `OPENAI_API_KEY` | API key for OpenAI provider |
+| `ANTHROPIC_API_KEY` | API key for Anthropic provider |
+| `LLM_PROVIDER` | Provider to use (`openai` or `anthropic`) |
+| `LLM_MODEL` | Model name (default: `gpt-4` or `claude-3-sonnet`) |
+| `ASK_ASSUME_YES` | Set to `1` or `true` to skip confirmation |
 
 ## Next Steps
 

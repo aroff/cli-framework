@@ -10,6 +10,7 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 /// Command identifier
 pub type CommandId = &'static str;
@@ -45,7 +46,14 @@ pub struct Command {
     /// Execution function (async)
     ///
     /// Returns a boxed future that will be awaited by the framework.
+    /// Uses `Arc<dyn Fn>` to allow closures that capture state (e.g. the ask command).
     #[allow(clippy::type_complexity)]
-    pub execute:
-        fn(&mut dyn AppContext, CommandArgs) -> Pin<Box<dyn Future<Output = CommandResult> + Send>>,
+    pub execute: Arc<
+        dyn Fn(
+                &mut dyn AppContext,
+                CommandArgs,
+            ) -> Pin<Box<dyn Future<Output = CommandResult> + Send>>
+            + Send
+            + Sync,
+    >,
 }

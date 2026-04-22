@@ -83,3 +83,7 @@ path = "examples/with_ailoop/src/main.rs"
 name = "integration_app_builder"
 path = "tests/integration/app_builder.rs"
 
+[[test]]
+name = "unit_command_ask_resolution"
+path = "tests/unit/command/ask_resolution.rs"
+
