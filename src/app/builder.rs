@@ -219,7 +219,14 @@ impl<C: AppContext> App<C> {
     /// This parses command-line arguments and executes the corresponding command.
     pub async fn run(&mut self) -> Result<()> {
         let args: Vec<String> = std::env::args().collect();
+        self.run_with_args(args).await
+    }
 
+    /// Run the CLI application with the given arguments.
+    ///
+    /// This is the testable equivalent of [`run`](Self::run) that accepts
+    /// an explicit argument list instead of reading `std::env::args()`.
+    pub async fn run_with_args(&mut self, args: Vec<String>) -> Result<()> {
         if Self::should_show_help(&args) {
             HelpRenderer::new(self.meta.as_ref(), &self.command_registry).print();
             return Ok(());
@@ -239,7 +246,6 @@ impl<C: AppContext> App<C> {
         let command_id = &args[1];
         let remaining_args = &args[2..];
 
-        // Basic argument parsing
         let mut positional = Vec::new();
         let mut named = std::collections::HashMap::new();
 
