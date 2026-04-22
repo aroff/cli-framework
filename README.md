@@ -61,7 +61,7 @@ impl AppContext for MyContext {}
 
 ## AI Ask Command
 
-Enable natural language command resolution:
+Enable natural language command resolution. The `ask` command sends your query to an LLM provider, which resolves it to one of your registered commands, then prompts for confirmation before executing:
 
 ```rust
 use cli_framework::prelude::*;
@@ -83,9 +83,40 @@ async fn main() -> anyhow::Result<()> {
 
     // Users can now type:
     // $ myapp ask deploy the app to production
+    // $ myapp ask --query "show status" --yes
     
     Ok(())
 }
+```
+
+### Query syntax
+
+- `ask <query>` — positional words are joined into a single query
+- `ask --query "<query>"` — explicit named query
+
+### Confirmation
+
+After the LLM resolves your query, the command displays the resolved command,
+confidence score, and reasoning, then prompts:
+
+```
+Execute this command? (y/N):
+```
+
+Only `y` or `yes` (case-insensitive) proceeds.
+
+### Non-interactive mode
+
+Use `--yes` to skip the confirmation prompt:
+
+```
+$ myapp ask "deploy to production" --yes
+```
+
+Or set the `ASK_ASSUME_YES` environment variable to `1` or `true` for CI/scripting:
+
+```
+ASK_ASSUME_YES=1 myapp ask "deploy to production"
 ```
 
 ## Core Concepts
@@ -168,6 +199,7 @@ Run the included examples to see the framework in action:
 - `ANTHROPIC_API_KEY` - Anthropic API key
 - `LLM_PROVIDER` - Provider selection ("openai", "anthropic")
 - `LLM_MODEL` - Model name
+- `ASK_ASSUME_YES` - Skip confirmation prompt for ask command ("1" or "true")
 
 ### ailoop Configuration
 - `AILOOP_CHANNEL` - Channel name (default: "cli-framework")

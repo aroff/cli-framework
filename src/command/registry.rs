@@ -5,6 +5,7 @@ use crate::llm::CommandMetadata;
 use std::collections::HashMap;
 
 /// Registry for managing commands
+#[derive(Clone)]
 pub struct CommandRegistry {
     commands: HashMap<String, Command>,
 }

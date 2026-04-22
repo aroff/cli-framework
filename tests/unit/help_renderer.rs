@@ -5,6 +5,7 @@ use cli_framework::cli_output::HelpRenderer;
 use cli_framework::command::{Command, CommandArgs, CommandRegistry};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 struct TestContext;
 impl AppContext for TestContext {}
@@ -14,6 +15,13 @@ fn noop_execute(
     _args: CommandArgs,
 ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> {
     Box::pin(async move { Ok(()) })
+}
+
+fn noop_arc_execute(
+) -> Arc<dyn Fn(&mut dyn AppContext, CommandArgs) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync> {
+    Arc::new(|_ctx: &mut dyn AppContext, _args: CommandArgs| {
+        Box::pin(async move { Ok(()) })
+    })
 }
 
 #[test]
@@ -36,21 +44,21 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
         summary: "Stop service",
         syntax: None,
         category: Some("Services"),
-        execute: noop_execute,
+        execute: noop_arc_execute(),
     });
     registry.register(Command {
         id: "start",
         summary: "Start service",
         syntax: None,
         category: Some("Services"),
-        execute: noop_execute,
+        execute: noop_arc_execute(),
     });
     registry.register(Command {
         id: "restart",
         summary: "Restart service",
         syntax: None,
         category: Some("Services"),
-        execute: noop_execute,
+        execute: noop_arc_execute(),
     });
 
     // Other groups
@@ -59,14 +67,14 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
         summary: "Show metrics",
         syntax: None,
         category: Some("Observability"),
-        execute: noop_execute,
+        execute: noop_arc_execute(),
     });
     registry.register(Command {
         id: "whoami",
         summary: "Print user",
         syntax: None,
         category: None,
-        execute: noop_execute,
+        execute: noop_arc_execute(),
     });
 
     let output = HelpRenderer::new(None, &registry).render();
@@ -92,14 +100,14 @@ fn t8_renders_fixed_width_id_column_per_group() {
         summary: "Show logs",
         syntax: None,
         category: None,
-        execute: noop_execute,
+        execute: noop_arc_execute(),
     });
     registry.register(Command {
         id: "status",
         summary: "Show status",
         syntax: None,
         category: None,
-        execute: noop_execute,
+        execute: noop_arc_execute(),
     });
 
     let output = HelpRenderer::new(None, &registry).render();
