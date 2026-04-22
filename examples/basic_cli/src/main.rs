@@ -51,6 +51,7 @@ async fn main() -> anyhow::Result<()> {
     // Build the CLI application
     let mut builder = AppBuilder::new();
     builder = builder
+        .with_version(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
         .register_command(hello_command)
         .register_command(increment_command);
 

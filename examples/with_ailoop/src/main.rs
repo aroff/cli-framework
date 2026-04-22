@@ -104,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
     builder = builder.with_ailoop_channel("cli-framework-demo");
 
     builder = builder
+        .with_version(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
         .register_command(deploy_command)
         .register_command(configure_command);
 
