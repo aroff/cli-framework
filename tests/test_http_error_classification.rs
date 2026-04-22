@@ -1,41 +1,34 @@
 //! Unit tests for HTTP error classification utilities
 
 use cli_framework::http_retry::http_errors::{is_connection_error, is_timeout};
+use std::time::Duration;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[tokio::test]
 async fn test_is_timeout_helper_function() {
     // T009: Unit test for is_timeout() helper function
 
+    // Avoid external network calls in tests: use a local mock server that deliberately delays.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/delay"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(250)))
+        .mount(&server)
+        .await;
+
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(10))
+        .timeout(Duration::from_millis(10))
         .build()
         .unwrap();
 
-    // Create a request that will timeout
-    let result = client
-        .get("http://httpbin.org/delay/5") // This will timeout due to 10ms timeout
-        .send()
-        .await;
+    let result = client.get(format!("{}/delay", server.uri())).send().await;
+    let err = result.expect_err("request should timeout");
 
-    if let Err(e) = result {
-        assert!(
-            is_timeout(&e),
-            "Timeout errors should be detected by is_timeout()"
-        );
-    } else {
-        // If it didn't timeout, try with a very short timeout
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(1))
-            .build()
-            .unwrap();
-        let result = client.get("http://httpbin.org/delay/1").send().await;
-        if let Err(e) = result {
-            assert!(
-                is_timeout(&e) || e.is_timeout(),
-                "Timeout errors should be detected"
-            );
-        }
-    }
+    assert!(
+        is_timeout(&err) || err.is_timeout(),
+        "Timeout errors should be detected by is_timeout()"
+    );
 }
 
 #[tokio::test]
