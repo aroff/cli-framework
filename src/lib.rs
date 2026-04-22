@@ -76,7 +76,7 @@ pub mod http_retry;
 
 /// Prelude module for convenient imports
 pub mod prelude {
-    pub use crate::app::{AppBuilder, AppContext};
+    pub use crate::app::{AppBuilder, AppContext, AppMeta};
     pub use crate::command::{Command, CommandArgs};
     pub use crate::data_source::DataSource;
     pub use crate::llm::{CommandMetadata, CommandResolution, LlmProvider};

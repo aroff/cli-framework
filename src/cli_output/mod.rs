@@ -89,6 +89,7 @@ pub fn should_use_color() -> bool {
 }
 
 pub mod ask;
+pub mod help;
 pub mod json;
 pub mod message;
 #[cfg(feature = "progress")]
@@ -97,6 +98,7 @@ pub mod table;
 
 // Re-export commonly used types
 pub use ask::*;
+pub use help::HelpRenderer;
 pub use json::{format_json, format_json_compact, print_json};
 pub use message::{format_message, format_message_with_details, print_message};
 #[cfg(feature = "progress")]
