@@ -103,6 +103,14 @@ impl AppBuilder {
             self.command_registry.register(ask_command);
         }
 
+        #[cfg(feature = "clap-dispatch")]
+        let clap_root = crate::app::clap_adapter::build_clap_root(
+            self.meta.as_ref(),
+            &self.command_registry,
+            self.app_name,
+            self.app_version,
+        );
+
         Ok(App {
             command_registry: Arc::new(self.command_registry),
             llm_provider: self.llm_provider,
@@ -112,6 +120,8 @@ impl AppBuilder {
             meta: self.meta,
             app_name: self.app_name,
             app_version: self.app_version,
+            #[cfg(feature = "clap-dispatch")]
+            clap_root,
         })
     }
 }
@@ -131,6 +141,8 @@ pub struct App<C: AppContext> {
     meta: Option<AppMeta>,
     app_name: &'static str,
     app_version: &'static str,
+    #[cfg(feature = "clap-dispatch")]
+    clap_root: clap::Command,
 }
 
 struct CliAppContextWrapper<'a, C: AppContext> {
@@ -200,6 +212,33 @@ impl<C: AppContext> App<C> {
         self.run_with_args(args).await
     }
 
+    #[cfg(feature = "clap-dispatch")]
+    pub fn rebuild_clap_root(&mut self) {
+        self.clap_root = crate::app::clap_adapter::build_clap_root(
+            self.meta.as_ref(),
+            &self.command_registry,
+            self.app_name,
+            self.app_version,
+        );
+    }
+
+    #[cfg(feature = "clap-dispatch")]
+    pub async fn run_with_args(&mut self, args: Vec<String>) -> Result<()> {
+        if let Some(parsed) = crate::app::clap_adapter::parse_with_clap(&self.clap_root, args)? {
+            if parsed.command_id == "version" && self.command_registry.get("version").is_none() {
+                if self.app_name == "unknown" {
+                    log::warn!("version called but with_version() was not configured");
+                }
+                println!("{} {}", self.app_name, self.app_version);
+                return Ok(());
+            }
+            self.execute_command(&parsed.command_id, parsed.args).await
+        } else {
+            Ok(())
+        }
+    }
+
+    #[cfg(not(feature = "clap-dispatch"))]
     pub async fn run_with_args(&mut self, args: Vec<String>) -> Result<()> {
         if Self::should_show_help(&args) {
             self.show_help();

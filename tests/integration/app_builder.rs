@@ -178,3 +178,130 @@ fn warn_log_emitted_when_version_not_configured() {
 
     log::set_max_level(log::LevelFilter::Off);
 }
+
+#[cfg(feature = "clap-dispatch")]
+mod clap_dispatch_tests {
+    use super::*;
+
+    fn hello_command() -> cli_framework::command::Command {
+        cli_framework::command::Command {
+            id: "hello",
+            summary: "Say hello",
+            syntax: None,
+            category: None,
+            execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
+        }
+    }
+
+    #[tokio::test]
+    async fn clap_help_shows_subcommands() {
+        let app = AppBuilder::new()
+            .with_version("myapp", "1.2.3")
+            .register_command(hello_command())
+            .build(DummyCtx)
+            .unwrap();
+
+        let cap = StdoutCapture::new();
+        let mut app = app;
+        app.run_with_args(vec!["myapp".to_string(), "--help".to_string()])
+            .await
+            .unwrap();
+        let output = cap.finish();
+
+        assert!(output.contains("hello"));
+        assert!(output.contains("version"));
+    }
+
+    #[tokio::test]
+    async fn clap_unknown_command_returns_ok() {
+        let mut app = AppBuilder::new()
+            .with_version("myapp", "1.2.3")
+            .build(DummyCtx)
+            .unwrap();
+
+        let result = app
+            .run_with_args(vec!["myapp".to_string(), "bogus".to_string()])
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn clap_key_equals_value_parsing() {
+        use std::sync::Mutex;
+
+        let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured_clone = captured.clone();
+
+        let cmd = cli_framework::command::Command {
+            id: "hello",
+            summary: "Say hello",
+            syntax: None,
+            category: None,
+            execute: Arc::new(move |_ctx, args| {
+                let captured = captured_clone.clone();
+                Box::pin(async move {
+                    let name = args.named.get("name").cloned().unwrap_or_default();
+                    captured.lock().unwrap().push(name);
+                    Ok(())
+                })
+            }),
+        };
+
+        let mut app = AppBuilder::new()
+            .with_version("myapp", "1.2.3")
+            .register_command(cmd)
+            .build(DummyCtx)
+            .unwrap();
+
+        app.run_with_args(vec![
+            "myapp".to_string(),
+            "hello".to_string(),
+            "--name=Alice".to_string(),
+        ])
+        .await
+        .unwrap();
+
+        let vals = captured.lock().unwrap();
+        assert_eq!(vals[0], "Alice");
+    }
+
+    #[tokio::test]
+    async fn clap_no_args_shows_help() {
+        let app = AppBuilder::new()
+            .with_version("myapp", "1.2.3")
+            .build(DummyCtx)
+            .unwrap();
+
+        let mut app = app;
+        let result = app.run_with_args(vec!["myapp".to_string()]).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn clap_dash_h_shows_help() {
+        let app = AppBuilder::new()
+            .with_version("myapp", "1.2.3")
+            .build(DummyCtx)
+            .unwrap();
+
+        let cap = StdoutCapture::new();
+        let mut app = app;
+        app.run_with_args(vec!["myapp".to_string(), "-h".to_string()])
+            .await
+            .unwrap();
+        let output = cap.finish();
+        assert!(!output.is_empty());
+    }
+
+    #[test]
+    fn clap_render_help_preserves_custom_format() {
+        let app = AppBuilder::new()
+            .with_version("myapp", "1.2.3")
+            .build(DummyCtx)
+            .unwrap();
+
+        let help = app.render_help();
+        assert!(help.contains("version - Print version information"));
+        assert!(help.contains("Options:"));
+    }
+}
