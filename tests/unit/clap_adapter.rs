@@ -356,3 +356,81 @@ fn parse_with_clap_mixed_positional_and_named() {
     assert_eq!(result.args.positional, vec!["file.txt"]);
     assert_eq!(result.args.named.get("name").unwrap(), "Alice");
 }
+
+// DD#8: bare --flag without a value must NOT insert "true" into named args.
+#[test]
+fn parse_with_clap_bare_flag_not_inserted_as_true() {
+    let registry = make_registry_with(vec![Command {
+        id: "hello",
+        summary: "Say hello",
+        syntax: None,
+        category: None,
+        execute: noop_execute(),
+    }]);
+
+    let root =
+        cli_framework::app::clap_adapter::build_clap_root(None, &registry, "testapp", "0.1.0");
+
+    let result = cli_framework::app::clap_adapter::parse_with_clap(
+        &root,
+        vec![
+            "testapp".to_string(),
+            "hello".to_string(),
+            "--verbose".to_string(),
+        ],
+    )
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(result.command_id, "hello");
+    assert!(
+        result.args.named.get("verbose").is_none(),
+        "bare --flag must NOT appear in named (DD#8)"
+    );
+    assert!(
+        !result.args.positional.contains(&"--verbose".to_string()),
+        "bare --flag must NOT appear in positional"
+    );
+}
+
+// Verify that --key value and --key=value produce identical CommandArgs (AC-G1.2).
+#[test]
+fn parse_with_clap_key_value_and_equals_value_parity() {
+    let registry = make_registry_with(vec![Command {
+        id: "hello",
+        summary: "Say hello",
+        syntax: None,
+        category: None,
+        execute: noop_execute(),
+    }]);
+
+    let root =
+        cli_framework::app::clap_adapter::build_clap_root(None, &registry, "testapp", "0.1.0");
+
+    let result_space = cli_framework::app::clap_adapter::parse_with_clap(
+        &root,
+        vec![
+            "testapp".to_string(),
+            "hello".to_string(),
+            "--name".to_string(),
+            "Alice".to_string(),
+        ],
+    )
+    .unwrap()
+    .unwrap();
+
+    let result_eq = cli_framework::app::clap_adapter::parse_with_clap(
+        &root,
+        vec![
+            "testapp".to_string(),
+            "hello".to_string(),
+            "--name=Alice".to_string(),
+        ],
+    )
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(result_space.command_id, result_eq.command_id);
+    assert_eq!(result_space.args.named, result_eq.args.named);
+    assert_eq!(result_space.args.positional, result_eq.args.positional);
+}

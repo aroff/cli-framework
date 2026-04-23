@@ -1,3 +1,23 @@
+//! Clap-based argv parsing adapter.
+//!
+//! **Design deviation from spec Section 4.3:** The spec suggests using
+//! `sub_matches.ids()` + `get_many::<String>()` to extract parsed args from
+//! Clap. However, because commands are registered dynamically at runtime and
+//! their accepted flags/args are not known at build time, we cannot register
+//! individual named arguments with Clap. Instead, each subcommand uses a
+//! `trailing_var_arg` to capture all remaining args, which are then
+//! classified as named (`--key value` / `--key=value`) or positional in
+//! `match_to_command_args`. This preserves Clap's handling of `--help`,
+//! `--version`, `--` terminator, and subcommand routing while accommodating
+//! the dynamic command model.
+//!
+//! **Design deviation from spec Section 5.1:** `build_clap_root` accepts
+//! `app_name` and `app_version` as separate parameters in addition to
+//! `meta: Option<&AppMeta>`, because `App` stores these independently of
+//! `AppMeta` (fields `app_name` / `app_version` on the `App` struct). When
+//! `meta` is `None`, the name and version still need to be propagated to
+//! Clap.
+
 use crate::app::AppMeta;
 use crate::command::{CommandArgs, CommandRegistry};
 
@@ -12,8 +32,11 @@ pub fn build_clap_root(
     app_name: &'static str,
     app_version: &'static str,
 ) -> clap::Command {
-    let mut root = clap::Command::new(app_name)
-        .version(app_version)
+    let name = meta.map(|m| m.name).unwrap_or(app_name);
+    let version = meta.map(|m| m.version).unwrap_or(app_version);
+
+    let mut root = clap::Command::new(name)
+        .version(version)
         .propagate_version(true)
         .subcommand_required(true)
         .arg_required_else_help(true);
@@ -96,6 +119,15 @@ fn match_to_command_args(sub_matches: &clap::ArgMatches) -> CommandArgs {
             let arg = args[i];
             if arg.starts_with("--") {
                 let stripped = &arg[2..];
+                if stripped.is_empty() {
+                    // Bare "--" after Clap's terminator: remaining items are positional.
+                    i += 1;
+                    while i < args.len() {
+                        positional.push(args[i].to_string());
+                        i += 1;
+                    }
+                    break;
+                }
                 if let Some(eq_pos) = stripped.find('=') {
                     let key = &stripped[..eq_pos];
                     let value = &stripped[eq_pos + 1..];
@@ -105,7 +137,11 @@ fn match_to_command_args(sub_matches: &clap::ArgMatches) -> CommandArgs {
                     named.insert(stripped.to_string(), args[i + 1].to_string());
                     i += 2;
                 } else {
-                    named.insert(stripped.to_string(), "true".to_string());
+                    // DD#8: bare --flag without a value is treated as a boolean flag.
+                    // CommandArgs.named is HashMap<String, String> which cannot represent
+                    // a boolean. Per the spec, we do NOT insert "true" (correctness
+                    // improvement). Apps needing boolean flags should use explicit flag
+                    // args in future phases with Clap derive.
                     i += 1;
                 }
             } else {
