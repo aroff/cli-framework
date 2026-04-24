@@ -17,11 +17,15 @@ fn noop_execute(
     Box::pin(async move { Ok(()) })
 }
 
-fn noop_arc_execute(
-) -> Arc<dyn Fn(&mut dyn AppContext, CommandArgs) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync> {
-    Arc::new(|_ctx: &mut dyn AppContext, _args: CommandArgs| {
-        Box::pin(async move { Ok(()) })
-    })
+fn noop_arc_execute() -> Arc<
+    dyn Fn(
+            &mut dyn AppContext,
+            CommandArgs,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>
+        + Send
+        + Sync,
+> {
+    Arc::new(|_ctx: &mut dyn AppContext, _args: CommandArgs| Box::pin(async move { Ok(()) }))
 }
 
 #[test]
@@ -79,7 +83,9 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
 
     let output = HelpRenderer::new(None, &registry).render();
 
-    let obs = output.find("Observability:").expect("Observability heading");
+    let obs = output
+        .find("Observability:")
+        .expect("Observability heading");
     let svc = output.find("Services:").expect("Services heading");
     let other = output.find("Other:").expect("Other heading");
     assert!(obs < svc);
@@ -116,4 +122,3 @@ fn t8_renders_fixed_width_id_column_per_group() {
     // Ensure "status" is padded with 2 spaces before summary begins.
     assert!(output.contains("  status  Show status"));
 }
-

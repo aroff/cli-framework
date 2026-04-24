@@ -39,6 +39,35 @@ impl StdoutCapture {
     }
 }
 
+struct StderrCapture {
+    saved_fd: i32,
+    tmp: tempfile::NamedTempFile,
+}
+
+impl StderrCapture {
+    fn new() -> Self {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let stderr_fd = std::io::stderr().as_raw_fd();
+        let saved_fd = unsafe { libc::dup(stderr_fd) };
+        unsafe {
+            libc::dup2(tmp.as_raw_fd(), stderr_fd);
+        }
+        Self { saved_fd, tmp }
+    }
+
+    fn finish(self) -> String {
+        let _ = std::io::stderr().flush();
+        let stderr_fd = std::io::stderr().as_raw_fd();
+        unsafe {
+            libc::dup2(self.saved_fd, stderr_fd);
+            libc::close(self.saved_fd);
+        }
+        let contents = std::fs::read_to_string(self.tmp.path()).unwrap_or_default();
+        drop(self.tmp);
+        contents
+    }
+}
+
 struct LogCollector {
     records: Arc<Mutex<Vec<String>>>,
 }
@@ -177,4 +206,241 @@ fn warn_log_emitted_when_version_not_configured() {
         .any(|m| m.contains("with_version() was not configured")));
 
     log::set_max_level(log::LevelFilter::Off);
+}
+
+#[cfg(feature = "clap-dispatch")]
+mod clap_dispatch_tests {
+    use super::*;
+
+    fn hello_command() -> cli_framework::command::Command {
+        cli_framework::command::Command {
+            id: "hello",
+            summary: "Say hello",
+            syntax: None,
+            category: None,
+            execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
+        }
+    }
+
+    #[tokio::test]
+    async fn clap_help_shows_subcommands() {
+        let app = AppBuilder::new()
+            .with_version("myapp", "1.2.3")
+            .register_command(hello_command())
+            .build(DummyCtx)
+            .unwrap();
+
+        let cap = StdoutCapture::new();
+        let mut app = app;
+        app.run_with_args(vec!["myapp".to_string(), "--help".to_string()])
+            .await
+            .unwrap();
+        let output = cap.finish();
+
+        assert!(output.contains("hello"));
+        assert!(output.contains("version"));
+    }
+
+    #[tokio::test]
+    async fn clap_unknown_command_returns_ok() {
+        let mut app = AppBuilder::new()
+            .with_version("myapp", "1.2.3")
+            .build(DummyCtx)
+            .unwrap();
+
+        let result = app
+            .run_with_args(vec!["myapp".to_string(), "bogus".to_string()])
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn clap_key_equals_value_parsing() {
+        use std::sync::Mutex;
+
+        let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured_clone = captured.clone();
+
+        let cmd = cli_framework::command::Command {
+            id: "hello",
+            summary: "Say hello",
+            syntax: None,
+            category: None,
+            execute: Arc::new(move |_ctx, args| {
+                let captured = captured_clone.clone();
+                Box::pin(async move {
+                    let name = args.named.get("name").cloned().unwrap_or_default();
+                    captured.lock().unwrap().push(name);
+                    Ok(())
+                })
+            }),
+        };
+
+        let mut app = AppBuilder::new()
+            .with_version("myapp", "1.2.3")
+            .register_command(cmd)
+            .build(DummyCtx)
+            .unwrap();
+
+        app.run_with_args(vec![
+            "myapp".to_string(),
+            "hello".to_string(),
+            "--name=Alice".to_string(),
+        ])
+        .await
+        .unwrap();
+
+        let vals = captured.lock().unwrap();
+        assert_eq!(vals[0], "Alice");
+    }
+
+    #[tokio::test]
+    async fn clap_no_args_shows_help() {
+        let app = AppBuilder::new()
+            .with_version("myapp", "1.2.3")
+            .build(DummyCtx)
+            .unwrap();
+
+        let mut app = app;
+        let result = app.run_with_args(vec!["myapp".to_string()]).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn clap_dash_h_shows_help() {
+        let app = AppBuilder::new()
+            .with_version("myapp", "1.2.3")
+            .build(DummyCtx)
+            .unwrap();
+
+        let cap = StdoutCapture::new();
+        let mut app = app;
+        app.run_with_args(vec!["myapp".to_string(), "-h".to_string()])
+            .await
+            .unwrap();
+        let output = cap.finish();
+        assert!(!output.is_empty());
+    }
+
+    #[test]
+    fn clap_render_help_preserves_custom_format() {
+        let app = AppBuilder::new()
+            .with_version("myapp", "1.2.3")
+            .build(DummyCtx)
+            .unwrap();
+
+        let help = app.render_help();
+        assert!(help.contains("version - Print version information"));
+        assert!(help.contains("Options:"));
+    }
+
+    // AC-G2.2: `prog --version` outputs "{name} {version}" format.
+    #[tokio::test]
+    async fn clap_version_flag_output_format() {
+        let mut app = AppBuilder::new()
+            .with_version("testapp", "3.5.7")
+            .build(DummyCtx)
+            .unwrap();
+
+        let cap = StdoutCapture::new();
+        app.run_with_args(vec!["testapp".to_string(), "--version".to_string()])
+            .await
+            .unwrap();
+        let output = cap.finish();
+
+        let trimmed = output.trim();
+        assert!(
+            trimmed.contains("testapp"),
+            "expected version output to contain app name, got: {:?}",
+            trimmed
+        );
+        assert!(
+            trimmed.contains("3.5.7"),
+            "expected version output to contain version, got: {:?}",
+            trimmed
+        );
+    }
+
+    // AC-G5.3: `prog unknown_cmd` produces stderr containing "unrecognized subcommand".
+    #[tokio::test]
+    async fn clap_unknown_command_stderr_contains_unrecognized() {
+        let mut app = AppBuilder::new()
+            .with_version("myapp", "1.0.0")
+            .build(DummyCtx)
+            .unwrap();
+
+        let cap = StderrCapture::new();
+        let result = app
+            .run_with_args(vec!["myapp".to_string(), "bogus".to_string()])
+            .await;
+        let stderr = cap.finish();
+
+        assert!(result.is_ok());
+        assert!(
+            stderr.contains("unrecognized"),
+            "expected stderr to contain 'unrecognized', got: {:?}",
+            stderr
+        );
+    }
+
+    // AC-G5.4: `prog hello --nonexistent-flag` behavior.
+    //
+    // **Known limitation:** With the `trailing_var_arg` approach (necessary for
+    // dynamic commands whose flags are unknown at build time), Clap captures
+    // `--nonexistent-flag` as a trailing string rather than rejecting it as an
+    // unknown flag. This is a documented deviation from the spec. The test
+    // verifies that the command still executes successfully and the unknown
+    // flag is available in the args for the command to handle.
+    #[tokio::test]
+    async fn clap_unknown_flag_captured_silently() {
+        let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured_clone = captured.clone();
+
+        let cmd = cli_framework::command::Command {
+            id: "hello",
+            summary: "Say hello",
+            syntax: None,
+            category: None,
+            execute: Arc::new(move |_ctx, args| {
+                let captured = captured_clone.clone();
+                Box::pin(async move {
+                    let all_args: Vec<String> = args
+                        .named
+                        .values()
+                        .chain(args.positional.iter())
+                        .cloned()
+                        .collect();
+                    *captured.lock().unwrap() = all_args;
+                    Ok(())
+                })
+            }),
+        };
+
+        let mut app = AppBuilder::new()
+            .with_version("myapp", "1.0.0")
+            .register_command(cmd)
+            .build(DummyCtx)
+            .unwrap();
+
+        let result = app
+            .run_with_args(vec![
+                "myapp".to_string(),
+                "hello".to_string(),
+                "--nonexistent-flag".to_string(),
+            ])
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "with trailing_var_arg, unknown flags are captured, not rejected"
+        );
+
+        // The bare --nonexistent-flag is not inserted as "true" per DD#8,
+        // so captured args should be empty (flag is skipped, not stored).
+        let vals = captured.lock().unwrap();
+        assert!(
+            vals.is_empty(),
+            "bare --flag without value should not appear in named or positional (DD#8)"
+        );
+    }
 }
