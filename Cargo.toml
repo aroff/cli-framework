@@ -54,6 +54,7 @@ observability = []
 # CLI output utilities optional features
 table-advanced = ["comfy-table"]
 progress = ["indicatif"]
+clap-dispatch = []
 
 [lib]
 name = "cli_framework"
@@ -86,4 +87,13 @@ path = "tests/integration/app_builder.rs"
 [[test]]
 name = "unit_command_ask_resolution"
 path = "tests/unit/command/ask_resolution.rs"
+
+[[test]]
+name = "unit_help_renderer"
+path = "tests/unit/help_renderer.rs"
+
+[[test]]
+name = "unit_clap_adapter"
+path = "tests/unit/clap_adapter.rs"
+required-features = ["clap-dispatch"]
 

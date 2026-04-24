@@ -2,6 +2,10 @@ use crate::app::meta::AppMeta;
 use crate::command::CommandRegistry;
 
 /// Renders formatted help text for a CLI application.
+///
+/// **Deprecated for the primary CLI help path.** When the `clap-dispatch` feature
+/// is enabled, Clap handles `--help`/`-h` output. This renderer is preserved for
+/// applications that call `render_help()` directly for custom category-grouped formatting.
 pub struct HelpRenderer<'a> {
     meta: Option<&'a AppMeta>,
     commands: &'a CommandRegistry,
