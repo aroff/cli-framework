@@ -20,6 +20,8 @@ async fn main() -> anyhow::Result<()> {
         summary: "Deploy application to specified environment",
         syntax: Some("deploy --env <environment> --version <version>"),
         category: Some("deployment"),
+        spec: None,
+        validator: None,
         execute: Arc::new(|_ctx, args| {
             Box::pin(async move {
                 let env = args.named.get("env").map(String::as_str).unwrap_or("dev");
@@ -43,6 +45,8 @@ async fn main() -> anyhow::Result<()> {
         summary: "Show system status and health information",
         syntax: Some("status"),
         category: Some("monitoring"),
+        spec: None,
+        validator: None,
         execute: Arc::new(|_ctx, _args| {
             Box::pin(async move {
                 println!("📊 System Status:");
@@ -60,6 +64,8 @@ async fn main() -> anyhow::Result<()> {
         summary: "Show application logs",
         syntax: Some("logs --service <service> --lines <count>"),
         category: Some("monitoring"),
+        spec: None,
+        validator: None,
         execute: Arc::new(|_ctx, args| {
             Box::pin(async move {
                 let service = args
@@ -99,9 +105,9 @@ async fn main() -> anyhow::Result<()> {
 
     builder = builder
         .with_version(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
-        .register_command(deploy_command)
-        .register_command(status_command)
-        .register_command(logs_command);
+        .register_command(deploy_command)?
+        .register_command(status_command)?
+        .register_command(logs_command)?;
 
     let mut app = builder.build(MyApp)?;
 

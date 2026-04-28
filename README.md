@@ -205,6 +205,14 @@ Run the included examples to see the framework in action:
 - `AILOOP_CHANNEL` - Channel name (default: "cli-framework")
 - `AILOOP_SERVER_URL` - ailoop server URL
 
+## Migration Guide
+
+Upgrading to the typed `CommandSpec` model? See [docs/migration-typed-spec.md](docs/migration-typed-spec.md) for step-by-step instructions on:
+- Adding `spec: None, validator: None` fields to existing `Command` literals
+- Adopting `CommandSpec` for validated argument parsing
+- Updating `register_command` call sites (now returns `Result<Self>`)
+- Using `CliTestHarness` for in-process test capture (see [docs/testing.md](docs/testing.md))
+
 ## License
 
 Apache-2.0 or MIT

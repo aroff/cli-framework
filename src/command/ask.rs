@@ -21,6 +21,8 @@ pub fn create_ask_command(
         summary: "Resolve natural language queries to commands",
         syntax: Some("ask <query> | ask --query \"<query>\" [--yes]"),
         category: Some("ai"),
+        spec: None,
+        validator: None,
         execute: Arc::new(move |_ctx, args| {
             let provider = llm_provider.clone();
             let metadata = metadata_snapshot.clone();

@@ -20,6 +20,8 @@ async fn main() -> anyhow::Result<()> {
         summary: "Print a greeting message",
         syntax: Some("hello [name]"),
         category: Some("utilities"),
+        spec: None,
+        validator: None,
         execute: Arc::new(|_ctx, args| {
             Box::pin(async move {
                 let name = args
@@ -40,6 +42,8 @@ async fn main() -> anyhow::Result<()> {
         summary: "Increment and display counter",
         syntax: Some("increment"),
         category: Some("utilities"),
+        spec: None,
+        validator: None,
         execute: Arc::new(|_ctx, _args| {
             Box::pin(async move {
                 // This is a simplified example - in practice, you'd need proper context access
@@ -53,8 +57,8 @@ async fn main() -> anyhow::Result<()> {
     let mut builder = AppBuilder::new();
     builder = builder
         .with_version(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
-        .register_command(hello_command)
-        .register_command(increment_command);
+        .register_command(hello_command)?
+        .register_command(increment_command)?;
 
     let mut app = builder.build(MyApp)?;
 

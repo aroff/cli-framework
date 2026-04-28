@@ -48,6 +48,8 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
         summary: "Stop service",
         syntax: None,
         category: Some("Services"),
+        spec: None,
+        validator: None,
         execute: noop_arc_execute(),
     });
     registry.register(Command {
@@ -55,6 +57,8 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
         summary: "Start service",
         syntax: None,
         category: Some("Services"),
+        spec: None,
+        validator: None,
         execute: noop_arc_execute(),
     });
     registry.register(Command {
@@ -62,6 +66,8 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
         summary: "Restart service",
         syntax: None,
         category: Some("Services"),
+        spec: None,
+        validator: None,
         execute: noop_arc_execute(),
     });
 
@@ -71,6 +77,8 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
         summary: "Show metrics",
         syntax: None,
         category: Some("Observability"),
+        spec: None,
+        validator: None,
         execute: noop_arc_execute(),
     });
     registry.register(Command {
@@ -78,6 +86,8 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
         summary: "Print user",
         syntax: None,
         category: None,
+        spec: None,
+        validator: None,
         execute: noop_arc_execute(),
     });
 
@@ -106,6 +116,8 @@ fn t8_renders_fixed_width_id_column_per_group() {
         summary: "Show logs",
         syntax: None,
         category: None,
+        spec: None,
+        validator: None,
         execute: noop_arc_execute(),
     });
     registry.register(Command {
@@ -113,6 +125,8 @@ fn t8_renders_fixed_width_id_column_per_group() {
         summary: "Show status",
         syntax: None,
         category: None,
+        spec: None,
+        validator: None,
         execute: noop_arc_execute(),
     });
 
@@ -121,4 +135,11 @@ fn t8_renders_fixed_width_id_column_per_group() {
     // col_width = max(len("logs"), len("status")) + 2 = 6 + 2 = 8
     // Ensure "status" is padded with 2 spaces before summary begins.
     assert!(output.contains("  status  Show status"));
+}
+
+#[test]
+fn render_normalized_matches_render() {
+    let registry = CommandRegistry::new();
+    let renderer = HelpRenderer::new(None, &registry);
+    assert_eq!(renderer.render(), renderer.render_normalized());
 }

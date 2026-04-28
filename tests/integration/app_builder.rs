@@ -168,12 +168,15 @@ fn show_help_version_appears_before_registered_commands() {
         summary: "Alpha command",
         syntax: None,
         category: Some("test"),
+        spec: None,
+        validator: None,
         execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
     };
 
     let app = AppBuilder::new()
         .with_version("myapp", "1.2.3")
         .register_command(cmd)
+        .unwrap()
         .build(DummyCtx)
         .unwrap();
 
@@ -218,6 +221,8 @@ mod clap_dispatch_tests {
             summary: "Say hello",
             syntax: None,
             category: None,
+            spec: None,
+            validator: None,
             execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
         }
     }
@@ -227,6 +232,7 @@ mod clap_dispatch_tests {
         let app = AppBuilder::new()
             .with_version("myapp", "1.2.3")
             .register_command(hello_command())
+            .unwrap()
             .build(DummyCtx)
             .unwrap();
 
@@ -266,6 +272,8 @@ mod clap_dispatch_tests {
             summary: "Say hello",
             syntax: None,
             category: None,
+            spec: None,
+            validator: None,
             execute: Arc::new(move |_ctx, args| {
                 let captured = captured_clone.clone();
                 Box::pin(async move {
@@ -279,6 +287,7 @@ mod clap_dispatch_tests {
         let mut app = AppBuilder::new()
             .with_version("myapp", "1.2.3")
             .register_command(cmd)
+            .unwrap()
             .build(DummyCtx)
             .unwrap();
 
@@ -401,6 +410,8 @@ mod clap_dispatch_tests {
             summary: "Say hello",
             syntax: None,
             category: None,
+            spec: None,
+            validator: None,
             execute: Arc::new(move |_ctx, args| {
                 let captured = captured_clone.clone();
                 Box::pin(async move {
@@ -419,6 +430,7 @@ mod clap_dispatch_tests {
         let mut app = AppBuilder::new()
             .with_version("myapp", "1.0.0")
             .register_command(cmd)
+            .unwrap()
             .build(DummyCtx)
             .unwrap();
 

@@ -20,6 +20,13 @@
 
 use crate::app::AppMeta;
 use crate::command::{CommandArgs, CommandRegistry};
+use crate::parser::clap_mapper::{
+    build_legacy_clap_command, build_typed_clap_command, map_matches_to_typed_args,
+};
+use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
+use crate::parser::error_codes::{E_UNKNOWN_COMMAND, E_UNKNOWN_FLAG};
+use crate::parser::outcome::ParseOutcome;
+use crate::spec::command_tree::CommandPath;
 
 pub struct ParsedCommand {
     pub command_id: String,
@@ -51,16 +58,11 @@ pub fn build_clap_root(
     }
 
     for cmd in registry.commands() {
-        let mut sub = clap::Command::new(cmd.id).about(cmd.summary).arg(
-            clap::Arg::new("trailing")
-                .num_args(0..)
-                .trailing_var_arg(true)
-                .allow_hyphen_values(true),
-        );
-
-        if let Some(syntax) = cmd.syntax {
-            sub = sub.after_help(format!("Syntax: {}", syntax));
-        }
+        let sub = if let Some(ref spec) = cmd.spec {
+            build_typed_clap_command(cmd.id, spec)
+        } else {
+            build_legacy_clap_command(cmd)
+        };
         root = root.subcommand(sub);
     }
 
@@ -81,29 +83,76 @@ pub fn build_clap_root(
     root
 }
 
+/// Parse argv against the clap command tree, returning a typed `ParseOutcome`.
+///
+/// - `HelpShown` / `VersionShown`: clap wrote to stdout; caller should return `Ok(())`.
+/// - `ParseError(d)`: a structured diagnostic; caller should report it and return `Ok(())`.
+/// - `Parsed { .. }`: a matched command; caller should dispatch execution.
 pub fn parse_with_clap(
     root: &clap::Command,
+    registry: &CommandRegistry,
     args: Vec<String>,
-) -> anyhow::Result<Option<ParsedCommand>> {
+) -> ParseOutcome {
     match root.clone().try_get_matches_from(&args) {
         Ok(matches) => {
             let (name, sub_matches) = matches.subcommand().expect("subcommand required");
-            let args = match_to_command_args(sub_matches);
-            Ok(Some(ParsedCommand {
-                command_id: name.to_string(),
-                args,
-            }))
+            let command_path = CommandPath::root_for(name);
+
+            let (cmd_args, typed_args) = if let Some(cmd) = registry.get(name) {
+                if let Some(ref spec) = cmd.spec {
+                    match map_matches_to_typed_args(spec, sub_matches) {
+                        Ok(typed) => (CommandArgs::default(), Some(typed)),
+                        Err(d) => return ParseOutcome::ParseError(d),
+                    }
+                } else {
+                    (match_to_command_args(sub_matches), None)
+                }
+            } else {
+                // Built-in commands (e.g. "version") not in the user registry
+                (match_to_command_args(sub_matches), None)
+            };
+
+            ParseOutcome::Parsed {
+                command_path,
+                args: cmd_args,
+                typed_args,
+            }
         }
         Err(e) => {
-            if !e.use_stderr() {
-                use std::io::Write;
-                let mut stdout = std::io::stdout();
-                write!(stdout, "{}", e).ok();
-                stdout.flush().ok();
-            } else {
-                e.print().ok();
+            use clap::error::ErrorKind;
+            match e.kind() {
+                ErrorKind::DisplayHelp | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
+                    use std::io::Write;
+                    let mut stdout = std::io::stdout();
+                    write!(stdout, "{}", e).ok();
+                    stdout.flush().ok();
+                    ParseOutcome::HelpShown
+                }
+                ErrorKind::DisplayVersion => {
+                    use std::io::Write;
+                    let mut stdout = std::io::stdout();
+                    write!(stdout, "{}", e).ok();
+                    stdout.flush().ok();
+                    ParseOutcome::VersionShown
+                }
+                ErrorKind::UnknownArgument => ParseOutcome::ParseError(Diagnostic {
+                    code: E_UNKNOWN_FLAG,
+                    category: DiagnosticCategory::Parse,
+                    message: "unknown argument".to_string(),
+                    suggestion: Some("Use --help to see available arguments".to_string()),
+                    span: None,
+                }),
+                _ => {
+                    let cmd_arg = args.get(1).cloned().unwrap_or_default();
+                    ParseOutcome::ParseError(Diagnostic {
+                        code: E_UNKNOWN_COMMAND,
+                        category: DiagnosticCategory::Parse,
+                        message: format!("unrecognized subcommand '{}'", cmd_arg),
+                        suggestion: Some("Use --help to see available commands".to_string()),
+                        span: Some(cmd_arg),
+                    })
+                }
             }
-            Ok(None)
         }
     }
 }

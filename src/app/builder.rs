@@ -6,9 +6,13 @@ use crate::cli_output::HelpRenderer;
 use crate::command::{Command, CommandRegistry};
 use crate::llm::LlmProvider;
 use crate::plugin::PluginRegistryManager;
+use crate::spec::command_tree::{CommandPath, GroupMetadata};
 use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+#[cfg(feature = "testkit")]
+use std::sync::Mutex;
 
 pub struct AppBuilder {
     command_registry: CommandRegistry,
@@ -35,9 +39,30 @@ impl AppBuilder {
         }
     }
 
-    pub fn register_command(mut self, command: Command) -> Self {
-        self.command_registry.register(command);
-        self
+    /// Register a root-level command. Returns `Err` if the command ID is already occupied
+    /// or an alias conflicts with an existing registration.
+    pub fn register_command(mut self, command: Command) -> Result<Self> {
+        let path = CommandPath::root_for(command.id);
+        self.command_registry
+            .register_at(&path, command)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        Ok(self)
+    }
+
+    /// Register a command at an arbitrary `CommandPath`.
+    pub fn register_command_at(mut self, path: &CommandPath, command: Command) -> Result<Self> {
+        self.command_registry
+            .register_at(path, command)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        Ok(self)
+    }
+
+    /// Register a command group (no command, just metadata).
+    pub fn register_group(mut self, path: &CommandPath, metadata: GroupMetadata) -> Result<Self> {
+        self.command_registry
+            .register_group(path, metadata)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        Ok(self)
     }
 
     pub fn register_module<M: Module>(mut self, module: M) -> Result<Self> {
@@ -122,6 +147,8 @@ impl AppBuilder {
             app_version: self.app_version,
             #[cfg(feature = "clap-dispatch")]
             clap_root,
+            #[cfg(feature = "testkit")]
+            stdout_capture: None,
         })
     }
 }
@@ -143,6 +170,9 @@ pub struct App<C: AppContext> {
     app_version: &'static str,
     #[cfg(feature = "clap-dispatch")]
     clap_root: clap::Command,
+    /// Captures framework-level stdout output (version strings etc.) when testkit is active.
+    #[cfg(feature = "testkit")]
+    pub stdout_capture: Option<Arc<Mutex<Vec<u8>>>>,
 }
 
 struct CliAppContextWrapper<'a, C: AppContext> {
@@ -224,17 +254,31 @@ impl<C: AppContext> App<C> {
 
     #[cfg(feature = "clap-dispatch")]
     pub async fn run_with_args(&mut self, args: Vec<String>) -> Result<()> {
-        if let Some(parsed) = crate::app::clap_adapter::parse_with_clap(&self.clap_root, args)? {
-            if parsed.command_id == "version" && self.command_registry.get("version").is_none() {
-                if self.app_name == "unknown" {
-                    log::warn!("version called but with_version() was not configured");
+        use crate::app::clap_adapter::parse_with_clap;
+        use crate::app::diagnostic_reporter::DiagnosticReporter;
+        use crate::parser::outcome::ParseOutcome;
+
+        match parse_with_clap(&self.clap_root, &self.command_registry, args) {
+            ParseOutcome::Parsed {
+                command_path,
+                args: cmd_args,
+                ..
+            } => {
+                let cmd_id = command_path.leaf().unwrap_or("").to_string();
+                if cmd_id == "version" && self.command_registry.get("version").is_none() {
+                    if self.app_name == "unknown" {
+                        log::warn!("version called but with_version() was not configured");
+                    }
+                    self.framework_println(&format!("{} {}", self.app_name, self.app_version));
+                    return Ok(());
                 }
-                println!("{} {}", self.app_name, self.app_version);
-                return Ok(());
+                self.execute_command(&cmd_id, cmd_args).await
             }
-            self.execute_command(&parsed.command_id, parsed.args).await
-        } else {
-            Ok(())
+            ParseOutcome::HelpShown | ParseOutcome::VersionShown => Ok(()),
+            ParseOutcome::ParseError(d) => {
+                DiagnosticReporter::report(&d);
+                Ok(())
+            }
         }
     }
 
@@ -250,7 +294,7 @@ impl<C: AppContext> App<C> {
                 if self.app_name == "unknown" {
                     log::warn!("version called but with_version() was not configured");
                 }
-                println!("{} {}", self.app_name, self.app_version);
+                self.framework_println(&format!("{} {}", self.app_name, self.app_version));
                 return Ok(());
             }
             _ => {}
@@ -282,6 +326,19 @@ impl<C: AppContext> App<C> {
 
         let cmd_args = crate::command::CommandArgs { positional, named };
         self.execute_command(command_id, cmd_args).await
+    }
+
+    /// Write a line of framework-level output. Routes through the testkit capture buffer
+    /// when active; otherwise writes to real stdout.
+    fn framework_println(&self, s: &str) {
+        #[cfg(feature = "testkit")]
+        if let Some(ref buf) = self.stdout_capture {
+            let mut lock = buf.lock().unwrap();
+            lock.extend_from_slice(s.as_bytes());
+            lock.push(b'\n');
+            return;
+        }
+        println!("{}", s);
     }
 
     pub fn show_help(&self) {

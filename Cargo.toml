@@ -9,6 +9,7 @@ repository = "https://github.com/your-org/cli-framework"
 
 [dependencies]
 anyhow = "1.0"
+thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.0", features = ["full"] }
@@ -55,6 +56,14 @@ observability = []
 table-advanced = ["comfy-table"]
 progress = ["indicatif"]
 clap-dispatch = []
+# Reject unknown flags on legacy (no-spec) commands
+strict-args = []
+# Reject registration of commands without a CommandSpec
+strict-types = []
+# Coerce bare "--flag" to Bool(true) on legacy path
+legacy-arg-coercion = []
+# Enable CliTestHarness (dev/test use only)
+testkit = []
 
 [lib]
 name = "cli_framework"
@@ -95,5 +104,10 @@ path = "tests/unit/help_renderer.rs"
 [[test]]
 name = "unit_clap_adapter"
 path = "tests/unit/clap_adapter.rs"
+required-features = ["clap-dispatch"]
+
+[[test]]
+name = "unit_parser_diagnostics"
+path = "tests/unit/parser_diagnostics.rs"
 required-features = ["clap-dispatch"]
 
