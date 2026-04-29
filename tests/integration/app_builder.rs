@@ -163,6 +163,7 @@ fn show_help_contains_version_entry() {
 }
 
 #[test]
+#[cfg(not(feature = "strict-types"))]
 fn show_help_version_appears_before_registered_commands() {
     use cli_framework::command::Command;
 
@@ -231,6 +232,7 @@ mod clap_dispatch_tests {
     }
 
     #[tokio::test]
+    #[cfg(not(feature = "strict-types"))]
     async fn clap_help_shows_subcommands() {
         let app = AppBuilder::new()
             .with_version("myapp", "1.2.3")
@@ -264,6 +266,7 @@ mod clap_dispatch_tests {
     }
 
     #[tokio::test]
+    #[cfg(not(feature = "strict-types"))]
     async fn clap_key_equals_value_parsing() {
         use std::sync::Mutex;
 
@@ -404,6 +407,7 @@ mod clap_dispatch_tests {
     // verifies that the command still executes successfully and the unknown
     // flag is available in the args for the command to handle.
     #[tokio::test]
+    #[cfg(not(feature = "strict-types"))]
     async fn clap_unknown_flag_captured_silently() {
         let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let captured_clone = captured.clone();

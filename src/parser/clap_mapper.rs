@@ -267,10 +267,16 @@ mod tests {
             .collect();
 
         #[cfg(not(feature = "strict-args"))]
-        assert!(arg_ids.contains(&"trailing"), "expected 'trailing' var-arg when strict-args is disabled");
+        assert!(
+            arg_ids.contains(&"trailing"),
+            "expected 'trailing' var-arg when strict-args is disabled"
+        );
 
         #[cfg(feature = "strict-args")]
-        assert!(!arg_ids.contains(&"trailing"), "trailing var-arg should not be present when strict-args is enabled");
+        assert!(
+            !arg_ids.contains(&"trailing"),
+            "trailing var-arg should not be present when strict-args is enabled"
+        );
     }
 
     #[test]

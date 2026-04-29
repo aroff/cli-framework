@@ -26,4 +26,5 @@ pub mod http_errors;
 pub use http_errors::{is_connection_error, is_retryable_http_error, is_timeout};
 
 pub mod client;
+pub use client::secure_reqwest_client;
 pub use client::RetryableHttpClient;

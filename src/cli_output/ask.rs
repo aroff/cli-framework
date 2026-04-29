@@ -4,6 +4,7 @@
 //! confidence scores, retry attempts, and error messages.
 
 use crate::llm::CommandResolution;
+use crate::security::sanitize_untrusted_output;
 
 /// Display command resolution result
 ///
@@ -13,9 +14,10 @@ pub fn display_resolution(resolution: &CommandResolution) {
 
     // Show confidence with color coding
     let confidence_color = get_confidence_color(resolution.confidence);
+    let safe_id = sanitize_untrusted_output(&resolution.command_id);
     println!(
         "🎯 Resolved: {} (confidence: {}{:.1}%{})",
-        resolution.command_id,
+        safe_id,
         confidence_color,
         resolution.confidence * 100.0,
         reset_color()
@@ -25,16 +27,29 @@ pub fn display_resolution(resolution: &CommandResolution) {
     if !resolution.args.positional.is_empty() || !resolution.args.named.is_empty() {
         println!("📋 Arguments:");
         if !resolution.args.positional.is_empty() {
-            println!("   Positional: {:?}", resolution.args.positional);
+            let safe_positional: Vec<String> = resolution
+                .args
+                .positional
+                .iter()
+                .map(|s| sanitize_untrusted_output(s))
+                .collect();
+            println!("   Positional: {:?}", safe_positional);
         }
         if !resolution.args.named.is_empty() {
-            println!("   Named: {:?}", resolution.args.named);
+            let safe_named: std::collections::HashMap<String, String> = resolution
+                .args
+                .named
+                .iter()
+                .map(|(k, v)| (sanitize_untrusted_output(k), sanitize_untrusted_output(v)))
+                .collect();
+            println!("   Named: {:?}", safe_named);
         }
     }
 
     // Show reasoning if available
     if let Some(reasoning) = &resolution.reasoning {
-        println!("💭 Reasoning: {}", reasoning);
+        let safe_reasoning = sanitize_untrusted_output(reasoning);
+        println!("💭 Reasoning: {}", safe_reasoning);
     }
 
     println!();
@@ -44,20 +59,30 @@ pub fn display_resolution(resolution: &CommandResolution) {
 ///
 /// Shows a formatted confirmation prompt with command details.
 pub fn display_confirmation(resolution: &CommandResolution, context: Option<&str>) {
-    println!("⚠️  Execute command: {}", resolution.command_id);
+    let safe_id = sanitize_untrusted_output(&resolution.command_id);
+    println!("⚠️  Execute command: {}", safe_id);
 
     if !resolution.args.positional.is_empty() {
-        println!("   Positional args: {:?}", resolution.args.positional);
+        let safe_positional: Vec<String> = resolution
+            .args
+            .positional
+            .iter()
+            .map(|s| sanitize_untrusted_output(s))
+            .collect();
+        println!("   Positional args: {:?}", safe_positional);
     }
 
     if !resolution.args.named.is_empty() {
         for (key, value) in &resolution.args.named {
-            println!("   {}: {}", key, value);
+            let safe_key = sanitize_untrusted_output(key);
+            let safe_value = sanitize_untrusted_output(value);
+            println!("   {}: {}", safe_key, safe_value);
         }
     }
 
     if let Some(ctx) = context {
-        println!("   Context: {}", ctx);
+        let safe_ctx = sanitize_untrusted_output(ctx);
+        println!("   Context: {}", safe_ctx);
     }
 
     println!();
@@ -81,7 +106,8 @@ pub fn display_retry(attempt: usize, max_attempts: usize, error: &str) {
         reset_color()
     );
 
-    println!("❌ Previous attempt failed: {}", error);
+    let safe_error = sanitize_untrusted_output(error);
+    println!("❌ Previous attempt failed: {}", safe_error);
     println!();
 }
 
@@ -89,24 +115,28 @@ pub fn display_retry(attempt: usize, max_attempts: usize, error: &str) {
 ///
 /// Shows confirmation that the command executed successfully.
 pub fn display_success(command_id: &str) {
-    println!("✅ {} executed successfully", command_id);
+    let safe_id = sanitize_untrusted_output(command_id);
+    println!("✅ {} executed successfully", safe_id);
 }
 
 /// Display command execution failure
 ///
 /// Shows detailed error information for failed commands.
 pub fn display_failure(command_id: &str, error: &str) {
-    println!("❌ {} failed: {}", command_id, error);
+    let safe_id = sanitize_untrusted_output(command_id);
+    let safe_error = sanitize_untrusted_output(error);
+    println!("❌ {} failed: {}", safe_id, safe_error);
 }
 
 /// Display max retries exceeded
 ///
 /// Shows when all retry attempts have been exhausted.
 pub fn display_max_retries_exceeded(command_id: &str) {
+    let safe_id = sanitize_untrusted_output(command_id);
     println!(
         "{}💥 Max retries exceeded for command: {}{}",
         red_color(),
-        command_id,
+        safe_id,
         reset_color()
     );
 }
@@ -152,9 +182,12 @@ pub fn display_command_help(commands: &[crate::llm::CommandMetadata]) {
         }
 
         for cmd in cmds {
-            println!("   • {} - {}", cmd.id, cmd.summary);
+            let safe_id = sanitize_untrusted_output(&cmd.id);
+            let safe_summary = sanitize_untrusted_output(&cmd.summary);
+            println!("   • {} - {}", safe_id, safe_summary);
             if let Some(syntax) = &cmd.syntax {
-                println!("     Syntax: {}", syntax);
+                let safe_syntax = sanitize_untrusted_output(syntax);
+                println!("     Syntax: {}", safe_syntax);
             }
         }
         println!();
