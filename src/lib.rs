@@ -30,6 +30,8 @@
 //!             summary: "Say hello",
 //!             syntax: Some("hello --name <name>"),
 //!             category: Some("greetings"),
+//!             spec: None,
+//!             validator: None,
 //!             execute: std::sync::Arc::new(|_ctx, args| Box::pin(async move {
 //!                 let name = args
 //!                     .named
@@ -39,7 +41,7 @@
 //!                 println!("Hello, {}!", name);
 //!                 Ok(())
 //!             })),
-//!         });
+//!         }).unwrap();
 //!
 //!     let mut app = builder.build(MyContext)?;
 //!     app.run().await?;
@@ -74,6 +76,14 @@ pub mod retry;
 // Applications should add reqwest to their Cargo.toml when using this module
 pub mod http_retry;
 
+// Spec and parser modules
+pub mod parser;
+pub mod spec;
+
+// Testkit — compile only when the `testkit` feature is active
+#[cfg(feature = "testkit")]
+pub mod testkit;
+
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::app::{AppBuilder, AppContext, AppMeta};
@@ -82,4 +92,5 @@ pub mod prelude {
     pub use crate::llm::{CommandMetadata, CommandResolution, LlmProvider};
     pub use crate::message::{AppMessage, AppMessageKind};
     pub use crate::plugin::PluginRegistryManager;
+    pub use crate::spec::{ArgSpec, ArgValue, CommandPath, CommandSpec};
 }

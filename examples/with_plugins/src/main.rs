@@ -21,6 +21,8 @@ async fn main() -> anyhow::Result<()> {
         summary: "Execute a built-in command",
         syntax: Some("builtin <message>"),
         category: Some("builtins"),
+        spec: None,
+        validator: None,
         execute: Arc::new(|_ctx, args| {
             Box::pin(async move {
                 let message = args
@@ -44,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
 
     builder = builder
         .with_version(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
-        .register_command(builtin_command);
+        .register_command(builtin_command)?;
 
     let mut app = builder.build(MyApp)?;
 

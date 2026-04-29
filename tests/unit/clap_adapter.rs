@@ -1,5 +1,6 @@
 use cli_framework::app::AppMeta;
 use cli_framework::command::{Command, CommandArgs, CommandRegistry};
+use cli_framework::parser::ParseOutcome;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -34,6 +35,8 @@ fn build_clap_root_subcommand_count_matches_registry() {
             summary: "Say hello",
             syntax: None,
             category: None,
+            spec: None,
+            validator: None,
             execute: noop_execute(),
         },
         Command {
@@ -41,6 +44,8 @@ fn build_clap_root_subcommand_count_matches_registry() {
             summary: "Say goodbye",
             syntax: None,
             category: None,
+            spec: None,
+            validator: None,
             execute: noop_execute(),
         },
     ]);
@@ -147,6 +152,8 @@ fn build_clap_root_no_version_subcommand_when_user_registers_version() {
         summary: "Custom version",
         syntax: None,
         category: None,
+        spec: None,
+        validator: None,
         execute: noop_execute(),
     }]);
 
@@ -173,27 +180,35 @@ fn parse_with_clap_key_value() {
         summary: "Say hello",
         syntax: None,
         category: None,
+        spec: None,
+        validator: None,
         execute: noop_execute(),
     }]);
 
     let root =
         cli_framework::app::clap_adapter::build_clap_root(None, &registry, "testapp", "0.1.0");
 
-    let result = cli_framework::app::clap_adapter::parse_with_clap(
+    let outcome = cli_framework::app::clap_adapter::parse_with_clap(
         &root,
+        &registry,
         vec![
             "testapp".to_string(),
             "hello".to_string(),
             "--name".to_string(),
             "Alice".to_string(),
         ],
-    )
-    .unwrap()
-    .unwrap();
+    );
 
-    assert_eq!(result.command_id, "hello");
-    assert_eq!(result.args.named.get("name").unwrap(), "Alice");
-    assert!(result.args.positional.is_empty());
+    match outcome {
+        ParseOutcome::Parsed {
+            command_path, args, ..
+        } => {
+            assert_eq!(command_path.leaf().unwrap(), "hello");
+            assert_eq!(args.named.get("name").unwrap(), "Alice");
+            assert!(args.positional.is_empty());
+        }
+        other => panic!("expected Parsed, got {:?}", other),
+    }
 }
 
 #[test]
@@ -203,25 +218,33 @@ fn parse_with_clap_key_equals_value() {
         summary: "Say hello",
         syntax: None,
         category: None,
+        spec: None,
+        validator: None,
         execute: noop_execute(),
     }]);
 
     let root =
         cli_framework::app::clap_adapter::build_clap_root(None, &registry, "testapp", "0.1.0");
 
-    let result = cli_framework::app::clap_adapter::parse_with_clap(
+    let outcome = cli_framework::app::clap_adapter::parse_with_clap(
         &root,
+        &registry,
         vec![
             "testapp".to_string(),
             "hello".to_string(),
             "--name=Alice".to_string(),
         ],
-    )
-    .unwrap()
-    .unwrap();
+    );
 
-    assert_eq!(result.command_id, "hello");
-    assert_eq!(result.args.named.get("name").unwrap(), "Alice");
+    match outcome {
+        ParseOutcome::Parsed {
+            command_path, args, ..
+        } => {
+            assert_eq!(command_path.leaf().unwrap(), "hello");
+            assert_eq!(args.named.get("name").unwrap(), "Alice");
+        }
+        other => panic!("expected Parsed, got {:?}", other),
+    }
 }
 
 #[test]
@@ -231,99 +254,111 @@ fn parse_with_clap_positional_after_double_dash() {
         summary: "Say hello",
         syntax: None,
         category: None,
+        spec: None,
+        validator: None,
         execute: noop_execute(),
     }]);
 
     let root =
         cli_framework::app::clap_adapter::build_clap_root(None, &registry, "testapp", "0.1.0");
 
-    let result = cli_framework::app::clap_adapter::parse_with_clap(
+    let outcome = cli_framework::app::clap_adapter::parse_with_clap(
         &root,
+        &registry,
         vec![
             "testapp".to_string(),
             "hello".to_string(),
             "--".to_string(),
             "positional".to_string(),
         ],
-    )
-    .unwrap()
-    .unwrap();
+    );
 
-    assert_eq!(result.command_id, "hello");
-    assert!(result.args.positional.contains(&"positional".to_string()));
+    match outcome {
+        ParseOutcome::Parsed {
+            command_path, args, ..
+        } => {
+            assert_eq!(command_path.leaf().unwrap(), "hello");
+            assert!(args.positional.contains(&"positional".to_string()));
+        }
+        other => panic!("expected Parsed, got {:?}", other),
+    }
 }
 
 #[test]
-fn parse_with_clap_help_returns_none() {
-    let root = cli_framework::app::clap_adapter::build_clap_root(
-        None,
-        &CommandRegistry::new(),
-        "testapp",
-        "0.1.0",
-    );
+fn parse_with_clap_help_returns_help_shown() {
+    let registry = CommandRegistry::new();
+    let root =
+        cli_framework::app::clap_adapter::build_clap_root(None, &registry, "testapp", "0.1.0");
 
-    let result = cli_framework::app::clap_adapter::parse_with_clap(
+    let outcome = cli_framework::app::clap_adapter::parse_with_clap(
         &root,
+        &registry,
         vec!["testapp".to_string(), "--help".to_string()],
-    )
-    .unwrap();
+    );
 
-    assert!(result.is_none());
+    assert!(
+        matches!(outcome, ParseOutcome::HelpShown(_)),
+        "expected HelpShown, got {:?}",
+        outcome
+    );
 }
 
 #[test]
-fn parse_with_clap_version_flag_returns_none() {
-    let root = cli_framework::app::clap_adapter::build_clap_root(
-        None,
-        &CommandRegistry::new(),
-        "testapp",
-        "0.1.0",
-    );
+fn parse_with_clap_version_flag_returns_version_shown() {
+    let registry = CommandRegistry::new();
+    let root =
+        cli_framework::app::clap_adapter::build_clap_root(None, &registry, "testapp", "0.1.0");
 
-    let result = cli_framework::app::clap_adapter::parse_with_clap(
+    let outcome = cli_framework::app::clap_adapter::parse_with_clap(
         &root,
+        &registry,
         vec!["testapp".to_string(), "--version".to_string()],
-    )
-    .unwrap();
+    );
 
-    assert!(result.is_none());
+    assert!(
+        matches!(outcome, ParseOutcome::VersionShown(_)),
+        "expected VersionShown, got {:?}",
+        outcome
+    );
 }
 
 #[test]
-fn parse_with_clap_unknown_command_returns_none() {
-    let root = cli_framework::app::clap_adapter::build_clap_root(
-        None,
-        &CommandRegistry::new(),
-        "testapp",
-        "0.1.0",
-    );
+fn parse_with_clap_unknown_command_returns_parse_error() {
+    let registry = CommandRegistry::new();
+    let root =
+        cli_framework::app::clap_adapter::build_clap_root(None, &registry, "testapp", "0.1.0");
 
-    let result = cli_framework::app::clap_adapter::parse_with_clap(
+    let outcome = cli_framework::app::clap_adapter::parse_with_clap(
         &root,
+        &registry,
         vec!["testapp".to_string(), "nonexistent".to_string()],
-    )
-    .unwrap();
+    );
 
-    assert!(result.is_none());
+    assert!(
+        matches!(outcome, ParseOutcome::ParseError(_)),
+        "expected ParseError, got {:?}",
+        outcome
+    );
 }
 
 #[test]
-fn parse_with_clap_version_subcommand_returns_some() {
-    let root = cli_framework::app::clap_adapter::build_clap_root(
-        None,
-        &CommandRegistry::new(),
-        "testapp",
-        "0.1.0",
+fn parse_with_clap_version_subcommand_returns_parsed() {
+    let registry = CommandRegistry::new();
+    let root =
+        cli_framework::app::clap_adapter::build_clap_root(None, &registry, "testapp", "0.1.0");
+
+    let outcome = cli_framework::app::clap_adapter::parse_with_clap(
+        &root,
+        &registry,
+        vec!["testapp".to_string(), "version".to_string()],
     );
 
-    let result = cli_framework::app::clap_adapter::parse_with_clap(
-        &root,
-        vec!["testapp".to_string(), "version".to_string()],
-    )
-    .unwrap()
-    .unwrap();
-
-    assert_eq!(result.command_id, "version");
+    match outcome {
+        ParseOutcome::Parsed { command_path, .. } => {
+            assert_eq!(command_path.leaf().unwrap(), "version");
+        }
+        other => panic!("expected Parsed, got {:?}", other),
+    }
 }
 
 #[test]
@@ -333,14 +368,17 @@ fn parse_with_clap_mixed_positional_and_named() {
         summary: "Say hello",
         syntax: None,
         category: None,
+        spec: None,
+        validator: None,
         execute: noop_execute(),
     }]);
 
     let root =
         cli_framework::app::clap_adapter::build_clap_root(None, &registry, "testapp", "0.1.0");
 
-    let result = cli_framework::app::clap_adapter::parse_with_clap(
+    let outcome = cli_framework::app::clap_adapter::parse_with_clap(
         &root,
+        &registry,
         vec![
             "testapp".to_string(),
             "hello".to_string(),
@@ -348,13 +386,18 @@ fn parse_with_clap_mixed_positional_and_named() {
             "--name".to_string(),
             "Alice".to_string(),
         ],
-    )
-    .unwrap()
-    .unwrap();
+    );
 
-    assert_eq!(result.command_id, "hello");
-    assert_eq!(result.args.positional, vec!["file.txt"]);
-    assert_eq!(result.args.named.get("name").unwrap(), "Alice");
+    match outcome {
+        ParseOutcome::Parsed {
+            command_path, args, ..
+        } => {
+            assert_eq!(command_path.leaf().unwrap(), "hello");
+            assert_eq!(args.positional, vec!["file.txt"]);
+            assert_eq!(args.named.get("name").unwrap(), "Alice");
+        }
+        other => panic!("expected Parsed, got {:?}", other),
+    }
 }
 
 // DD#8: bare --flag without a value must NOT insert "true" into named args.
@@ -365,32 +408,40 @@ fn parse_with_clap_bare_flag_not_inserted_as_true() {
         summary: "Say hello",
         syntax: None,
         category: None,
+        spec: None,
+        validator: None,
         execute: noop_execute(),
     }]);
 
     let root =
         cli_framework::app::clap_adapter::build_clap_root(None, &registry, "testapp", "0.1.0");
 
-    let result = cli_framework::app::clap_adapter::parse_with_clap(
+    let outcome = cli_framework::app::clap_adapter::parse_with_clap(
         &root,
+        &registry,
         vec![
             "testapp".to_string(),
             "hello".to_string(),
             "--verbose".to_string(),
         ],
-    )
-    .unwrap()
-    .unwrap();
+    );
 
-    assert_eq!(result.command_id, "hello");
-    assert!(
-        result.args.named.get("verbose").is_none(),
-        "bare --flag must NOT appear in named (DD#8)"
-    );
-    assert!(
-        !result.args.positional.contains(&"--verbose".to_string()),
-        "bare --flag must NOT appear in positional"
-    );
+    match outcome {
+        ParseOutcome::Parsed {
+            command_path, args, ..
+        } => {
+            assert_eq!(command_path.leaf().unwrap(), "hello");
+            assert!(
+                args.named.get("verbose").is_none(),
+                "bare --flag must NOT appear in named (DD#8)"
+            );
+            assert!(
+                !args.positional.contains(&"--verbose".to_string()),
+                "bare --flag must NOT appear in positional"
+            );
+        }
+        other => panic!("expected Parsed, got {:?}", other),
+    }
 }
 
 // Verify that --key value and --key=value produce identical CommandArgs (AC-G1.2).
@@ -401,36 +452,52 @@ fn parse_with_clap_key_value_and_equals_value_parity() {
         summary: "Say hello",
         syntax: None,
         category: None,
+        spec: None,
+        validator: None,
         execute: noop_execute(),
     }]);
 
     let root =
         cli_framework::app::clap_adapter::build_clap_root(None, &registry, "testapp", "0.1.0");
 
-    let result_space = cli_framework::app::clap_adapter::parse_with_clap(
+    let outcome_space = cli_framework::app::clap_adapter::parse_with_clap(
         &root,
+        &registry,
         vec![
             "testapp".to_string(),
             "hello".to_string(),
             "--name".to_string(),
             "Alice".to_string(),
         ],
-    )
-    .unwrap()
-    .unwrap();
+    );
 
-    let result_eq = cli_framework::app::clap_adapter::parse_with_clap(
+    let outcome_eq = cli_framework::app::clap_adapter::parse_with_clap(
         &root,
+        &registry,
         vec![
             "testapp".to_string(),
             "hello".to_string(),
             "--name=Alice".to_string(),
         ],
-    )
-    .unwrap()
-    .unwrap();
+    );
 
-    assert_eq!(result_space.command_id, result_eq.command_id);
-    assert_eq!(result_space.args.named, result_eq.args.named);
-    assert_eq!(result_space.args.positional, result_eq.args.positional);
+    match (outcome_space, outcome_eq) {
+        (
+            ParseOutcome::Parsed {
+                command_path: p1,
+                args: a1,
+                ..
+            },
+            ParseOutcome::Parsed {
+                command_path: p2,
+                args: a2,
+                ..
+            },
+        ) => {
+            assert_eq!(p1.leaf().unwrap(), p2.leaf().unwrap());
+            assert_eq!(a1.named, a2.named);
+            assert_eq!(a1.positional, a2.positional);
+        }
+        other => panic!("expected both Parsed, got {:?}", other),
+    }
 }
