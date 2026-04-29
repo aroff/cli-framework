@@ -6,6 +6,9 @@ pub use ask::create_ask_command;
 pub use registry::CommandRegistry;
 
 use crate::app::context::AppContext;
+use crate::parser::diagnostic::Diagnostic;
+use crate::spec::command_tree::CommandSpec;
+use crate::spec::value::ArgValue;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::future::Future;
@@ -43,6 +46,11 @@ pub struct Command {
     pub syntax: Option<&'static str>,
     /// Optional category for grouping in palette
     pub category: Option<&'static str>,
+    /// Typed argument spec; `None` preserves legacy behavior.
+    pub spec: Option<Arc<CommandSpec>>,
+    /// Optional command-level validation hook (Stage 6).
+    #[allow(clippy::type_complexity)]
+    pub validator: Option<Arc<dyn Fn(&HashMap<String, ArgValue>) -> Vec<Diagnostic> + Send + Sync>>,
     /// Execution function (async)
     ///
     /// Returns a boxed future that will be awaited by the framework.
@@ -56,4 +64,21 @@ pub struct Command {
             + Send
             + Sync,
     >,
+}
+
+impl Command {
+    /// Attach a typed `CommandSpec` to this command.
+    pub fn with_spec(mut self, spec: CommandSpec) -> Self {
+        self.spec = Some(Arc::new(spec));
+        self
+    }
+
+    /// Attach a command-level validation hook.
+    pub fn with_validator<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&HashMap<String, ArgValue>) -> Vec<Diagnostic> + Send + Sync + 'static,
+    {
+        self.validator = Some(Arc::new(f));
+        self
+    }
 }

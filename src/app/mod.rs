@@ -1,5 +1,6 @@
 pub mod builder;
 pub mod context;
+pub mod diagnostic_reporter;
 pub mod meta;
 pub mod module;
 

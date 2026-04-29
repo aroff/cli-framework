@@ -132,6 +132,11 @@ impl<'a> HelpRenderer<'a> {
     pub fn print(&self) {
         print!("{}", self.render());
     }
+
+    /// Render help text with no dynamic content (timestamps etc.) — suitable for snapshot tests.
+    pub fn render_normalized(&self) -> String {
+        self.render()
+    }
 }
 
 fn title_case(input: &str) -> String {

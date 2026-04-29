@@ -20,6 +20,8 @@ async fn main() -> anyhow::Result<()> {
         summary: "Deploy application (requires confirmation)",
         syntax: Some("deploy --env <environment>"),
         category: Some("deployment"),
+        spec: None,
+        validator: None,
         execute: Arc::new(|_ctx, args| {
             Box::pin(async move {
                 let env = args
@@ -58,6 +60,8 @@ async fn main() -> anyhow::Result<()> {
         summary: "Configure application settings",
         syntax: Some("configure"),
         category: Some("setup"),
+        spec: None,
+        validator: None,
         execute: Arc::new(|_ctx, _args| {
             Box::pin(async move {
                 println!("⚙️  Configuring application...");
@@ -106,8 +110,8 @@ async fn main() -> anyhow::Result<()> {
 
     builder = builder
         .with_version(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
-        .register_command(deploy_command)
-        .register_command(configure_command);
+        .register_command(deploy_command)?
+        .register_command(configure_command)?;
 
     let mut app = builder.build(MyApp)?;
 
