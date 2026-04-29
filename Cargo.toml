@@ -119,6 +119,10 @@ name = "unit_security_http_client"
 path = "tests/unit/security_http_client.rs"
 
 [[test]]
+name = "unit_http_retry_client"
+path = "tests/unit/http_retry_client.rs"
+
+[[test]]
 name = "unit_clap_adapter"
 path = "tests/unit/clap_adapter.rs"
 required-features = ["clap-dispatch"]

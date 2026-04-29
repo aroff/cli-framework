@@ -10,22 +10,27 @@ use crate::security::sanitize_untrusted_output;
 ///
 /// Shows the resolved command, confidence score, arguments, and reasoning.
 pub fn display_resolution(resolution: &CommandResolution) {
-    println!("\n🤔 Resolving command...");
+    display_resolution_to(resolution, &mut std::io::stdout());
+}
 
-    // Show confidence with color coding
+/// Writer-based variant of `display_resolution` for testing.
+pub fn display_resolution_to<W: std::io::Write>(resolution: &CommandResolution, w: &mut W) {
+    writeln!(w, "\n🤔 Resolving command...").ok();
+
     let confidence_color = get_confidence_color(resolution.confidence);
     let safe_id = sanitize_untrusted_output(&resolution.command_id);
-    println!(
+    writeln!(
+        w,
         "🎯 Resolved: {} (confidence: {}{:.1}%{})",
         safe_id,
         confidence_color,
         resolution.confidence * 100.0,
         reset_color()
-    );
+    )
+    .ok();
 
-    // Show arguments if any
     if !resolution.args.positional.is_empty() || !resolution.args.named.is_empty() {
-        println!("📋 Arguments:");
+        writeln!(w, "📋 Arguments:").ok();
         if !resolution.args.positional.is_empty() {
             let safe_positional: Vec<String> = resolution
                 .args
@@ -33,7 +38,7 @@ pub fn display_resolution(resolution: &CommandResolution) {
                 .iter()
                 .map(|s| sanitize_untrusted_output(s))
                 .collect();
-            println!("   Positional: {:?}", safe_positional);
+            writeln!(w, "   Positional: {:?}", safe_positional).ok();
         }
         if !resolution.args.named.is_empty() {
             let safe_named: std::collections::HashMap<String, String> = resolution
@@ -42,25 +47,33 @@ pub fn display_resolution(resolution: &CommandResolution) {
                 .iter()
                 .map(|(k, v)| (sanitize_untrusted_output(k), sanitize_untrusted_output(v)))
                 .collect();
-            println!("   Named: {:?}", safe_named);
+            writeln!(w, "   Named: {:?}", safe_named).ok();
         }
     }
 
-    // Show reasoning if available
     if let Some(reasoning) = &resolution.reasoning {
         let safe_reasoning = sanitize_untrusted_output(reasoning);
-        println!("💭 Reasoning: {}", safe_reasoning);
+        writeln!(w, "💭 Reasoning: {}", safe_reasoning).ok();
     }
 
-    println!();
+    writeln!(w).ok();
 }
 
 /// Display confirmation prompt
 ///
 /// Shows a formatted confirmation prompt with command details.
 pub fn display_confirmation(resolution: &CommandResolution, context: Option<&str>) {
+    display_confirmation_to(resolution, context, &mut std::io::stdout());
+}
+
+/// Writer-based variant of `display_confirmation` for testing.
+pub fn display_confirmation_to<W: std::io::Write>(
+    resolution: &CommandResolution,
+    context: Option<&str>,
+    w: &mut W,
+) {
     let safe_id = sanitize_untrusted_output(&resolution.command_id);
-    println!("⚠️  Execute command: {}", safe_id);
+    writeln!(w, "⚠️  Execute command: {}", safe_id).ok();
 
     if !resolution.args.positional.is_empty() {
         let safe_positional: Vec<String> = resolution
@@ -69,99 +82,140 @@ pub fn display_confirmation(resolution: &CommandResolution, context: Option<&str
             .iter()
             .map(|s| sanitize_untrusted_output(s))
             .collect();
-        println!("   Positional args: {:?}", safe_positional);
+        writeln!(w, "   Positional args: {:?}", safe_positional).ok();
     }
 
     if !resolution.args.named.is_empty() {
         for (key, value) in &resolution.args.named {
             let safe_key = sanitize_untrusted_output(key);
             let safe_value = sanitize_untrusted_output(value);
-            println!("   {}: {}", safe_key, safe_value);
+            writeln!(w, "   {}: {}", safe_key, safe_value).ok();
         }
     }
 
     if let Some(ctx) = context {
         let safe_ctx = sanitize_untrusted_output(ctx);
-        println!("   Context: {}", safe_ctx);
+        writeln!(w, "   Context: {}", safe_ctx).ok();
     }
 
-    println!();
+    writeln!(w).ok();
 }
 
 /// Display retry information
 ///
 /// Shows information about retry attempts with error details.
 pub fn display_retry(attempt: usize, max_attempts: usize, error: &str) {
+    display_retry_to(attempt, max_attempts, error, &mut std::io::stdout());
+}
+
+/// Writer-based variant of `display_retry` for testing.
+pub fn display_retry_to<W: std::io::Write>(
+    attempt: usize,
+    max_attempts: usize,
+    error: &str,
+    w: &mut W,
+) {
     let attempt_color = if attempt >= max_attempts {
         red_color()
     } else {
         yellow_color()
     };
 
-    println!(
+    writeln!(
+        w,
         "{}🔄 Retry {} of {}{}",
         attempt_color,
         attempt,
         max_attempts,
         reset_color()
-    );
+    )
+    .ok();
 
     let safe_error = sanitize_untrusted_output(error);
-    println!("❌ Previous attempt failed: {}", safe_error);
-    println!();
+    writeln!(w, "❌ Previous attempt failed: {}", safe_error).ok();
+    writeln!(w).ok();
 }
 
 /// Display successful command execution
 ///
 /// Shows confirmation that the command executed successfully.
 pub fn display_success(command_id: &str) {
+    display_success_to(command_id, &mut std::io::stdout());
+}
+
+/// Writer-based variant of `display_success` for testing.
+pub fn display_success_to<W: std::io::Write>(command_id: &str, w: &mut W) {
     let safe_id = sanitize_untrusted_output(command_id);
-    println!("✅ {} executed successfully", safe_id);
+    writeln!(w, "✅ {} executed successfully", safe_id).ok();
 }
 
 /// Display command execution failure
 ///
 /// Shows detailed error information for failed commands.
 pub fn display_failure(command_id: &str, error: &str) {
+    display_failure_to(command_id, error, &mut std::io::stdout());
+}
+
+/// Writer-based variant of `display_failure` for testing.
+pub fn display_failure_to<W: std::io::Write>(command_id: &str, error: &str, w: &mut W) {
     let safe_id = sanitize_untrusted_output(command_id);
     let safe_error = sanitize_untrusted_output(error);
-    println!("❌ {} failed: {}", safe_id, safe_error);
+    writeln!(w, "❌ {} failed: {}", safe_id, safe_error).ok();
 }
 
 /// Display max retries exceeded
 ///
 /// Shows when all retry attempts have been exhausted.
 pub fn display_max_retries_exceeded(command_id: &str) {
+    display_max_retries_exceeded_to(command_id, &mut std::io::stdout());
+}
+
+/// Writer-based variant of `display_max_retries_exceeded` for testing.
+pub fn display_max_retries_exceeded_to<W: std::io::Write>(command_id: &str, w: &mut W) {
     let safe_id = sanitize_untrusted_output(command_id);
-    println!(
+    writeln!(
+        w,
         "{}💥 Max retries exceeded for command: {}{}",
         red_color(),
         safe_id,
         reset_color()
-    );
+    )
+    .ok();
 }
 
 /// Display suggested alternative command
 ///
 /// Shows AI-suggested alternative when a command fails.
 pub fn display_suggestion(resolution: &CommandResolution) {
-    println!("💡 AI suggests trying:");
-    display_resolution(resolution);
+    display_suggestion_to(resolution, &mut std::io::stdout());
+}
+
+/// Writer-based variant of `display_suggestion` for testing.
+pub fn display_suggestion_to<W: std::io::Write>(resolution: &CommandResolution, w: &mut W) {
+    writeln!(w, "💡 AI suggests trying:").ok();
+    display_resolution_to(resolution, w);
 }
 
 /// Display command help for available commands
 ///
 /// Shows a formatted list of available commands for user reference.
 pub fn display_command_help(commands: &[crate::llm::CommandMetadata]) {
+    display_command_help_to(commands, &mut std::io::stdout());
+}
+
+/// Writer-based variant of `display_command_help` for testing.
+pub fn display_command_help_to<W: std::io::Write>(
+    commands: &[crate::llm::CommandMetadata],
+    w: &mut W,
+) {
     if commands.is_empty() {
-        println!("ℹ️  No commands available");
+        writeln!(w, "ℹ️  No commands available").ok();
         return;
     }
 
-    println!("📚 Available commands:");
-    println!();
+    writeln!(w, "📚 Available commands:").ok();
+    writeln!(w).ok();
 
-    // Group commands by category
     let mut categorized: std::collections::HashMap<
         Option<String>,
         Vec<&crate::llm::CommandMetadata>,
@@ -176,25 +230,24 @@ pub fn display_command_help(commands: &[crate::llm::CommandMetadata]) {
 
     for (category, cmds) in categorized {
         if let Some(cat) = category {
-            println!("{}🔖 {}:{}", yellow_color(), cat, reset_color());
+            writeln!(w, "{}🔖 {}:{}", yellow_color(), cat, reset_color()).ok();
         } else {
-            println!("{}🔖 General:{}", yellow_color(), reset_color());
+            writeln!(w, "{}🔖 General:{}", yellow_color(), reset_color()).ok();
         }
 
         for cmd in cmds {
             let safe_id = sanitize_untrusted_output(&cmd.id);
             let safe_summary = sanitize_untrusted_output(&cmd.summary);
-            println!("   • {} - {}", safe_id, safe_summary);
+            writeln!(w, "   • {} - {}", safe_id, safe_summary).ok();
             if let Some(syntax) = &cmd.syntax {
                 let safe_syntax = sanitize_untrusted_output(syntax);
-                println!("     Syntax: {}", safe_syntax);
+                writeln!(w, "     Syntax: {}", safe_syntax).ok();
             }
         }
-        println!();
+        writeln!(w).ok();
     }
 }
 
-/// Get color code for confidence score
 fn get_confidence_color(confidence: f32) -> String {
     if confidence >= 0.8 {
         green_color()
@@ -205,7 +258,6 @@ fn get_confidence_color(confidence: f32) -> String {
     }
 }
 
-/// ANSI color codes
 fn green_color() -> String {
     if crate::cli_mode::should_color_output() {
         "\x1b[32m".to_string()
@@ -246,15 +298,12 @@ mod tests {
 
     #[test]
     fn test_confidence_colors() {
-        // Test high confidence
         let high_conf = get_confidence_color(0.9);
         assert!(high_conf.contains("[32m") || high_conf.is_empty());
 
-        // Test medium confidence
         let medium_conf = get_confidence_color(0.7);
         assert!(medium_conf.contains("[33m") || medium_conf.is_empty());
 
-        // Test low confidence
         let low_conf = get_confidence_color(0.4);
         assert!(low_conf.contains("[31m") || low_conf.is_empty());
     }
@@ -273,7 +322,6 @@ mod tests {
             reasoning: Some("User wants to deploy to production".to_string()),
         };
 
-        // This would normally print to stdout, but we can't easily test that
         display_resolution(&resolution);
     }
 

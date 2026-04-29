@@ -181,3 +181,33 @@ fn test_per_command_override_wins() {
         CommandRiskTier::Safe
     );
 }
+
+// AC7: Destructive-tier with ALLOW_DESTRUCTIVE_COMMANDS=1 returns Ok when interactive,
+// or DESTRUCTIVE_COMMAND_BLOCKED when non-interactive (as in CI/test environments).
+#[test]
+fn test_ac7_destructive_allowed_with_env_and_interactive() {
+    std::env::set_var("ALLOW_DESTRUCTIVE_COMMANDS", "1");
+    let policy = CommandRiskPolicy::default();
+    let resolution = make_resolution("drop-db");
+
+    let result = enforce_risk_gate(&policy, &resolution, Some("destructive"), false);
+
+    if cli_framework::cli_mode::is_interactive() {
+        // Interactive terminal + ALLOW_DESTRUCTIVE_COMMANDS=1 → gate passes
+        assert!(
+            result.is_ok(),
+            "Should return Ok when interactive and ALLOW_DESTRUCTIVE_COMMANDS=1"
+        );
+    } else {
+        // Non-interactive (CI/test) → still blocked even with the env var set
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("DESTRUCTIVE_COMMAND_BLOCKED"),
+            "Expected DESTRUCTIVE_COMMAND_BLOCKED in non-interactive mode, got: {}",
+            msg
+        );
+    }
+
+    std::env::remove_var("ALLOW_DESTRUCTIVE_COMMANDS");
+}
