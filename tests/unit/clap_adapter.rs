@@ -297,7 +297,7 @@ fn parse_with_clap_help_returns_help_shown() {
     );
 
     assert!(
-        matches!(outcome, ParseOutcome::HelpShown),
+        matches!(outcome, ParseOutcome::HelpShown(_)),
         "expected HelpShown, got {:?}",
         outcome
     );
@@ -316,7 +316,7 @@ fn parse_with_clap_version_flag_returns_version_shown() {
     );
 
     assert!(
-        matches!(outcome, ParseOutcome::VersionShown),
+        matches!(outcome, ParseOutcome::VersionShown(_)),
         "expected VersionShown, got {:?}",
         outcome
     );

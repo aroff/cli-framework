@@ -5,9 +5,12 @@ use crate::app::AppMeta;
 use crate::cli_output::HelpRenderer;
 use crate::command::{Command, CommandRegistry};
 use crate::llm::LlmProvider;
+use crate::parser::validator::SpecValidator;
 use crate::plugin::PluginRegistryManager;
 use crate::spec::command_tree::{CommandPath, GroupMetadata};
+use crate::spec::value::ArgValue;
 use anyhow::Result;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -42,6 +45,14 @@ impl AppBuilder {
     /// Register a root-level command. Returns `Err` if the command ID is already occupied
     /// or an alias conflicts with an existing registration.
     pub fn register_command(mut self, command: Command) -> Result<Self> {
+        #[cfg(feature = "strict-types")]
+        if command.spec.is_none() {
+            return Err(anyhow::anyhow!(
+                "strict-types: command '{}' must have a CommandSpec",
+                command.id
+            ));
+        }
+
         let path = CommandPath::root_for(command.id);
         self.command_registry
             .register_at(&path, command)
@@ -51,6 +62,14 @@ impl AppBuilder {
 
     /// Register a command at an arbitrary `CommandPath`.
     pub fn register_command_at(mut self, path: &CommandPath, command: Command) -> Result<Self> {
+        #[cfg(feature = "strict-types")]
+        if command.spec.is_none() {
+            return Err(anyhow::anyhow!(
+                "strict-types: command at path '{}' must have a CommandSpec",
+                path.to_path_string()
+            ));
+        }
+
         self.command_registry
             .register_at(path, command)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -262,7 +281,7 @@ impl<C: AppContext> App<C> {
             ParseOutcome::Parsed {
                 command_path,
                 args: cmd_args,
-                ..
+                typed_args,
             } => {
                 let cmd_id = command_path.leaf().unwrap_or("").to_string();
                 if cmd_id == "version" && self.command_registry.get("version").is_none() {
@@ -272,9 +291,17 @@ impl<C: AppContext> App<C> {
                     self.framework_println(&format!("{} {}", self.app_name, self.app_version));
                     return Ok(());
                 }
-                self.execute_command(&cmd_id, cmd_args).await
+                self.execute_command_with_typed_args(&cmd_id, cmd_args, typed_args)
+                    .await
             }
-            ParseOutcome::HelpShown | ParseOutcome::VersionShown => Ok(()),
+            ParseOutcome::HelpShown(text) => {
+                self.framework_println(text.trim_end());
+                Ok(())
+            }
+            ParseOutcome::VersionShown(text) => {
+                self.framework_println(text.trim_end());
+                Ok(())
+            }
             ParseOutcome::ParseError(d) => {
                 DiagnosticReporter::report(&d);
                 Ok(())
@@ -315,7 +342,11 @@ impl<C: AppContext> App<C> {
                     named.insert(key, remaining_args[i + 1].clone());
                     i += 2;
                 } else {
-                    named.insert(key, "true".to_string());
+                    // DD#8: bare --flag without value
+                    #[cfg(feature = "legacy-arg-coercion")]
+                    {
+                        named.insert(key, "true".to_string());
+                    }
                     i += 1;
                 }
             } else {
@@ -363,11 +394,43 @@ impl<C: AppContext> App<C> {
         command_id: &str,
         args: crate::command::CommandArgs,
     ) -> Result<()> {
+        self.execute_command_with_typed_args(command_id, args, None)
+            .await
+    }
+
+    pub async fn execute_command_with_typed_args(
+        &mut self,
+        command_id: &str,
+        args: crate::command::CommandArgs,
+        typed_args: Option<HashMap<String, ArgValue>>,
+    ) -> Result<()> {
+        use crate::app::diagnostic_reporter::DiagnosticReporter;
+
         let command = self
             .command_registry
             .get(command_id)
             .ok_or_else(|| anyhow::anyhow!("Command '{}' not found", command_id))?
             .clone();
+
+        // Stage 6: Validation Pipeline
+        // If the command has a spec and we have typed args, run validation
+        if let (Some(ref spec), Some(ref typed_args_map)) = (&command.spec, &typed_args) {
+            // Spec-level validation (E003–E006)
+            let spec_diagnostics = SpecValidator::validate(spec, typed_args_map);
+            if !spec_diagnostics.is_empty() {
+                DiagnosticReporter::report_all(&spec_diagnostics);
+                return Err(anyhow::anyhow!("validation failed"));
+            }
+
+            // Command-level validation hook (custom validation)
+            if let Some(ref validator) = command.validator {
+                let custom_diagnostics = validator(typed_args_map);
+                if !custom_diagnostics.is_empty() {
+                    DiagnosticReporter::report_all(&custom_diagnostics);
+                    return Err(anyhow::anyhow!("custom validation failed"));
+                }
+            }
+        }
 
         let mut ctx_wrapper = CliAppContextWrapper {
             _inner: &mut self.ctx,

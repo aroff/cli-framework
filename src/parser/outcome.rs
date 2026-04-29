@@ -15,9 +15,11 @@ pub enum ParseOutcome {
         typed_args: Option<HashMap<String, ArgValue>>,
     },
     /// `--help` / `-h` was requested; help was rendered; no command to execute.
-    HelpShown,
+    /// The String contains the help text to be printed.
+    HelpShown(String),
     /// `--version` / `-V` was requested; version was rendered; no command to execute.
-    VersionShown,
+    /// The String contains the version text to be printed.
+    VersionShown(String),
     /// A parse error occurred; diagnostics carry the details.
     ParseError(Diagnostic),
 }

@@ -31,12 +31,18 @@ pub fn build_legacy_clap_command(cmd: &Command) -> clap::Command {
         cmd.id
     );
 
-    let mut sub = clap::Command::new(cmd.id).about(cmd.summary).arg(
-        clap::Arg::new("trailing")
-            .num_args(0..)
-            .trailing_var_arg(true)
-            .allow_hyphen_values(true),
-    );
+    let mut sub = clap::Command::new(cmd.id).about(cmd.summary);
+
+    // With strict-args feature, don't use trailing_var_arg (reject unknown flags)
+    #[cfg(not(feature = "strict-args"))]
+    {
+        sub = sub.arg(
+            clap::Arg::new("trailing")
+                .num_args(0..)
+                .trailing_var_arg(true)
+                .allow_hyphen_values(true),
+        );
+    }
 
     if let Some(syntax) = cmd.syntax {
         sub = sub.after_help(format!("Syntax: {}", syntax));
@@ -259,7 +265,12 @@ mod tests {
             .get_arguments()
             .map(|a| a.get_id().as_str())
             .collect();
-        assert!(arg_ids.contains(&"trailing"), "expected 'trailing' var-arg");
+
+        #[cfg(not(feature = "strict-args"))]
+        assert!(arg_ids.contains(&"trailing"), "expected 'trailing' var-arg when strict-args is disabled");
+
+        #[cfg(feature = "strict-args")]
+        assert!(!arg_ids.contains(&"trailing"), "trailing var-arg should not be present when strict-args is enabled");
     }
 
     #[test]

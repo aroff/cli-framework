@@ -7,6 +7,9 @@ use std::sync::{Arc, Mutex};
 use cli_framework::app::{AppBuilder, AppContext};
 use cli_framework::command::CommandArgs;
 
+#[cfg(feature = "testkit")]
+use cli_framework::testkit::CliTestHarness;
+
 struct DummyCtx;
 impl AppContext for DummyCtx {}
 
@@ -454,5 +457,53 @@ mod clap_dispatch_tests {
             vals.is_empty(),
             "bare --flag without value should not appear in named or positional (DD#8)"
         );
+    }
+}
+
+// ============================================================================
+// Testkit-based versions of version dispatch tests (Stage 7 migration)
+// ============================================================================
+
+#[cfg(feature = "testkit")]
+mod testkit_version_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn version_dispatch_with_version_configured_testkit() {
+        let app = AppBuilder::new()
+            .with_version("myapp", "1.2.3")
+            .build(DummyCtx)
+            .unwrap();
+
+        let mut harness = CliTestHarness::new(app);
+        let output = harness.run(&["myapp", "version"]).await;
+
+        assert_eq!(output.stdout(), "myapp 1.2.3\n");
+        assert_eq!(output.exit_code(), 0);
+    }
+
+    #[tokio::test]
+    async fn version_dispatch_double_dash_version_testkit() {
+        let app = AppBuilder::new()
+            .with_version("myapp", "1.2.3")
+            .build(DummyCtx)
+            .unwrap();
+
+        let mut harness = CliTestHarness::new(app);
+        let output = harness.run(&["myapp", "--version"]).await;
+
+        assert_eq!(output.stdout(), "myapp 1.2.3\n");
+        assert_eq!(output.exit_code(), 0);
+    }
+
+    #[tokio::test]
+    async fn version_dispatch_without_with_version_prints_unknown_testkit() {
+        let app = AppBuilder::new().build(DummyCtx).unwrap();
+
+        let mut harness = CliTestHarness::new(app);
+        let output = harness.run(&["myapp", "version"]).await;
+
+        assert_eq!(output.stdout(), "unknown unknown\n");
+        assert_eq!(output.exit_code(), 0);
     }
 }

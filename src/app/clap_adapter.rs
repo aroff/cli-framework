@@ -122,18 +122,12 @@ pub fn parse_with_clap(
             use clap::error::ErrorKind;
             match e.kind() {
                 ErrorKind::DisplayHelp | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
-                    use std::io::Write;
-                    let mut stdout = std::io::stdout();
-                    write!(stdout, "{}", e).ok();
-                    stdout.flush().ok();
-                    ParseOutcome::HelpShown
+                    // Stage 2: Parser is side-effect-free; return text for app layer to print
+                    ParseOutcome::HelpShown(e.to_string())
                 }
                 ErrorKind::DisplayVersion => {
-                    use std::io::Write;
-                    let mut stdout = std::io::stdout();
-                    write!(stdout, "{}", e).ok();
-                    stdout.flush().ok();
-                    ParseOutcome::VersionShown
+                    // Stage 2: Parser is side-effect-free; return text for app layer to print
+                    ParseOutcome::VersionShown(e.to_string())
                 }
                 ErrorKind::UnknownArgument => ParseOutcome::ParseError(Diagnostic {
                     code: E_UNKNOWN_FLAG,
