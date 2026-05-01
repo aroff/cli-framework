@@ -2,6 +2,8 @@
 //! side-effect-free.
 
 use crate::parser::diagnostic::Diagnostic;
+
+#[cfg(feature = "testkit")]
 use std::sync::{Mutex, OnceLock};
 
 /// Writes structured diagnostics to stderr (or to an in-process capture buffer
@@ -10,8 +12,10 @@ pub struct DiagnosticReporter;
 
 // ── optional in-process stderr capture (testkit only) ─────────────────────────
 
+#[cfg(feature = "testkit")]
 static STDERR_CAPTURE: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
 
+#[cfg(feature = "testkit")]
 fn stderr_capture_buf() -> &'static Mutex<Option<Vec<u8>>> {
     STDERR_CAPTURE.get_or_init(|| Mutex::new(None))
 }

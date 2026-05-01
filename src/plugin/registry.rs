@@ -110,6 +110,51 @@ impl Default for PluginRegistryConfig {
     }
 }
 
+fn validate_manifest_path(
+    manifest_path: &std::path::Path,
+    plugin_root: &std::path::Path,
+) -> anyhow::Result<std::path::PathBuf> {
+    let canonical_manifest = manifest_path.canonicalize().map_err(|e| {
+        let err = anyhow::anyhow!(
+            "PLUGIN_PATH_UNRESOLVED: cannot resolve manifest path '{}': {}",
+            manifest_path.display(),
+            e
+        );
+        log::error!(
+            "Plugin path validation failed: cannot resolve manifest path '{}': {}",
+            manifest_path.display(),
+            e
+        );
+        err
+    })?;
+    let canonical_root = plugin_root.canonicalize().map_err(|e| {
+        let err = anyhow::anyhow!(
+            "PLUGIN_PATH_UNRESOLVED: cannot resolve plugin root '{}': {}",
+            plugin_root.display(),
+            e
+        );
+        log::error!(
+            "Plugin path validation failed: cannot resolve plugin root '{}': {}",
+            plugin_root.display(),
+            e
+        );
+        err
+    })?;
+    if !canonical_manifest.starts_with(&canonical_root) {
+        log::error!(
+            "Plugin path escape detected: manifest '{}' is outside root '{}'",
+            canonical_manifest.display(),
+            canonical_root.display()
+        );
+        return Err(anyhow::anyhow!(
+            "PLUGIN_PATH_ESCAPE: manifest path '{}' is outside plugin root '{}'",
+            canonical_manifest.display(),
+            canonical_root.display()
+        ));
+    }
+    Ok(canonical_manifest)
+}
+
 /// Plugin registry manager
 pub struct PluginRegistryManager {
     config_path: PathBuf,
@@ -135,19 +180,24 @@ impl PluginRegistryManager {
         }
 
         // Load enabled plugin manifests
+        let plugin_root = self
+            .config_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Cannot determine plugin root from config path"))?;
         for (plugin_id, entry) in self.config.get_enabled_plugins() {
             let manifest_path = PathBuf::from(&entry.manifest_path);
-            if manifest_path.exists() {
-                match PluginManifest::from_file(&manifest_path) {
+            match validate_manifest_path(&manifest_path, plugin_root) {
+                Ok(validated_path) => match PluginManifest::from_file(&validated_path) {
                     Ok(manifest) => {
                         self.loaded_manifests.insert(plugin_id.clone(), manifest);
                     }
                     Err(e) => {
                         eprintln!("Failed to load plugin {}: {}", plugin_id, e);
                     }
+                },
+                Err(e) => {
+                    eprintln!("Plugin path validation failed for {}: {}", plugin_id, e);
                 }
-            } else {
-                eprintln!("Plugin manifest not found: {}", entry.manifest_path);
             }
         }
 
@@ -187,9 +237,14 @@ impl PluginRegistryManager {
 
         self.config.add_plugin(plugin_id.clone(), entry);
 
-        // Try to load the manifest
-        let manifest_path = PathBuf::from(manifest_path);
-        let manifest = PluginManifest::from_file(&manifest_path)?;
+        // Try to load the manifest with path confinement validation
+        let manifest_path_buf = PathBuf::from(manifest_path);
+        let plugin_root = self
+            .config_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Cannot determine plugin root from config path"))?;
+        let validated_path = validate_manifest_path(&manifest_path_buf, plugin_root)?;
+        let manifest = PluginManifest::from_file(&validated_path)?;
         self.loaded_manifests.insert(plugin_id, manifest);
 
         Ok(())
@@ -208,7 +263,11 @@ impl PluginRegistryManager {
                 // Load the plugin if it's being enabled
                 if let Some(entry) = self.config.plugins.get(plugin_id) {
                     let manifest_path = PathBuf::from(&entry.manifest_path);
-                    let manifest = PluginManifest::from_file(&manifest_path)?;
+                    let plugin_root = self.config_path.parent().ok_or_else(|| {
+                        anyhow::anyhow!("Cannot determine plugin root from config path")
+                    })?;
+                    let validated_path = validate_manifest_path(&manifest_path, plugin_root)?;
+                    let manifest = PluginManifest::from_file(&validated_path)?;
                     self.loaded_manifests
                         .insert(plugin_id.to_string(), manifest);
                 }

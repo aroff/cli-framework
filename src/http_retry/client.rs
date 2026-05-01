@@ -95,7 +95,23 @@ impl RetryableHttpClient {
     pub fn client(&self) -> &Client {
         &self.client
     }
+}
 
+/// Returns a reqwest::Client with secure defaults: 5s connect timeout, 30s total
+/// timeout, built-in TLS roots, TLS certificate verification enabled.
+///
+/// This factory MUST NOT call `danger_accept_invalid_certs(true)`.
+pub fn secure_reqwest_client() -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(30))
+        .pool_max_idle_per_host(10)
+        .pool_idle_timeout(Duration::from_secs(90))
+        .tls_built_in_root_certs(true)
+        .build()?)
+}
+
+impl RetryableHttpClient {
     /// Execute a request builder with retry logic
     ///
     /// This is the core method that handles retry logic. It:

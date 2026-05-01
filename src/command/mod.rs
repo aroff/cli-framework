@@ -3,6 +3,7 @@ pub mod parser;
 pub mod registry;
 
 pub use ask::create_ask_command;
+pub use ask::enforce_risk_gate;
 pub use registry::CommandRegistry;
 
 use crate::app::context::AppContext;
