@@ -166,14 +166,21 @@ fn build_clap_root_no_version_subcommand_when_user_registers_version() {
         .unwrap();
     let (name, sub_matches) = matches.subcommand().unwrap();
     assert_eq!(name, "version");
-    let trailing: Vec<String> = sub_matches
-        .get_many::<String>("trailing")
-        .map(|v| v.cloned().collect())
-        .unwrap_or_default();
-    assert!(trailing.is_empty());
+    // strict-args disables trailing vararg, so the "trailing" id is not registered
+    #[cfg(not(feature = "strict-args"))]
+    {
+        let trailing: Vec<String> = sub_matches
+            .get_many::<String>("trailing")
+            .map(|v| v.cloned().collect())
+            .unwrap_or_default();
+        assert!(trailing.is_empty());
+    }
+    #[cfg(feature = "strict-args")]
+    let _ = sub_matches;
 }
 
 #[test]
+#[cfg(not(feature = "strict-args"))]
 fn parse_with_clap_key_value() {
     let registry = make_registry_with(vec![Command {
         id: "hello",
@@ -212,6 +219,7 @@ fn parse_with_clap_key_value() {
 }
 
 #[test]
+#[cfg(not(feature = "strict-args"))]
 fn parse_with_clap_key_equals_value() {
     let registry = make_registry_with(vec![Command {
         id: "hello",
@@ -248,6 +256,7 @@ fn parse_with_clap_key_equals_value() {
 }
 
 #[test]
+#[cfg(not(feature = "strict-args"))]
 fn parse_with_clap_positional_after_double_dash() {
     let registry = make_registry_with(vec![Command {
         id: "hello",
@@ -362,6 +371,7 @@ fn parse_with_clap_version_subcommand_returns_parsed() {
 }
 
 #[test]
+#[cfg(not(feature = "strict-args"))]
 fn parse_with_clap_mixed_positional_and_named() {
     let registry = make_registry_with(vec![Command {
         id: "hello",
@@ -402,6 +412,7 @@ fn parse_with_clap_mixed_positional_and_named() {
 
 // DD#8: bare --flag without a value must NOT insert "true" into named args.
 #[test]
+#[cfg(not(feature = "strict-args"))]
 fn parse_with_clap_bare_flag_not_inserted_as_true() {
     let registry = make_registry_with(vec![Command {
         id: "hello",
@@ -446,6 +457,7 @@ fn parse_with_clap_bare_flag_not_inserted_as_true() {
 
 // Verify that --key value and --key=value produce identical CommandArgs (AC-G1.2).
 #[test]
+#[cfg(not(feature = "strict-args"))]
 fn parse_with_clap_key_value_and_equals_value_parity() {
     let registry = make_registry_with(vec![Command {
         id: "hello",

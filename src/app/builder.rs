@@ -26,6 +26,7 @@ pub struct AppBuilder {
     meta: Option<AppMeta>,
     app_name: &'static str,
     app_version: &'static str,
+    risk_policy: crate::security::command_risk::CommandRiskPolicy,
 }
 
 impl AppBuilder {
@@ -39,7 +40,17 @@ impl AppBuilder {
             meta: None,
             app_name: "unknown",
             app_version: "unknown",
+            risk_policy: crate::security::command_risk::CommandRiskPolicy::default(),
         }
+    }
+
+    /// Override the default (all-Safe) command risk policy.
+    pub fn with_risk_policy(
+        mut self,
+        policy: crate::security::command_risk::CommandRiskPolicy,
+    ) -> Self {
+        self.risk_policy = policy;
+        self
     }
 
     /// Register a root-level command. Returns `Err` if the command ID is already occupied
@@ -142,8 +153,11 @@ impl AppBuilder {
 
         if let Some(ref provider) = self.llm_provider {
             let registry_snapshot = Arc::new(self.command_registry.clone());
-            let ask_command =
-                crate::command::create_ask_command(provider.clone(), registry_snapshot);
+            let ask_command = crate::command::create_ask_command(
+                provider.clone(),
+                registry_snapshot,
+                self.risk_policy.clone(),
+            );
             self.command_registry.register(ask_command);
         }
 

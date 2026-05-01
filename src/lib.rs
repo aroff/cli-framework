@@ -70,6 +70,7 @@ pub mod observability;
 
 pub mod auth;
 pub mod retry;
+pub mod security;
 
 // HTTP retry integration module
 // Note: This module requires applications to provide `reqwest` dependency

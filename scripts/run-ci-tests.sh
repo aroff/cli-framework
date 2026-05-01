@@ -19,7 +19,7 @@ echo -e "${GREEN}Running CI tests locally...${NC}"
 echo ""
 
 # Step 1: Check formatting
-echo -e "${YELLOW}[1/5] Checking code formatting...${NC}"
+echo -e "${YELLOW}[1/6] Checking code formatting...${NC}"
 if cargo fmt --all -- --check; then
     echo -e "${GREEN}✓ Formatting check passed${NC}"
 else
@@ -29,7 +29,7 @@ fi
 echo ""
 
 # Step 2: Run Clippy
-echo -e "${YELLOW}[2/5] Running Clippy lints...${NC}"
+echo -e "${YELLOW}[2/6] Running Clippy lints...${NC}"
 if cargo clippy -- -D warnings; then
     echo -e "${GREEN}✓ Clippy check passed${NC}"
 else
@@ -38,8 +38,18 @@ else
 fi
 echo ""
 
-# Step 3: Build release binary
-echo -e "${YELLOW}[3/5] Building release binary...${NC}"
+# Step 3: Run cargo audit
+echo -e "${YELLOW}[3/6] Running cargo audit...${NC}"
+if cargo audit; then
+    echo -e "${GREEN}✓ No known vulnerabilities${NC}"
+else
+    echo -e "${RED}✗ cargo audit found advisories${NC}"
+    exit 1
+fi
+echo ""
+
+# Step 4: Build release binary
+echo -e "${YELLOW}[4/6] Building release binary...${NC}"
 if cargo build --release --verbose; then
     echo -e "${GREEN}✓ Release build succeeded${NC}"
 else
@@ -48,8 +58,8 @@ else
 fi
 echo ""
 
-# Step 4: Run all tests
-echo -e "${YELLOW}[4/5] Running all tests...${NC}"
+# Step 5: Run all tests
+echo -e "${YELLOW}[5/6] Running all tests...${NC}"
 if cargo test --verbose; then
     echo -e "${GREEN}✓ All tests passed${NC}"
 else
@@ -58,8 +68,8 @@ else
 fi
 echo ""
 
-# Step 5: Run integration tests
-echo -e "${YELLOW}[5/5] Running integration tests...${NC}"
+# Step 6: Run integration tests
+echo -e "${YELLOW}[6/6] Running integration tests...${NC}"
 if cargo test --test '*' --verbose; then
     echo -e "${GREEN}✓ Integration tests passed${NC}"
 else

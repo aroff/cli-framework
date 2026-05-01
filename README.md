@@ -192,6 +192,58 @@ Run the included examples to see the framework in action:
 - `cargo run --example with_plugins` - CLI with third-party plugin loading
 - `cargo run --example with_ailoop` - CLI with human-in-the-loop confirmations
 
+## Security
+
+### Output Sanitization
+
+All strings originating from LLM responses, plugin data, or external APIs are sanitized before display. The sanitizer strips ANSI CSI/OSC escape sequences and terminal control characters, preventing terminal-injection attacks. Printable ASCII, valid UTF-8 multi-byte characters, newlines, tabs, and carriage returns are preserved.
+
+### Command Risk Tiers
+
+The `ask` command classifies every AI-resolved command into one of three risk tiers:
+
+| Tier | Default categories | Behavior |
+|---|---|---|
+| `Safe` | All others | Proceeds normally; `ASK_ASSUME_YES`/`--yes` honored |
+| `Sensitive` | `data`, `config` | Requires interactive confirmation in non-interactive mode |
+| `Destructive` | `deployment`, `admin`, `destructive` | Blocked unless `ALLOW_DESTRUCTIVE_COMMANDS=1` AND interactive `y/yes` confirmation |
+
+Configure a custom policy via `AppBuilder::with_risk_policy()`:
+
+```rust
+use cli_framework::security::command_risk::{CommandRiskPolicy, CommandRiskTier};
+
+let mut policy = CommandRiskPolicy::default();
+policy.tiers.insert("my-safe-deploy".to_string(), CommandRiskTier::Safe);
+
+let app = AppBuilder::new()
+    .with_risk_policy(policy)
+    .build(ctx)?;
+```
+
+### `ALLOW_DESTRUCTIVE_COMMANDS` Environment Variable
+
+Setting `ALLOW_DESTRUCTIVE_COMMANDS=1` permits destructive-tier commands to proceed **only when combined with interactive `y/yes` confirmation**. This variable alone is insufficient — an interactive terminal is always required. `--yes` and `ASK_ASSUME_YES` are silently ignored for destructive commands.
+
+### Secure HTTP Client
+
+Use `secure_reqwest_client()` to obtain a `reqwest::Client` with secure defaults:
+
+```rust
+use cli_framework::http_retry::secure_reqwest_client;
+
+let client = secure_reqwest_client()?;
+let retry_client = RetryableHttpClient::new(client);
+```
+
+Defaults: 5s connect timeout, 30s total timeout, built-in TLS roots, TLS certificate verification enabled, no `danger_accept_invalid_certs`.
+
+## CI Requirements
+
+The following tools must be installed in your CI environment:
+
+- `cargo-audit` — installed via `cargo install cargo-audit`. Required for the supply-chain vulnerability check step in `scripts/run-ci-tests.sh`.
+
 ## Environment Variables
 
 ### LLM Configuration
@@ -199,7 +251,7 @@ Run the included examples to see the framework in action:
 - `ANTHROPIC_API_KEY` - Anthropic API key
 - `LLM_PROVIDER` - Provider selection ("openai", "anthropic")
 - `LLM_MODEL` - Model name
-- `ASK_ASSUME_YES` - Skip confirmation prompt for ask command ("1" or "true")
+- `ASK_ASSUME_YES` - Skip confirmation prompt for `Safe`/`Sensitive`-tier ask commands ("1" or "true")
 
 ### ailoop Configuration
 - `AILOOP_CHANNEL` - Channel name (default: "cli-framework")

@@ -117,12 +117,9 @@ fn build_clap_arg(arg_spec: &ArgSpec) -> clap::Arg {
         },
         ArgKind::Option => {
             arg = arg.long(arg_spec.name);
-            match &arg_spec.value_type {
-                ArgValueType::Enum(allowed) => {
-                    arg = arg
-                        .value_parser(clap::builder::PossibleValuesParser::new(allowed.as_slice()));
-                }
-                _ => {}
+            if let ArgValueType::Enum(allowed) = &arg_spec.value_type {
+                arg =
+                    arg.value_parser(clap::builder::PossibleValuesParser::new(allowed.as_slice()));
             }
             match arg_spec.cardinality {
                 Cardinality::Required => {
@@ -267,10 +264,16 @@ mod tests {
             .collect();
 
         #[cfg(not(feature = "strict-args"))]
-        assert!(arg_ids.contains(&"trailing"), "expected 'trailing' var-arg when strict-args is disabled");
+        assert!(
+            arg_ids.contains(&"trailing"),
+            "expected 'trailing' var-arg when strict-args is disabled"
+        );
 
         #[cfg(feature = "strict-args")]
-        assert!(!arg_ids.contains(&"trailing"), "trailing var-arg should not be present when strict-args is enabled");
+        assert!(
+            !arg_ids.contains(&"trailing"),
+            "trailing var-arg should not be present when strict-args is enabled"
+        );
     }
 
     #[test]

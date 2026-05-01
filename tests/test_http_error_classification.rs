@@ -5,36 +5,35 @@ use cli_framework::http_retry::http_errors::{is_connection_error, is_timeout};
 #[tokio::test]
 async fn test_is_timeout_helper_function() {
     // T009: Unit test for is_timeout() helper function
+    //
+    // Bind a local TCP listener that accepts connections but never responds,
+    // guaranteeing a timeout with a short client timeout.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // Accept the connection in a background task (but never send data)
+    tokio::spawn(async move {
+        let (_socket, _) = listener.accept().await.unwrap();
+        // Hold the connection open but never respond
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    });
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(10))
+        .timeout(std::time::Duration::from_millis(50))
         .build()
         .unwrap();
 
-    // Create a request that will timeout
-    let result = client
-        .get("http://httpbin.org/delay/5") // This will timeout due to 10ms timeout
-        .send()
-        .await;
+    let result = client.get(format!("http://{}/slow", addr)).send().await;
 
-    if let Err(e) = result {
-        assert!(
-            is_timeout(&e),
-            "Timeout errors should be detected by is_timeout()"
-        );
-    } else {
-        // If it didn't timeout, try with a very short timeout
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(1))
-            .build()
-            .unwrap();
-        let result = client.get("http://httpbin.org/delay/1").send().await;
-        if let Err(e) = result {
+    match result {
+        Err(e) => {
             assert!(
-                is_timeout(&e) || e.is_timeout(),
-                "Timeout errors should be detected"
+                is_timeout(&e),
+                "Timeout errors should be detected by is_timeout(), got: {:?}",
+                e
             );
         }
+        Ok(_) => panic!("Expected timeout error, but request succeeded"),
     }
 }
 

@@ -93,7 +93,11 @@ async fn test_ask_positional_query_calls_resolve() {
     let captured_commands = mock.captured_commands.clone();
 
     let registry = create_test_registry_with_commands();
-    let ask_cmd = cli_framework::command::create_ask_command(Arc::new(mock), Arc::new(registry));
+    let ask_cmd = cli_framework::command::create_ask_command(
+        Arc::new(mock),
+        Arc::new(registry),
+        cli_framework::security::command_risk::CommandRiskPolicy::default(),
+    );
 
     let mut ctx = NoopContext;
     let mut named1 = HashMap::new();
@@ -116,7 +120,11 @@ async fn test_ask_named_query_calls_resolve() {
     let captured_query = mock.captured_query.clone();
 
     let registry = create_test_registry_with_commands();
-    let ask_cmd = cli_framework::command::create_ask_command(Arc::new(mock), Arc::new(registry));
+    let ask_cmd = cli_framework::command::create_ask_command(
+        Arc::new(mock),
+        Arc::new(registry),
+        cli_framework::security::command_risk::CommandRiskPolicy::default(),
+    );
 
     let mut ctx = NoopContext;
     let mut named = HashMap::new();
@@ -138,7 +146,11 @@ async fn test_ask_no_query_returns_ok() {
     let mock = MockLlmProvider::new();
 
     let registry = create_test_registry_with_commands();
-    let ask_cmd = cli_framework::command::create_ask_command(Arc::new(mock), Arc::new(registry));
+    let ask_cmd = cli_framework::command::create_ask_command(
+        Arc::new(mock),
+        Arc::new(registry),
+        cli_framework::security::command_risk::CommandRiskPolicy::default(),
+    );
 
     let mut ctx = NoopContext;
     let args = CommandArgs {
@@ -156,7 +168,11 @@ async fn test_ask_excludes_self_from_metadata() {
     let captured_commands = mock.captured_commands.clone();
 
     let registry = create_test_registry_with_commands();
-    let ask_cmd = cli_framework::command::create_ask_command(Arc::new(mock), Arc::new(registry));
+    let ask_cmd = cli_framework::command::create_ask_command(
+        Arc::new(mock),
+        Arc::new(registry),
+        cli_framework::security::command_risk::CommandRiskPolicy::default(),
+    );
 
     let mut ctx = NoopContext;
     let mut named2 = HashMap::new();
@@ -212,7 +228,11 @@ async fn test_ask_dispatches_resolved_command() {
 
     let mock = MockLlmProvider::with_resolution(resolution);
 
-    let ask_cmd = cli_framework::command::create_ask_command(Arc::new(mock), Arc::new(registry));
+    let ask_cmd = cli_framework::command::create_ask_command(
+        Arc::new(mock),
+        Arc::new(registry),
+        cli_framework::security::command_risk::CommandRiskPolicy::default(),
+    );
 
     let mut ctx = NoopContext;
     let mut named = HashMap::new();
@@ -241,7 +261,11 @@ async fn test_ask_unknown_command_returns_error() {
     let mock = MockLlmProvider::with_resolution(resolution);
 
     let registry = CommandRegistry::new();
-    let ask_cmd = cli_framework::command::create_ask_command(Arc::new(mock), Arc::new(registry));
+    let ask_cmd = cli_framework::command::create_ask_command(
+        Arc::new(mock),
+        Arc::new(registry),
+        cli_framework::security::command_risk::CommandRiskPolicy::default(),
+    );
 
     let mut ctx = NoopContext;
     let mut named3 = HashMap::new();
@@ -268,7 +292,11 @@ async fn test_ask_recursive_ask_returns_error() {
     let mock = MockLlmProvider::with_resolution(resolution);
 
     let registry = CommandRegistry::new();
-    let ask_cmd = cli_framework::command::create_ask_command(Arc::new(mock), Arc::new(registry));
+    let ask_cmd = cli_framework::command::create_ask_command(
+        Arc::new(mock),
+        Arc::new(registry),
+        cli_framework::security::command_risk::CommandRiskPolicy::default(),
+    );
 
     let mut ctx = NoopContext;
     let args = CommandArgs {
@@ -291,7 +319,11 @@ async fn test_ask_provider_error_returns_error() {
     let mock = MockLlmProvider::with_error("API rate limit exceeded");
 
     let registry = CommandRegistry::new();
-    let ask_cmd = cli_framework::command::create_ask_command(Arc::new(mock), Arc::new(registry));
+    let ask_cmd = cli_framework::command::create_ask_command(
+        Arc::new(mock),
+        Arc::new(registry),
+        cli_framework::security::command_risk::CommandRiskPolicy::default(),
+    );
 
     let mut ctx = NoopContext;
     let args = CommandArgs {
@@ -312,7 +344,11 @@ async fn test_ask_yes_flag_skips_confirmation() {
     let mock = MockLlmProvider::with_resolution(make_resolution("status", 0.9));
 
     let registry = create_test_registry_with_commands();
-    let ask_cmd = cli_framework::command::create_ask_command(Arc::new(mock), Arc::new(registry));
+    let ask_cmd = cli_framework::command::create_ask_command(
+        Arc::new(mock),
+        Arc::new(registry),
+        cli_framework::security::command_risk::CommandRiskPolicy::default(),
+    );
 
     let mut ctx = NoopContext;
     let mut named = HashMap::new();
@@ -327,6 +363,7 @@ async fn test_ask_yes_flag_skips_confirmation() {
 }
 
 #[tokio::test]
+#[cfg(not(feature = "strict-types"))]
 async fn test_app_without_llm_has_no_ask_in_help() {
     use cli_framework::app::AppBuilder;
 

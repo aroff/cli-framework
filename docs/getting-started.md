@@ -168,6 +168,38 @@ ASK_ASSUME_YES=1 cargo run -- ask "say hello to Bob"
 | `LLM_MODEL` | Model name (default: `gpt-4` or `claude-3-sonnet`) |
 | `ASK_ASSUME_YES` | Set to `1` or `true` to skip confirmation |
 
+## Security Defaults
+
+### Output Sanitization
+
+All strings from LLM responses, plugin data, and external APIs are sanitized before display. ANSI CSI/OSC escape sequences and terminal control characters are stripped automatically. No action is required — sanitization happens at every print site.
+
+### Risk Gate Model
+
+The `ask` command classifies every resolved command into a risk tier before execution:
+
+- **Safe** (default): proceeds normally; `--yes` / `ASK_ASSUME_YES` are honored.
+- **Sensitive** (categories: `data`, `config`): requires interactive confirmation when not in `--yes` / CI mode.
+- **Destructive** (categories: `deployment`, `admin`, `destructive`): `--yes` and `ASK_ASSUME_YES` are **ignored**. Requires `ALLOW_DESTRUCTIVE_COMMANDS=1` in the environment **and** interactive `y/yes` input.
+
+Override per-command tiers with `AppBuilder::with_risk_policy()`.
+
+### Plugin Path Confinement
+
+Plugin manifest paths are canonicalized and validated to reside under the plugin registry directory. Paths using `../` that would escape the plugin root are rejected with a `PLUGIN_PATH_ESCAPE` error. This prevents path-traversal attacks via crafted registry TOML files.
+
+### Secure HTTP Client
+
+The `secure_reqwest_client()` factory provides a `reqwest::Client` with hardened defaults:
+
+```rust
+use cli_framework::http_retry::secure_reqwest_client;
+
+let client = secure_reqwest_client()?; // 5s connect, 30s total, TLS on
+```
+
+The existing `RetryableHttpClient::new(client)` constructor is unchanged.
+
 ## Next Steps
 
 - Explore [Rich CLI Output](https://github.com/your-org/cli-framework#rich-cli-output) for tables and JSON.
