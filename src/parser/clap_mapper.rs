@@ -117,12 +117,9 @@ fn build_clap_arg(arg_spec: &ArgSpec) -> clap::Arg {
         },
         ArgKind::Option => {
             arg = arg.long(arg_spec.name);
-            match &arg_spec.value_type {
-                ArgValueType::Enum(allowed) => {
-                    arg = arg
-                        .value_parser(clap::builder::PossibleValuesParser::new(allowed.as_slice()));
-                }
-                _ => {}
+            if let ArgValueType::Enum(allowed) = &arg_spec.value_type {
+                arg =
+                    arg.value_parser(clap::builder::PossibleValuesParser::new(allowed.as_slice()));
             }
             match arg_spec.cardinality {
                 Cardinality::Required => {

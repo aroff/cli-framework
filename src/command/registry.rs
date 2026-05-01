@@ -48,6 +48,7 @@ impl std::error::Error for RegistrationError {}
 
 // ── Internal tree node ────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub(crate) struct TreeNode {
     pub command: Option<Command>,
     pub group_meta: Option<GroupMetadata>,
@@ -55,6 +56,7 @@ pub(crate) struct TreeNode {
 }
 
 impl TreeNode {
+    #[allow(dead_code)]
     fn empty() -> Self {
         TreeNode {
             command: None,
