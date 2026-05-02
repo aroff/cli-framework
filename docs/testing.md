@@ -1,6 +1,14 @@
 # Testing with CliTestHarness
 
-The `testkit` feature provides `CliTestHarness<C>` for deterministic, in-process testing of CLI applications.
+**What this is:** Documentation for **automated tests** that you write in Rust and run with **`cargo test`** (unit and integration tests in your crate). Specifically, this file explains the optional **`CliTestHarness`** helper from **`cli-framework`**, which runs your **`App`** **in-process** so you can assert on stdout/stderr and exit behavior **without starting a separate OS process**.
+
+**Who needs it:** App authors who want stable, fast regression tests around parsing, `--help`, and command dispatch.
+
+**Who can skip it:** If you only use manual checks or subprocess-based tests, you do not need this harness.
+
+---
+
+The **`testkit`** feature exposes **`CliTestHarness<C>`** for deterministic CLI runs inside **`#[tokio::test]`** (or similar).
 
 ## Enabling the feature
 

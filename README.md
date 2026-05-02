@@ -17,26 +17,34 @@ Choose this crate when you want one stack for classical subcommands plus optiona
 
 ## Documentation
 
-| Document | Audience |
-|----------|-----------|
-| [docs/getting-started.md](docs/getting-started.md) | Step-by-step first CLI |
-| [docs/migration-typed-spec.md](docs/migration-typed-spec.md) | Migrating to `CommandSpec` |
-| [docs/testing.md](docs/testing.md) | Test harness (`testkit`) and patterns |
-| [architecture.md](architecture.md) | Module layout and design summary |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Build, CI parity, conventions |
+| Document | What it covers |
+|-----------|----------------|
+| [docs/migration-typed-spec.md](docs/migration-typed-spec.md) | How to move from “no **`CommandSpec`**” style code to typed args and stricter flags (**not** deprecated; optional upgrade path) |
+| [docs/testing.md](docs/testing.md) | **Automated tests** you write with **`cargo test`**: in-process harness **`CliTestHarness`** (feature **`testkit`**) instead of spawning subprocesses |
+| [architecture.md](architecture.md) | System design: **`src/`** modules, data flow, dependencies (no roadmap) |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Build, CI parity, repo layout |
 
-## Quick Start
+## Quick start
 
-Add to your `Cargo.toml`:
+**Prerequisites:** Rust stable (edition **2021**; MSRV is typically **1.70+**) and familiarity with **`async`/Tokio.**
+
+**Create a binary crate** (adjust the path vs `cli-framework` to match your layout):
+
+```bash
+cargo new my-cli-app && cd my-cli-app
+```
+
+**Dependencies** in `Cargo.toml` (published crate, git, or `path`):
 
 ```toml
 [dependencies]
-cli-framework = { git = "https://github.com/aroff/cli-framework" } # or path / crates.io when published
+cli-framework = { git = "https://github.com/aroff/cli-framework" }
+# cli-framework = { path = "../cli-framework" }
 anyhow = "1.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
-Basic CLI application:
+**Minimal application:** use **`Arc`** for **`execute`**; **`spec`** / **`validator`** are **`None`** until you adopt **`CommandSpec`** (see migration doc).
 
 ```rust
 use cli_framework::prelude::*;
@@ -44,7 +52,7 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let hello_command = Command {
+    let hello = Command {
         id: "hello",
         summary: "Print a greeting",
         syntax: Some("hello [name]"),
@@ -55,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
             Box::pin(async move {
                 let name = args
                     .positional
-                    .get(0)
+                    .first()
                     .map(String::as_str)
                     .unwrap_or("World");
                 println!("Hello, {}!", name);
@@ -65,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let mut builder = AppBuilder::new();
-    builder = builder.register_command(hello_command)?;
+    builder = builder.register_command(hello)?;
 
     let mut app = builder.build(MyContext)?;
     app.run().await?;
@@ -77,33 +85,57 @@ struct MyContext;
 impl AppContext for MyContext {}
 ```
 
+**Sanity checks:**
+
+```bash
+cargo run
+cargo run -- hello Alice
+```
+
 ## AI Ask Command
 
-Enable natural language command resolution. The `ask` command sends your query to an LLM provider, which resolves it to one of your registered commands, then prompts for confirmation before executing:
+Natural-language **`ask`** is registered when an LLM is configured (**`with_llm_from_env()`** or **`with_llm_provider`** after you build the **`AppBuilder`**). Example with one registered command plus **`ask`**:
 
 ```rust
 use cli_framework::prelude::*;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Set up LLM provider
-    std::env::set_var("OPENAI_API_KEY", "your-api-key");
+    std::env::set_var("OPENAI_API_KEY", "your-api-key"); // Or set in the shell / use Anthropic vars
     std::env::set_var("LLM_PROVIDER", "openai");
 
-    let mut builder = AppBuilder::new().with_llm_from_env()?; // Auto-detects from env vars
+    let hello = Command {
+        id: "hello",
+        summary: "Say hello",
+        syntax: Some("hello [name]"),
+        category: Some("utilities"),
+        spec: None,
+        validator: None,
+        execute: Arc::new(|_ctx, args| {
+            Box::pin(async move {
+                let name = args
+                    .positional
+                    .first()
+                    .map(String::as_str)
+                    .unwrap_or("World");
+                println!("Hello, {}!", name);
+                Ok(())
+            })
+        }),
+    };
 
-    // Register your commands (same pattern as the quick start; `ask` is added by with_llm_from_env).
-    // builder = builder.register_command(deploy_command)?;
+    let mut builder = AppBuilder::new().with_llm_from_env()?;
+    builder = builder.register_command(hello)?;
 
     let mut app = builder.build(MyContext)?;
     app.run().await?;
 
-    // Users can now type:
-    // $ myapp ask deploy the app to production
-    // $ myapp ask --query "show status" --yes
-    
     Ok(())
 }
+
+struct MyContext;
+impl AppContext for MyContext {}
 ```
 
 ### Query syntax
@@ -117,10 +149,15 @@ After the LLM resolves your query, the command displays the resolved command,
 confidence score, and reasoning, then prompts:
 
 ```
+Resolved to command:
+   Command: hello
+   Confidence: 95%
+   ...
+
 Execute this command? (y/N):
 ```
 
-Only `y` or `yes` (case-insensitive) proceeds.
+Exact formatting may vary slightly by version; only **`y`** or **`yes`** (case-insensitive) proceeds when confirmation is shown.
 
 ### Non-interactive mode
 
@@ -250,6 +287,10 @@ let app = AppBuilder::new()
 
 Setting `ALLOW_DESTRUCTIVE_COMMANDS=1` permits destructive-tier commands to proceed **only when combined with interactive `y/yes` confirmation**. This variable alone is insufficient — an interactive terminal is always required. `--yes` and `ASK_ASSUME_YES` are silently ignored for destructive commands.
 
+### Plugin path confinement
+
+Plugin registry entries are constrained so **`manifest_path`** cannot escape the plugin root (canonical paths, rejection of traversal). Malformed configs fail with **`PLUGIN_PATH_ESCAPE`** instead of loading arbitrary filesystem locations.
+
 ### Secure HTTP Client
 
 Use `secure_reqwest_client()` to obtain a `reqwest::Client` with secure defaults:
@@ -266,11 +307,14 @@ Defaults: 5s connect timeout, 30s total timeout, built-in TLS roots, TLS certifi
 ## Environment Variables
 
 ### LLM Configuration
-- `OPENAI_API_KEY` - OpenAI API key
-- `ANTHROPIC_API_KEY` - Anthropic API key
-- `LLM_PROVIDER` - Provider selection ("openai", "anthropic")
-- `LLM_MODEL` - Model name
-- `ASK_ASSUME_YES` - Skip confirmation prompt for `Safe`/`Sensitive`-tier ask commands ("1" or "true")
+
+| Variable | Role |
+|---------|------|
+| `OPENAI_API_KEY` | OpenAI API key |
+| `ANTHROPIC_API_KEY` | Anthropic API key |
+| `LLM_PROVIDER` | **`openai`** or **`anthropic`** |
+| `LLM_MODEL` | Override model id (providers pick defaults otherwise) |
+| `ASK_ASSUME_YES` | Set **`1`** or **`true`** to skip confirmation for **Safe** / **Sensitive** ask resolutions (destructive tier still gated per policy) |
 
 ### ailoop Configuration
 - `AILOOP_CHANNEL` - Channel name (default: "cli-framework")

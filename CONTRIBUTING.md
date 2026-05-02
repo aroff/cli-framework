@@ -1,6 +1,6 @@
 # Contributing to CLI Framework
 
-This document is for developers who build, test, or submit changes to this repository. For end-user usage, see [README.md](README.md) and [docs/getting-started.md](docs/getting-started.md).
+This document is for developers who build, test, or submit changes to this repository. For integrating the library, see [README.md](README.md); for deeper topics, [architecture.md](architecture.md) and [docs/](docs/).
 
 ## Prerequisites
 
@@ -20,7 +20,7 @@ cargo build
 - `src/` — library code (`app`, `command`, `parser`, `spec`, `llm`, `plugin`, `security`, …)
 - `examples/` — binaries you run with `cargo run --example <name>`
 - `tests/` — crates registered via `Cargo.toml` `[[test]]` (unit, integration, contract helpers)
-- `docs/` — user-oriented guides (`getting-started.md`, migration, testing)
+- `docs/` — guides (`migration-typed-spec.md`, `testing.md`)
 - `specs/` — design notes for in-flight work
 - `tools-cli-framework/` — bundled Agent Skill (`SKILL.md` + `references/`)
 

@@ -1,45 +1,43 @@
 # Architecture
 
-This document describes how **cli-framework** is structured and how the main subsystems interact. It supplements the user-facing [README.md](README.md).
+Macro view of **cli-framework**: what the library is, how **`src/`** modules group responsibility, and how request flow moves through the runtime. For how to use the library, see [README.md](README.md). For contributing and running checks, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Role in the stack
 
-**cli-framework** is a Rust library for building CLIs: it centralizes command registration, parsing and dispatch, optional LLM-based natural language resolution (`ask`), plugin loading, human-in-the-loop hooks via **ailoop-core**, and shared concerns such as output sanitization and HTTP client defaults.
-
-Applications depend on `cli_framework`, provide an `AppContext` implementation, and register `Command` values through `AppBuilder`.
+**cli-framework** is a Rust library: command registration and dispatch, optional LLM **`ask`**, plugin loading, **ailoop-core** integration, output sanitization and risk policy, HTTP retry helpers, and terminal-oriented output modes. Host binaries implement **`AppContext`**, construct **`AppBuilder`**, and register **`Command`** values.
 
 ## Major components
 
-| Area | Module(s) | Responsibility |
-|------|-----------|------------------|
-| Application shell | `app` | `AppBuilder` composes the registry, optional LLM, risk policy, and meta; `run` and command execution entry points. |
-| Commands | `command` | `Command` struct (metadata, optional `CommandSpec`, `validator`, `execute`), `CommandRegistry`, ask integration. |
-| Parsing and specs | `parser`, `spec` | Maps argv to structured arguments; typed `CommandSpec` tree for validated dispatch when enabled. |
-| LLM resolution | `llm`, `command::ask` | Resolves user text to a registered command; wires confirmation and risk tiers. |
-| Plugins | `plugin` | Registry-backed loading from manifests; paths constrained to reduce traversal escapes. |
-| Human-in-the-loop | `ailoop` | Bridges to ailoop-core for confirmations and prompts outside the `ask` flow. |
-| Security | `security` | Output sanitization for untrusted strings; command risk tiers for `ask`; related policy hooks on `AppBuilder`. |
-| HTTP | `http_retry`, `retry` | Retryable HTTP client patterns and `secure_reqwest_client()` defaults for callers that use reqwest. |
-| CLI presentation | `cli_output`, `cli_mode`, `message` | Tables, JSON, progress (feature-gated), and message shaping for terminal output. |
+| Area | Module(s) under `src/` | Responsibility |
+|------|-------------------------|----------------|
+| Application shell | `app` | **`AppBuilder`** composes **`CommandRegistry`**, optional LLM, risk policy, app meta; **`App::run`** / argument dispatch. |
+| Commands | `command` | **`Command`** (metadata, optional **`CommandSpec`**, **`validator`**, **`execute`**), registry, **`ask`** wiring. |
+| Parsing and specs | `parser`, `spec` | CLI string to structured args; **`CommandPath`** tree, **`CommandSpec`** / **`ArgSpec`** when enabled. |
+| LLM | `llm`, `command::ask` | **`LlmProvider`** implementations, resolution, confirmation and risk gates before dispatch. |
+| Plugins | `plugin` | Registry TOML / manifests, constrained paths, command loading. |
+| Human-in-the-loop | `ailoop` | **ailoop-core** client for confirmations and prompts outside **`ask`**. |
+| Security | `security` | Sanitization of untrusted terminal output; **`CommandRiskPolicy`** for **`ask`**. |
+| HTTP | `http_retry`, `retry` | Retry policies, **`RetryableHttpClient`**, **`secure_reqwest_client`**. |
+| Presentation | `cli_output`, `cli_mode`, `message` | Help, tables, JSON, progress (feature-gated), message types. |
+
+Supporting: **`auth`**, **`retry`**, **`data_source`**, **`message`**, **`observability`** (feature-gated), **`testkit`** (feature-gated, for tests).
 
 ## Execution flow
 
-1. The host binary constructs `AppBuilder`, registers commands (each `Command` uses `Arc`-wrapped async `execute` closures), and optionally configures LLM, risk policy, and plugins.
-2. The runtime parses input (CLI or repl-style, depending on the app), resolves to a command id and `CommandArgs`, and invokes the matching `execute` future with a mutable `AppContext`.
-3. For the **`ask`** path, input is sent to the configured LLM provider; resolution is classified by risk tier, confirmation rules apply, then the resolved command runs like any other dispatch.
+1. **Build time:** **`AppBuilder`** registers commands (and optional groups at **`CommandPath`**). Optional LLM configures **`create_ask_command`** and provider handle.
+2. **Run time:** Parse argv (or repl input) to a command id and **`CommandArgs`**, look up **`execute`**, **`await`** the future with **`&mut dyn AppContext`**.
+3. **`ask` path:** Parse query → **`LlmProvider::resolve_command`** against registry-derived metadata → enforce risk → confirm if required → dispatch same as (2).
 
-## Security model (summary)
+## Security model (behavioral summary)
 
-- **Output sanitization**: Strings from LLMs, plugins, or externals pass through sanitization before terminal display to mitigate injection via escape sequences (see README for behavioral detail).
-- **Risk tiers**: Resolved commands map to tiers (`Safe`, `Sensitive`, `Destructive`); destructive actions require explicit environment and interactive confirmation policy as documented in the README.
-- **Plugins**: Manifest paths are validated relative to allowed roots to reduce path traversal from registry files.
+- Untrusted strings (LLM, plugins, HTTP) are sanitized before emission to the terminal.
+- **`ask`** maps resolved commands to tiers; destructive tier requires policy and interactive confirmation as documented in README.
+- Plugin manifest paths are rooted and validated to limit directory escape.
 
-Detailed policy tuning uses `AppBuilder::with_risk_policy()` and environment variables referenced in README.
+## Crate dependencies (external, high level)
 
-## Optional Cargo features
+Declared in **`Cargo.toml`**: **`tokio`**, **`async-trait`**, **`anyhow`**, **`thiserror`**, **`serde`**, **`reqwest`**, **`clap`**, **`regex`**, **`toml`**, **`log`**, **`crossterm`**, **ailoop-core** (git pin), **async-openai**, **anthropic-sdk**; optional **comfy-table**, **indicatif** behind features.
 
-Default features are minimal. Optional integrations (advanced tables, progress, clap-dispatch, strict parsing modes, testkit, etc.) are declared in `Cargo.toml` so applications opt in explicitly and keep compile graphs smaller when unused.
+## Cargo features (compile-time surface)
 
-## Tests
-
-Unit tests live under `tests/unit/`; integration scenarios under `tests/integration/`. Feature-gated tests use `required-features` in `Cargo.toml`. See [docs/testing.md](docs/testing.md) for harness-oriented usage.
+Default is empty. Common flags: **`table-advanced`**, **`progress`**, **`clap-dispatch`**, **`strict-args`**, **`strict-types`**, **`legacy-arg-coercion`**, **`observability`**, **`testkit`**. Full matrix is authoritative in **`Cargo.toml`**.
