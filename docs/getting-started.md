@@ -27,12 +27,48 @@ anyhow = "1.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
-## Step 3: Define Your Application Context
+## Step 3: Commands and entrypoint (`main.rs`)
 
-Create `src/main.rs` and start by defining your application context. This is where you'll store application-wide state.
+Create `src/main.rs` with application context plus one greeting command based on positional args. Commands use async `Arc` closures (`spec` / `validator` are `None` until you adopt typed specs; see [migration-typed-spec.md](migration-typed-spec.md)):
 
 ```rust
 use cli_framework::prelude::*;
+use std::sync::Arc;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let ctx = MyAppContext {
+        app_name: "My CLI App".to_string(),
+    };
+
+    let hello = Command {
+        id: "hello",
+        summary: "Say hello to someone",
+        syntax: Some("hello [name]"),
+        category: Some("utilities"),
+        spec: None,
+        validator: None,
+        execute: Arc::new(|_ctx, args| {
+            Box::pin(async move {
+                let name = args
+                    .positional
+                    .get(0)
+                    .map(String::as_str)
+                    .unwrap_or("World");
+                println!("Hello, {}!", name);
+                Ok(())
+            })
+        }),
+    };
+
+    let mut builder = AppBuilder::new();
+    builder = builder.register_command(hello)?;
+
+    let mut app = builder.build(ctx)?;
+    app.run().await?;
+
+    Ok(())
+}
 
 struct MyAppContext {
     app_name: String,
@@ -41,50 +77,7 @@ struct MyAppContext {
 impl AppContext for MyAppContext {}
 ```
 
-## Step 4: Create a Command
-
-Now create a command that greets the user:
-
-```rust
-async fn hello_command(ctx: &mut dyn AppContext, args: CommandArgs) -> CommandResult {
-    let name = args.positional.get(0).unwrap_or(&"World".to_string()).clone();
-    println!("Hello, {}!", name);
-    Ok(())
-}
-```
-
-## Step 5: Build and Run the App
-
-Put it all together in `main()`:
-
-```rust
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let ctx = MyAppContext {
-        app_name: "My CLI App".to_string(),
-    };
-
-    // Build the application
-    let mut builder = AppBuilder::new();
-    
-    // Register the command
-    builder = builder.register_command(Command {
-        id: "hello",
-        summary: "Say hello to someone",
-        syntax: Some("hello [name]"),
-        category: Some("utilities"),
-        execute: hello_command,
-    });
-    
-    // Build and run
-    let mut app = builder.build(ctx)?;
-    app.run().await?;
-    
-    Ok(())
-}
-```
-
-## Step 6: Test Your Application
+## Step 4: Run and sanity-check locally
 
 Now you can run your application and pass commands to it:
 
@@ -96,30 +89,61 @@ cargo run
 cargo run -- hello Alice
 ```
 
-## Step 7: AI Ask Command
+## Step 5: AI Ask Command
 
 To enable natural language command resolution, configure an LLM provider.
 
 ### Setup
 
+Rebuild `main.rs` similarly to Step 3, but call `with_llm_from_env()` before registering commands:
+
 ```rust
+use cli_framework::prelude::*;
+use std::sync::Arc;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Set environment variables (or set them in your shell)
     std::env::set_var("OPENAI_API_KEY", "your-api-key");
     std::env::set_var("LLM_PROVIDER", "openai");
 
-    let ctx = MyAppContext { app_name: "AI CLI".to_string() };
+    let ctx = MyAppContext {
+        app_name: "AI CLI".to_string(),
+    };
 
-    let mut builder = AppBuilder::new()
-        .with_llm_from_env()? // This enables the 'ask' command
-        .register_command(hello_command);
-    
+    let hello = Command {
+        id: "hello",
+        summary: "Say hello to someone",
+        syntax: Some("hello [name]"),
+        category: Some("utilities"),
+        spec: None,
+        validator: None,
+        execute: Arc::new(|_ctx, args| {
+            Box::pin(async move {
+                let name = args
+                    .positional
+                    .get(0)
+                    .map(String::as_str)
+                    .unwrap_or("World");
+                println!("Hello, {}!", name);
+                Ok(())
+            })
+        }),
+    };
+
+    let mut builder = AppBuilder::new().with_llm_from_env()?;
+    builder = builder.register_command(hello)?;
+
     let mut app = builder.build(ctx)?;
     app.run().await?;
-    
+
     Ok(())
 }
+
+struct MyAppContext {
+    app_name: String,
+}
+
+impl AppContext for MyAppContext {}
 ```
 
 ### Usage
@@ -202,6 +226,7 @@ The existing `RetryableHttpClient::new(client)` constructor is unchanged.
 
 ## Next Steps
 
-- Explore [Rich CLI Output](https://github.com/your-org/cli-framework#rich-cli-output) for tables and JSON.
-- Add [ailoop integration](https://github.com/your-org/cli-framework#ailoop-integration) for human-in-the-loop confirmations.
-- Create [Plugins](https://github.com/your-org/cli-framework#plugin-system) to extend your CLI.
+- [README: examples and CLI output](https://github.com/aroff/cli-framework#examples) for runnable samples.
+- [README: ailoop integration](https://github.com/aroff/cli-framework#ailoop-integration) for confirmations.
+- [README: Plugin system](https://github.com/aroff/cli-framework#plugin-system).
+- [CONTRIBUTING](../CONTRIBUTING.md) for CI parity and conventions.

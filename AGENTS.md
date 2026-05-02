@@ -1,111 +1,19 @@
-# Contributing to TUI Framework
+# Agents
 
-Thank you for your interest in contributing to TUI Framework! This document provides guidelines and instructions for contributing.
+Entries use [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) normative keywords.
 
-## Development Setup
+CFW-0001 - Automated or human-assisted changes MUST keep this repository scoped to [**cli-framework**](https://github.com/aroff/cli-framework): a Rust library for CLI apps (command registry, optional `ask` / LLM, plugins, ailoop, security helpers). Agents MUST NOT treat this project as an unrelated codebase (for example generic TUI or widget frameworks).
 
-1. Clone the repository
-2. Install Rust toolchain (latest stable)
-3. Run tests: `cargo test`
-4. Build: `cargo build`
+CFW-0002 - Work that affects builds, merges, or shared workflow MUST align with [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Code Style
+CFW-0003 - Commit messages MUST conform to [Conventional Commits](https://www.conventionalcommits.org/).
 
-- Follow Rust standard formatting: `cargo fmt`
-- Run clippy: `cargo clippy`
-- Ensure all tests pass: `cargo test`
-- Ensure examples compile: `cargo build --examples`
+CFW-0004 - Agents MUST NOT use `git commit --no-verify` to bypass hooks.
 
-## Testing
+CFW-0005 - Change sets intended for integration SHOULD pass project checks: `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test` (see [CONTRIBUTING.md](CONTRIBUTING.md) and `scripts/run-ci-tests.sh` for full parity).
 
-The project follows a test-first approach:
+CFW-0006 - Behavioral or public API changes SHOULD update consumer-facing docs ([README.md](README.md), [docs/](docs/), or related specs under [specs/](specs/)) when users or integrators would otherwise be misled.
 
-- **Unit Tests**: Test individual components in `src/`
-- **Integration Tests**: Test component interactions in `tests/`
-- **Contract Tests**: Verify trait implementations comply with contracts in `tests/contract/`
-- **Examples**: Serve as integration tests and documentation
+CFW-0007 - Temporary or generated artifacts MUST NOT be committed (for example build output under `target/`).
 
-Run all tests:
-```bash
-cargo test
-```
-
-Run specific test suites:
-```bash
-cargo test --lib              # Unit tests only
-cargo test --test keymap      # Integration tests
-cargo test contract           # Contract tests
-```
-
-## Project Structure
-
-```
-cli-framework/
-├── src/              # Source code
-│   ├── app/         # Application builder and runtime
-│   ├── command/     # Command system
-│   ├── data_source/ # Data source trait
-│   ├── keymap/      # Keybinding system
-│   ├── view/        # View trait and theme
-│   ├── widget/      # Standard widgets (GridView, LogView, etc.)
-│   ├── message/     # Message system
-│   ├── auth/        # Optional authentication
-│   ├── retry/       # Retry policies
-│   └── observability/ # OpenTelemetry integration
-├── tests/           # Test suites
-│   ├── unit/        # Unit tests
-│   ├── integration/ # Integration tests
-│   └── contract/    # Contract tests
-├── examples/        # Example applications
-└── specs/           # Specification documents
-```
-
-## Making Changes
-
-1. **Create a branch**: `git checkout -b feature/your-feature-name`
-2. **Write tests first** (test-first approach)
-3. **Implement the feature**
-4. **Ensure all tests pass**
-5. **Update documentation** if needed
-6. **Commit with clear messages**
-
-## Commit Messages
-
-Follow conventional commit format:
-- `feat: add new feature`
-- `fix: fix bug`
-- `docs: update documentation`
-- `test: add tests`
-- `refactor: refactor code`
-
-## Pull Request Process
-
-1. Ensure all tests pass
-2. Ensure examples compile
-3. Update documentation if needed
-4. Create a pull request with a clear description
-5. Reference any related issues
-
-## Design Principles
-
-The framework follows these principles:
-
-1. **Opinionated Defaults**: Provide sensible defaults that work for most cases
-2. **Flexibility**: Allow customization where needed
-3. **Test-First**: Write tests before implementation
-4. **Documentation**: Public API must be documented
-5. **Error Handling**: Use `anyhow::Result` for framework operations
-
-## Areas for Contribution
-
-- Bug fixes
-- Performance improvements
-- Additional widgets
-- Documentation improvements
-- Example applications
-- Test coverage improvements
-
-## Questions?
-
-Open an issue for questions or discussions about contributions.
-
+CFW-0008 - The **`cli-framework`** crate and materials in this repository are licensed under **[Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)**. The `license` field in `Cargo.toml` and license notices in documentation MUST remain consistent with that choice unless maintainers explicitly approve a change.

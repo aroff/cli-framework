@@ -81,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
 
                 println!("📋 Last {} lines of {} logs:", lines, service);
                 for i in 1..=lines {
-                    println!("   {}  [INFO] Log message {}", "00:00:00", i);
+                    println!("   00:00:00  [INFO] Log message {}", i);
                 }
                 Ok(())
             })
@@ -92,10 +92,10 @@ async fn main() -> anyhow::Result<()> {
     let mut builder = AppBuilder::new();
 
     // Configure LLM provider from environment (if available)
-    if let Ok(_) = std::env::var("OPENAI_API_KEY") {
+    if std::env::var("OPENAI_API_KEY").is_ok() {
         builder = builder.with_llm_from_env()?;
         println!("🤖 AI ask command enabled (OpenAI)");
-    } else if let Ok(_) = std::env::var("ANTHROPIC_API_KEY") {
+    } else if std::env::var("ANTHROPIC_API_KEY").is_ok() {
         builder = builder.with_llm_from_env()?;
         println!("🤖 AI ask command enabled (Anthropic)");
     } else {
@@ -143,7 +143,7 @@ async fn main() -> anyhow::Result<()> {
 
         // Parse command (basic parsing for demo)
         let parts: Vec<&str> = input.split_whitespace().collect();
-        if let Some(command_id) = parts.get(0) {
+        if let Some(command_id) = parts.first() {
             let args = if parts.len() > 1 {
                 CommandArgs {
                     positional: parts[1..].iter().map(|s| s.to_string()).collect(),

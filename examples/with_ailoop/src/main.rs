@@ -151,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
 
         // Parse command (basic parsing for demo)
         let parts: Vec<&str> = input.split_whitespace().collect();
-        if let Some(command_id) = parts.get(0) {
+        if let Some(command_id) = parts.first() {
             let args = if parts.len() > 1 {
                 CommandArgs {
                     positional: parts[1..].iter().map(|s| s.to_string()).collect(),

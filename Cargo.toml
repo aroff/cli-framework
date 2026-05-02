@@ -4,8 +4,8 @@ version = "0.3.0"
 edition = "2021"
 authors = ["CLI Framework Team"]
 description = "A pure CLI framework with AI-powered command resolution and plugin system"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/your-org/cli-framework"
+license = "Apache-2.0"
+repository = "https://github.com/aroff/cli-framework"
 
 [dependencies]
 anyhow = "1.0"
