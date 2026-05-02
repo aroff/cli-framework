@@ -94,8 +94,7 @@ For non-trivial tools, plan for discovery and ops: `--help`/built-in help, **ver
 
 | Topic | Location |
 |--------|-----------|
-| User overview | `README.md` |
-| Tutorial | `docs/getting-started.md` |
+| User overview | `README.md` (quick start, ask, security) |
 | Typed args | `docs/migration-typed-spec.md` |
 | Tests | `docs/testing.md` |
 | Layout | `CONTRIBUTING.md`, `architecture.md` |
