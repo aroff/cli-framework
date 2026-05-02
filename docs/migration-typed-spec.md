@@ -1,6 +1,11 @@
 # Migration Guide: Typed CommandSpec
 
-This guide covers migrating from untyped (legacy) commands to the typed `CommandSpec` model introduced in v0.3.
+**What this is:** The library today supports **both** styles: commands with **`spec: None` / `validator: None`** (simpler, legacy parse path) and commands with a full **`CommandSpec`** (typed arguments, stricter validation, richer help). This document is the **upgrade guide** when you choose the typed path. It is **not** a notice that the crate is legacy; most small apps can stay on **`spec: None`** until they need structured flags.
+
+**Should you delete this file?** No, if you want a single place for **`register_command`?`**, feature flags (**`strict-types`**, **`strict-args`**, etc.), and **`CommandSpec`** examples. If you never adopt **`CommandSpec`**, you can ignore this file.
+
+---
+This guide covers migrating from optional-spec commands to the typed **`CommandSpec`** model (v0.3+).
 
 ## What changed
 

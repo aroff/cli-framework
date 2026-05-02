@@ -12,7 +12,7 @@ CFW-0004 - Agents MUST NOT use `git commit --no-verify` to bypass hooks.
 
 CFW-0005 - Change sets intended for integration SHOULD pass project checks: `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test` (see [CONTRIBUTING.md](CONTRIBUTING.md) and `scripts/run-ci-tests.sh` for full parity).
 
-CFW-0006 - Behavioral or public API changes SHOULD update consumer-facing docs ([README.md](README.md), [docs/](docs/), or related specs under [specs/](specs/)) when users or integrators would otherwise be misled.
+CFW-0006 - Behavioral or public API changes SHOULD update consumer-facing docs ([README.md](README.md), [docs/](docs/), [specs/](specs/)) when users or integrators would otherwise be misled; module or flow edits SHOULD align the **System design** section in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 CFW-0007 - Temporary or generated artifacts MUST NOT be committed (for example build output under `target/`).
 

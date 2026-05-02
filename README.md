@@ -21,8 +21,7 @@ Choose this crate when you want one stack for classical subcommands plus optiona
 |-----------|----------------|
 | [docs/migration-typed-spec.md](docs/migration-typed-spec.md) | How to move from “no **`CommandSpec`**” style code to typed args and stricter flags (**not** deprecated; optional upgrade path) |
 | [docs/testing.md](docs/testing.md) | **Automated tests** you write with **`cargo test`**: in-process harness **`CliTestHarness`** (feature **`testkit`**) instead of spawning subprocesses |
-| [architecture.md](architecture.md) | System design: **`src/`** modules, data flow, dependencies (no roadmap) |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Build, CI parity, repo layout |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Contribute, CI, **system design** (`src/` modules, flow, deps) |
 
 ## Quick start
 

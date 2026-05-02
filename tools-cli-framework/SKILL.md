@@ -97,7 +97,7 @@ For non-trivial tools, plan for discovery and ops: `--help`/built-in help, **ver
 | User overview | `README.md` (quick start, ask, security) |
 | Typed args | `docs/migration-typed-spec.md` |
 | Tests | `docs/testing.md` |
-| Layout | `CONTRIBUTING.md`, `architecture.md` |
+| Layout / design | `CONTRIBUTING.md` |
 | Runnable samples | `examples/basic_cli`, `examples/with_ask`, `examples/with_plugins`, `examples/with_ailoop`, `examples/http_retry_demo` |
 
 ## Detailed scenarios
