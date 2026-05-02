@@ -1,16 +1,29 @@
 # CLI Framework
 
-A pure CLI framework with AI-powered command resolution and plugin system for Rust. Build powerful CLI applications with natural language command processing, third-party plugin support, and human-in-the-loop interactions.
+[![Repository](https://img.shields.io/badge/GitHub-aroff%2Fcli--framework-informational)](https://github.com/aroff/cli-framework)
+
+A Rust library for building CLIs with optional AI-assisted command resolution (**ask**), a plugin registry, ailoop-backed human-in-the-loop prompts, structured command metadata, and async-first dispatch on Tokio.
 
 ## Features
 
-- **🤖 AI Ask Command**: Natural language command resolution using OpenAI/Anthropic LLMs
-- **🔌 Plugin System**: Registry-based third-party command loading from manifest files
-- **👥 Human-in-the-Loop**: ailoop-core integration for confirmations and interactive prompts
-- **🔄 Command Registry**: Centralized command management with metadata collection
-- **📊 Rich CLI Output**: Tables, JSON, progress indicators, and formatted messages
-- **⚡ Async-First**: Built on Tokio for high-performance async operations
-- **🛠️ Extensible**: Easy to add new LLM providers, plugins, and integrations
+- **AI Ask**: Natural language routing to registered commands via OpenAI or Anthropic
+- **Plugins**: Manifest-driven third-party commands with path validation
+- **Human-in-the-loop**: ailoop-core for confirmations beyond the ask flow
+- **Command registry**: Central registration, optional typed `CommandSpec`, and grouping metadata
+- **CLI output helpers**: Tables, JSON, progress (behind Cargo features where applicable)
+- **Security defaults**: Output sanitization, risk tiers for ask, hardened HTTP helpers
+
+Choose this crate when you want one stack for classical subcommands plus optional LLM resolution and scripted workflows, without assembling parsing, sanitization, and policy from scratch.
+
+## Documentation
+
+| Document | Audience |
+|----------|-----------|
+| [docs/getting-started.md](docs/getting-started.md) | Step-by-step first CLI |
+| [docs/migration-typed-spec.md](docs/migration-typed-spec.md) | Migrating to `CommandSpec` |
+| [docs/testing.md](docs/testing.md) | Test harness (`testkit`) and patterns |
+| [architecture.md](architecture.md) | Module layout and design summary |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Build, CI parity, conventions |
 
 ## Quick Start
 
@@ -18,7 +31,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cli-framework = { path = "../cli-framework" }  # or from crates.io when published
+cli-framework = { git = "https://github.com/aroff/cli-framework" } # or path / crates.io when published
 anyhow = "1.0"
 tokio = { version = "1", features = ["full"] }
 ```
@@ -27,29 +40,34 @@ Basic CLI application:
 
 ```rust
 use cli_framework::prelude::*;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Create a command
     let hello_command = Command {
         id: "hello",
         summary: "Print a greeting",
         syntax: Some("hello [name]"),
         category: Some("utilities"),
-        execute: |ctx, args| Box::pin(async move {
-            let name = args.positional.get(0).unwrap_or(&"World".to_string());
-            println!("Hello, {}!", name);
-            Ok(())
+        spec: None,
+        validator: None,
+        execute: Arc::new(|_ctx, args| {
+            Box::pin(async move {
+                let name = args
+                    .positional
+                    .get(0)
+                    .map(String::as_str)
+                    .unwrap_or("World");
+                println!("Hello, {}!", name);
+                Ok(())
+            })
         }),
     };
 
-    // Build the app
     let mut builder = AppBuilder::new();
-    builder = builder.register_command(hello_command);
+    builder = builder.register_command(hello_command)?;
 
     let mut app = builder.build(MyContext)?;
-
-    // Run the app (parses command line arguments)
     app.run().await?;
 
     Ok(())
@@ -72,11 +90,10 @@ async fn main() -> anyhow::Result<()> {
     std::env::set_var("OPENAI_API_KEY", "your-api-key");
     std::env::set_var("LLM_PROVIDER", "openai");
 
-    let mut builder = AppBuilder::new()
-        .with_llm_from_env()?; // Auto-detects from env vars
+    let mut builder = AppBuilder::new().with_llm_from_env()?; // Auto-detects from env vars
 
-    // Register commands (ask command is added automatically)
-    builder = builder.register_command(deploy_command);
+    // Register your commands (same pattern as the quick start; `ask` is added by with_llm_from_env).
+    // builder = builder.register_command(deploy_command)?;
 
     let mut app = builder.build(MyContext)?;
     app.run().await?;
@@ -126,15 +143,21 @@ ASK_ASSUME_YES=1 myapp ask "deploy to production"
 Commands are executable operations in your CLI application. Each command has metadata for AI resolution:
 
 ```rust
+use std::sync::Arc;
+
 let deploy_command = Command {
     id: "deploy",
     summary: "Deploy application to specified environment",
     syntax: Some("deploy --env <environment> --version <version>"),
     category: Some("deployment"),
-    execute: |ctx, args| Box::pin(async move {
-        let env = args.named.get("env").unwrap_or(&"dev".to_string());
-        println!("🚀 Deploying to {}...", env);
-        Ok(())
+    spec: None,
+    validator: None,
+    execute: Arc::new(|_ctx, args| {
+        Box::pin(async move {
+            let env = args.named.get("env").map(String::as_str).unwrap_or("dev");
+            println!("Deploying to {}...", env);
+            Ok(())
+        })
     }),
 };
 ```
@@ -166,31 +189,33 @@ enabled = true
 
 ### ailoop Integration
 
-Add human-in-the-loop confirmations:
+Use `cli_framework::ailoop::AiloopClient` inside a command closure (configure the channel via `AppBuilder::with_ailoop_channel` or environment variables as needed):
 
 ```rust
-async fn dangerous_command(ctx: &mut dyn AppContext, args: CommandArgs) -> CommandResult {
-    let ailoop = ctx.ailoop_client();
-    let confirmed = ailoop.request_confirmation(
-        "Delete all user data?",
-        Some("This action cannot be undone")
-    ).await?;
-
-    if confirmed {
-        println!("Deleting...");
-    }
-    Ok(())
+use cli_framework::ailoop::AiloopClient;
+// Inside execute:
+let ailoop = AiloopClient::new()?;
+let confirmed = ailoop
+    .request_confirmation("Delete all user data?", Some("This action cannot be undone"))
+    .await?;
+if confirmed {
+    println!("Deleting...");
 }
 ```
+
+See `examples/with_ailoop` for a full program.
 
 ## Examples
 
 Run the included examples to see the framework in action:
 
-- `cargo run --example basic_cli` - Minimal CLI application with commands
-- `cargo run --example with_ask` - CLI with AI-powered natural language commands
-- `cargo run --example with_plugins` - CLI with third-party plugin loading
-- `cargo run --example with_ailoop` - CLI with human-in-the-loop confirmations
+- `cargo run --example basic_cli` — Minimal CLI application with commands
+- `cargo run --example with_ask` — CLI with AI-backed natural language (`ask`)
+- `cargo run --example with_plugins` — CLI with registry-based plugins
+- `cargo run --example with_ailoop` — ailoop confirmations and prompts
+- `cargo run --example http_retry_demo` — `http_retry` and secure client defaults
+
+Source for each lives under [`examples/`](examples/).
 
 ## Security
 
@@ -238,12 +263,6 @@ let retry_client = RetryableHttpClient::new(client);
 
 Defaults: 5s connect timeout, 30s total timeout, built-in TLS roots, TLS certificate verification enabled, no `danger_accept_invalid_certs`.
 
-## CI Requirements
-
-The following tools must be installed in your CI environment:
-
-- `cargo-audit` — installed via `cargo install cargo-audit`. Required for the supply-chain vulnerability check step in `scripts/run-ci-tests.sh`.
-
 ## Environment Variables
 
 ### LLM Configuration
@@ -267,4 +286,8 @@ Upgrading to the typed `CommandSpec` model? See [docs/migration-typed-spec.md](d
 
 ## License
 
-Apache-2.0 or MIT
+Apache-2.0
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).

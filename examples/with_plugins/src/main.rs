@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
             Box::pin(async move {
                 let message = args
                     .positional
-                    .get(0)
+                    .first()
                     .map(String::as_str)
                     .unwrap_or("Hello from built-in command!");
                 println!("🔧 Built-in: {}", message);
@@ -81,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
 
         // Parse command (basic parsing for demo)
         let parts: Vec<&str> = input.split_whitespace().collect();
-        if let Some(command_id) = parts.get(0) {
+        if let Some(command_id) = parts.first() {
             let args = if parts.len() > 1 {
                 CommandArgs {
                     positional: parts[1..].iter().map(|s| s.to_string()).collect(),

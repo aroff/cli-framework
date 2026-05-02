@@ -1,0 +1,13 @@
+[metadata]
+name = "tools-cli-framework"
+version = "0.2.0"
+description = "Rust CLI guidance for cli-framework: AppBuilder, Arc Command handlers, CommandPath, optional ask/plugins/ailoop; links to repo docs and examples."
+author = "aroff"
+repository = "https://github.com/aroff/cli-framework"
+tags = ["cli", "rust", "cli-framework", "tokio", "commands", "ask", "plugins"]
+capabilities = [
+    "framework-integration",
+    "command-architecture",
+    "mandatory-command-baseline",
+    "hierarchical-command-path",
+]
