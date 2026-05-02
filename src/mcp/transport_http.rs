@@ -19,6 +19,15 @@ pub async fn start_streamable_http(
         )
     })?;
 
+    // §4.8: Log in spec order after successful bind
+    log::info!(
+        "MCP server listening on http://{}:{}{}",
+        args.host,
+        args.port,
+        args.path
+    );
+    log::info!("MCP: exported {} tools", tool_registry.tool_count());
+
     let session_manager = Arc::new(LocalSessionManager::default());
     let config = StreamableHttpServerConfig::default();
 

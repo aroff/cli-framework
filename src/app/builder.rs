@@ -178,6 +178,7 @@ impl AppBuilder {
             meta: self.meta,
             app_name: self.app_name,
             app_version: self.app_version,
+            risk_policy: self.risk_policy.clone(),
             #[cfg(feature = "clap-dispatch")]
             clap_root,
             #[cfg(feature = "testkit")]
@@ -201,6 +202,7 @@ pub struct App<C: AppContext> {
     meta: Option<AppMeta>,
     app_name: &'static str,
     app_version: &'static str,
+    risk_policy: crate::security::command_risk::CommandRiskPolicy,
     #[cfg(feature = "clap-dispatch")]
     clap_root: clap::Command,
     /// Captures framework-level stdout output (version strings etc.) when testkit is active.
@@ -299,6 +301,7 @@ impl<C: AppContext> App<C> {
                     Arc::clone(&self.command_registry),
                     self.app_name,
                     mcp_args,
+                    self.risk_policy.clone(),
                 )
                 .await;
             }
@@ -346,6 +349,7 @@ impl<C: AppContext> App<C> {
                     Arc::clone(&self.command_registry),
                     self.app_name,
                     mcp_args,
+                    self.risk_policy.clone(),
                 )
                 .await;
             }

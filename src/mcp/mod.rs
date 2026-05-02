@@ -39,6 +39,7 @@ impl Default for McpServerArgs {
 pub struct McpToolRegistry {
     tools: HashMap<String, Command>,
     app_name: String,
+    risk_policy: crate::security::CommandRiskPolicy,
 }
 
 impl McpToolRegistry {
@@ -60,7 +61,17 @@ impl McpToolRegistry {
         Self {
             tools,
             app_name: app_name.to_string(),
+            risk_policy: crate::security::CommandRiskPolicy::default(),
         }
+    }
+
+    pub fn with_risk_policy(mut self, policy: crate::security::CommandRiskPolicy) -> Self {
+        self.risk_policy = policy;
+        self
+    }
+
+    pub fn tool_count(&self) -> usize {
+        self.tools.len()
     }
 
     pub fn list_tools(&self) -> Vec<McpToolDescriptor> {
@@ -238,6 +249,22 @@ pub async fn dispatch_tool_call(
         }
     }
 
+    // Apply CommandRiskPolicy check (§4.6, G4, G5 — risk tiers enforced for MCP callers).
+    {
+        let tier = tool_registry.risk_policy.classify(cmd.id, cmd.category);
+        if tier == crate::security::CommandRiskTier::Destructive {
+            log::warn!(
+                "MCP: command '{}' has Destructive risk tier; executing under MCP authority",
+                cmd.id
+            );
+        } else if tier == crate::security::CommandRiskTier::Sensitive {
+            log::info!(
+                "MCP: command '{}' has Sensitive risk tier; executing under MCP authority",
+                cmd.id
+            );
+        }
+    }
+
     let mut ctx = McpAppContext;
     match (cmd.execute)(&mut ctx, cmd_args).await {
         Ok(()) => Ok(CallToolResult::success(vec![Content::text("OK")])),
@@ -303,16 +330,10 @@ pub async fn serve_mcp(
     registry: Arc<CommandRegistry>,
     app_name: &str,
     args: McpServerArgs,
+    risk_policy: crate::security::CommandRiskPolicy,
 ) -> Result<()> {
-    let tool_registry = Arc::new(McpToolRegistry::from_command_registry(&registry, app_name));
-    let tool_count = tool_registry.tools.len();
-
-    log::info!("MCP: exported {} tools", tool_count);
-    log::info!(
-        "MCP server listening on http://{}:{}{}",
-        args.host,
-        args.port,
-        args.path
+    let tool_registry = Arc::new(
+        McpToolRegistry::from_command_registry(&registry, app_name).with_risk_policy(risk_policy),
     );
 
     transport_http::start_streamable_http(tool_registry, &args).await
