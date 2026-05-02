@@ -27,6 +27,7 @@ async fn main() -> anyhow::Result<()> {
                     name: "name",
                     kind: cli_framework::spec::arg_spec::ArgKind::Option,
                     short: None,
+                    long: None,
                     value_type: cli_framework::spec::arg_spec::ArgValueType::String,
                     cardinality: cli_framework::spec::arg_spec::Cardinality::Optional,
                     default: None,

@@ -2,6 +2,7 @@ use cli_framework::command::{Command, CommandArgs, CommandRegistry};
 use cli_framework::mcp::McpToolRegistry;
 use cli_framework::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use cli_framework::spec::command_tree::{CommandPath, CommandSpec};
+use insta;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -71,6 +72,7 @@ fn test_required_arg_in_schema_required_array() {
             name: "env",
             kind: ArgKind::Option,
             short: None,
+            long: None,
             value_type: ArgValueType::String,
             cardinality: Cardinality::Required,
             default: None,
@@ -101,6 +103,7 @@ fn test_optional_arg_not_in_required_array() {
             name: "verbose",
             kind: ArgKind::Flag,
             short: None,
+            long: None,
             value_type: ArgValueType::Bool,
             cardinality: Cardinality::Optional,
             default: None,
@@ -170,6 +173,7 @@ fn test_tool_descriptor_snapshot() {
             name: "target",
             kind: ArgKind::Option,
             short: None,
+            long: None,
             value_type: ArgValueType::String,
             cardinality: Cardinality::Required,
             default: None,
@@ -190,8 +194,13 @@ fn test_tool_descriptor_snapshot() {
     assert_eq!(tool.name, "myapp.deploy");
     assert_eq!(tool.description, "Deploy the application");
 
-    let schema_str = serde_json::to_string_pretty(&tool.input_schema).unwrap();
-    assert!(schema_str.contains("\"target\""));
-    assert!(schema_str.contains("\"string\""));
-    assert!(schema_str.contains("\"required\""));
+    // Snapshot test: stable serialized output committed as fixture (AC-SNAPSHOT)
+    let mut settings = insta::Settings::clone_current();
+    settings.set_snapshot_path(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots"),
+    );
+    settings.set_prepend_module_to_snapshot(false);
+    settings.bind(|| {
+        insta::assert_json_snapshot!("tool_descriptor", tool);
+    });
 }

@@ -190,7 +190,7 @@ impl ServerHandler for CliFrameworkHandler {
         let arguments = request.arguments;
         let registry = Arc::clone(&self.tool_registry);
 
-        async move { dispatch_tool_call(&registry, &tool_name, arguments).await }
+        async move { dispatch_tool_call_spawned(registry, tool_name, arguments).await }
     }
 }
 
@@ -244,6 +244,27 @@ pub async fn dispatch_tool_call(
         Err(e) => Err(ErrorData::new(
             rmcp::model::ErrorCode(-32003),
             Cow::Owned(format!("MCP_EXECUTION_FAILED: {}", e)),
+            None,
+        )),
+    }
+}
+
+/// Dispatches a tool call in a separate tokio task (§4.7).
+/// Panics in the task are caught as JoinError and returned as MCP_INTERNAL_ERROR.
+pub async fn dispatch_tool_call_spawned(
+    tool_registry: Arc<McpToolRegistry>,
+    tool_name: String,
+    arguments: Option<JsonObject>,
+) -> Result<CallToolResult, ErrorData> {
+    let handle =
+        tokio::spawn(
+            async move { dispatch_tool_call(&tool_registry, &tool_name, arguments).await },
+        );
+    match handle.await {
+        Ok(result) => result,
+        Err(join_err) => Err(ErrorData::new(
+            rmcp::model::ErrorCode(-32004),
+            Cow::Owned(format!("MCP_INTERNAL_ERROR: task panicked: {}", join_err)),
             None,
         )),
     }

@@ -1,7 +1,7 @@
-use crate::spec::arg_spec::{ArgValueType, Cardinality};
+use crate::spec::arg_spec::{ArgKind, ArgValueType, Cardinality};
 use crate::spec::command_tree::CommandSpec;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct McpToolDescriptor {
@@ -28,11 +28,12 @@ pub fn build_input_schema(spec: Option<&CommandSpec>) -> Value {
         return json!({ "type": "object", "additionalProperties": true });
     };
 
-    let mut properties: HashMap<String, Value> = HashMap::new();
+    // Use BTreeMap for sorted, deterministic property key output
+    let mut properties: BTreeMap<String, Value> = BTreeMap::new();
     let mut required: Vec<String> = Vec::new();
 
     for arg in &spec.args {
-        let prop_name = arg.name.to_string();
+        let prop_name = arg.long.unwrap_or(arg.name).to_string();
         let (_, schema_value) = arg_spec_to_json_schema_property(arg);
         properties.insert(prop_name.clone(), schema_value);
         if arg.cardinality == Cardinality::Required {
@@ -40,9 +41,11 @@ pub fn build_input_schema(spec: Option<&CommandSpec>) -> Value {
         }
     }
 
+    let props_value: Value = serde_json::to_value(&properties).unwrap_or(json!({}));
+
     let mut schema = json!({
         "type": "object",
-        "properties": properties,
+        "properties": props_value,
     });
 
     if !required.is_empty() {
@@ -53,7 +56,18 @@ pub fn build_input_schema(spec: Option<&CommandSpec>) -> Value {
 }
 
 pub fn arg_spec_to_json_schema_property(arg: &crate::spec::arg_spec::ArgSpec) -> (String, Value) {
-    let prop_name = arg.name.to_string();
+    let prop_name = arg.long.unwrap_or(arg.name).to_string();
+
+    // Handle Repeated cardinality: Flag → Count (integer), others → List (array)
+    if arg.cardinality == Cardinality::Repeated {
+        let schema_value = if arg.kind == ArgKind::Flag {
+            json!({ "type": "integer" })
+        } else {
+            json!({ "type": "array", "items": { "type": "string" } })
+        };
+        return (prop_name, schema_value);
+    }
+
     let schema_value = match &arg.value_type {
         ArgValueType::Bool => json!({ "type": "boolean" }),
         ArgValueType::String => json!({ "type": "string" }),

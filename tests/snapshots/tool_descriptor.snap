@@ -1,0 +1,20 @@
+---
+source: tests/unit/mcp_tool_export.rs
+assertion_line: 204
+expression: tool
+---
+{
+  "name": "myapp.deploy",
+  "description": "Deploy the application",
+  "inputSchema": {
+    "properties": {
+      "target": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "target"
+    ],
+    "type": "object"
+  }
+}

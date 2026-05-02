@@ -1,5 +1,5 @@
 use cli_framework::command::{Command, CommandArgs, CommandRegistry};
-use cli_framework::mcp::{dispatch_tool_call, McpToolRegistry};
+use cli_framework::mcp::{dispatch_tool_call, dispatch_tool_call_spawned, McpToolRegistry};
 use cli_framework::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use cli_framework::spec::command_tree::CommandSpec;
 use std::future::Future;
@@ -78,6 +78,7 @@ async fn test_tool_call_arg_validation_failed() {
             name: "required-arg",
             kind: ArgKind::Option,
             short: None,
+            long: None,
             value_type: ArgValueType::String,
             cardinality: Cardinality::Required,
             default: None,
@@ -138,31 +139,36 @@ async fn test_tool_call_execution_failed() {
 
 #[tokio::test]
 async fn test_tool_call_internal_error() {
-    // Test internal error path via tokio::spawn panic recovery
-    let tool_registry = Arc::new(McpToolRegistry::from_command_registry(
-        &CommandRegistry::new(),
-        "myapp",
-    ));
+    // Verify that a panicking execute closure produces MCP_INTERNAL_ERROR.
+    // dispatch_tool_call_spawned runs the call in a tokio::spawn and maps
+    // JoinError (panic) → MCP_INTERNAL_ERROR (AC-E-INTERNAL, §4.7).
+    let panicking_cmd = Command {
+        id: "panic-cmd",
+        summary: "Panicking command",
+        syntax: None,
+        category: None,
+        spec: None,
+        validator: None,
+        execute: Arc::new(|_ctx, _args| {
+            Box::pin(async move {
+                panic!("intentional panic for MCP_INTERNAL_ERROR test");
+                #[allow(unreachable_code)]
+                Ok(())
+            })
+        }),
+    };
 
-    let result = tokio::task::spawn(async move {
-        dispatch_tool_call(&tool_registry, "myapp.nonexistent", None).await
-    })
-    .await;
+    let mut registry = CommandRegistry::new();
+    registry.register(panicking_cmd);
+    let tool_registry = Arc::new(McpToolRegistry::from_command_registry(&registry, "myapp"));
 
-    // The task should complete (not panic), returning a CMD_NOT_FOUND error
-    match result {
-        Ok(Err(err)) => {
-            assert!(
-                err.message.starts_with("MCP_CMD_NOT_FOUND:"),
-                "got: {}",
-                err.message
-            );
-        }
-        Ok(Ok(_)) => panic!("expected error"),
-        Err(join_err) => {
-            // If the task panicked, that's an internal error scenario
-            let msg = format!("MCP_INTERNAL_ERROR: task panicked: {}", join_err);
-            assert!(msg.contains("MCP_INTERNAL_ERROR:"));
-        }
-    }
+    let result =
+        dispatch_tool_call_spawned(tool_registry, "myapp.panic-cmd".to_string(), None).await;
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        err.message.starts_with("MCP_INTERNAL_ERROR:"),
+        "expected MCP_INTERNAL_ERROR, got: {}",
+        err.message
+    );
 }
