@@ -291,6 +291,19 @@ impl<C: AppContext> App<C> {
         use crate::app::diagnostic_reporter::DiagnosticReporter;
         use crate::parser::outcome::ParseOutcome;
 
+        #[cfg(feature = "mcp-server")]
+        {
+            if args.iter().any(|a| a == "--mcp-serve") {
+                let mcp_args = crate::mcp::extract_mcp_args_from_raw(&args);
+                return crate::mcp::serve_mcp(
+                    Arc::clone(&self.command_registry),
+                    self.app_name,
+                    mcp_args,
+                )
+                .await;
+            }
+        }
+
         match parse_with_clap(&self.clap_root, &self.command_registry, args) {
             ParseOutcome::Parsed {
                 command_path,
@@ -325,6 +338,19 @@ impl<C: AppContext> App<C> {
 
     #[cfg(not(feature = "clap-dispatch"))]
     pub async fn run_with_args(&mut self, args: Vec<String>) -> Result<()> {
+        #[cfg(feature = "mcp-server")]
+        {
+            if args.iter().any(|a| a == "--mcp-serve") {
+                let mcp_args = crate::mcp::extract_mcp_args_from_raw(&args);
+                return crate::mcp::serve_mcp(
+                    Arc::clone(&self.command_registry),
+                    self.app_name,
+                    mcp_args,
+                )
+                .await;
+            }
+        }
+
         if Self::should_show_help(&args) {
             self.show_help();
             return Ok(());

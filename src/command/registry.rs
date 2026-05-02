@@ -190,6 +190,11 @@ impl CommandRegistry {
         self.tree_commands.get(&path_str)
     }
 
+    /// Iterate over all commands in the tree (including hierarchical), with their path strings.
+    pub fn all_tree_commands(&self) -> impl Iterator<Item = (&str, &Command)> {
+        self.tree_commands.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
     /// List direct child paths of the given path.
     pub fn list_children(&self, path: &CommandPath) -> Vec<CommandPath> {
         let prefix = if path.0.is_empty() {

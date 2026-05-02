@@ -34,6 +34,10 @@ anthropic-sdk = "0.1"
 comfy-table = { version = "7.0", optional = true }
 indicatif = { version = "0.17", optional = true }
 
+# Optional MCP server dependencies
+rmcp = { version = "1.6", features = ["server", "transport-streamable-http-server"], optional = true }
+axum = { version = "0.8", optional = true }
+
 # Optional OpenTelemetry dependencies (applications can enable)
 # Note: Applications should add these dependencies themselves when using observability feature
 # opentelemetry = { version = "0.24", optional = true }
@@ -65,6 +69,8 @@ strict-types = []
 legacy-arg-coercion = []
 # Enable CliTestHarness (dev/test use only)
 testkit = []
+# MCP server — expose registered commands as MCP tools via Streamable HTTP
+mcp-server = ["dep:rmcp", "dep:axum"]
 
 [lib]
 name = "cli_framework"
@@ -131,4 +137,24 @@ required-features = ["clap-dispatch"]
 name = "unit_parser_diagnostics"
 path = "tests/unit/parser_diagnostics.rs"
 required-features = ["clap-dispatch"]
+
+[[test]]
+name = "unit_mcp_tool_export"
+path = "tests/unit/mcp_tool_export.rs"
+required-features = ["mcp-server"]
+
+[[test]]
+name = "unit_mcp_dispatch"
+path = "tests/unit/mcp_dispatch.rs"
+required-features = ["mcp-server"]
+
+[[test]]
+name = "integration_mcp_http"
+path = "tests/integration/mcp_http.rs"
+required-features = ["mcp-server"]
+
+[[example]]
+name = "with_mcp"
+path = "examples/with_mcp/src/main.rs"
+required-features = ["mcp-server"]
 
