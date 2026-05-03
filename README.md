@@ -12,6 +12,71 @@ A Rust library for building CLIs with optional AI-assisted command resolution (*
 - **Command registry**: Central registration, optional typed `CommandSpec`, and grouping metadata
 - **CLI output helpers**: Tables, JSON, progress (behind Cargo features where applicable)
 - **Security defaults**: Output sanitization, risk tiers for ask, hardened HTTP helpers
+- **MCP Server Mode**: Expose all registered commands as MCP tools over Streamable HTTP (opt-in via `mcp-server` feature)
+
+## MCP Server Mode
+
+Any binary built with `cli-framework` can become a first-class [Model Context Protocol](https://modelcontextprotocol.io/) server with zero per-command implementation work. LLM agents (Cursor, Claude Desktop, custom agents) can enumerate and invoke all registered commands through the standard MCP protocol.
+
+### Enabling MCP mode
+
+Add the `mcp-server` feature in your binary's `Cargo.toml`:
+
+```toml
+[dependencies]
+cli-framework = { version = "0.3", features = ["mcp-server", "clap-dispatch"] }
+```
+
+### CLI flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--mcp-serve` | (flag, disabled) | Start MCP Streamable HTTP server |
+| `--mcp-host` | `127.0.0.1` | Bind address |
+| `--mcp-port` | `8080` | Bind port |
+| `--mcp-path` | `/mcp` | HTTP path prefix for the MCP endpoint |
+
+### Running
+
+```bash
+my-app --mcp-serve --mcp-port 9000
+```
+
+### Tool naming convention
+
+Each registered command is exported as `<app_name>.<command_id>`. Hierarchical commands (e.g. `cluster/get`) use dots: `myapp.cluster.get`.
+
+### Schema inference
+
+Each tool's `inputSchema` is derived from `CommandSpec.args`:
+
+| `ArgSpec.value_type` | JSON Schema type |
+|---|---|
+| `Bool` | `"boolean"` |
+| `String` | `"string"` |
+| `Int` | `"integer"` |
+| `Float` | `"number"` |
+| `Enum(variants)` | `{ "type": "string", "enum": [...] }` |
+| Repeated option | `{ "type": "array", "items": { "type": "string" } }` |
+| Repeated flag (Count) | `"integer"` |
+
+Commands without a `CommandSpec` use a permissive schema `{ "type": "object", "additionalProperties": true }`.
+
+### Cursor integration example
+
+```json
+{
+  "mcpServers": {
+    "my-app": {
+      "url": "http://127.0.0.1:8080/mcp"
+    }
+  }
+}
+```
+
+### Security
+
+All MCP tool calls are routed through the same validation pipeline as CLI calls: `SpecValidator`, custom validators, and risk policy checks all apply. Network-level access control is the operator's responsibility (the MCP endpoint has no built-in authentication).
 
 Choose this crate when you want one stack for classical subcommands plus optional LLM resolution and scripted workflows, without assembling parsing, sanitization, and policy from scratch.
 

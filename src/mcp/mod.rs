@@ -1,0 +1,340 @@
+pub mod schema;
+pub mod transport_http;
+
+use crate::command::registry::CommandRegistry;
+use crate::command::{Command, CommandArgs};
+use crate::spec::value::ArgValue;
+use anyhow::Result;
+use rmcp::{
+    model::{
+        CallToolRequestParams, CallToolResult, Content, ErrorData, JsonObject, ListToolsResult,
+        PaginatedRequestParams, ServerInfo, Tool,
+    },
+    service::RequestContext,
+    RoleServer, ServerHandler,
+};
+use schema::{command_to_tool_descriptor, McpToolDescriptor};
+use serde_json::Value;
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+#[derive(Debug, Clone)]
+pub struct McpServerArgs {
+    pub host: String,
+    pub port: u16,
+    pub path: String,
+}
+
+impl Default for McpServerArgs {
+    fn default() -> Self {
+        Self {
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            path: "/mcp".to_string(),
+        }
+    }
+}
+
+pub struct McpToolRegistry {
+    tools: HashMap<String, Command>,
+    app_name: String,
+    risk_policy: crate::security::CommandRiskPolicy,
+}
+
+impl McpToolRegistry {
+    pub fn from_command_registry(registry: &CommandRegistry, app_name: &str) -> Self {
+        if app_name == "unknown" {
+            log::warn!("MCP: app_name is 'unknown'; use with_version() to set a proper name");
+        }
+        let mut tools = HashMap::new();
+        for (path_str, cmd) in registry.all_tree_commands() {
+            let tool_name = format!("{}.{}", app_name, path_str.replace('/', "."));
+            if cmd.spec.is_none() {
+                log::warn!(
+                    "MCP: command '{}' has no CommandSpec; using permissive schema",
+                    cmd.id
+                );
+            }
+            tools.insert(tool_name, cmd.clone());
+        }
+        Self {
+            tools,
+            app_name: app_name.to_string(),
+            risk_policy: crate::security::CommandRiskPolicy::default(),
+        }
+    }
+
+    pub fn with_risk_policy(mut self, policy: crate::security::CommandRiskPolicy) -> Self {
+        self.risk_policy = policy;
+        self
+    }
+
+    pub fn tool_count(&self) -> usize {
+        self.tools.len()
+    }
+
+    pub fn list_tools(&self) -> Vec<McpToolDescriptor> {
+        self.tools
+            .iter()
+            .map(|(name, cmd)| command_to_tool_descriptor(name, cmd.summary, cmd.spec.as_deref()))
+            .collect()
+    }
+
+    pub fn resolve_tool(&self, tool_name: &str) -> Option<&Command> {
+        self.tools.get(tool_name)
+    }
+
+    pub fn app_name(&self) -> &str {
+        &self.app_name
+    }
+}
+
+struct McpAppContext;
+impl crate::app::AppContext for McpAppContext {}
+
+fn json_value_to_arg_value(v: &Value) -> Option<ArgValue> {
+    match v {
+        Value::Bool(b) => Some(ArgValue::Bool(*b)),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Some(ArgValue::Int(i))
+            } else if let Some(f) = n.as_f64() {
+                Some(ArgValue::Float(f))
+            } else {
+                None
+            }
+        }
+        Value::String(s) => Some(ArgValue::Str(s.clone())),
+        Value::Array(arr) => {
+            let items: Vec<ArgValue> = arr.iter().filter_map(json_value_to_arg_value).collect();
+            Some(ArgValue::List(items))
+        }
+        _ => None,
+    }
+}
+
+fn map_mcp_args_to_command_args(
+    arguments: Option<JsonObject>,
+) -> (CommandArgs, HashMap<String, ArgValue>) {
+    let arguments = arguments.unwrap_or_default();
+    let mut named = HashMap::new();
+    let mut positional = Vec::new();
+    let mut typed = HashMap::new();
+
+    if let Some(Value::Array(pos)) = arguments.get("_positional") {
+        for v in pos {
+            positional.push(match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            });
+        }
+    }
+
+    for (k, v) in &arguments {
+        if k == "_positional" {
+            continue;
+        }
+        named.insert(
+            k.clone(),
+            match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            },
+        );
+        if let Some(av) = json_value_to_arg_value(v) {
+            typed.insert(k.clone(), av);
+        }
+    }
+
+    (CommandArgs { positional, named }, typed)
+}
+
+fn make_rmcp_tool(desc: &McpToolDescriptor) -> Tool {
+    let input_schema: serde_json::Map<String, Value> = match &desc.input_schema {
+        Value::Object(m) => m.clone(),
+        _ => serde_json::Map::new(),
+    };
+    Tool::new(
+        Cow::<'static, str>::Owned(desc.name.clone()),
+        Cow::<'static, str>::Owned(desc.description.clone()),
+        Arc::new(input_schema),
+    )
+}
+
+#[derive(Clone)]
+pub struct CliFrameworkHandler {
+    tool_registry: Arc<McpToolRegistry>,
+}
+
+impl CliFrameworkHandler {
+    pub fn new(tool_registry: Arc<McpToolRegistry>) -> Self {
+        Self { tool_registry }
+    }
+}
+
+impl ServerHandler for CliFrameworkHandler {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::default()
+    }
+
+    fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl std::future::Future<Output = Result<ListToolsResult, ErrorData>> + Send + '_ {
+        let descriptors = self.tool_registry.list_tools();
+        let tools: Vec<Tool> = descriptors.iter().map(make_rmcp_tool).collect();
+        std::future::ready(Ok(ListToolsResult {
+            tools,
+            next_cursor: None,
+            meta: Default::default(),
+        }))
+    }
+
+    fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> impl std::future::Future<Output = Result<CallToolResult, ErrorData>> + Send + '_ {
+        let tool_name = request.name.to_string();
+        let arguments = request.arguments;
+        let registry = Arc::clone(&self.tool_registry);
+
+        async move { dispatch_tool_call_spawned(registry, tool_name, arguments).await }
+    }
+}
+
+pub async fn dispatch_tool_call(
+    tool_registry: &McpToolRegistry,
+    tool_name: &str,
+    arguments: Option<JsonObject>,
+) -> Result<CallToolResult, ErrorData> {
+    let cmd = tool_registry
+        .resolve_tool(tool_name)
+        .ok_or_else(|| {
+            ErrorData::new(
+                rmcp::model::ErrorCode(-32001),
+                Cow::Owned(format!(
+                    "MCP_CMD_NOT_FOUND: tool '{}' not registered",
+                    tool_name
+                )),
+                None,
+            )
+        })?
+        .clone();
+
+    let (cmd_args, typed_args) = map_mcp_args_to_command_args(arguments);
+
+    if let Some(ref spec) = cmd.spec {
+        let diagnostics = crate::parser::validator::SpecValidator::validate(spec, &typed_args);
+        if !diagnostics.is_empty() {
+            let msg = format!("MCP_ARG_VALIDATION_FAILED: {}", diagnostics[0].message);
+            return Err(ErrorData::new(
+                rmcp::model::ErrorCode(-32002),
+                Cow::Owned(msg),
+                None,
+            ));
+        }
+        if let Some(ref validator) = cmd.validator {
+            let custom_diags = validator(&typed_args);
+            if !custom_diags.is_empty() {
+                let msg = format!("MCP_ARG_VALIDATION_FAILED: {}", custom_diags[0].message);
+                return Err(ErrorData::new(
+                    rmcp::model::ErrorCode(-32002),
+                    Cow::Owned(msg),
+                    None,
+                ));
+            }
+        }
+    }
+
+    // Apply CommandRiskPolicy check (§4.6, G4, G5 — risk tiers enforced for MCP callers).
+    {
+        let tier = tool_registry.risk_policy.classify(cmd.id, cmd.category);
+        if tier == crate::security::CommandRiskTier::Destructive {
+            log::warn!(
+                "MCP: command '{}' has Destructive risk tier; executing under MCP authority",
+                cmd.id
+            );
+        } else if tier == crate::security::CommandRiskTier::Sensitive {
+            log::info!(
+                "MCP: command '{}' has Sensitive risk tier; executing under MCP authority",
+                cmd.id
+            );
+        }
+    }
+
+    let mut ctx = McpAppContext;
+    match (cmd.execute)(&mut ctx, cmd_args).await {
+        Ok(()) => Ok(CallToolResult::success(vec![Content::text("OK")])),
+        Err(e) => Err(ErrorData::new(
+            rmcp::model::ErrorCode(-32003),
+            Cow::Owned(format!("MCP_EXECUTION_FAILED: {}", e)),
+            None,
+        )),
+    }
+}
+
+/// Dispatches a tool call in a separate tokio task (§4.7).
+/// Panics in the task are caught as JoinError and returned as MCP_INTERNAL_ERROR.
+pub async fn dispatch_tool_call_spawned(
+    tool_registry: Arc<McpToolRegistry>,
+    tool_name: String,
+    arguments: Option<JsonObject>,
+) -> Result<CallToolResult, ErrorData> {
+    let handle =
+        tokio::spawn(
+            async move { dispatch_tool_call(&tool_registry, &tool_name, arguments).await },
+        );
+    match handle.await {
+        Ok(result) => result,
+        Err(join_err) => Err(ErrorData::new(
+            rmcp::model::ErrorCode(-32004),
+            Cow::Owned(format!("MCP_INTERNAL_ERROR: task panicked: {}", join_err)),
+            None,
+        )),
+    }
+}
+
+pub fn extract_mcp_args_from_raw(args: &[String]) -> McpServerArgs {
+    let mut host = "127.0.0.1".to_string();
+    let mut port = 8080u16;
+    let mut path = "/mcp".to_string();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--mcp-host" if i + 1 < args.len() => {
+                host = args[i + 1].clone();
+                i += 2;
+            }
+            "--mcp-port" if i + 1 < args.len() => {
+                if let Ok(p) = args[i + 1].parse::<u16>() {
+                    port = p;
+                }
+                i += 2;
+            }
+            "--mcp-path" if i + 1 < args.len() => {
+                path = args[i + 1].clone();
+                i += 2;
+            }
+            _ => i += 1,
+        }
+    }
+
+    McpServerArgs { host, port, path }
+}
+
+pub async fn serve_mcp(
+    registry: Arc<CommandRegistry>,
+    app_name: &str,
+    args: McpServerArgs,
+    risk_policy: crate::security::CommandRiskPolicy,
+) -> Result<()> {
+    let tool_registry = Arc::new(
+        McpToolRegistry::from_command_registry(&registry, app_name).with_risk_policy(risk_policy),
+    );
+
+    transport_http::start_streamable_http(tool_registry, &args).await
+}

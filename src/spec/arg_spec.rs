@@ -6,6 +6,8 @@ pub struct ArgSpec {
     pub name: &'static str,
     pub kind: ArgKind,
     pub short: Option<char>,
+    /// Overrides the long flag name used in CLI and MCP schema. Falls back to `name` if None.
+    pub long: Option<&'static str>,
     pub value_type: ArgValueType,
     pub cardinality: Cardinality,
     pub default: Option<ArgValue>,

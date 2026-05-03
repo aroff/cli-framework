@@ -85,6 +85,10 @@ pub mod spec;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 
+// MCP server — compile only when the `mcp-server` feature is active
+#[cfg(feature = "mcp-server")]
+pub mod mcp;
+
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::app::{AppBuilder, AppContext, AppMeta};
