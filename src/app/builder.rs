@@ -178,6 +178,7 @@ impl AppBuilder {
             meta: self.meta,
             app_name: self.app_name,
             app_version: self.app_version,
+            risk_policy: self.risk_policy.clone(),
             #[cfg(feature = "clap-dispatch")]
             clap_root,
             #[cfg(feature = "testkit")]
@@ -201,6 +202,7 @@ pub struct App<C: AppContext> {
     meta: Option<AppMeta>,
     app_name: &'static str,
     app_version: &'static str,
+    risk_policy: crate::security::command_risk::CommandRiskPolicy,
     #[cfg(feature = "clap-dispatch")]
     clap_root: clap::Command,
     /// Captures framework-level stdout output (version strings etc.) when testkit is active.
@@ -291,6 +293,20 @@ impl<C: AppContext> App<C> {
         use crate::app::diagnostic_reporter::DiagnosticReporter;
         use crate::parser::outcome::ParseOutcome;
 
+        #[cfg(feature = "mcp-server")]
+        {
+            if args.iter().any(|a| a == "--mcp-serve") {
+                let mcp_args = crate::mcp::extract_mcp_args_from_raw(&args);
+                return crate::mcp::serve_mcp(
+                    Arc::clone(&self.command_registry),
+                    self.app_name,
+                    mcp_args,
+                    self.risk_policy.clone(),
+                )
+                .await;
+            }
+        }
+
         match parse_with_clap(&self.clap_root, &self.command_registry, args) {
             ParseOutcome::Parsed {
                 command_path,
@@ -325,6 +341,20 @@ impl<C: AppContext> App<C> {
 
     #[cfg(not(feature = "clap-dispatch"))]
     pub async fn run_with_args(&mut self, args: Vec<String>) -> Result<()> {
+        #[cfg(feature = "mcp-server")]
+        {
+            if args.iter().any(|a| a == "--mcp-serve") {
+                let mcp_args = crate::mcp::extract_mcp_args_from_raw(&args);
+                return crate::mcp::serve_mcp(
+                    Arc::clone(&self.command_registry),
+                    self.app_name,
+                    mcp_args,
+                    self.risk_policy.clone(),
+                )
+                .await;
+            }
+        }
+
         if Self::should_show_help(&args) {
             self.show_help();
             return Ok(());
