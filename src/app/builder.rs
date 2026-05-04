@@ -27,6 +27,8 @@ pub struct AppBuilder {
     app_name: &'static str,
     app_version: &'static str,
     risk_policy: crate::security::command_risk::CommandRiskPolicy,
+    #[cfg(feature = "doctor")]
+    doctor_checks: Vec<Arc<dyn crate::doctor::check::DoctorCheck>>,
 }
 
 impl AppBuilder {
@@ -41,6 +43,8 @@ impl AppBuilder {
             app_name: "unknown",
             app_version: "unknown",
             risk_policy: crate::security::command_risk::CommandRiskPolicy::default(),
+            #[cfg(feature = "doctor")]
+            doctor_checks: Vec::new(),
         }
     }
 
@@ -142,6 +146,23 @@ impl AppBuilder {
         self
     }
 
+    #[cfg(feature = "doctor")]
+    pub fn register_doctor_checks(
+        mut self,
+        checks: Vec<Arc<dyn crate::doctor::check::DoctorCheck>>,
+    ) -> Self {
+        self.doctor_checks.extend(checks);
+        self
+    }
+
+    #[cfg(feature = "doctor")]
+    pub(crate) fn push_doctor_checks(
+        &mut self,
+        checks: Vec<Arc<dyn crate::doctor::check::DoctorCheck>>,
+    ) {
+        self.doctor_checks.extend(checks);
+    }
+
     pub fn build<C: AppContext + 'static>(mut self, ctx: C) -> Result<App<C>> {
         let ailoop_client = if let Some(config) = self.ailoop_config {
             Some(AiloopClient::with_config(config)?)
@@ -159,6 +180,22 @@ impl AppBuilder {
                 self.risk_policy.clone(),
             );
             self.command_registry.register(ask_command);
+        }
+
+        #[cfg(feature = "doctor")]
+        {
+            if !self.doctor_checks.is_empty() {
+                if self.command_registry.get("doctor").is_none() {
+                    let cmd = crate::doctor::command::create_doctor_command(std::mem::take(
+                        &mut self.doctor_checks,
+                    ));
+                    self.command_registry.register(cmd);
+                } else {
+                    log::warn!(
+                        "'doctor' command already registered; skipping auto-registration from doctor_checks"
+                    );
+                }
+            }
         }
 
         let clap_root = crate::app::clap_adapter::build_clap_root(
@@ -414,7 +451,42 @@ impl<C: AppContext> App<C> {
             llm_provider: &self.llm_provider,
         };
 
-        (command.execute)(&mut ctx_wrapper, args).await?;
+        // For spec-based commands, build CommandArgs from typed_args so execute closures
+        // can access parsed flag values via args.named
+        let effective_args = if let Some(ref typed_map) = typed_args {
+            let mut named = std::collections::HashMap::new();
+            for (k, v) in typed_map {
+                use crate::spec::value::ArgValue;
+                let s = match v {
+                    ArgValue::Bool(b) => b.to_string(),
+                    ArgValue::Str(s) => s.clone(),
+                    ArgValue::Int(i) => i.to_string(),
+                    ArgValue::Float(f) => f.to_string(),
+                    ArgValue::Enum(e) => e.clone(),
+                    ArgValue::Count(c) => c.to_string(),
+                    ArgValue::List(items) => items
+                        .iter()
+                        .map(|i| match i {
+                            ArgValue::Str(s) => s.clone(),
+                            ArgValue::Int(i) => i.to_string(),
+                            ArgValue::Float(f) => f.to_string(),
+                            ArgValue::Enum(e) => e.clone(),
+                            _ => String::new(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(","),
+                };
+                named.insert(k.clone(), s);
+            }
+            crate::command::CommandArgs {
+                positional: Vec::new(),
+                named,
+            }
+        } else {
+            args
+        };
+
+        (command.execute)(&mut ctx_wrapper, effective_args).await?;
         Ok(())
     }
 

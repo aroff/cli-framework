@@ -278,7 +278,92 @@ assert!(output.contains("ok"));
 
 The `testkit` feature enables in-process CLI testing without spawning a subprocess. See `skill/references/testing-with-testkit.md` and `docs/testing.md`.
 
-## 15. Pointers to `references/` and `skill/examples/`
+## 15. Doctor diagnostics framework (`doctor` feature)
+
+Enable with `features = ["doctor"]`. Provides a structured `DoctorCheck` trait, concurrent runner, and a `doctor` CLI command with terminal table and JSON output.
+
+### Implementing a check
+
+```rust
+use cli_framework::doctor::{CheckSeverity, DoctorCheck, DoctorFinding, DoctorFuture};
+use cli_framework::app::AppContext;
+
+struct MyCheck;
+
+impl DoctorCheck for MyCheck {
+    fn id(&self) -> &'static str { "my-check" }
+    fn title(&self) -> &'static str { "My check" }
+    fn run(&self, _ctx: &dyn AppContext) -> DoctorFuture {
+        Box::pin(async {
+            DoctorFinding {
+                check_id: "my-check".to_string(),
+                title: "My check".to_string(),
+                severity: CheckSeverity::Ok,
+                message: "All good".to_string(),
+                detail: None,
+                remediation: None,
+            }
+        })
+    }
+}
+```
+
+`CheckSeverity` values: `Ok`, `Warning`, `Error`, `Skipped`. Only `Error` findings trigger exit code 1.
+
+### Registering checks via `DoctorModule`
+
+```rust
+use cli_framework::doctor::{DoctorCheck, DoctorModule};
+use std::sync::Arc;
+
+let checks: Vec<Arc<dyn DoctorCheck>> = vec![Arc::new(MyCheck)];
+let app = AppBuilder::new()
+    .register_module(DoctorModule::new(checks))?
+    .build(ctx)?;
+```
+
+Or directly via `register_doctor_checks`:
+
+```rust
+let app = AppBuilder::new()
+    .register_doctor_checks(vec![Arc::new(MyCheck)])
+    .build(ctx)?;
+```
+
+### Built-in checks
+
+```rust
+use cli_framework::doctor::builtin::{EnvRequiredCheck, TmpdirWritableCheck};
+
+// Checks HOME and PATH are set and non-empty (Error if missing)
+Arc::new(EnvRequiredCheck::new(&["HOME", "PATH"]))
+
+// Checks temp dir is writable (Warning if not)
+Arc::new(TmpdirWritableCheck)
+```
+
+### CLI usage
+
+```
+myapp doctor              # terminal table output
+myapp doctor --json       # JSON to stdout
+myapp doctor --check <id> # run one check by ID
+```
+
+### Exit code policy
+
+- Exit 0: no `Error`-severity findings (warnings and skipped do not affect exit code)
+- Exit 1: one or more `Error`-severity findings
+
+CI pipelines can rely on this: `myapp doctor --json | jq '.summary.errors'`.
+
+### Example
+
+```bash
+cargo run --example with_doctor --features doctor
+```
+
+## 16. Pointers to `references/` and `skill/examples/`
 
 ### Reference files
 
@@ -304,4 +389,5 @@ The `testkit` feature enables in-process CLI testing without spawning a subproce
 | `skill/examples/with_plugins` | `cargo run --example with_plugins` | none |
 | `skill/examples/with_ailoop` | `cargo run --example with_ailoop` | none |
 | `skill/examples/with_mcp` | `cargo run --example with_mcp --features mcp-server` | `mcp-server` |
+| `skill/examples/with_doctor` | `cargo run --example with_doctor --features doctor` | `doctor` |
 | `skill/examples/http_retry_demo` | `cargo run --example http_retry_demo` | none |
