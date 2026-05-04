@@ -36,7 +36,7 @@ Use `path = "..."` when developing inside a workspace or alongside the crate sou
 Enable optional features as needed:
 
 ```toml
-cli-framework = { git = "...", features = ["mcp-server", "clap-dispatch", "testkit"] }
+cli-framework = { git = "...", features = ["mcp-server", "testkit"] }
 ```
 
 See `skill/references/features-and-cargo-flags.md` for the full feature table.

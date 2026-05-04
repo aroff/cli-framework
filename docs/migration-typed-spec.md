@@ -1,8 +1,8 @@
 # Migration Guide: Typed CommandSpec
 
-**What this is:** The library today supports **both** styles: commands with **`spec: None` / `validator: None`** (simpler, legacy parse path) and commands with a full **`CommandSpec`** (typed arguments, stricter validation, richer help). This document is the **upgrade guide** when you choose the typed path. It is **not** a notice that the crate is legacy; most small apps can stay on **`spec: None`** until they need structured flags.
+**What this is:** The library routes all dispatch through Clap. Commands with **`spec: None` / `validator: None`** are accepted (Clap emits a warning for unspecced commands) and commands with a full **`CommandSpec`** get typed arguments, stricter validation, and richer help. This document is the **upgrade guide** when you adopt the typed path.
 
-**Should you delete this file?** No, if you want a single place for **`register_command`?`**, feature flags (**`strict-types`**, **`strict-args`**, etc.), and **`CommandSpec`** examples. If you never adopt **`CommandSpec`**, you can ignore this file.
+**Should you delete this file?** No, if you want a single place for **`register_command`**, feature flags (**`strict-types`**, **`strict-args`**, etc.), and **`CommandSpec`** examples. If you never adopt **`CommandSpec`**, you can ignore this file.
 
 ---
 This guide covers migrating from optional-spec commands to the typed **`CommandSpec`** model (v0.3+).
@@ -11,7 +11,7 @@ This guide covers migrating from optional-spec commands to the typed **`CommandS
 
 - `Command` now has two optional fields: `spec: Option<Arc<CommandSpec>>` and `validator: Option<Arc<dyn Fn(...)>>`.
 - `AppBuilder::register_command()` now returns `Result<Self>` instead of `Self`.
-- The clap parse path emits a `log::warn!` for commands without a spec (legacy-parse-path).
+- The Clap parse path emits a `log::warn!` for commands without a spec.
 
 ## Adding spec/validator to existing commands
 
@@ -104,7 +104,9 @@ AppBuilder::new()
 
 | Flag | Effect |
 |------|--------|
-| `strict-args` | Reject unknown flags on legacy (no-spec) commands |
+| `strict-args` | Reject unknown flags on unspecced commands |
 | `strict-types` | Reject registration of commands without a CommandSpec |
-| `legacy-arg-coercion` | Coerce bare `--flag` to `Bool(true)` on legacy path |
+| `legacy-arg-coercion` | Coerce bare `--flag` to `Bool(true)` for unspecced commands |
 | `testkit` | Enable `CliTestHarness` for in-process test capture |
+
+> **Note:** `clap-dispatch` is now in the `default` feature set and is a no-op alias retained for one release cycle. You do not need to enable it explicitly. It will be removed in v0.5.0.

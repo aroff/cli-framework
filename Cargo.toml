@@ -53,7 +53,7 @@ libc = "0.2"
 insta = { version = "1", features = ["json"] }
 
 [features]
-default = []
+default = ["clap-dispatch"]
 # observability = ["opentelemetry", "opentelemetry-otlp", "opentelemetry-sdk"]
 # Note: OpenTelemetry integration will be implemented in src/observability/mod.rs
 # Applications should add opentelemetry crates to their own Cargo.toml when using this feature
@@ -61,7 +61,7 @@ observability = []
 # CLI output utilities optional features
 table-advanced = ["comfy-table"]
 progress = ["indicatif"]
-clap-dispatch = []
+clap-dispatch = []  # no-op since v0.4.0; remove in v0.5.0
 # Reject unknown flags on legacy (no-spec) commands
 strict-args = []
 # Reject registration of commands without a CommandSpec
@@ -132,12 +132,10 @@ path = "tests/unit/http_retry_client.rs"
 [[test]]
 name = "unit_clap_adapter"
 path = "tests/unit/clap_adapter.rs"
-required-features = ["clap-dispatch"]
 
 [[test]]
 name = "unit_parser_diagnostics"
 path = "tests/unit/parser_diagnostics.rs"
-required-features = ["clap-dispatch"]
 
 [[test]]
 name = "unit_mcp_tool_export"

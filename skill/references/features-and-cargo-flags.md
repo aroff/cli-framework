@@ -1,13 +1,13 @@
 # Features and Cargo flags
 
-All 9 optional features for `cli-framework`. Default feature set is empty (`default = []`).
+All 9 optional features for `cli-framework`. Default feature set includes `clap-dispatch`.
 
 ## Feature table
 
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `mcp-server` | off | Expose registered commands as MCP tools via Streamable HTTP; pulls in `rmcp` and `axum` |
-| `clap-dispatch` | off | Enable `clap`-based argument dispatch adapter |
+| `clap-dispatch` | **on** | No-op since v0.4.0 (Clap dispatch is now always active); retained for compatibility, will be removed in v0.5.0 |
 | `testkit` | off | Enable `CliTestHarness` for in-process CLI testing (dev/test use only) |
 | `strict-types` | off | Reject registration of commands without a `CommandSpec` |
 | `strict-args` | off | Reject unknown flags on legacy (no-spec) commands |
@@ -22,7 +22,6 @@ All 9 optional features for `cli-framework`. Default feature set is empty (`defa
 [dependencies]
 cli-framework = { git = "https://github.com/aroff/cli-framework", features = [
     "mcp-server",
-    "clap-dispatch",
     "testkit",
 ] }
 ```
