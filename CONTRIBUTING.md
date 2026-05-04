@@ -49,7 +49,7 @@ Also: `auth`, `data_source`; `observability`, `testkit` behind features.
 
 **Security (summary):** sanitize untrusted terminal output; `ask` tier policy; plugin paths rooted (no traversal).
 
-**Features:** default `[]`; see `[features]` in `Cargo.toml`. User-visible behavior → update README in the same PR.
+**Features:** default `["clap-dispatch"]`; see `[features]` in `Cargo.toml`. The `clap-dispatch` flag is now a no-op default — all dispatch goes through the Clap path. User-visible behavior → update README in the same PR.
 
 ## Tests
 
