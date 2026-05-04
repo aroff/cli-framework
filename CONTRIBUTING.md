@@ -20,11 +20,12 @@ cargo build
 | Path | Role |
 |------|------|
 | `src/` | Library |
-| `examples/` | `cargo run --example <name>` |
+| `skill/` | Bundled Agent Skill (`SKILL.md`, `skill-project.toml`, `references/`) |
+| `skill/examples/` | Runnable samples — `cargo run --example <name>` |
 | `tests/` | `[[test]]` targets in `Cargo.toml` |
 | `docs/` | `migration-typed-spec.md`, `testing.md` |
 | `specs/` | In-flight design notes |
-| `tools-cli-framework/` | Bundled Agent Skill |
+| `tools-cli-framework/` | Superseded — see `skill/` |
 
 ## System design (`src/`)
 
