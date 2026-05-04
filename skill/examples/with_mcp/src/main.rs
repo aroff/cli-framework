@@ -1,7 +1,7 @@
 //! MCP Server Example
 //!
 //! Demonstrates how to start the CLI framework in MCP server mode.
-//! Run with: cargo run --example with_mcp --features "mcp-server clap-dispatch" -- --mcp-serve --mcp-port 8080
+//! Run with: cargo run --example with_mcp --features "mcp-server" -- --mcp-serve --mcp-port 8080
 
 use cli_framework::prelude::*;
 use std::sync::Arc;

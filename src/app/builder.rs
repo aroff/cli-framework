@@ -161,7 +161,6 @@ impl AppBuilder {
             self.command_registry.register(ask_command);
         }
 
-        #[cfg(feature = "clap-dispatch")]
         let clap_root = crate::app::clap_adapter::build_clap_root(
             self.meta.as_ref(),
             &self.command_registry,
@@ -179,7 +178,6 @@ impl AppBuilder {
             app_name: self.app_name,
             app_version: self.app_version,
             risk_policy: self.risk_policy.clone(),
-            #[cfg(feature = "clap-dispatch")]
             clap_root,
             #[cfg(feature = "testkit")]
             stdout_capture: None,
@@ -203,7 +201,6 @@ pub struct App<C: AppContext> {
     app_name: &'static str,
     app_version: &'static str,
     risk_policy: crate::security::command_risk::CommandRiskPolicy,
-    #[cfg(feature = "clap-dispatch")]
     clap_root: clap::Command,
     /// Captures framework-level stdout output (version strings etc.) when testkit is active.
     #[cfg(feature = "testkit")]
@@ -277,7 +274,6 @@ impl<C: AppContext> App<C> {
         self.run_with_args(args).await
     }
 
-    #[cfg(feature = "clap-dispatch")]
     pub fn rebuild_clap_root(&mut self) {
         self.clap_root = crate::app::clap_adapter::build_clap_root(
             self.meta.as_ref(),
@@ -287,7 +283,6 @@ impl<C: AppContext> App<C> {
         );
     }
 
-    #[cfg(feature = "clap-dispatch")]
     pub async fn run_with_args(&mut self, args: Vec<String>) -> Result<()> {
         use crate::app::clap_adapter::parse_with_clap;
         use crate::app::diagnostic_reporter::DiagnosticReporter;
@@ -337,70 +332,6 @@ impl<C: AppContext> App<C> {
                 Ok(())
             }
         }
-    }
-
-    #[cfg(not(feature = "clap-dispatch"))]
-    pub async fn run_with_args(&mut self, args: Vec<String>) -> Result<()> {
-        #[cfg(feature = "mcp-server")]
-        {
-            if args.iter().any(|a| a == "--mcp-serve") {
-                let mcp_args = crate::mcp::extract_mcp_args_from_raw(&args);
-                return crate::mcp::serve_mcp(
-                    Arc::clone(&self.command_registry),
-                    self.app_name,
-                    mcp_args,
-                    self.risk_policy.clone(),
-                )
-                .await;
-            }
-        }
-
-        if Self::should_show_help(&args) {
-            self.show_help();
-            return Ok(());
-        }
-
-        match args[1].as_str() {
-            "version" | "--version" => {
-                if self.app_name == "unknown" {
-                    log::warn!("version called but with_version() was not configured");
-                }
-                self.framework_println(&format!("{} {}", self.app_name, self.app_version));
-                return Ok(());
-            }
-            _ => {}
-        }
-
-        let command_id = &args[1];
-        let remaining_args = &args[2..];
-
-        let mut positional = Vec::new();
-        let mut named = std::collections::HashMap::new();
-
-        let mut i = 0;
-        while i < remaining_args.len() {
-            let arg = &remaining_args[i];
-            if arg.starts_with("--") {
-                let key = arg.trim_start_matches("--").to_string();
-                if i + 1 < remaining_args.len() && !remaining_args[i + 1].starts_with("--") {
-                    named.insert(key, remaining_args[i + 1].clone());
-                    i += 2;
-                } else {
-                    // DD#8: bare --flag without value
-                    #[cfg(feature = "legacy-arg-coercion")]
-                    {
-                        named.insert(key, "true".to_string());
-                    }
-                    i += 1;
-                }
-            } else {
-                positional.push(arg.clone());
-                i += 1;
-            }
-        }
-
-        let cmd_args = crate::command::CommandArgs { positional, named };
-        self.execute_command(command_id, cmd_args).await
     }
 
     /// Write a line of framework-level output. Routes through the testkit capture buffer
