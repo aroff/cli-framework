@@ -24,7 +24,7 @@ Add the `mcp-server` feature in your binary's `Cargo.toml`:
 
 ```toml
 [dependencies]
-cli-framework = { version = "0.3", features = ["mcp-server", "clap-dispatch"] }
+cli-framework = { version = "0.4", features = ["mcp-server"] }
 ```
 
 ### CLI flags

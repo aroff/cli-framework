@@ -14,7 +14,7 @@ The **`testkit`** feature exposes **`CliTestHarness<C>`** for deterministic CLI 
 
 ```toml
 [dev-dependencies]
-cli-framework = { path = ".", features = ["testkit", "clap-dispatch"] }
+cli-framework = { path = ".", features = ["testkit"] }
 ```
 
 ## Basic usage
