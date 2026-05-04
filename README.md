@@ -304,7 +304,7 @@ if confirmed {
 }
 ```
 
-See `examples/with_ailoop` for a full program.
+See `skill/examples/with_ailoop` for a full program.
 
 ## Examples
 
@@ -316,7 +316,7 @@ Run the included examples to see the framework in action:
 - `cargo run --example with_ailoop` — ailoop confirmations and prompts
 - `cargo run --example http_retry_demo` — `http_retry` and secure client defaults
 
-Source for each lives under [`examples/`](examples/).
+Source for each lives under [`skill/examples/`](skill/examples/).
 
 ## Security
 
