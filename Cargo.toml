@@ -79,23 +79,23 @@ path = "src/lib.rs"
 
 [[example]]
 name = "http_retry_demo"
-path = "examples/http_retry_demo/main.rs"
+path = "skill/examples/http_retry_demo/main.rs"
 
 [[example]]
 name = "basic_cli"
-path = "examples/basic_cli/src/main.rs"
+path = "skill/examples/basic_cli/src/main.rs"
 
 [[example]]
 name = "with_ask"
-path = "examples/with_ask/src/main.rs"
+path = "skill/examples/with_ask/src/main.rs"
 
 [[example]]
 name = "with_plugins"
-path = "examples/with_plugins/src/main.rs"
+path = "skill/examples/with_plugins/src/main.rs"
 
 [[example]]
 name = "with_ailoop"
-path = "examples/with_ailoop/src/main.rs"
+path = "skill/examples/with_ailoop/src/main.rs"
 
 [[test]]
 name = "integration_app_builder"
@@ -156,6 +156,6 @@ required-features = ["mcp-server"]
 
 [[example]]
 name = "with_mcp"
-path = "examples/with_mcp/src/main.rs"
+path = "skill/examples/with_mcp/src/main.rs"
 required-features = ["mcp-server"]
 

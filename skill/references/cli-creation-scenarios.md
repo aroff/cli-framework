@@ -1,6 +1,6 @@
 # CLI creation scenarios (cli-framework)
 
-Practical layouts for **`CommandPath`** registration and operational baselines. All Rust snippets assume `cli-framework` plus `tokio` and `anyhow` as in the parent `SKILL.md`.
+Practical layouts for **`CommandPath`** registration and operational baselines. All Rust snippets assume `cli-framework` plus `tokio` and `anyhow`.
 
 ## Shared bootstrap
 
@@ -18,7 +18,7 @@ anyhow = "1"
 tokio = { version = "1", features = ["full"] }
 ```
 
-Minimal `main.rs` with **`health`** and **`version`** (note `Arc` execute and `register_command(...) ?`):
+Minimal `main.rs` with **`health`** and **`version`** (note `Arc` execute and `register_command(…)?`):
 
 ```rust
 use cli_framework::prelude::*;
@@ -35,12 +35,10 @@ fn health_command() -> Command {
         category: Some("ops"),
         spec: None,
         validator: None,
-        execute: Arc::new(|_ctx, _args| {
-            Box::pin(async move {
-                println!("ok");
-                Ok(())
-            })
-        }),
+        execute: Arc::new(|_ctx, _args| Box::pin(async move {
+            println!("ok");
+            Ok(())
+        })),
     }
 }
 
@@ -52,12 +50,10 @@ fn version_command() -> Command {
         category: Some("ops"),
         spec: None,
         validator: None,
-        execute: Arc::new(|_ctx, _args| {
-            Box::pin(async move {
-                println!("{}", env!("CARGO_PKG_VERSION"));
-                Ok(())
-            })
-        }),
+        execute: Arc::new(|_ctx, _args| Box::pin(async move {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        })),
     }
 }
 
