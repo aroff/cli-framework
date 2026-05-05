@@ -45,9 +45,7 @@ specs
 target
 .cursor
 .specify
-specs
-target
 
 # Newton planner scratch (planner.sh ./tmp)
-/tmp/
+tmp/
 .newton
