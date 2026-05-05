@@ -89,6 +89,10 @@ pub mod testkit;
 #[cfg(feature = "mcp-server")]
 pub mod mcp;
 
+// Doctor diagnostics framework — compile only when the `doctor` feature is active
+#[cfg(feature = "doctor")]
+pub mod doctor;
+
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::app::{AppBuilder, AppContext, AppMeta};
@@ -98,4 +102,9 @@ pub mod prelude {
     pub use crate::message::{AppMessage, AppMessageKind};
     pub use crate::plugin::PluginRegistryManager;
     pub use crate::spec::{ArgSpec, ArgValue, CommandPath, CommandSpec};
+
+    #[cfg(feature = "doctor")]
+    pub use crate::doctor::{
+        CheckSeverity, DoctorCheck, DoctorFinding, DoctorModule, DoctorReport,
+    };
 }

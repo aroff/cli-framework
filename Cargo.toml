@@ -72,6 +72,8 @@ legacy-arg-coercion = []
 testkit = []
 # MCP server — expose registered commands as MCP tools via Streamable HTTP
 mcp-server = ["dep:rmcp", "dep:axum"]
+# Doctor diagnostics framework — structured health checks with terminal/JSON output
+doctor = []
 
 [lib]
 name = "cli_framework"
@@ -156,4 +158,19 @@ required-features = ["mcp-server"]
 name = "with_mcp"
 path = "skill/examples/with_mcp/src/main.rs"
 required-features = ["mcp-server"]
+
+[[example]]
+name = "with_doctor"
+path = "skill/examples/with_doctor/src/main.rs"
+required-features = ["doctor"]
+
+[[test]]
+name = "unit_doctor_runner"
+path = "tests/unit/doctor_runner.rs"
+required-features = ["doctor"]
+
+[[test]]
+name = "integration_doctor_command"
+path = "tests/integration/doctor_command.rs"
+required-features = ["doctor"]
 
