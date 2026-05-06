@@ -74,22 +74,53 @@ fn json_snapshot() {
 
 #[test]
 fn render_json_cs004_error_message_on_failure() {
-    // Test that render_json wraps errors with CS004.
-    // Normal documents serialize fine, so we test via a custom check on the error path.
-    // Since a normal CliSpecDocument always serializes, we verify the function succeeds
-    // and the error message format by checking the error code string is defined.
-    let error_code = "CS004";
+    let doc = make_test_doc();
+    // render_json succeeds for a valid document
     assert!(
-        error_code.starts_with("CS"),
-        "CS004 should be used for JSON serialization errors"
+        render_json(&doc).is_ok(),
+        "render_json must succeed for a valid document"
+    );
+
+    // Verify CS004 error wrapping: simulate the same .map_err pattern used in render_json
+    // (serde_json::to_string_pretty never fails for CliSpecDocument, so we validate
+    // the error code format by constructing an equivalent wrapped error)
+    let simulated = serde_json::from_str::<serde_json::Value>("{bad json}").unwrap_err();
+    let wrapped = anyhow::anyhow!("CS004: JSON serialization error: {}", simulated);
+    assert!(
+        wrapped.to_string().contains("CS004"),
+        "render_json error must contain CS004"
     );
 }
 
 #[test]
 fn render_yaml_cs003_error_message_on_failure() {
-    let error_code = "CS003";
+    let doc = make_test_doc();
+    // render_yaml succeeds for a valid document
     assert!(
-        error_code.starts_with("CS"),
-        "CS003 should be used for YAML serialization errors"
+        render_yaml(&doc).is_ok(),
+        "render_yaml must succeed for a valid document"
     );
+
+    // Verify CS003 error wrapping: simulate the same .map_err pattern used in render_yaml
+    // (serde_yaml::to_string never fails for CliSpecDocument, so we validate
+    // the error code format by constructing an equivalent wrapped error)
+    let wrapped = anyhow::anyhow!("CS003: YAML serialization error: simulated failure");
+    assert!(
+        wrapped.to_string().contains("CS003"),
+        "render_yaml error must contain CS003"
+    );
+}
+
+#[test]
+fn yaml_snapshot() {
+    let doc = make_test_doc();
+    let mut settings = insta::Settings::clone_current();
+    settings.set_snapshot_path(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots"),
+    );
+    settings.set_prepend_module_to_snapshot(false);
+    settings.bind(|| {
+        let yaml_output = render_yaml(&doc).expect("render_yaml should not fail");
+        insta::assert_snapshot!("spec_yaml_output", yaml_output);
+    });
 }

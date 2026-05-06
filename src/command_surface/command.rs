@@ -3,6 +3,7 @@ use crate::command_surface::collect::collect;
 use crate::command_surface::render::{render_json, render_markdown, render_yaml};
 use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use crate::spec::command_tree::CommandSpec;
+use crate::spec::value::ArgValue;
 use std::sync::{Arc, OnceLock};
 
 /// Returns the built-in `spec` Command for auto-registration in AppBuilder::build.
@@ -73,9 +74,9 @@ fn spec_spec() -> CommandSpec {
                 kind: ArgKind::Option,
                 short: None,
                 long: None,
-                value_type: ArgValueType::String,
+                value_type: ArgValueType::Enum(vec!["json", "yaml", "markdown"]),
                 cardinality: Cardinality::Optional,
-                default: None,
+                default: Some(ArgValue::Str("json".to_string())),
                 conflicts_with: vec![],
                 requires: vec![],
                 help: "Output format: json, yaml, or markdown (default: json)",

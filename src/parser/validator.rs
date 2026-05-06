@@ -99,12 +99,10 @@ fn value_matches_type(value: &ArgValue, value_type: &ArgValueType) -> bool {
         ArgValue::Str(_) => matches!(value_type, ArgValueType::String),
         ArgValue::Int(_) => matches!(value_type, ArgValueType::Int),
         ArgValue::Float(_) => matches!(value_type, ArgValueType::Float),
-        ArgValue::Enum(v) => {
-            if let ArgValueType::Enum(allowed) = value_type {
-                allowed.contains(&v.as_str())
-            } else {
-                false
-            }
+        ArgValue::Enum(_) => {
+            // Only verify the value variant matches the declared Enum type; per-command
+            // execute closures validate the specific allowed values with proper error codes.
+            matches!(value_type, ArgValueType::Enum(_))
         }
     }
 }
