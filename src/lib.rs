@@ -81,6 +81,9 @@ pub mod http_retry;
 pub mod parser;
 pub mod spec;
 
+// Command surface export — always compiled, no feature flag
+pub mod command_surface;
+
 // Testkit — compile only when the `testkit` feature is active
 #[cfg(feature = "testkit")]
 pub mod testkit;

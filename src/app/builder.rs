@@ -206,6 +206,21 @@ impl AppBuilder {
             }
         }
 
+        // Auto-register built-in `spec` command (always-on, no feature gate)
+        let spec_registry_cell: std::sync::Arc<
+            std::sync::OnceLock<std::sync::Arc<crate::command::CommandRegistry>>,
+        > = std::sync::Arc::new(std::sync::OnceLock::new());
+        if self.command_registry.get("spec").is_none() {
+            let spec_cmd = crate::command_surface::command::create_spec_command(
+                self.app_name,
+                self.app_version,
+                spec_registry_cell.clone(),
+            );
+            self.command_registry.register(spec_cmd);
+        } else {
+            log::warn!("'spec' command already registered; skipping built-in spec command");
+        }
+
         let clap_root = crate::app::clap_adapter::build_clap_root(
             self.meta.as_ref(),
             &self.command_registry,
@@ -213,8 +228,11 @@ impl AppBuilder {
             self.app_version,
         );
 
+        let registry_arc = Arc::new(self.command_registry);
+        spec_registry_cell.set(registry_arc.clone()).ok();
+
         Ok(App {
-            command_registry: Arc::new(self.command_registry),
+            command_registry: registry_arc,
             llm_provider: self.llm_provider,
             ailoop_client,
             plugin_registry_manager,
