@@ -266,3 +266,59 @@ fn test_ask_command_registered_with_llm_and_ailoop() {
         "ask command should appear in help when LLM and ailoop are configured"
     );
 }
+
+// AC10: ask command execution reaches authorize call (verifies via error propagation
+// when no server is running — proves the authorize path is reached, not stdin).
+//
+// The MockLlmProvider resolves the query to "hello", risk gate passes (Safe tier),
+// then request_confirmation attempts a WebSocket connection that fails because no
+// ailoop server is running. The error MUST contain "Ailoop authorization failed",
+// proving authorize was called and stdin was never used.
+#[tokio::test]
+#[cfg(not(feature = "strict-types"))]
+async fn test_ask_command_calls_authorize_not_stdin() {
+    // Use a guaranteed-unreachable port so the test doesn't accidentally hit a
+    // real server on the developer's machine.
+    let config = cli_framework::ailoop::AiloopConfig {
+        channel: "test-channel".to_string(),
+        server_url: Some("ws://127.0.0.1:19999".to_string()), // nothing listening here
+        default_timeout_seconds: 2,
+    };
+
+    let mut app = AppBuilder::new()
+        .with_llm_provider(Arc::new(MockLlmProvider))
+        .with_ailoop_config(config)
+        .register_command(Command {
+            id: "hello",
+            summary: "Hello",
+            syntax: None,
+            category: None,
+            spec: None,
+            validator: None,
+            execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
+        })
+        .unwrap()
+        .build(DummyCtx)
+        .unwrap();
+
+    let args = CommandArgs {
+        positional: vec!["say hello".to_string()],
+        named: std::collections::HashMap::new(),
+    };
+
+    let result = app.execute_command("ask", args).await;
+
+    // The command MUST fail because no ailoop server is running.
+    // The error message proves that request_confirmation (which calls authorize)
+    // was reached — a stdin-based path would have returned Ok or blocked on read.
+    assert!(
+        result.is_err(),
+        "ask execution should fail when ailoop server is unreachable"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("Ailoop authorization failed"),
+        "Expected 'Ailoop authorization failed' in error (proves authorize was called, not stdin); got: {}",
+        err_msg
+    );
+}
