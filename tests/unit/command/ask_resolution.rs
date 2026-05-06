@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use cli_framework::ailoop::{AiloopClient, AiloopConfig};
 use cli_framework::app::AppContext;
 use cli_framework::command::{Command, CommandArgs, CommandRegistry};
 use cli_framework::llm::{CommandMetadata, CommandResolution, LlmProvider};
@@ -86,6 +87,15 @@ fn make_resolution(command_id: &str, confidence: f32) -> CommandResolution {
     }
 }
 
+fn make_ailoop_client() -> Arc<AiloopClient> {
+    let config = AiloopConfig {
+        channel: "test".to_string(),
+        server_url: Some("ws://localhost:8080".to_string()),
+        default_timeout_seconds: 30,
+    };
+    Arc::new(AiloopClient::with_config(config).unwrap())
+}
+
 #[tokio::test]
 async fn test_ask_positional_query_calls_resolve() {
     let mock = MockLlmProvider::with_resolution(make_resolution("status", 0.95));
@@ -97,6 +107,7 @@ async fn test_ask_positional_query_calls_resolve() {
         Arc::new(mock),
         Arc::new(registry),
         cli_framework::security::command_risk::CommandRiskPolicy::default(),
+        make_ailoop_client(),
     );
 
     let mut ctx = NoopContext;
@@ -124,6 +135,7 @@ async fn test_ask_named_query_calls_resolve() {
         Arc::new(mock),
         Arc::new(registry),
         cli_framework::security::command_risk::CommandRiskPolicy::default(),
+        make_ailoop_client(),
     );
 
     let mut ctx = NoopContext;
@@ -150,6 +162,7 @@ async fn test_ask_no_query_returns_ok() {
         Arc::new(mock),
         Arc::new(registry),
         cli_framework::security::command_risk::CommandRiskPolicy::default(),
+        make_ailoop_client(),
     );
 
     let mut ctx = NoopContext;
@@ -172,6 +185,7 @@ async fn test_ask_excludes_self_from_metadata() {
         Arc::new(mock),
         Arc::new(registry),
         cli_framework::security::command_risk::CommandRiskPolicy::default(),
+        make_ailoop_client(),
     );
 
     let mut ctx = NoopContext;
@@ -232,6 +246,7 @@ async fn test_ask_dispatches_resolved_command() {
         Arc::new(mock),
         Arc::new(registry),
         cli_framework::security::command_risk::CommandRiskPolicy::default(),
+        make_ailoop_client(),
     );
 
     let mut ctx = NoopContext;
@@ -265,6 +280,7 @@ async fn test_ask_unknown_command_returns_error() {
         Arc::new(mock),
         Arc::new(registry),
         cli_framework::security::command_risk::CommandRiskPolicy::default(),
+        make_ailoop_client(),
     );
 
     let mut ctx = NoopContext;
@@ -296,6 +312,7 @@ async fn test_ask_recursive_ask_returns_error() {
         Arc::new(mock),
         Arc::new(registry),
         cli_framework::security::command_risk::CommandRiskPolicy::default(),
+        make_ailoop_client(),
     );
 
     let mut ctx = NoopContext;
@@ -323,6 +340,7 @@ async fn test_ask_provider_error_returns_error() {
         Arc::new(mock),
         Arc::new(registry),
         cli_framework::security::command_risk::CommandRiskPolicy::default(),
+        make_ailoop_client(),
     );
 
     let mut ctx = NoopContext;
@@ -348,6 +366,7 @@ async fn test_ask_yes_flag_skips_confirmation() {
         Arc::new(mock),
         Arc::new(registry),
         cli_framework::security::command_risk::CommandRiskPolicy::default(),
+        make_ailoop_client(),
     );
 
     let mut ctx = NoopContext;

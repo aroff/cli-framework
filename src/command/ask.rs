@@ -1,3 +1,4 @@
+use crate::ailoop::AiloopClient;
 use crate::app::context::AppContext;
 use crate::command::{Command, CommandArgs, CommandRegistry, CommandResult};
 use crate::llm::{CommandMetadata, CommandResolution, LlmProvider};
@@ -11,6 +12,7 @@ pub fn create_ask_command(
     llm_provider: Arc<dyn LlmProvider>,
     registry: Arc<CommandRegistry>,
     risk_policy: CommandRiskPolicy,
+    ailoop_client: Arc<AiloopClient>,
 ) -> Command {
     let metadata_snapshot: Vec<CommandMetadata> = registry
         .collect_metadata()
@@ -30,7 +32,10 @@ pub fn create_ask_command(
             let metadata = metadata_snapshot.clone();
             let registry = registry.clone();
             let policy = risk_policy.clone();
-            Box::pin(async move { execute_ask(provider, metadata, registry, args, policy).await })
+            let client = ailoop_client.clone();
+            Box::pin(async move {
+                execute_ask(provider, metadata, registry, args, policy, client).await
+            })
         }),
     }
 }
@@ -41,6 +46,7 @@ async fn execute_ask(
     registry: Arc<CommandRegistry>,
     args: CommandArgs,
     risk_policy: CommandRiskPolicy,
+    ailoop_client: Arc<AiloopClient>,
 ) -> CommandResult {
     let query = match extract_query(&args) {
         Ok(q) => q,
@@ -67,15 +73,25 @@ async fn execute_ask(
         .find(|m| m.id == resolution.command_id)
         .and_then(|m| m.category.as_deref());
 
-    enforce_risk_gate(&risk_policy, &resolution, command_category, assume_yes)?;
+    enforce_risk_gate(
+        &risk_policy,
+        &resolution,
+        command_category,
+        assume_yes,
+        true,
+    )?;
 
     print_resolution(&resolution);
 
     if assume_yes {
         println!("\u{26a0}\u{fe0f}  Running without confirmation");
-    } else if !confirm_execution()? {
-        println!("Command cancelled");
-        return Ok(());
+    } else {
+        let action = format!("Execute command '{}'", resolution.command_id);
+        let confirmed = ailoop_client.request_confirmation(&action, None).await?;
+        if !confirmed {
+            println!("Command cancelled by user");
+            return Ok(());
+        }
     }
 
     dispatch_resolved_command(&registry, &resolution).await
@@ -103,13 +119,14 @@ pub fn enforce_risk_gate(
     resolution: &CommandResolution,
     command_category: Option<&str>,
     assume_yes: bool,
+    ailoop_available: bool,
 ) -> anyhow::Result<()> {
     use crate::security::command_risk::CommandRiskTier;
     let tier = policy.classify(&resolution.command_id, command_category);
     match tier {
         CommandRiskTier::Safe => Ok(()),
         CommandRiskTier::Sensitive => {
-            if !crate::cli_mode::is_interactive() && !assume_yes {
+            if !ailoop_available && !crate::cli_mode::is_interactive() && !assume_yes {
                 log::warn!(
                     "Sensitive command '{}' blocked in non-interactive mode without --yes",
                     resolution.command_id
@@ -137,14 +154,14 @@ pub fn enforce_risk_gate(
                     resolution.command_id
                 ));
             }
-            if !crate::cli_mode::is_interactive() {
+            if !ailoop_available && !crate::cli_mode::is_interactive() {
                 log::warn!(
                     "Destructive command '{}' blocked: non-interactive terminal",
                     resolution.command_id
                 );
                 return Err(anyhow::anyhow!(
                     "DESTRUCTIVE_COMMAND_BLOCKED: command '{}' requires an interactive \
-                     terminal even when ALLOW_DESTRUCTIVE_COMMANDS=1",
+                     terminal or ailoop when ALLOW_DESTRUCTIVE_COMMANDS=1",
                     resolution.command_id
                 ));
             }
@@ -164,14 +181,6 @@ fn print_resolution(resolution: &CommandResolution) {
         println!("   Reasoning: {}", safe_reasoning);
     }
     println!();
-}
-
-fn confirm_execution() -> anyhow::Result<bool> {
-    println!("Execute this command? (y/N): ");
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    let input = input.trim().to_lowercase();
-    Ok(matches!(input.as_str(), "y" | "yes"))
 }
 
 async fn dispatch_resolved_command(
