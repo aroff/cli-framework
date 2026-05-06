@@ -158,7 +158,9 @@ cargo run -- hello Alice
 
 ## AI Ask Command
 
-Natural-language **`ask`** is registered when an LLM is configured (**`with_llm_from_env()`** or **`with_llm_provider`** after you build the **`AppBuilder`**). Example with one registered command plus **`ask`**:
+Natural-language **`ask`** is registered when an LLM is configured (**`with_llm_from_env()`** or **`with_llm_provider`**). **A paired `ailoop serve` process is also required** — `.build()` returns an error if `with_ailoop_channel()` or `with_ailoop_config()` has not been called when an LLM provider is set.
+
+Example with one registered command plus **`ask`**:
 
 ```rust
 use cli_framework::prelude::*;
@@ -168,6 +170,7 @@ use std::sync::Arc;
 async fn main() -> anyhow::Result<()> {
     std::env::set_var("OPENAI_API_KEY", "your-api-key"); // Or set in the shell / use Anthropic vars
     std::env::set_var("LLM_PROVIDER", "openai");
+    // AILOOP_SERVER defaults to ws://localhost:8080; run `ailoop serve --port 8080` first.
 
     let hello = Command {
         id: "hello",
@@ -189,7 +192,9 @@ async fn main() -> anyhow::Result<()> {
         }),
     };
 
-    let mut builder = AppBuilder::new().with_llm_from_env()?;
+    let mut builder = AppBuilder::new()
+        .with_llm_from_env()?
+        .with_ailoop_channel("my-app");  // required when LLM provider is set
     builder = builder.register_command(hello)?;
 
     let mut app = builder.build(MyContext)?;
@@ -290,7 +295,24 @@ enabled = true
 
 ### ailoop Integration
 
-Use `cli_framework::ailoop::AiloopClient` inside a command closure (configure the channel via `AppBuilder::with_ailoop_channel` or environment variables as needed):
+The `ask` command (AI natural-language routing) requires a paired `ailoop serve` process for all human-in-the-loop (HITL) interactions: authorization, questions, and notifications are routed over WebSocket to that server. There is no fallback to stdin.
+
+**Pairing requirement:** Start `ailoop serve` before using `ask` or any HITL method:
+
+```bash
+export AILOOP_SERVER=ws://localhost:8080
+ailoop serve --port 8080
+```
+
+**Mandatory configuration:** If you call `.with_llm_from_env()` or `.with_llm_provider()` on `AppBuilder`, you MUST also call `.with_ailoop_channel()` or `.with_ailoop_config()` before `.build()`. Building without ailoop config when an LLM provider is set returns `Err(AILOOP_REQUIRED_FOR_ASK)`.
+
+```rust
+let mut builder = AppBuilder::new()
+    .with_llm_from_env()?
+    .with_ailoop_channel("my-app-channel");  // required when LLM is set
+```
+
+Use `cli_framework::ailoop::AiloopClient` inside a command closure for ad-hoc HITL calls:
 
 ```rust
 use cli_framework::ailoop::AiloopClient;
@@ -331,8 +353,8 @@ The `ask` command classifies every AI-resolved command into one of three risk ti
 | Tier | Default categories | Behavior |
 |---|---|---|
 | `Safe` | All others | Proceeds normally; `ASK_ASSUME_YES`/`--yes` honored |
-| `Sensitive` | `data`, `config` | Requires interactive confirmation in non-interactive mode |
-| `Destructive` | `deployment`, `admin`, `destructive` | Blocked unless `ALLOW_DESTRUCTIVE_COMMANDS=1` AND interactive `y/yes` confirmation |
+| `Sensitive` | `data`, `config` | Requires interactive confirmation; ailoop acts as the interactive channel (no TTY needed when ailoop configured) |
+| `Destructive` | `deployment`, `admin`, `destructive` | Blocked unless `ALLOW_DESTRUCTIVE_COMMANDS=1`; when set, requires TTY or ailoop for confirmation |
 
 Configure a custom policy via `AppBuilder::with_risk_policy()`:
 
@@ -349,7 +371,7 @@ let app = AppBuilder::new()
 
 ### `ALLOW_DESTRUCTIVE_COMMANDS` Environment Variable
 
-Setting `ALLOW_DESTRUCTIVE_COMMANDS=1` permits destructive-tier commands to proceed **only when combined with interactive `y/yes` confirmation**. This variable alone is insufficient — an interactive terminal is always required. `--yes` and `ASK_ASSUME_YES` are silently ignored for destructive commands.
+Setting `ALLOW_DESTRUCTIVE_COMMANDS=1` permits destructive-tier commands to proceed when combined with interactive confirmation. When ailoop is configured, the ailoop channel acts as the interactive channel (no TTY required). Without ailoop, an interactive terminal is always required. `--yes` and `ASK_ASSUME_YES` are silently ignored for destructive commands.
 
 ### Plugin path confinement
 
@@ -381,8 +403,11 @@ Defaults: 5s connect timeout, 30s total timeout, built-in TLS roots, TLS certifi
 | `ASK_ASSUME_YES` | Set **`1`** or **`true`** to skip confirmation for **Safe** / **Sensitive** ask resolutions (destructive tier still gated per policy) |
 
 ### ailoop Configuration
-- `AILOOP_CHANNEL` - Channel name (default: "cli-framework")
-- `AILOOP_SERVER_URL` - ailoop server URL
+
+| Variable | Role |
+|---------|------|
+| `AILOOP_CHANNEL` | Channel name (default: `"cli-framework"`) |
+| `AILOOP_SERVER` | WebSocket URL of the paired `ailoop serve` process (default: `ws://localhost:8080`); `http://` and `https://` URLs are normalized to `ws://`/`wss://` automatically |
 
 ## Migration Guide
 

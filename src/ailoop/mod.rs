@@ -1,19 +1,24 @@
 //! ailoop-core integration module
 //!
-//! Provides human-in-the-loop interactions for CLI applications using ailoop-core.
-//! This module wraps ailoop-core functionality to provide simple APIs for
-//! confirmations, questions, and notifications in CLI contexts.
+//! Provides human-in-the-loop interactions for CLI applications using ailoop-core
+//! WebSocket client APIs.
 //!
-//! ## Features
+//! ## Pairing Requirement
 //!
-//! - **Confirmation Requests**: Request user approval for actions
-//! - **Question Prompts**: Ask users for input with optional choices
-//! - **Notifications**: Send informational messages to users
-//! - **Channel Management**: Support for multiple interaction channels
+//! This framework depends on a running `ailoop serve` process at the configured
+//! `AILOOP_SERVER` URL (default: `ws://localhost:8080`). All HITL operations
+//! (`request_confirmation`, `ask_question`, `send_notification`) establish a
+//! per-call WebSocket connection to that server. If the server is unreachable,
+//! all methods return `Err`; no silent fallback to stdin is permitted.
+//!
+//! Start a paired server before using HITL features:
+//! ```bash
+//! ailoop serve --port 8080
+//! # or
+//! export AILOOP_SERVER=ws://localhost:8080
+//! ```
 //!
 //! ## Configuration
-//!
-//! Configure ailoop integration in your AppBuilder:
 //!
 //! ```rust,no_run
 //! use cli_framework::prelude::*;
@@ -32,47 +37,23 @@
 //!
 //! ## Environment Variables
 //!
+//! - `AILOOP_SERVER`: WebSocket URL of the paired ailoop server (defaults to `ws://localhost:8080`)
 //! - `AILOOP_CHANNEL`: Default channel name (optional, defaults to "cli-framework")
-//! - `AILOOP_SERVER_URL`: ailoop server URL (optional, defaults to "http://localhost:8080")
 //!
-//! ## Usage in Commands
+//! ## Error Semantics
 //!
-//! ```rust,ignore
-//! use cli_framework::ailoop::AiloopClient;
-//!
-//! async fn my_command(ctx: &mut dyn AppContext, args: CommandArgs) -> CommandResult {
-//!     let ailoop = ctx.ailoop_client();
-//!
-//!     // Request confirmation before proceeding
-//!     let confirmed = ailoop.request_confirmation(
-//!         "Deploy to production environment?",
-//!         Some("This will affect live users")
-//!     ).await?;
-//!
-//!     if confirmed {
-//!         // Proceed with deployment
-//!         println!("Deployment confirmed and started...");
-//!     } else {
-//!         println!("Deployment cancelled by user");
-//!     }
-//!
-//!     Ok(())
-//! }
-//! ```
+//! All HITL methods return `Err` if the ailoop server is unreachable, times out,
+//! or returns an unexpected response. No silent fallback to stdin is permitted.
 
-use ailoop_core::channel::ChannelIsolation;
-use ailoop_core::services::interaction::InteractionService;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 /// Configuration for ailoop integration
 #[derive(Debug, Clone)]
 pub struct AiloopConfig {
     /// Channel name for interactions
     pub channel: String,
-    /// Server URL (for future HTTP client integration)
+    /// Server URL (WebSocket URL; http:// and https:// are normalized to ws:// and wss://)
     pub server_url: Option<String>,
     /// Default timeout for interactions in seconds
     pub default_timeout_seconds: u32,
@@ -83,238 +64,205 @@ impl Default for AiloopConfig {
         Self {
             channel: std::env::var("AILOOP_CHANNEL")
                 .unwrap_or_else(|_| "cli-framework".to_string()),
-            server_url: std::env::var("AILOOP_SERVER_URL").ok(),
+            server_url: std::env::var("AILOOP_SERVER").ok(),
             default_timeout_seconds: 300, // 5 minutes
         }
     }
 }
 
-/// Client for ailoop-core interactions
+/// Normalize http(s):// URLs to ws(s):// for WebSocket use.
+pub fn normalize_ws_url(url: &str) -> String {
+    if url.starts_with("http://") {
+        url.replacen("http://", "ws://", 1)
+    } else if url.starts_with("https://") {
+        url.replacen("https://", "wss://", 1)
+    } else {
+        url.to_string()
+    }
+}
+
+/// Client for ailoop-core interactions via WebSocket.
 ///
-/// This provides a simplified API for CLI applications to interact with humans
-/// through ailoop-core's channel system.
+/// All HITL methods delegate to a paired `ailoop serve` process via
+/// `ailoop_core::client` WebSocket APIs. There is no in-process channel state;
+/// each method call establishes a new WebSocket connection.
+///
+/// # Pairing Requirement
+///
+/// A running `ailoop serve` process at `AILOOP_SERVER` (default: `ws://localhost:8080`)
+/// is required for all HITL operations. If the server is unreachable or returns an
+/// error, all methods return `Err`.
+#[derive(Clone, Debug)]
 pub struct AiloopClient {
-    interaction_service: Arc<Mutex<InteractionService>>,
     config: AiloopConfig,
 }
 
 impl AiloopClient {
-    /// Create a new ailoop client with default configuration
+    /// Create a new ailoop client with default configuration.
     pub fn new() -> Result<Self> {
         Self::with_config(AiloopConfig::default())
     }
 
-    /// Create a new ailoop client with custom configuration
+    /// Create a new ailoop client with custom configuration.
+    ///
+    /// Validates that `server_url`, if provided, normalizes to a `ws://` or `wss://` URL.
+    /// Returns `Err` with `AILOOP_INVALID_URL` context if the URL cannot be normalized.
     pub fn with_config(config: AiloopConfig) -> Result<Self> {
-        let channel_isolation = ChannelIsolation::new(config.channel.clone());
-        let interaction_service = InteractionService::new(channel_isolation);
-
-        Ok(Self {
-            interaction_service: Arc::new(Mutex::new(interaction_service)),
-            config,
-        })
+        if let Some(ref url) = config.server_url {
+            let normalized = normalize_ws_url(url);
+            if !normalized.starts_with("ws://") && !normalized.starts_with("wss://") {
+                return Err(anyhow!("Invalid WebSocket URL: {}", url));
+            }
+        }
+        Ok(Self { config })
     }
 
-    /// Request user confirmation for an action
+    /// Compute the effective server URL: config → AILOOP_SERVER env → default.
+    fn effective_server_url(&self) -> String {
+        let raw = self.config.server_url.clone().unwrap_or_else(|| {
+            std::env::var("AILOOP_SERVER").unwrap_or_else(|_| "ws://localhost:8080".to_string())
+        });
+        normalize_ws_url(&raw)
+    }
+
+    fn timeout_seconds(&self) -> u32 {
+        self.config.default_timeout_seconds
+    }
+
+    /// Request user confirmation for an action via ailoop WebSocket `authorize`.
     ///
-    /// This sends an authorization request to the configured channel and waits
-    /// for user approval or denial.
+    /// Returns `Ok(true)` if approved, `Ok(false)` if denied, or `Err` on failure.
+    /// No fallback to stdin. Requires a paired `ailoop serve` process.
     ///
     /// # Arguments
     ///
     /// * `action` - Description of the action requiring confirmation
-    /// * `context` - Optional additional context or details
-    ///
-    /// # Returns
-    ///
-    /// Returns `Ok(true)` if approved, `Ok(false)` if denied, or an error.
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// # async fn example() -> anyhow::Result<()> {
-    /// # let ailoop = cli_framework::ailoop::AiloopClient::new()?;
-    /// let confirmed = ailoop.request_confirmation(
-    ///     "Delete all user data",
-    ///     Some("This action cannot be undone")
-    /// ).await?;
-    ///
-    /// if confirmed {
-    ///     // Proceed with deletion
-    /// } else {
-    ///     // Show cancellation message
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
+    /// * `context` - Optional additional context appended to the action string
     pub async fn request_confirmation(&self, action: &str, context: Option<&str>) -> Result<bool> {
-        let service = self.interaction_service.lock().await;
+        use ailoop_core::models::{MessageContent, ResponseType};
 
-        let result = service
-            .handle_authorization(
-                action.to_string(),
-                self.config.channel.clone(),
-                self.config.default_timeout_seconds,
-            )
-            .await;
+        let server = self.effective_server_url();
+        let action_str = if let Some(ctx) = context {
+            format!("{} ({})", action, ctx)
+        } else {
+            action.to_string()
+        };
 
-        match result {
-            Ok(_) => {
-                if cfg!(test) {
-                    return Ok(true);
-                }
+        let response = ailoop_core::client::authorize(
+            &server,
+            &self.config.channel,
+            &action_str,
+            self.timeout_seconds(),
+        )
+        .await
+        .map_err(|e| anyhow!("Ailoop authorization failed: {}", e))?;
 
-                println!("\n⚠️  Confirmation requested: {}", action);
-                if let Some(ctx) = context {
-                    println!("   Context: {}", ctx);
-                }
-                println!(
-                    "   (Waiting for human approval on channel '{}')",
-                    self.config.channel
-                );
-                print!("   Approve? (y/N): ");
-                use std::io::{self, Write};
-                io::stdout().flush()?;
-
-                let mut input = String::new();
-                io::stdin().read_line(&mut input)?;
-                let input = input.trim().to_lowercase();
-                Ok(matches!(input.as_str(), "y" | "yes"))
-            }
-            Err(e) => Err(anyhow!("Failed to request confirmation: {}", e)),
+        match response {
+            None => Err(anyhow!("Ailoop authorization failed: request timed out")),
+            Some(msg) => match msg.content {
+                MessageContent::Response { response_type, .. } => match response_type {
+                    ResponseType::AuthorizationApproved => Ok(true),
+                    ResponseType::AuthorizationDenied => Ok(false),
+                    ResponseType::Timeout => Err(anyhow!("Ailoop authorization failed: timed out")),
+                    ResponseType::Cancelled => {
+                        Err(anyhow!("Ailoop authorization failed: cancelled"))
+                    }
+                    other => Err(anyhow!(
+                        "Ailoop authorization failed: unexpected response type {:?}",
+                        other
+                    )),
+                },
+                _ => Err(anyhow!(
+                    "Ailoop authorization failed: unexpected message content"
+                )),
+            },
         }
     }
 
-    /// Ask a question and get user response
+    /// Ask a question and get user response via ailoop WebSocket `ask`.
     ///
-    /// # Arguments
+    /// Returns the user's answer as a `String`, or `Err` on failure.
+    /// No fallback to stdin. Requires a paired `ailoop serve` process.
     ///
-    /// * `question` - The question to ask
-    /// * `choices` - Optional list of predefined choices
-    ///
-    /// # Returns
-    ///
-    /// Returns the user's response as a String.
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// # async fn example() -> anyhow::Result<()> {
-    /// # let ailoop = cli_framework::ailoop::AiloopClient::new()?;
-    /// let environment = ailoop.ask_question(
-    ///     "Which environment to deploy to?",
-    ///     Some(vec!["staging".to_string(), "production".to_string()])
-    /// ).await?;
-    /// # Ok(())
-    /// # }
-    /// ```
+    /// Note: `choices` are forwarded to the server; the server may present them
+    /// to the user as options. If the user's response does not match a choice,
+    /// the raw text response is returned.
     pub async fn ask_question(
         &self,
         question: &str,
         choices: Option<Vec<String>>,
     ) -> Result<String> {
-        let service = self.interaction_service.lock().await;
+        use ailoop_core::models::{MessageContent, ResponseType};
 
-        let result = service
-            .handle_question(
-                question.to_string(),
-                self.config.channel.clone(),
-                self.config.default_timeout_seconds,
-            )
-            .await;
+        let server = self.effective_server_url();
 
-        match result {
-            Ok(_) => {
-                if cfg!(test) {
-                    return Ok(choices
-                        .as_ref()
-                        .and_then(|choices| choices.first())
-                        .cloned()
-                        .unwrap_or_else(|| "test response".to_string()));
-                }
+        let response = ailoop_core::client::ask(
+            &server,
+            &self.config.channel,
+            question,
+            self.timeout_seconds(),
+            choices,
+        )
+        .await
+        .map_err(|e| anyhow!("Ailoop question failed: {}", e))?;
 
-                println!("\n❓ Question: {}", question);
-                if let Some(choices) = &choices {
-                    println!("   Choices: {}", choices.join(", "));
-                }
-                println!(
-                    "   (Waiting for response on channel '{}')",
-                    self.config.channel
-                );
-                print!("   Response: ");
-                use std::io::{self, Write};
-                io::stdout().flush()?;
-
-                let mut input = String::new();
-                io::stdin().read_line(&mut input)?;
-                Ok(input.trim().to_string())
-            }
-            Err(e) => Err(anyhow!("Failed to ask question: {}", e)),
+        match response {
+            None => Err(anyhow!("Ailoop question failed: request timed out")),
+            Some(msg) => match msg.content {
+                MessageContent::Response {
+                    answer,
+                    response_type,
+                } => match response_type {
+                    ResponseType::Text => {
+                        answer.ok_or_else(|| anyhow!("Ailoop question failed: empty answer"))
+                    }
+                    ResponseType::Timeout => Err(anyhow!("Ailoop question failed: timed out")),
+                    ResponseType::Cancelled => Err(anyhow!("Ailoop question failed: cancelled")),
+                    other => Err(anyhow!(
+                        "Ailoop question failed: unexpected response type {:?}",
+                        other
+                    )),
+                },
+                _ => Err(anyhow!(
+                    "Ailoop question failed: unexpected message content"
+                )),
+            },
         }
     }
 
-    /// Send a notification
+    /// Send a notification via ailoop WebSocket `say`.
     ///
-    /// # Arguments
+    /// Fire-and-forget: does not wait for a response. Returns `Err` if the
+    /// server is unreachable. Requires a paired `ailoop serve` process.
     ///
-    /// * `message` - The notification message
-    /// * `priority` - Priority level (defaults to "normal")
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// # async fn example() -> anyhow::Result<()> {
-    /// # let ailoop = cli_framework::ailoop::AiloopClient::new()?;
-    /// ailoop.send_notification(
-    ///     "Build completed successfully",
-    ///     Some("high")
-    /// ).await?;
-    /// # Ok(())
-    /// # }
-    /// ```
+    /// Note: `priority` is forwarded to the server. If `None`, defaults to "normal".
     pub async fn send_notification(&self, message: &str, priority: Option<&str>) -> Result<()> {
-        let service = self.interaction_service.lock().await;
-
+        let server = self.effective_server_url();
         let priority_str = priority.unwrap_or("normal");
 
-        service
-            .handle_notification(
-                message.to_string(),
-                self.config.channel.clone(),
-                priority_str.to_string(),
-            )
-            .map_err(|e| anyhow!("Failed to send notification: {}", e))?;
-
-        println!("📢 Notification sent: {}", message);
-        Ok(())
+        ailoop_core::client::say(&server, &self.config.channel, message, priority_str)
+            .await
+            .map_err(|e| anyhow!("Ailoop notification failed: {}", e))
     }
 
-    /// Get channel statistics
-    ///
-    /// Returns (queue_size, connection_count) for the configured channel.
-    pub async fn get_channel_stats(&self) -> (usize, usize) {
-        let service = self.interaction_service.lock().await;
-        service.get_channel_stats(&self.config.channel)
-    }
-
-    /// Get the configured channel name
+    /// Get the configured channel name.
     pub fn channel(&self) -> &str {
         &self.config.channel
     }
 
-    /// Get the server URL if configured
+    /// Get the raw server URL if explicitly configured (not normalized).
     pub fn server_url(&self) -> Option<&str> {
         self.config.server_url.as_deref()
     }
 }
 
-/// Extension trait for AppContext to provide ailoop client access
+/// Extension trait for AppContext to provide ailoop client access.
 ///
 /// Applications can implement this trait on their AppContext to provide
 /// ailoop client access to commands.
 #[async_trait]
 pub trait AiloopContext {
-    /// Get access to the ailoop client for interactions
+    /// Get access to the ailoop client for interactions.
     fn ailoop_client(&self) -> &AiloopClient;
 }
 
@@ -322,54 +270,100 @@ pub trait AiloopContext {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_ailoop_client_creation() {
+    #[test]
+    fn test_normalize_ws_url_http() {
+        assert_eq!(
+            normalize_ws_url("http://localhost:8080"),
+            "ws://localhost:8080"
+        );
+    }
+
+    #[test]
+    fn test_normalize_ws_url_https() {
+        assert_eq!(normalize_ws_url("https://example.com"), "wss://example.com");
+    }
+
+    #[test]
+    fn test_normalize_ws_url_ws_passthrough() {
+        assert_eq!(
+            normalize_ws_url("ws://localhost:8080"),
+            "ws://localhost:8080"
+        );
+    }
+
+    #[test]
+    fn test_normalize_ws_url_wss_passthrough() {
+        assert_eq!(normalize_ws_url("wss://example.com"), "wss://example.com");
+    }
+
+    #[test]
+    fn test_ailoop_client_creation() {
         let client = AiloopClient::new().unwrap();
         assert_eq!(client.channel(), "cli-framework");
     }
 
-    #[tokio::test]
-    async fn test_request_confirmation() {
-        let client = AiloopClient::new().unwrap();
-
-        // This will simulate approval for now
-        let result = client
-            .request_confirmation("Test action", Some("Test context"))
-            .await;
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), true);
+    #[test]
+    fn test_ailoop_client_with_valid_ws_url() {
+        let config = AiloopConfig {
+            channel: "test".to_string(),
+            server_url: Some("ws://localhost:9000".to_string()),
+            default_timeout_seconds: 30,
+        };
+        assert!(AiloopClient::with_config(config).is_ok());
     }
 
-    #[tokio::test]
-    async fn test_ask_question() {
-        let client = AiloopClient::new().unwrap();
-
-        let result = client
-            .ask_question("Test question", Some(vec!["choice1".to_string()]))
-            .await;
-
-        assert!(result.is_ok());
-        assert!(!result.unwrap().is_empty());
+    #[test]
+    fn test_ailoop_client_with_http_url_normalized() {
+        let config = AiloopConfig {
+            channel: "test".to_string(),
+            server_url: Some("http://localhost:9000".to_string()),
+            default_timeout_seconds: 30,
+        };
+        assert!(AiloopClient::with_config(config).is_ok());
     }
 
-    #[tokio::test]
-    async fn test_send_notification() {
-        let client = AiloopClient::new().unwrap();
-
-        let result = client
-            .send_notification("Test notification", Some("high"))
-            .await;
-
-        assert!(result.is_ok());
+    #[test]
+    fn test_ailoop_client_with_invalid_url() {
+        let config = AiloopConfig {
+            channel: "test".to_string(),
+            server_url: Some("ftp://localhost:9000".to_string()),
+            default_timeout_seconds: 30,
+        };
+        let result = AiloopClient::with_config(config);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid WebSocket URL"));
     }
 
-    #[tokio::test]
-    async fn test_channel_stats() {
-        let client = AiloopClient::new().unwrap();
+    #[test]
+    fn test_effective_server_url_from_config() {
+        let config = AiloopConfig {
+            channel: "test".to_string(),
+            server_url: Some("http://192.168.1.100:9000".to_string()),
+            default_timeout_seconds: 30,
+        };
+        let client = AiloopClient::with_config(config).unwrap();
+        assert_eq!(client.effective_server_url(), "ws://192.168.1.100:9000");
+    }
 
-        let (queue_size, connections) = client.get_channel_stats().await;
-        assert_eq!(queue_size, 0);
-        assert_eq!(connections, 0);
+    #[test]
+    fn test_effective_server_url_default() {
+        // Without AILOOP_SERVER set, should default to ws://localhost:8080
+        let saved = std::env::var("AILOOP_SERVER").ok();
+        std::env::remove_var("AILOOP_SERVER");
+
+        let config = AiloopConfig {
+            channel: "test".to_string(),
+            server_url: None,
+            default_timeout_seconds: 30,
+        };
+        let client = AiloopClient::with_config(config).unwrap();
+        assert_eq!(client.effective_server_url(), "ws://localhost:8080");
+
+        if let Some(v) = saved {
+            std::env::set_var("AILOOP_SERVER", v);
+        }
     }
 }

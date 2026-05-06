@@ -164,6 +164,13 @@ impl AppBuilder {
     }
 
     pub fn build<C: AppContext + 'static>(mut self, ctx: C) -> Result<App<C>> {
+        if self.llm_provider.is_some() && self.ailoop_config.is_none() {
+            return Err(anyhow::anyhow!(
+                "AILOOP_REQUIRED_FOR_ASK: ask command requires ailoop configuration; \
+                 call .with_ailoop_config() or .with_ailoop_channel() before .build()"
+            ));
+        }
+
         let ailoop_client = if let Some(config) = self.ailoop_config {
             Some(AiloopClient::with_config(config)?)
         } else {
@@ -178,6 +185,7 @@ impl AppBuilder {
                 provider.clone(),
                 registry_snapshot,
                 self.risk_policy.clone(),
+                Arc::new(ailoop_client.clone().unwrap()),
             );
             self.command_registry.register(ask_command);
         }

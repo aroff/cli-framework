@@ -16,7 +16,7 @@ fn make_resolution(command_id: &str) -> CommandResolution {
 fn test_safe_tier_always_ok_false() {
     let policy = CommandRiskPolicy::default();
     let resolution = make_resolution("list");
-    let result = enforce_risk_gate(&policy, &resolution, None, false);
+    let result = enforce_risk_gate(&policy, &resolution, None, false, false);
     assert!(result.is_ok());
 }
 
@@ -24,7 +24,7 @@ fn test_safe_tier_always_ok_false() {
 fn test_safe_tier_always_ok_true() {
     let policy = CommandRiskPolicy::default();
     let resolution = make_resolution("list");
-    let result = enforce_risk_gate(&policy, &resolution, None, true);
+    let result = enforce_risk_gate(&policy, &resolution, None, true, false);
     assert!(result.is_ok());
 }
 
@@ -40,6 +40,7 @@ fn test_destructive_blocked_without_env() {
         &resolution,
         Some("destructive"),
         true, // assume_yes is ignored for destructive
+        false,
     );
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
@@ -57,7 +58,7 @@ fn test_destructive_blocked_assume_yes_true() {
     let policy = CommandRiskPolicy::default();
     let resolution = make_resolution("rm-all");
 
-    let result = enforce_risk_gate(&policy, &resolution, Some("destructive"), true);
+    let result = enforce_risk_gate(&policy, &resolution, Some("destructive"), true, false);
     assert!(result.is_err());
     assert!(result
         .unwrap_err()
@@ -71,7 +72,7 @@ fn test_destructive_blocked_assume_yes_false() {
     let policy = CommandRiskPolicy::default();
     let resolution = make_resolution("rm-all");
 
-    let result = enforce_risk_gate(&policy, &resolution, Some("destructive"), false);
+    let result = enforce_risk_gate(&policy, &resolution, Some("destructive"), false, false);
     assert!(result.is_err());
     assert!(result
         .unwrap_err()
@@ -79,14 +80,14 @@ fn test_destructive_blocked_assume_yes_false() {
         .contains("DESTRUCTIVE_COMMAND_BLOCKED"));
 }
 
-// AC8: Sensitive command blocked in non-interactive mode without assume_yes
+// AC8: Sensitive command blocked in non-interactive mode without assume_yes (no ailoop)
 #[test]
 fn test_sensitive_blocked_non_interactive_no_assume_yes() {
     // Tests run in non-interactive mode (no TTY)
     let policy = CommandRiskPolicy::default();
     let resolution = make_resolution("config-update");
 
-    let result = enforce_risk_gate(&policy, &resolution, Some("config"), false);
+    let result = enforce_risk_gate(&policy, &resolution, Some("config"), false, false);
     // In test env (non-interactive), should be blocked
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
@@ -97,6 +98,51 @@ fn test_sensitive_blocked_non_interactive_no_assume_yes() {
     );
 }
 
+// Sensitive command allowed when ailoop is available (non-interactive)
+#[test]
+fn test_sensitive_allowed_with_ailoop() {
+    let policy = CommandRiskPolicy::default();
+    let resolution = make_resolution("config-update");
+
+    // ailoop_available=true relaxes the TTY check
+    let result = enforce_risk_gate(&policy, &resolution, Some("config"), false, true);
+    assert!(
+        result.is_ok(),
+        "Sensitive command should be allowed when ailoop is available"
+    );
+}
+
+// Destructive command allowed when ailoop + ALLOW_DESTRUCTIVE_COMMANDS=1
+#[test]
+fn test_destructive_allowed_with_ailoop_and_env() {
+    std::env::set_var("ALLOW_DESTRUCTIVE_COMMANDS", "1");
+    let policy = CommandRiskPolicy::default();
+    let resolution = make_resolution("drop-db");
+
+    let result = enforce_risk_gate(&policy, &resolution, Some("destructive"), false, true);
+    assert!(
+        result.is_ok(),
+        "Destructive command should be allowed when ailoop is available and env var set"
+    );
+
+    std::env::remove_var("ALLOW_DESTRUCTIVE_COMMANDS");
+}
+
+// Destructive command still blocked without ALLOW_DESTRUCTIVE_COMMANDS even with ailoop
+#[test]
+fn test_destructive_still_blocked_without_env_even_with_ailoop() {
+    std::env::remove_var("ALLOW_DESTRUCTIVE_COMMANDS");
+    let policy = CommandRiskPolicy::default();
+    let resolution = make_resolution("drop-db");
+
+    let result = enforce_risk_gate(&policy, &resolution, Some("destructive"), false, true);
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("DESTRUCTIVE_COMMAND_BLOCKED"));
+}
+
 // AC10: enforce_risk_gate is callable without App/AppBuilder
 #[test]
 fn test_enforce_risk_gate_standalone() {
@@ -105,7 +151,7 @@ fn test_enforce_risk_gate_standalone() {
         .tiers
         .insert("my-cmd".to_string(), CommandRiskTier::Safe);
     let resolution = make_resolution("my-cmd");
-    let result = enforce_risk_gate(&policy, &resolution, None, false);
+    let result = enforce_risk_gate(&policy, &resolution, None, false, false);
     assert!(result.is_ok());
 }
 
@@ -182,15 +228,15 @@ fn test_per_command_override_wins() {
     );
 }
 
-// AC7: Destructive-tier with ALLOW_DESTRUCTIVE_COMMANDS=1 returns Ok when interactive,
-// or DESTRUCTIVE_COMMAND_BLOCKED when non-interactive (as in CI/test environments).
+// AC7: Destructive-tier with ALLOW_DESTRUCTIVE_COMMANDS=1 returns Ok when interactive or ailoop,
+// or DESTRUCTIVE_COMMAND_BLOCKED when non-interactive without ailoop (as in CI/test environments).
 #[test]
 fn test_ac7_destructive_allowed_with_env_and_interactive() {
     std::env::set_var("ALLOW_DESTRUCTIVE_COMMANDS", "1");
     let policy = CommandRiskPolicy::default();
     let resolution = make_resolution("drop-db");
 
-    let result = enforce_risk_gate(&policy, &resolution, Some("destructive"), false);
+    let result = enforce_risk_gate(&policy, &resolution, Some("destructive"), false, false);
 
     if cli_framework::cli_mode::is_interactive() {
         // Interactive terminal + ALLOW_DESTRUCTIVE_COMMANDS=1 → gate passes
