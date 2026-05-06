@@ -1,17 +1,13 @@
-use crate::command::{Command, CommandRegistry};
+use crate::command::Command;
 use crate::command_surface::collect::collect;
 use crate::command_surface::render::{render_json, render_markdown, render_yaml};
 use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use crate::spec::command_tree::CommandSpec;
 use crate::spec::value::ArgValue;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 /// Returns the built-in `spec` Command for auto-registration in AppBuilder::build.
-pub fn create_spec_command(
-    app_name: &'static str,
-    app_version: &'static str,
-    registry_cell: Arc<OnceLock<Arc<CommandRegistry>>>,
-) -> Command {
+pub fn create_spec_command(app_name: &'static str, app_version: &'static str) -> Command {
     Command {
         id: "spec",
         summary: "Export the CLI command surface as JSON, YAML, or Markdown",
@@ -19,8 +15,7 @@ pub fn create_spec_command(
         category: None,
         spec: Some(Arc::new(spec_spec())),
         validator: None,
-        execute: Arc::new(move |_ctx, args| {
-            let cell = registry_cell.clone();
+        execute: Arc::new(move |ctx, args| {
             let format_str = args
                 .named
                 .get("format")
@@ -33,6 +28,12 @@ pub fn create_spec_command(
                 .map(|v| v == "true")
                 .unwrap_or(false);
 
+            // Access the registry synchronously before entering the async block
+            // so we don't need to hold a reference across an await boundary.
+            let doc = ctx
+                .opt_registry()
+                .map(|reg| collect(reg, app_name, app_version, include_hidden));
+
             Box::pin(async move {
                 if format_str != "json" && format_str != "yaml" && format_str != "markdown" {
                     return Err(anyhow::anyhow!(
@@ -41,8 +42,14 @@ pub fn create_spec_command(
                     ));
                 }
 
-                let registry = cell.get().expect("spec: registry_cell not initialized");
-                let doc = collect(registry, app_name, app_version, include_hidden);
+                let doc = doc.unwrap_or_else(|| {
+                    crate::command_surface::collect::collect(
+                        &crate::command::CommandRegistry::new(),
+                        app_name,
+                        app_version,
+                        include_hidden,
+                    )
+                });
 
                 let rendered: String = match format_str.as_str() {
                     "json" => render_json(&doc)?,
