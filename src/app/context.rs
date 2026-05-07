@@ -14,6 +14,12 @@
 pub trait AppContext: Send + Sync {
     // Applications define their own structure
     // Framework only requires the trait to exist
+
+    /// Provides access to the frozen command registry, populated by `AppBuilder::build`.
+    /// Returns `None` for contexts that do not expose the registry (e.g., user-defined contexts).
+    fn opt_registry(&self) -> Option<&crate::command::CommandRegistry> {
+        None
+    }
 }
 
 /// Extension trait for AppContext to provide LLM provider access

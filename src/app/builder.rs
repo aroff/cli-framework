@@ -206,6 +206,17 @@ impl AppBuilder {
             }
         }
 
+        // Auto-register built-in `spec` command (always-on, no feature gate)
+        if self.command_registry.get("spec").is_none() {
+            let spec_cmd = crate::command_surface::command::create_spec_command(
+                self.app_name,
+                self.app_version,
+            );
+            self.command_registry.register(spec_cmd);
+        } else {
+            log::warn!("'spec' command already registered; skipping built-in spec command");
+        }
+
         let clap_root = crate::app::clap_adapter::build_clap_root(
             self.meta.as_ref(),
             &self.command_registry,
@@ -213,8 +224,10 @@ impl AppBuilder {
             self.app_version,
         );
 
+        let registry_arc = Arc::new(self.command_registry);
+
         Ok(App {
-            command_registry: Arc::new(self.command_registry),
+            command_registry: registry_arc,
             llm_provider: self.llm_provider,
             ailoop_client,
             plugin_registry_manager,
@@ -259,7 +272,11 @@ struct CliAppContextWrapper<'a, C: AppContext> {
     llm_provider: &'a Option<Arc<dyn LlmProvider>>,
 }
 
-impl<'a, C: AppContext> AppContext for CliAppContextWrapper<'a, C> {}
+impl<'a, C: AppContext> AppContext for CliAppContextWrapper<'a, C> {
+    fn opt_registry(&self) -> Option<&crate::command::CommandRegistry> {
+        Some(self.command_registry)
+    }
+}
 
 impl<'a, C: AppContext> crate::app::context::LlmContext for CliAppContextWrapper<'a, C> {
     fn llm_provider(&self) -> &dyn crate::llm::LlmProvider {

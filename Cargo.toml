@@ -13,6 +13,7 @@ regex = "1"
 thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yaml = "0.9"
 tokio = { version = "1.0", features = ["full"] }
 async-trait = "0.1"
 tokio-util = { version = "0.7", features = ["time"] }
@@ -177,4 +178,20 @@ required-features = ["doctor"]
 name = "integration_doctor_command"
 path = "tests/integration/doctor_command.rs"
 required-features = ["doctor"]
+
+[[test]]
+name = "unit_command_surface_json_schema"
+path = "tests/unit/command_surface_json_schema.rs"
+
+[[test]]
+name = "unit_command_surface_collect"
+path = "tests/unit/command_surface_collect.rs"
+
+[[test]]
+name = "unit_command_surface_render"
+path = "tests/unit/command_surface_render.rs"
+
+[[test]]
+name = "integration_spec_command"
+path = "tests/integration/spec_command.rs"
 

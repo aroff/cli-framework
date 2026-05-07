@@ -118,8 +118,14 @@ fn build_clap_arg(arg_spec: &ArgSpec) -> clap::Arg {
         ArgKind::Option => {
             arg = arg.long(arg_spec.name);
             if let ArgValueType::Enum(allowed) = &arg_spec.value_type {
-                arg =
-                    arg.value_parser(clap::builder::PossibleValuesParser::new(allowed.as_slice()));
+                // Add possible values to help text for discoverability without clap-level
+                // validation, so per-command execute closures can return proper error codes.
+                let enhanced = if arg_spec.help.is_empty() {
+                    format!("[possible: {}]", allowed.join("|"))
+                } else {
+                    format!("{} [possible: {}]", arg_spec.help, allowed.join("|"))
+                };
+                arg = arg.help(enhanced);
             }
             match arg_spec.cardinality {
                 Cardinality::Required => {
@@ -161,23 +167,11 @@ fn coerce_value(s: &str, value_type: &ArgValueType, name: &str) -> Result<ArgVal
             .parse::<f64>()
             .map(ArgValue::Float)
             .map_err(|_| type_error(name, s, "float")),
-        ArgValueType::Enum(allowed) => {
-            if allowed.contains(&s) {
-                Ok(ArgValue::Enum(s.to_string()))
-            } else {
-                Err(Diagnostic {
-                    code: E_INVALID_VALUE,
-                    category: DiagnosticCategory::Spec,
-                    message: format!(
-                        "invalid value '{}' for '{}'; expected one of: {}",
-                        s,
-                        name,
-                        allowed.join(", ")
-                    ),
-                    suggestion: Some(format!("Use one of: {}", allowed.join(", "))),
-                    span: Some(s.to_string()),
-                })
-            }
+        ArgValueType::Enum(_) => {
+            // Wrap any string as an Enum value; per-command execute closures are
+            // responsible for validating the specific allowed values and returning
+            // command-specific error codes (e.g. CS001 for the spec command).
+            Ok(ArgValue::Enum(s.to_string()))
         }
     }
 }

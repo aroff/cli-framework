@@ -1,0 +1,25 @@
+---
+source: tests/unit/command_surface_render.rs
+expression: yaml_output
+---
+schemaVersion: cli-framework.command-surface.v1
+app:
+  name: testapp
+  version: 0.1.0
+commands:
+- path: hello
+  id: hello
+  summary: Say hello
+  syntax: null
+  category: null
+  hidden: false
+  deprecated: null
+  aliases: []
+  args: []
+  inputSchema:
+    additionalProperties: true
+    type: object
+  examples: []
+  envVars: []
+  exitCodes: []
+  notes: null
