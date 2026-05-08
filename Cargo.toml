@@ -52,6 +52,7 @@ env_logger = "0.11"
 tempfile = "3.0"
 libc = "0.2"
 insta = { version = "1", features = ["json"] }
+axum = { version = "0.8" }
 
 [features]
 default = ["clap-dispatch"]
@@ -159,6 +160,11 @@ required-features = ["mcp-server"]
 [[test]]
 name = "integration_mcp_http"
 path = "tests/integration/mcp_http.rs"
+required-features = ["mcp-server"]
+
+[[test]]
+name = "integration_mcp_axum_mount"
+path = "tests/integration/mcp_axum_mount.rs"
 required-features = ["mcp-server"]
 
 [[example]]

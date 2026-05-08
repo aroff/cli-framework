@@ -5,6 +5,33 @@ use rmcp::transport::streamable_http_server::{
 };
 use std::sync::Arc;
 
+/// Returns an `axum::Router` fragment that serves the MCP Streamable HTTP protocol
+/// under `path`. Does NOT bind any port; the caller owns the `TcpListener` and
+/// must call `axum::serve` themselves.
+///
+/// # Path prefix
+/// `path` is forwarded verbatim to `nest_service`. The conventional value is `"/mcp"`.
+/// The caller is responsible for preventing prefix collisions with other routes.
+///
+/// # Middleware
+/// The returned router carries no middleware. TLS, auth, and rate-limiting are
+/// the responsibility of the host application's outer router.
+pub fn mcp_axum_router(tool_registry: Arc<McpToolRegistry>, path: &str) -> axum::Router {
+    let session_manager = Arc::new(LocalSessionManager::default());
+    let config = StreamableHttpServerConfig::default();
+    let service = StreamableHttpService::new(
+        {
+            let tool_registry = Arc::clone(&tool_registry);
+            move || Ok(CliFrameworkHandler::new(Arc::clone(&tool_registry)))
+        },
+        session_manager,
+        config,
+    );
+    axum::Router::new().nest_service(path, service)
+}
+
+/// Refactored — delegates router construction to `mcp_axum_router`.
+/// Signature and observable behavior are UNCHANGED.
 pub async fn start_streamable_http(
     tool_registry: Arc<McpToolRegistry>,
     args: &McpServerArgs,
@@ -19,7 +46,6 @@ pub async fn start_streamable_http(
         )
     })?;
 
-    // §4.8: Log in spec order after successful bind
     log::info!(
         "MCP server listening on http://{}:{}{}",
         args.host,
@@ -28,20 +54,7 @@ pub async fn start_streamable_http(
     );
     log::info!("MCP: exported {} tools", tool_registry.tool_count());
 
-    let session_manager = Arc::new(LocalSessionManager::default());
-    let config = StreamableHttpServerConfig::default();
-
-    let service = StreamableHttpService::new(
-        {
-            let tool_registry = Arc::clone(&tool_registry);
-            move || Ok(CliFrameworkHandler::new(Arc::clone(&tool_registry)))
-        },
-        session_manager,
-        config,
-    );
-
-    let path = args.path.clone();
-    let router = axum::Router::new().nest_service(&path, service);
+    let router = mcp_axum_router(tool_registry, &args.path);
 
     axum::serve(listener, router)
         .await
