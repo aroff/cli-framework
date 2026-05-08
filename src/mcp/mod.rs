@@ -326,6 +326,35 @@ pub fn extract_mcp_args_from_raw(args: &[String]) -> McpServerArgs {
     McpServerArgs { host, port, path }
 }
 
+/// Convenience builder: constructs an `axum::Router` for MCP without binding a port.
+///
+/// Suitable for embedding MCP into an existing Axum application that already owns
+/// a `TcpListener`. The caller MUST supply the same `app_name` they pass to
+/// `AppBuilder::with_version` so tool names match the `{app_name}.{command}` convention.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use cli_framework::mcp::build_mcp_axum_router;
+/// # use cli_framework::command::CommandRegistry;
+/// # use cli_framework::security::CommandRiskPolicy;
+/// let registry = CommandRegistry::new();
+/// let router = build_mcp_axum_router(&registry, "myapp", "/mcp", CommandRiskPolicy::default());
+/// // nest into your existing axum router:
+/// // let app = axum::Router::new().merge(router);
+/// ```
+pub fn build_mcp_axum_router(
+    registry: &CommandRegistry,
+    app_name: &str,
+    path: &str,
+    risk_policy: crate::security::CommandRiskPolicy,
+) -> axum::Router {
+    let tool_registry = Arc::new(
+        McpToolRegistry::from_command_registry(registry, app_name).with_risk_policy(risk_policy),
+    );
+    transport_http::mcp_axum_router(tool_registry, path)
+}
+
 pub async fn serve_mcp(
     registry: Arc<CommandRegistry>,
     app_name: &str,
