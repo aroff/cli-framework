@@ -75,6 +75,8 @@ testkit = []
 mcp-server = ["dep:rmcp", "dep:axum"]
 # Doctor diagnostics framework — structured health checks with terminal/JSON output
 doctor = []
+# Project config — project root discovery and TOML loading (off by default)
+project-config = []
 
 [lib]
 name = "cli_framework"
@@ -178,6 +180,26 @@ required-features = ["doctor"]
 name = "integration_doctor_command"
 path = "tests/integration/doctor_command.rs"
 required-features = ["doctor"]
+
+[[example]]
+name = "with_project_config"
+path = "skill/examples/with_project_config/src/main.rs"
+required-features = ["project-config"]
+
+[[test]]
+name = "unit_project_config_discover"
+path = "tests/unit/project_config_discover.rs"
+required-features = ["project-config"]
+
+[[test]]
+name = "unit_project_config_loader"
+path = "tests/unit/project_config_loader.rs"
+required-features = ["project-config"]
+
+[[test]]
+name = "integration_project_config"
+path = "tests/integration/project_config.rs"
+required-features = ["project-config"]
 
 [[test]]
 name = "unit_command_surface_json_schema"

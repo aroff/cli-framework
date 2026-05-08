@@ -96,6 +96,10 @@ pub mod mcp;
 #[cfg(feature = "doctor")]
 pub mod doctor;
 
+// Project config — optional project-root discovery and TOML loading
+#[cfg(feature = "project-config")]
+pub mod project_config;
+
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::app::{AppBuilder, AppContext, AppMeta};
@@ -109,5 +113,11 @@ pub mod prelude {
     #[cfg(feature = "doctor")]
     pub use crate::doctor::{
         CheckSeverity, DoctorCheck, DoctorFinding, DoctorModule, DoctorReport,
+    };
+
+    #[cfg(feature = "project-config")]
+    pub use crate::project_config::{
+        find_and_load, find_and_load_with_options, find_file_upward, find_file_upward_with_options,
+        load_toml_file, load_toml_str, DiscoverOptions, ProjectConfigError, ProjectRoot,
     };
 }

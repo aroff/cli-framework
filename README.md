@@ -13,6 +13,19 @@ A Rust library for building CLIs with optional AI-assisted command resolution (*
 - **CLI output helpers**: Tables, JSON, progress (behind Cargo features where applicable)
 - **Security defaults**: Output sanitization, risk tiers for ask, hardened HTTP helpers
 - **MCP Server Mode**: Expose all registered commands as MCP tools over Streamable HTTP (opt-in via `mcp-server` feature)
+- **Project Config**: Project root discovery and TOML loading (opt-in via `project-config` feature)
+
+## Cargo Features
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `clap-dispatch` | yes | Clap-based CLI dispatch (no-op since v0.4.0; remove in v0.5.0) |
+| `table-advanced` | no | Rich table output via `comfy-table` |
+| `progress` | no | Progress bars via `indicatif` |
+| `testkit` | no | `CliTestHarness` for in-process testing |
+| `mcp-server` | no | Expose commands as MCP tools over Streamable HTTP |
+| `doctor` | no | Structured health-check framework with terminal/JSON output |
+| `project-config` | no | Project root discovery and TOML loading (`PC001`–`PC005` error codes) |
 
 ## MCP Server Mode
 
