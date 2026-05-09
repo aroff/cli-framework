@@ -14,12 +14,12 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use aikit_agent::llm::openai_compat::OpenAiCompatProvider;
 use aikit_agent::llm::types::{
     FunctionDefinition, LlmMessage, LlmRequest, MessageToolCall, MessageToolCallFunction,
     ToolChoice, ToolDefinition,
 };
-use aikit_agent::{AgentConfig, LlmError, LlmGateway};
+use aikit_agent::llm::{stream::parse_sse_body, types::LlmStreamEvent};
+use aikit_agent::AgentConfig;
 
 pub const CHAT_FEATURE_DISABLED: &str = "CHAT_FEATURE_DISABLED";
 pub const CHAT_AGENT_START_FAILED: &str = "CHAT_AGENT_START_FAILED";
@@ -68,10 +68,6 @@ impl CommandsAsToolsExecutor {
         }
         let mut tools = HashMap::new();
         for (path_str, cmd) in registry.all_tree_commands() {
-            // Prevent self-recursion and reduce tool confusion.
-            if cmd.id == "chat" || cmd.id == "ask" {
-                continue;
-            }
             if cmd.spec.is_none() {
                 log::warn!(
                     "chat: command '{}' has no CommandSpec; using permissive schema",
@@ -145,15 +141,15 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
                     diagnostics[0].message
                 ));
             }
-            if let Some(ref validator) = cmd.validator {
-                let custom_diags = validator(&typed_args);
-                if !custom_diags.is_empty() {
-                    return Err(anyhow::anyhow!(
-                        "{}: {}",
-                        CHAT_ARG_VALIDATION_FAILED,
-                        custom_diags[0].message
-                    ));
-                }
+        }
+        if let Some(ref validator) = cmd.validator {
+            let custom_diags = validator(&typed_args);
+            if !custom_diags.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "{}: {}",
+                    CHAT_ARG_VALIDATION_FAILED,
+                    custom_diags[0].message
+                ));
             }
         }
 
@@ -166,49 +162,11 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
         )
         .await?;
 
-        let effective_args = effective_command_args(cmd, cmd_args, &typed_args);
-
-        (cmd.execute)(ctx, effective_args)
+        // MCP-parity: execute with the mapped CommandArgs (positional + named).
+        // Typed args are used only for validation.
+        (cmd.execute)(ctx, cmd_args)
             .await
             .map_err(|e| anyhow::anyhow!("{}: {}", CHAT_COMMAND_EXECUTION_FAILED, e))
-    }
-}
-
-fn effective_command_args(
-    cmd: &Command,
-    cmd_args: CommandArgs,
-    typed_args: &HashMap<String, ArgValue>,
-) -> CommandArgs {
-    if cmd.spec.is_none() {
-        return cmd_args;
-    }
-
-    let mut named = HashMap::new();
-    for (k, v) in typed_args {
-        let s = match v {
-            ArgValue::Bool(b) => b.to_string(),
-            ArgValue::Str(s) => s.clone(),
-            ArgValue::Int(i) => i.to_string(),
-            ArgValue::Float(f) => f.to_string(),
-            ArgValue::Enum(e) => e.clone(),
-            ArgValue::Count(c) => c.to_string(),
-            ArgValue::List(items) => items
-                .iter()
-                .map(|i| match i {
-                    ArgValue::Str(s) => s.clone(),
-                    ArgValue::Int(i) => i.to_string(),
-                    ArgValue::Float(f) => f.to_string(),
-                    ArgValue::Enum(e) => e.clone(),
-                    _ => String::new(),
-                })
-                .collect::<Vec<_>>()
-                .join(","),
-        };
-        named.insert(k.clone(), s);
-    }
-    CommandArgs {
-        positional: Vec::new(),
-        named,
     }
 }
 
@@ -308,13 +266,6 @@ pub fn create_chat_command(
     ailoop_client: Option<Arc<AiloopClient>>,
     app_name: &'static str,
 ) -> Command {
-    let tool_executor = CommandsAsToolsExecutor::new(&registry, app_name, risk_policy.clone())
-        .map_err(|e| {
-            log::error!("chat tool registry construction failed: {}", e);
-            e
-        })
-        .ok();
-
     Command {
         id: "chat",
         summary: "In-process chat session (commands-as-tools)",
@@ -327,8 +278,11 @@ pub fn create_chat_command(
         expose_mcp: false,
         execute: Arc::new(move |ctx, args| {
             let client = ailoop_client.clone();
-            let tool_exec = tool_executor.clone();
-            Box::pin(async move { execute_chat(ctx, client, tool_exec, args).await })
+            let registry = Arc::clone(&registry);
+            let risk_policy = risk_policy.clone();
+            Box::pin(async move {
+                execute_chat(ctx, registry, risk_policy, client, app_name, args).await
+            })
         }),
     }
 }
@@ -449,10 +403,22 @@ Notes:\n\
 
 async fn execute_chat(
     ctx: &mut dyn AppContext,
+    registry: Arc<CommandRegistry>,
+    risk_policy: CommandRiskPolicy,
     ailoop_client: Option<Arc<AiloopClient>>,
-    tool_exec: Option<CommandsAsToolsExecutor>,
+    app_name: &'static str,
     args: CommandArgs,
 ) -> CommandResult {
+    let tool_exec =
+        CommandsAsToolsExecutor::new(&registry, app_name, risk_policy).map_err(|e| {
+            // Deterministic error code for collision (construction-time).
+            if e.to_string().contains(CHAT_TOOL_REGISTRY_COLLISION) {
+                anyhow::anyhow!("{}", e)
+            } else {
+                anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e)
+            }
+        })?;
+
     let prompt_flag = args.named.get("prompt").cloned();
     let yolo = args.named.get("yolo").map(|v| v == "true").unwrap_or(false);
     let stream = args
@@ -494,7 +460,7 @@ async fn read_stdin_all() -> anyhow::Result<String> {
 async fn repl_loop(
     ctx: &mut dyn AppContext,
     ailoop_client: Option<Arc<AiloopClient>>,
-    tool_exec: Option<CommandsAsToolsExecutor>,
+    tool_exec: CommandsAsToolsExecutor,
     yolo: bool,
     stream: bool,
     model: Option<String>,
@@ -554,26 +520,22 @@ async fn repl_loop(
 async fn run_agent_one_shot(
     ctx: &mut dyn AppContext,
     ailoop_client: Option<Arc<AiloopClient>>,
-    tool_exec: Option<CommandsAsToolsExecutor>,
+    tool_exec: CommandsAsToolsExecutor,
     yolo: bool,
     stream: bool,
     model: Option<String>,
     prompt: String,
 ) -> CommandResult {
-    let tool_exec = tool_exec.ok_or_else(|| {
-        anyhow::anyhow!(
-            "{}: tool registry unavailable (CHAT_TOOL_REGISTRY_COLLISION?)",
-            CHAT_AGENT_START_FAILED
-        )
-    })?;
-
     let workdir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let config = AgentConfig::from_env(workdir, stream, model)
         .map_err(|e| anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?;
-
-    let gateway = OpenAiCompatProvider::new(config.timeout_secs, config.connect_timeout_secs)
-        .map_err(|e| anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?;
-    let gateway = Arc::new(gateway);
+    let http = Arc::new(
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(config.timeout_secs))
+            .connect_timeout(std::time::Duration::from_secs(config.connect_timeout_secs))
+            .build()
+            .context("failed to build HTTP client")?,
+    );
 
     let tools: Vec<ToolDefinition> = tool_exec
         .list_tools()
@@ -621,7 +583,7 @@ async fn run_agent_one_shot(
             stream,
         };
 
-        let resp = call_llm_off_runtime(Arc::clone(&gateway), req, stream).await?;
+        let resp = call_llm(http.clone(), req).await?;
 
         if !resp.tool_calls.is_empty() {
             let tool_calls_for_ctx: Vec<MessageToolCall> = resp
@@ -706,71 +668,159 @@ struct LlmResponseEnvelope {
     finish_reason: Option<String>,
 }
 
-async fn call_llm_off_runtime(
-    gateway: Arc<OpenAiCompatProvider>,
+async fn call_llm(
+    http: Arc<reqwest::Client>,
     req: LlmRequest,
-    stream: bool,
 ) -> anyhow::Result<LlmResponseEnvelope> {
-    let handle = tokio::task::spawn_blocking(
-        move || -> Result<(Option<String>, Vec<aikit_agent::llm::types::ToolCall>, Option<String>), LlmError> {
-        if stream {
-            use aikit_agent::llm::types::LlmStreamEvent;
-            let mut content = String::new();
-            let mut tool_calls_by_id: std::collections::HashMap<String, (String, String)> =
-                std::collections::HashMap::new();
-            let mut finish_reason = None;
+    let url = format!("{}/chat/completions", req.base_url.trim_end_matches('/'));
 
-            let stream_handle = gateway.stream(req)?;
-            for ev in stream_handle {
-                match ev? {
-                    LlmStreamEvent::TextDelta { content: delta } => {
-                        content.push_str(&delta);
-                    }
-                    LlmStreamEvent::ToolCallDelta {
-                        id,
-                        function_name,
-                        arguments_delta,
-                    } => {
-                        let entry = tool_calls_by_id
-                            .entry(id)
-                            .or_insert_with(|| (function_name.clone(), String::new()));
-                        entry.0 = function_name;
-                        entry.1.push_str(&arguments_delta);
-                    }
-                    LlmStreamEvent::Completed {
-                        finish_reason: r, ..
-                    } => {
-                        finish_reason = Some(r);
-                    }
-                    _ => {}
-                }
-            }
+    let mut body = serde_json::json!({
+        "model": req.model,
+        "messages": req.messages,
+        "tools": req.tools,
+        "tool_choice": req.tool_choice,
+        "temperature": req.temperature,
+        "top_p": req.top_p,
+        "max_tokens": req.max_tokens,
+        "stream": req.stream,
+    });
+    if req.stream {
+        body["stream_options"] = serde_json::json!({ "include_usage": true });
+    }
 
-            let tool_calls = tool_calls_by_id
-                .into_iter()
-                .map(|(id, (name, args))| aikit_agent::llm::types::ToolCall {
+    let response = http
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", req.api_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body_text = response.text().await.unwrap_or_default();
+        return Err(anyhow::anyhow!(
+            "{}: HTTP {} from {}: {}",
+            CHAT_AGENT_START_FAILED,
+            status.as_u16(),
+            url,
+            body_text
+        ));
+    }
+
+    if req.stream {
+        let body_text = response
+            .text()
+            .await
+            .map_err(|e| anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?;
+        let events = parse_sse_body(&body_text)
+            .map_err(|e| anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?;
+
+        let mut content = String::new();
+        let mut tool_calls_by_id: std::collections::HashMap<String, (String, String)> =
+            std::collections::HashMap::new();
+        let mut finish_reason = None;
+
+        for ev in events {
+            match ev {
+                LlmStreamEvent::TextDelta { content: delta } => content.push_str(&delta),
+                LlmStreamEvent::ToolCallDelta {
                     id,
-                    call_type: None,
+                    function_name,
+                    arguments_delta,
+                } => {
+                    let entry = tool_calls_by_id
+                        .entry(id)
+                        .or_insert_with(|| (function_name.clone(), String::new()));
+                    entry.0 = function_name;
+                    entry.1.push_str(&arguments_delta);
+                }
+                LlmStreamEvent::Completed {
+                    finish_reason: r, ..
+                } => finish_reason = Some(r),
+                _ => {}
+            }
+        }
+
+        let tool_calls = tool_calls_by_id
+            .into_iter()
+            .map(|(id, (name, args))| aikit_agent::llm::types::ToolCall {
+                id,
+                call_type: None,
+                function: aikit_agent::llm::types::ToolCallFunction {
+                    name,
+                    arguments: args,
+                },
+            })
+            .collect();
+
+        return Ok(LlmResponseEnvelope {
+            content: Some(content),
+            tool_calls,
+            finish_reason,
+        });
+    }
+
+    #[derive(serde::Deserialize)]
+    struct OpenAiToolCallFunction {
+        name: String,
+        arguments: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct OpenAiToolCall {
+        id: String,
+        #[serde(rename = "type")]
+        call_type: Option<String>,
+        function: OpenAiToolCallFunction,
+    }
+    #[derive(serde::Deserialize)]
+    struct OpenAiMessage {
+        content: Option<String>,
+        tool_calls: Option<Vec<OpenAiToolCall>>,
+    }
+    #[derive(serde::Deserialize)]
+    struct OpenAiChoice {
+        message: Option<OpenAiMessage>,
+        finish_reason: Option<String>,
+    }
+    #[derive(serde::Deserialize)]
+    struct OpenAiResponse {
+        choices: Vec<OpenAiChoice>,
+    }
+
+    let resp: OpenAiResponse = response.json().await.map_err(|e| {
+        anyhow::anyhow!(
+            "{}: failed to parse response: {}",
+            CHAT_AGENT_START_FAILED,
+            e
+        )
+    })?;
+
+    let first = resp.choices.into_iter().next();
+    let content = first
+        .as_ref()
+        .and_then(|c| c.message.as_ref())
+        .and_then(|m| m.content.clone());
+    let tool_calls = first
+        .as_ref()
+        .and_then(|c| c.message.as_ref())
+        .and_then(|m| m.tool_calls.as_ref())
+        .map(|calls| {
+            calls
+                .iter()
+                .map(|tc| aikit_agent::llm::types::ToolCall {
+                    id: tc.id.clone(),
+                    call_type: tc.call_type.clone(),
                     function: aikit_agent::llm::types::ToolCallFunction {
-                        name,
-                        arguments: args,
+                        name: tc.function.name.clone(),
+                        arguments: tc.function.arguments.clone(),
                     },
                 })
-                .collect();
-
-            Ok((Some(content), tool_calls, finish_reason))
-        } else {
-            let resp = gateway.complete(req)?;
-            Ok((resp.content, resp.tool_calls, resp.finish_reason))
-        }
-        },
-    );
-
-    let (content, tool_calls, finish_reason) =
-        handle
-            .await
-            .context("chat LLM call join failed")?
-            .map_err(|e| anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?;
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let finish_reason = first.and_then(|c| c.finish_reason);
 
     Ok(LlmResponseEnvelope {
         content,
