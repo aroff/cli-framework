@@ -41,4 +41,4 @@ Work is tracked in **at most three GitHub issues per repository** (consolidated 
 | AIKit (aikit issues) | https://github.com/orgs/goaikit/projects/1 |
 | cli-framework (cli-framework + product-cli rollout) | https://github.com/users/aroff/projects/13 |
 
-Earlier per-ID issues were **closed as superseded**; use **#28, #29, #49, #50, #11** only for deploy automation.
+Earlier per-ID issues were **deleted** from GitHub so deploy automation stays on **#28, #29, #49, #50, #11** only.
