@@ -15,6 +15,7 @@ pub fn create_spec_command(app_name: &'static str, app_version: &'static str) ->
         category: None,
         spec: Some(Arc::new(spec_spec())),
         validator: None,
+        expose_mcp: false,
         execute: Arc::new(move |ctx, args| {
             let format_str = args
                 .named

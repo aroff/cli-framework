@@ -174,6 +174,7 @@ fn show_help_version_appears_before_registered_commands() {
         category: Some("test"),
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
     };
 
@@ -227,6 +228,7 @@ mod clap_dispatch_tests {
             category: None,
             spec: None,
             validator: None,
+            expose_mcp: false,
             execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
         }
     }
@@ -280,6 +282,7 @@ mod clap_dispatch_tests {
             category: None,
             spec: None,
             validator: None,
+            expose_mcp: false,
             execute: Arc::new(move |_ctx, args| {
                 let captured = captured_clone.clone();
                 Box::pin(async move {
@@ -419,6 +422,7 @@ mod clap_dispatch_tests {
             category: None,
             spec: None,
             validator: None,
+            expose_mcp: false,
             execute: Arc::new(move |_ctx, args| {
                 let captured = captured_clone.clone();
                 Box::pin(async move {

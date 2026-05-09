@@ -65,12 +65,23 @@ pub struct Command {
             + Send
             + Sync,
     >,
+    /// Whether this command is eligible for MCP tool export.
+    /// Ignored under `McpToolExportPolicy::AllCommands` (the default).
+    /// Under `McpToolExportPolicy::ExposeMcpOnly`, only commands with
+    /// `expose_mcp == true` are registered as MCP tools.
+    pub expose_mcp: bool,
 }
 
 impl Command {
     /// Attach a typed `CommandSpec` to this command.
     pub fn with_spec(mut self, spec: CommandSpec) -> Self {
         self.spec = Some(Arc::new(spec));
+        self
+    }
+
+    /// Set whether this command appears in MCP tool listings.
+    pub fn with_expose_mcp(mut self, enabled: bool) -> Self {
+        self.expose_mcp = enabled;
         self
     }
 

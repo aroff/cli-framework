@@ -22,6 +22,7 @@ async fn main() -> anyhow::Result<()> {
         category: Some("deployment"),
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: Arc::new(|_ctx, args| {
             Box::pin(async move {
                 let env = args.named.get("env").map(String::as_str).unwrap_or("dev");
@@ -47,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
         category: Some("monitoring"),
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: Arc::new(|_ctx, _args| {
             Box::pin(async move {
                 println!("📊 System Status:");
@@ -66,6 +68,7 @@ async fn main() -> anyhow::Result<()> {
         category: Some("monitoring"),
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: Arc::new(|_ctx, args| {
             Box::pin(async move {
                 let service = args

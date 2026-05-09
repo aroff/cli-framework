@@ -14,7 +14,7 @@
 
 use axum::routing::get;
 use cli_framework::command::{Command, CommandRegistry};
-use cli_framework::mcp::build_mcp_axum_router;
+use cli_framework::mcp::{build_mcp_axum_router, McpToolExportPolicy};
 use cli_framework::prelude::*;
 use cli_framework::security::CommandRiskPolicy;
 use std::sync::Arc;
@@ -46,6 +46,7 @@ fn build_registry() -> anyhow::Result<CommandRegistry> {
             ..Default::default()
         })),
         validator: None,
+        expose_mcp: true,
         execute: Arc::new(|_ctx, args| {
             Box::pin(async move {
                 let name = args
@@ -65,6 +66,7 @@ fn build_registry() -> anyhow::Result<CommandRegistry> {
         category: Some("info"),
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: Arc::new(|_ctx, _args| {
             Box::pin(async move {
                 println!("Status: OK");
@@ -87,11 +89,13 @@ async fn run_embedded_mcp() -> anyhow::Result<()> {
     let registry = build_registry()?;
 
     // Build the MCP router fragment — no port is bound here.
+    // Use ExposeMcpOnly to expose only commands flagged with expose_mcp: true.
     let mcp_router = build_mcp_axum_router(
         &registry,
         "my-mcp-app",
         "/mcp",
         CommandRiskPolicy::default(),
+        McpToolExportPolicy::AllCommands,
     );
 
     // Compose with host-application routes. The caller owns the listener.
@@ -143,6 +147,7 @@ async fn main() -> anyhow::Result<()> {
                 ..Default::default()
             })),
             validator: None,
+            expose_mcp: true,
             execute: Arc::new(|_ctx, args| {
                 Box::pin(async move {
                     let name = args
@@ -162,6 +167,7 @@ async fn main() -> anyhow::Result<()> {
             category: Some("info"),
             spec: None,
             validator: None,
+            expose_mcp: false,
             execute: Arc::new(|_ctx, _args| {
                 Box::pin(async move {
                     println!("Status: OK");

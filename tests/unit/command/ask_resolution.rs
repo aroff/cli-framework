@@ -64,6 +64,7 @@ fn create_test_registry_with_commands() -> CommandRegistry {
         category: Some("deployment"),
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
     });
     registry.register(Command {
@@ -73,6 +74,7 @@ fn create_test_registry_with_commands() -> CommandRegistry {
         category: Some("monitoring"),
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
     });
     registry
@@ -217,6 +219,7 @@ async fn test_ask_dispatches_resolved_command() {
         category: None,
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: Arc::new(move |_ctx, args| {
             let executed_clone = executed_clone.clone();
             Box::pin(async move {
@@ -397,6 +400,7 @@ async fn test_app_without_llm_has_no_ask_in_help() {
             category: None,
             spec: None,
             validator: None,
+            expose_mcp: false,
             execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
         })
         .unwrap()

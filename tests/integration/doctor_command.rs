@@ -291,6 +291,7 @@ fn pre_registered_doctor_command_not_overwritten() {
             ..Default::default()
         })),
         validator: None,
+        expose_mcp: false,
         execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
     };
 

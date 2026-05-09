@@ -24,6 +24,7 @@ fn make_cmd(id: &'static str, summary: &'static str) -> Command {
         category: None,
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: noop_execute(),
     }
 }
@@ -36,6 +37,7 @@ fn make_cmd_with_spec(id: &'static str, summary: &'static str, spec: CommandSpec
         category: None,
         spec: Some(Arc::new(spec)),
         validator: None,
+        expose_mcp: false,
         execute: noop_execute(),
     }
 }

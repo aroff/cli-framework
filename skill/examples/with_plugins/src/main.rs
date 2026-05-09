@@ -23,6 +23,7 @@ async fn main() -> anyhow::Result<()> {
         category: Some("builtins"),
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: Arc::new(|_ctx, args| {
             Box::pin(async move {
                 let message = args
