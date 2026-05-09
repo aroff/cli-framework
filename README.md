@@ -237,6 +237,11 @@ In this rollout phase, `chat` runs an embedded agent that can call *only* the pr
 
 LLM configuration is resolved from environment variables used by `aikit-agent` (for example `OPENAI_API_KEY`, `AIKIT_LLM_URL`, `AIKIT_MODEL`), and can be overridden per-run with `--model`.
 
+Notes:
+- Tool calls are serialized.
+- Ctrl+C cancellation is best-effort; in-flight HTTP requests are cancelled via dropping the request future.
+- `--stream` enables server-side streaming, but output is printed once per turn (no structured event stream in this rollout phase).
+
 Try it with the built-in example:
 
 ```bash

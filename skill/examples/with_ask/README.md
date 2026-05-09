@@ -2,6 +2,8 @@
 
 Demonstrates **`deploy`**, **`status`**, **`logs`**, and optional natural-language **`ask`** when an LLM is configured.
 
+When `cli-framework` is built with `--features chat`, `ask` emits an `ASK_DEPRECATED` warning and `chat` is the preferred interface.
+
 ## Run
 
 From the repository root:

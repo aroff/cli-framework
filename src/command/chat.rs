@@ -1,7 +1,6 @@
 use crate::ailoop::AiloopClient;
 use crate::app::context::AppContext;
 use crate::command::{Command, CommandArgs, CommandRegistry, CommandResult};
-use crate::parser::validator::SpecValidator;
 use crate::security::command_risk::{CommandRiskPolicy, CommandRiskTier};
 use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use crate::spec::command_tree::{CommandSpec, EnvVarEntry, ExitCodeEntry};
@@ -12,6 +11,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 use aikit_agent::llm::types::{
     FunctionDefinition, LlmMessage, LlmRequest, MessageToolCall, MessageToolCallFunction,
@@ -131,23 +131,20 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
         let (cmd_args, typed_args) = crate::mcp::map_mcp_args_to_command_args_from_json(arguments)
             .map_err(|e| anyhow::anyhow!("{}: {}", CHAT_ARG_VALIDATION_FAILED, e))?;
 
-        if let Some(ref spec) = cmd.spec {
-            let diagnostics = SpecValidator::validate(spec, &typed_args);
-            if !diagnostics.is_empty() {
+        let typed_args_for_validation = if cmd.spec.is_some() || cmd.validator.is_some() {
+            Some(typed_args)
+        } else {
+            None
+        };
+
+        if let Some(ref typed) = typed_args_for_validation {
+            let diags = crate::app::dispatch::validate_typed_args(cmd, typed)
+                .map_err(|e| anyhow::anyhow!("{}: {}", CHAT_ARG_VALIDATION_FAILED, e))?;
+            if let Some(first) = diags.first() {
                 return Err(anyhow::anyhow!(
                     "{}: {}",
                     CHAT_ARG_VALIDATION_FAILED,
-                    diagnostics[0].message
-                ));
-            }
-        }
-        if let Some(ref validator) = cmd.validator {
-            let custom_diags = validator(&typed_args);
-            if !custom_diags.is_empty() {
-                return Err(anyhow::anyhow!(
-                    "{}: {}",
-                    CHAT_ARG_VALIDATION_FAILED,
-                    custom_diags[0].message
+                    first.message
                 ));
             }
         }
@@ -161,9 +158,13 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
         )
         .await?;
 
-        // MCP-parity: execute with the mapped CommandArgs (positional + named).
-        // Typed args are used only for validation.
-        (cmd.execute)(ctx, cmd_args)
+        // CLI/MCP parity: execute via the same "effective args" mapping as normal CLI dispatch.
+        // Typed args were already validated above.
+        let effective_args = crate::app::dispatch::effective_args_for_execution(
+            cmd_args,
+            typed_args_for_validation.as_ref(),
+        );
+        (cmd.execute)(ctx, effective_args)
             .await
             .map_err(|e| anyhow::anyhow!("{}: {}", CHAT_COMMAND_EXECUTION_FAILED, e))
     }
@@ -306,8 +307,9 @@ Exit:\n\
 Notes:\n\
  - Tool calls are serialized (one command executes at a time).\n\
  - Tools are limited to this process's registered CLI commands.\n\
- - Ctrl+C cancellation is best-effort; in-flight HTTP requests may not abort immediately.\n\
- - LLM HTTP timeouts: connect=10s, request=60s (fixed in this rollout phase).\n\
+ - Ctrl+C cancellation is best-effort; in-flight HTTP requests are cancelled via dropping the request future.\n\
+ - LLM HTTP timeouts and base URL come from AIKIT_* env configuration.\n\
+ - --stream enables server-side streaming, but output is still printed once per turn (no structured event stream).\n\
  - Structured output modes (events/JSON) are not enabled in this rollout phase.\n\
  - LLM configuration is resolved from environment variables (OPENAI_API_KEY / AIKIT_*).\n\
 ",
@@ -442,7 +444,16 @@ async fn execute_chat(
     };
 
     if let Some(prompt) = prompt_flag.or(prompt_from_stdin) {
-        run_agent_one_shot(ctx, ailoop_client, tool_exec, yolo, stream, model, prompt).await?;
+        let cancel = CancellationToken::new();
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                cancel.cancel();
+                return Ok(());
+            }
+            res = run_agent_one_shot(ctx, ailoop_client, tool_exec, yolo, stream, model, prompt, cancel.clone()) => {
+                res?;
+            }
+        }
         return Ok(());
     }
 
@@ -502,6 +513,7 @@ async fn repl_loop(
             continue;
         }
 
+        let cancel = CancellationToken::new();
         let turn_fut = run_agent_one_shot(
             ctx,
             ailoop_client.clone(),
@@ -510,14 +522,18 @@ async fn repl_loop(
             stream,
             model.clone(),
             prompt.to_string(),
+            cancel.clone(),
         );
+        tokio::pin!(turn_fut);
 
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
+                cancel.cancel();
+                let _ = (&mut turn_fut).await;
                 eprintln!("\nCtrl+C: turn canceled; exiting");
                 return Ok(());
             }
-            res = turn_fut => {
+            res = &mut turn_fut => {
                 res?;
             }
         }
@@ -532,6 +548,7 @@ async fn run_agent_one_shot(
     stream: bool,
     model: Option<String>,
     prompt: String,
+    cancel: CancellationToken,
 ) -> CommandResult {
     let workdir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let config = AgentConfig::from_env(workdir, stream, model)
@@ -590,7 +607,7 @@ async fn run_agent_one_shot(
             stream,
         };
 
-        let resp = call_llm(http.clone(), req).await?;
+        let resp = call_llm(http.clone(), req, cancel.clone()).await?;
 
         if !resp.tool_calls.is_empty() {
             let tool_calls_for_ctx: Vec<MessageToolCall> = resp
@@ -616,8 +633,7 @@ async fn run_agent_one_shot(
             for tc in resp.tool_calls {
                 let tool_name = tc.function.name;
                 let call_id = tc.id;
-                let args: Value =
-                    serde_json::from_str(&tc.function.arguments).unwrap_or(Value::Null);
+                let args = parse_tool_arguments_blocking(tc.function.arguments).await;
 
                 // Tool calls are serialized by design.
                 let output = match tool_exec.call_tool(&tool_name, args, ctx, &tool_opts).await {
@@ -661,6 +677,12 @@ async fn run_agent_one_shot(
     ))
 }
 
+async fn parse_tool_arguments_blocking(arguments: String) -> Value {
+    tokio::task::spawn_blocking(move || serde_json::from_str(&arguments).unwrap_or(Value::Null))
+        .await
+        .unwrap_or(Value::Null)
+}
+
 fn build_chat_system_instructions() -> String {
     let mut s = String::new();
     s.push_str("You are an in-process CLI agent.\n");
@@ -678,6 +700,7 @@ struct LlmResponseEnvelope {
 async fn call_llm(
     http: Arc<reqwest::Client>,
     req: LlmRequest,
+    cancel: CancellationToken,
 ) -> anyhow::Result<LlmResponseEnvelope> {
     let url = format!("{}/chat/completions", req.base_url.trim_end_matches('/'));
 
@@ -695,14 +718,21 @@ async fn call_llm(
         body["stream_options"] = serde_json::json!({ "include_usage": true });
     }
 
-    let response = http
+    let send_fut = http
         .post(&url)
         .header("Authorization", format!("Bearer {}", req.api_key))
         .header("Content-Type", "application/json")
         .json(&body)
-        .send()
-        .await
-        .map_err(|e| anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?;
+        .send();
+
+    let response = tokio::select! {
+        _ = cancel.cancelled() => {
+            return Err(anyhow::anyhow!("{}: cancelled", CHAT_AGENT_START_FAILED));
+        }
+        res = send_fut => {
+            res.map_err(|e| anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?
+        }
+    };
 
     let status = response.status();
     if !status.is_success() {
@@ -716,12 +746,19 @@ async fn call_llm(
         ));
     }
 
+    let body_text = tokio::select! {
+        _ = cancel.cancelled() => {
+            return Err(anyhow::anyhow!("{}: cancelled", CHAT_AGENT_START_FAILED));
+        }
+        t = response.text() => {
+            t.map_err(|e| anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?
+        }
+    };
+
     if req.stream {
-        let body_text = response
-            .text()
+        let events = tokio::task::spawn_blocking(move || parse_sse_body(&body_text))
             .await
-            .map_err(|e| anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?;
-        let events = parse_sse_body(&body_text)
+            .context("stream parse task failed")?
             .map_err(|e| anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?;
 
         let mut content = String::new();
@@ -796,13 +833,17 @@ async fn call_llm(
         choices: Vec<OpenAiChoice>,
     }
 
-    let resp: OpenAiResponse = response.json().await.map_err(|e| {
-        anyhow::anyhow!(
-            "{}: failed to parse response: {}",
-            CHAT_AGENT_START_FAILED,
-            e
-        )
-    })?;
+    let resp: OpenAiResponse =
+        tokio::task::spawn_blocking(move || serde_json::from_str(&body_text))
+            .await
+            .context("response parse task failed")?
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "{}: failed to parse response: {}",
+                    CHAT_AGENT_START_FAILED,
+                    e
+                )
+            })?;
 
     let first = resp.choices.into_iter().next();
     let content = first

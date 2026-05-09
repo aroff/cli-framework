@@ -1,6 +1,7 @@
 pub mod builder;
 pub mod context;
 pub mod diagnostic_reporter;
+pub(crate) mod dispatch;
 pub mod meta;
 pub mod module;
 

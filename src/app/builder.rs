@@ -5,7 +5,6 @@ use crate::app::AppMeta;
 use crate::cli_output::HelpRenderer;
 use crate::command::{Command, CommandRegistry};
 use crate::llm::LlmProvider;
-use crate::parser::validator::SpecValidator;
 use crate::plugin::PluginRegistryManager;
 use crate::spec::command_tree::{CommandPath, GroupMetadata};
 use crate::spec::value::ArgValue;
@@ -366,74 +365,6 @@ pub struct App<C: AppContext> {
     pub stdout_capture: Option<Arc<Mutex<Vec<u8>>>>,
 }
 
-struct CliAppContextWrapper<'a, C: AppContext> {
-    _inner: &'a mut C,
-    ailoop_client: &'a Option<AiloopClient>,
-    command_registry: &'a CommandRegistry,
-    llm_provider: &'a Option<Arc<dyn LlmProvider>>,
-}
-
-impl<'a, C: AppContext> AppContext for CliAppContextWrapper<'a, C> {
-    fn opt_registry(&self) -> Option<&crate::command::CommandRegistry> {
-        Some(self.command_registry)
-    }
-
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        self._inner.as_any()
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        self._inner.as_any_mut()
-    }
-}
-
-impl<'a, C: AppContext> crate::app::context::LlmContext for CliAppContextWrapper<'a, C> {
-    fn llm_provider(&self) -> &dyn crate::llm::LlmProvider {
-        self.llm_provider
-            .as_ref()
-            .expect("LLM provider not configured")
-            .as_ref()
-    }
-}
-
-impl<'a, C: AppContext> crate::app::context::CommandRegistryContext
-    for CliAppContextWrapper<'a, C>
-{
-    fn command_registry(&self) -> &crate::command::CommandRegistry {
-        self.command_registry
-    }
-
-    fn execute_command_sync(
-        &self,
-        command_id: &str,
-        args: crate::command::CommandArgs,
-    ) -> anyhow::Result<()> {
-        let command = self
-            .command_registry()
-            .get(command_id)
-            .ok_or_else(|| anyhow::anyhow!("Command '{}' not found", command_id))?
-            .clone();
-
-        struct NoopContext;
-        impl AppContext for NoopContext {}
-
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let mut ctx = NoopContext;
-                (command.execute)(&mut ctx, args).await
-            })
-        })
-    }
-}
-
-impl<'a, C: AppContext> crate::ailoop::AiloopContext for CliAppContextWrapper<'a, C> {
-    fn ailoop_client(&self) -> &AiloopClient {
-        self.ailoop_client
-            .as_ref()
-            .expect("Ailoop client not configured")
-    }
-}
-
 impl<C: AppContext> App<C> {
     #[doc(hidden)]
     pub fn should_show_help(args: &[String]) -> bool {
@@ -589,65 +520,25 @@ impl<C: AppContext> App<C> {
         use crate::app::diagnostic_reporter::DiagnosticReporter;
 
         // Stage 6: Validation Pipeline
-        if let (Some(ref spec), Some(ref typed_args_map)) = (&command.spec, &typed_args) {
-            // Spec-level validation (E003–E006)
-            let spec_diagnostics = SpecValidator::validate(spec, typed_args_map);
-            if !spec_diagnostics.is_empty() {
-                DiagnosticReporter::report_all(&spec_diagnostics);
+        if let Some(ref typed_args_map) = typed_args {
+            let diags = crate::app::dispatch::validate_typed_args(&command, typed_args_map)?;
+            if !diags.is_empty() {
+                DiagnosticReporter::report_all(&diags);
                 return Err(anyhow::anyhow!("validation failed"));
-            }
-
-            // Command-level validation hook (custom validation)
-            if let Some(ref validator) = command.validator {
-                let custom_diagnostics = validator(typed_args_map);
-                if !custom_diagnostics.is_empty() {
-                    DiagnosticReporter::report_all(&custom_diagnostics);
-                    return Err(anyhow::anyhow!("custom validation failed"));
-                }
             }
         }
 
-        let mut ctx_wrapper = CliAppContextWrapper {
-            _inner: &mut self.ctx,
-            ailoop_client: &self.ailoop_client,
+        let env = crate::app::dispatch::DispatchEnv {
             command_registry: self.command_registry.as_ref(),
             llm_provider: &self.llm_provider,
+            ailoop_client: &self.ailoop_client,
         };
+        let mut ctx_wrapper = crate::app::dispatch::CliAppContextWrapper::new(&mut self.ctx, env);
 
         // For spec-based commands, build CommandArgs from typed_args so execute closures
         // can access parsed flag values via args.named
-        let effective_args = if let Some(ref typed_map) = typed_args {
-            let mut named = std::collections::HashMap::new();
-            for (k, v) in typed_map {
-                use crate::spec::value::ArgValue;
-                let s = match v {
-                    ArgValue::Bool(b) => b.to_string(),
-                    ArgValue::Str(s) => s.clone(),
-                    ArgValue::Int(i) => i.to_string(),
-                    ArgValue::Float(f) => f.to_string(),
-                    ArgValue::Enum(e) => e.clone(),
-                    ArgValue::Count(c) => c.to_string(),
-                    ArgValue::List(items) => items
-                        .iter()
-                        .map(|i| match i {
-                            ArgValue::Str(s) => s.clone(),
-                            ArgValue::Int(i) => i.to_string(),
-                            ArgValue::Float(f) => f.to_string(),
-                            ArgValue::Enum(e) => e.clone(),
-                            _ => String::new(),
-                        })
-                        .collect::<Vec<_>>()
-                        .join(","),
-                };
-                named.insert(k.clone(), s);
-            }
-            crate::command::CommandArgs {
-                positional: Vec::new(),
-                named,
-            }
-        } else {
-            args
-        };
+        let effective_args =
+            crate::app::dispatch::effective_args_for_execution(args, typed_args.as_ref());
 
         (command.execute)(&mut ctx_wrapper, effective_args).await?;
         Ok(())
