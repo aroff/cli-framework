@@ -1,6 +1,6 @@
 # Agent chat rollout (index)
 
-**Canonical work plans live only in the GitHub issue bodies below** (full checklists, dependencies, and context). This file is a short index so the repo does not duplicate plans or drift from the issues.
+**Canonical work plans live only in the GitHub issue bodies below** (goal, definition of done, concrete deliverables, likely files, dependencies). This file is a short index only.
 
 ## Implementation order
 
