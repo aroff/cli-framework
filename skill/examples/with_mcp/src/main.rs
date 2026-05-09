@@ -1,6 +1,6 @@
 //! MCP Server Example
 //!
-//! Demonstrates three MCP server patterns:
+//! Demonstrates two MCP server patterns:
 //!
 //! 1. **`mcp serve` subcommand** (recommended) — first-class named command with `--help` support:
 //!    ```bash
@@ -10,14 +10,7 @@
 //!    cargo run --example with_mcp --features "mcp-server" -- mcp serve --help
 //!    ```
 //!
-//! 2. **Legacy `--mcp-serve` flag** (deprecated, kept for backward compatibility):
-//!    ```bash
-//!    cargo run --example with_mcp --features "mcp-server" -- --mcp-serve --mcp-port 8080
-//!    ```
-//!    This flag emits a deprecation warning to stderr and will be removed in v0.5.0.
-//!    Prefer `mcp serve` for new integrations.
-//!
-//! 3. **Embedded-mount mode** — MCP is nested into an existing Axum router on the same port:
+//! 2. **Embedded-mount mode** — MCP is nested into an existing Axum router on the same port:
 //!    ```bash
 //!    cargo run --example with_mcp --features "mcp-server" -- --embedded-mcp
 //!    ```
@@ -130,8 +123,7 @@ async fn main() -> anyhow::Result<()> {
         return run_embedded_mcp().await;
     }
 
-    // Standalone mode: --mcp-serve flag is intercepted by the framework, which
-    // binds its own listener and serves MCP exclusively on that port.
+    // Standalone mode: use `mcp serve` subcommand to start MCP server.
     let mut builder = AppBuilder::new();
     builder = builder
         .with_version("my-mcp-app", "0.1.0")

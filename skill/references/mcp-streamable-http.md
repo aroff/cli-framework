@@ -9,20 +9,20 @@ Full reference for the MCP server mode in `cli-framework`. See also [`skill/exam
 cli-framework = { git = "https://github.com/aroff/cli-framework", features = ["mcp-server"] }
 ```
 
-## Runtime flags
+## Starting the MCP server
+
+Use the `mcp serve` subcommand:
+
+```bash
+my-app mcp serve
+my-app mcp serve --host 0.0.0.0 --port 9000 --path /mcp
+```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--mcp-serve` | (off) | Start MCP Streamable HTTP server instead of normal CLI dispatch |
-| `--mcp-host` | `127.0.0.1` | Bind host |
-| `--mcp-port` | `8090` | Bind port |
-| `--mcp-path` | `/mcp` | HTTP path for the MCP endpoint |
-
-Example:
-
-```bash
-my-app --mcp-serve --mcp-host 0.0.0.0 --mcp-port 9000 --mcp-path /mcp
-```
+| `--host` | `127.0.0.1` | Bind host |
+| `--port` | `8080` | Bind port |
+| `--path` | `/mcp` | HTTP path for the MCP endpoint |
 
 ## Tool naming convention
 
@@ -57,7 +57,7 @@ Each tool call is handled in a separate `tokio::spawn` task. The command registr
 
 ## Newton-specific notes
 
-Newton defaults MCP port to `8090` to avoid collision with its Axum default port. When `--mcp-serve` is active, Newton's Axum server does NOT start in the same process. Use separate processes or ports for simultaneous Axum + MCP serving.
+Newton defaults MCP port to `8090` to avoid collision with its Axum default port. Use separate processes or ports for simultaneous Axum + MCP serving.
 
 ## Selective MCP exposure (`expose_mcp` and `McpToolExportPolicy`)
 
@@ -143,7 +143,7 @@ Command { id: "foo", summary: "...", expose_mcp: false, /* other fields */ execu
 
 ```rust
 // Enable with features = ["mcp-server"]
-// Then launch: ./my-app --mcp-serve --mcp-port 9000
+// Then launch: ./my-app mcp serve --port 9000
 // All registered commands become MCP tools automatically.
 use cli_framework::prelude::*;
 use std::sync::Arc;

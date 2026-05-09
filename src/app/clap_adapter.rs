@@ -116,43 +116,6 @@ pub fn build_clap_root(
         );
     }
 
-    #[cfg(feature = "mcp-server")]
-    {
-        root = root
-            .arg(
-                clap::Arg::new("mcp-serve")
-                    .long("mcp-serve")
-                    .action(clap::ArgAction::SetTrue)
-                    .global(true)
-                    .help("Enable MCP server mode (Streamable HTTP) [DEPRECATED: use `mcp serve`]"),
-            )
-            .arg(
-                clap::Arg::new("mcp-host")
-                    .long("mcp-host")
-                    .value_name("HOST")
-                    .default_value("127.0.0.1")
-                    .global(true)
-                    .help("MCP server bind address"),
-            )
-            .arg(
-                clap::Arg::new("mcp-port")
-                    .long("mcp-port")
-                    .value_name("PORT")
-                    .value_parser(clap::value_parser!(u16))
-                    .default_value("8080")
-                    .global(true)
-                    .help("MCP server bind port"),
-            )
-            .arg(
-                clap::Arg::new("mcp-path")
-                    .long("mcp-path")
-                    .value_name("PATH")
-                    .default_value("/mcp")
-                    .global(true)
-                    .help("MCP HTTP path prefix"),
-            );
-    }
-
     root
 }
 
@@ -232,31 +195,6 @@ fn build_legacy_clap_command_with_name(
     }
 
     sub
-}
-
-#[cfg(feature = "mcp-server")]
-#[derive(Debug, Default)]
-pub struct McpGlobalFlags {
-    pub mcp_serve: bool,
-    pub mcp_host: String,
-    pub mcp_port: u16,
-    pub mcp_path: String,
-}
-
-#[cfg(feature = "mcp-server")]
-pub fn extract_mcp_flags(matches: &clap::ArgMatches) -> McpGlobalFlags {
-    McpGlobalFlags {
-        mcp_serve: matches.get_flag("mcp-serve"),
-        mcp_host: matches
-            .get_one::<String>("mcp-host")
-            .cloned()
-            .unwrap_or_else(|| "127.0.0.1".to_string()),
-        mcp_port: *matches.get_one::<u16>("mcp-port").unwrap_or(&8080),
-        mcp_path: matches
-            .get_one::<String>("mcp-path")
-            .cloned()
-            .unwrap_or_else(|| "/mcp".to_string()),
-    }
 }
 
 /// Recursively walk `ArgMatches` to extract the full `CommandPath` and the leaf `ArgMatches`.

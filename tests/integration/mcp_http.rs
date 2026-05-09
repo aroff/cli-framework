@@ -2,6 +2,7 @@ use cli_framework::app::{AppBuilder, AppContext};
 use cli_framework::command::{Command, CommandArgs, CommandRegistry};
 use cli_framework::mcp::{serve_mcp, McpServerArgs, McpToolExportPolicy};
 use cli_framework::security::CommandRiskPolicy;
+use cli_framework::spec::command_tree::CommandSpec;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -296,7 +297,10 @@ async fn test_mcp_serve_subcommand_tools_list() {
                     summary: "Widget command exposed via mcp serve subcommand",
                     syntax: None,
                     category: None,
-                    spec: None,
+                    spec: Some(Arc::new(CommandSpec {
+                        summary: "Widget command exposed via mcp serve subcommand",
+                        ..Default::default()
+                    })),
                     validator: None,
                     expose_mcp: true,
                     execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),

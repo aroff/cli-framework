@@ -322,13 +322,9 @@ impl AppBuilder {
             meta: self.meta,
             app_name: self.app_name,
             app_version: self.app_version,
-            #[cfg(feature = "mcp-server")]
-            risk_policy: self.risk_policy.clone(),
             clap_root,
             #[cfg(feature = "testkit")]
             stdout_capture: None,
-            #[cfg(feature = "mcp-server")]
-            mcp_export_policy: self.mcp_export_policy,
         })
     }
 }
@@ -348,14 +344,10 @@ pub struct App<C: AppContext> {
     meta: Option<AppMeta>,
     app_name: &'static str,
     app_version: &'static str,
-    #[cfg(feature = "mcp-server")]
-    risk_policy: crate::security::command_risk::CommandRiskPolicy,
     clap_root: clap::Command,
     /// Captures framework-level stdout output (version strings etc.) when testkit is active.
     #[cfg(feature = "testkit")]
     pub stdout_capture: Option<Arc<Mutex<Vec<u8>>>>,
-    #[cfg(feature = "mcp-server")]
-    mcp_export_policy: crate::mcp::McpToolExportPolicy,
 }
 
 struct CliAppContextWrapper<'a, C: AppContext> {
@@ -444,22 +436,6 @@ impl<C: AppContext> App<C> {
         use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
         use crate::parser::error_codes::E_NESTED_COMMAND_NOT_FOUND;
         use crate::parser::outcome::ParseOutcome;
-
-        #[cfg(feature = "mcp-server")]
-        {
-            if args.iter().any(|a| a == "--mcp-serve") {
-                eprintln!("DEPRECATED: --mcp-serve is deprecated; use `mcp serve` instead");
-                let mcp_args = crate::mcp::extract_mcp_args_from_raw(&args);
-                return crate::mcp::serve_mcp(
-                    Arc::clone(&self.command_registry),
-                    self.app_name,
-                    mcp_args,
-                    self.risk_policy.clone(),
-                    self.mcp_export_policy,
-                )
-                .await;
-            }
-        }
 
         match parse_with_clap(&self.clap_root, &self.command_registry, args) {
             ParseOutcome::Parsed {
