@@ -1,19 +1,25 @@
 use crate::ailoop::AiloopClient;
 use crate::app::context::AppContext;
 use crate::command::{Command, CommandArgs, CommandRegistry, CommandResult};
-use crate::llm::{CommandMetadata, LlmProvider};
 use crate::parser::validator::SpecValidator;
 use crate::security::command_risk::{CommandRiskPolicy, CommandRiskTier};
 use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use crate::spec::command_tree::{CommandSpec, EnvVarEntry, ExitCodeEntry};
 use crate::spec::value::ArgValue;
-use crate::tool_args::map_tool_args_to_command_args;
 use anyhow::Context;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Arc;
+
+use aikit_agent::llm::openai_compat::OpenAiCompatProvider;
+use aikit_agent::llm::types::{
+    FunctionDefinition, LlmMessage, LlmRequest, MessageToolCall, MessageToolCallFunction,
+    ToolChoice, ToolDefinition,
+};
+use aikit_agent::{AgentConfig, LlmError, LlmGateway};
 
 pub const CHAT_FEATURE_DISABLED: &str = "CHAT_FEATURE_DISABLED";
 pub const CHAT_AGENT_START_FAILED: &str = "CHAT_AGENT_START_FAILED";
@@ -62,6 +68,10 @@ impl CommandsAsToolsExecutor {
         }
         let mut tools = HashMap::new();
         for (path_str, cmd) in registry.all_tree_commands() {
+            // Prevent self-recursion and reduce tool confusion.
+            if cmd.id == "chat" || cmd.id == "ask" {
+                continue;
+            }
             if cmd.spec.is_none() {
                 log::warn!(
                     "chat: command '{}' has no CommandSpec; using permissive schema",
@@ -123,7 +133,7 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
             )
         })?;
 
-        let (cmd_args, typed_args) = map_tool_args_to_command_args(arguments)
+        let (cmd_args, typed_args) = crate::mcp::map_mcp_args_to_command_args_from_json(arguments)
             .map_err(|e| anyhow::anyhow!("{}: {}", CHAT_ARG_VALIDATION_FAILED, e))?;
 
         if let Some(ref spec) = cmd.spec {
@@ -156,11 +166,7 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
         )
         .await?;
 
-        let effective_args = if cmd.spec.is_some() {
-            command_args_from_typed_args(&typed_args)
-        } else {
-            cmd_args
-        };
+        let effective_args = effective_command_args(cmd, cmd_args, &typed_args);
 
         (cmd.execute)(ctx, effective_args)
             .await
@@ -168,7 +174,15 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
     }
 }
 
-fn command_args_from_typed_args(typed_args: &HashMap<String, ArgValue>) -> CommandArgs {
+fn effective_command_args(
+    cmd: &Command,
+    cmd_args: CommandArgs,
+    typed_args: &HashMap<String, ArgValue>,
+) -> CommandArgs {
+    if cmd.spec.is_none() {
+        return cmd_args;
+    }
+
     let mut named = HashMap::new();
     for (k, v) in typed_args {
         let s = match v {
@@ -212,7 +226,7 @@ async fn enforce_chat_risk_gate(
             if yolo {
                 return Ok(());
             }
-            if !interactive && ailoop_client.is_none() {
+            if !interactive {
                 return Err(anyhow::anyhow!(
                     "{}: command '{}' is sensitive and requires confirmation (use --yolo in non-interactive mode)",
                     CHAT_RISK_REQUIRES_CONFIRMATION,
@@ -289,18 +303,11 @@ fn prompt_confirm(prompt: &str) -> anyhow::Result<bool> {
 }
 
 pub fn create_chat_command(
-    llm_provider: Option<Arc<dyn LlmProvider>>,
     registry: Arc<CommandRegistry>,
     risk_policy: CommandRiskPolicy,
     ailoop_client: Option<Arc<AiloopClient>>,
     app_name: &'static str,
 ) -> Command {
-    let metadata_snapshot: Vec<CommandMetadata> = registry
-        .collect_metadata()
-        .into_iter()
-        .filter(|m| m.id != "chat" && m.id != "ask")
-        .collect();
-
     let tool_executor = CommandsAsToolsExecutor::new(&registry, app_name, risk_policy.clone())
         .map_err(|e| {
             log::error!("chat tool registry construction failed: {}", e);
@@ -319,18 +326,9 @@ pub fn create_chat_command(
         validator: None,
         expose_mcp: false,
         execute: Arc::new(move |ctx, args| {
-            let provider = llm_provider.clone();
-            let registry = registry.clone();
-            let policy = risk_policy.clone();
             let client = ailoop_client.clone();
-            let metadata = metadata_snapshot.clone();
             let tool_exec = tool_executor.clone();
-            Box::pin(async move {
-                execute_chat(
-                    ctx, provider, registry, metadata, policy, client, tool_exec, args,
-                )
-                .await
-            })
+            Box::pin(async move { execute_chat(ctx, client, tool_exec, args).await })
         }),
     }
 }
@@ -348,17 +346,28 @@ Exit:\n\
 \n\
 Notes:\n\
  - Tool calls are serialized (one command executes at a time).\n\
- - This rollout phase uses the configured LLM provider to resolve one command per turn.\n\
- - Structured output modes (events/JSON) require upstream library support and are not enabled here.",
+ - Tools are limited to this process's registered CLI commands.\n\
+ - Structured output modes (events/JSON) are not enabled in this rollout phase.\n\
+ - LLM configuration is resolved from environment variables (OPENAI_API_KEY / AIKIT_*).\n\
+",
         ),
         env_vars: vec![
             EnvVarEntry {
                 name: "ALLOW_DESTRUCTIVE_COMMANDS",
-                description: "Set to 1/true to allow destructive commands (still requires confirmation)",
+                description:
+                    "Set to 1/true to allow destructive commands (still requires confirmation)",
             },
             EnvVarEntry {
-                name: "ASK_ASSUME_YES",
-                description: "Legacy ask env var (ignored by chat; use --yolo)",
+                name: "OPENAI_API_KEY",
+                description: "API key used by the embedded chat agent (OpenAI-compatible)",
+            },
+            EnvVarEntry {
+                name: "AIKIT_LLM_URL",
+                description: "OpenAI-compatible base URL (default: https://api.openai.com/v1)",
+            },
+            EnvVarEntry {
+                name: "AIKIT_MODEL",
+                description: "Default model name (overridden by --model)",
             },
         ],
         exit_codes: vec![
@@ -394,7 +403,7 @@ Notes:\n\
                 default: None,
                 conflicts_with: vec![],
                 requires: vec![],
-                help: "Model override (provider-dependent; best-effort)",
+                help: "Model override (OpenAI-compatible; best-effort)",
             },
             ArgSpec {
                 name: "yolo",
@@ -406,7 +415,8 @@ Notes:\n\
                 default: None,
                 conflicts_with: vec![],
                 requires: vec![],
-                help: "Skip confirmations for Sensitive commands (does not bypass Destructive gating)",
+                help:
+                    "Skip confirmations for Sensitive commands (does not bypass Destructive gating)",
             },
             ArgSpec {
                 name: "stream",
@@ -418,7 +428,7 @@ Notes:\n\
                 default: None,
                 conflicts_with: vec![],
                 requires: vec![],
-                help: "Stream LLM output if supported by the provider",
+                help: "Stream agent output (best-effort; line-oriented)",
             },
             ArgSpec {
                 name: "session_agents",
@@ -430,7 +440,7 @@ Notes:\n\
                 default: None,
                 conflicts_with: vec![],
                 requires: vec![],
-                help: "Session agent selection (reserved; provider-dependent)",
+                help: "Comma-separated agent persona IDs (reserved; best-effort)",
             },
         ],
         ..Default::default()
@@ -439,16 +449,18 @@ Notes:\n\
 
 async fn execute_chat(
     ctx: &mut dyn AppContext,
-    llm_provider: Option<Arc<dyn LlmProvider>>,
-    registry: Arc<CommandRegistry>,
-    available_commands: Vec<CommandMetadata>,
-    risk_policy: CommandRiskPolicy,
     ailoop_client: Option<Arc<AiloopClient>>,
     tool_exec: Option<CommandsAsToolsExecutor>,
     args: CommandArgs,
 ) -> CommandResult {
     let prompt_flag = args.named.get("prompt").cloned();
     let yolo = args.named.get("yolo").map(|v| v == "true").unwrap_or(false);
+    let stream = args
+        .named
+        .get("stream")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    let model = args.named.get("model").cloned();
 
     let prompt_from_stdin = if prompt_flag.is_none() && !crate::cli_mode::is_stdin_tty() {
         Some(read_stdin_all().await?)
@@ -457,18 +469,7 @@ async fn execute_chat(
     };
 
     if let Some(prompt) = prompt_flag.or(prompt_from_stdin) {
-        run_single_turn(
-            ctx,
-            llm_provider,
-            registry,
-            available_commands,
-            risk_policy,
-            ailoop_client,
-            tool_exec,
-            yolo,
-            prompt,
-        )
-        .await?;
+        run_agent_one_shot(ctx, ailoop_client, tool_exec, yolo, stream, model, prompt).await?;
         return Ok(());
     }
 
@@ -479,17 +480,7 @@ async fn execute_chat(
         ));
     }
 
-    repl_loop(
-        ctx,
-        llm_provider,
-        registry,
-        available_commands,
-        risk_policy,
-        ailoop_client,
-        tool_exec,
-        yolo,
-    )
-    .await
+    repl_loop(ctx, ailoop_client, tool_exec, yolo, stream, model).await
 }
 
 async fn read_stdin_all() -> anyhow::Result<String> {
@@ -502,13 +493,11 @@ async fn read_stdin_all() -> anyhow::Result<String> {
 
 async fn repl_loop(
     ctx: &mut dyn AppContext,
-    llm_provider: Option<Arc<dyn LlmProvider>>,
-    registry: Arc<CommandRegistry>,
-    available_commands: Vec<CommandMetadata>,
-    risk_policy: CommandRiskPolicy,
     ailoop_client: Option<Arc<AiloopClient>>,
     tool_exec: Option<CommandsAsToolsExecutor>,
     yolo: bool,
+    stream: bool,
+    model: Option<String>,
 ) -> CommandResult {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -540,15 +529,13 @@ async fn repl_loop(
             continue;
         }
 
-        let turn_fut = run_single_turn(
+        let turn_fut = run_agent_one_shot(
             ctx,
-            llm_provider.clone(),
-            Arc::clone(&registry),
-            available_commands.clone(),
-            risk_policy.clone(),
             ailoop_client.clone(),
             tool_exec.clone(),
             yolo,
+            stream,
+            model.clone(),
             prompt.to_string(),
         );
 
@@ -564,94 +551,230 @@ async fn repl_loop(
     }
 }
 
-async fn run_single_turn(
+async fn run_agent_one_shot(
     ctx: &mut dyn AppContext,
-    llm_provider: Option<Arc<dyn LlmProvider>>,
-    registry: Arc<CommandRegistry>,
-    available_commands: Vec<CommandMetadata>,
-    risk_policy: CommandRiskPolicy,
     ailoop_client: Option<Arc<AiloopClient>>,
     tool_exec: Option<CommandsAsToolsExecutor>,
     yolo: bool,
+    stream: bool,
+    model: Option<String>,
     prompt: String,
 ) -> CommandResult {
-    let provider = llm_provider.ok_or_else(|| {
+    let tool_exec = tool_exec.ok_or_else(|| {
         anyhow::anyhow!(
-            "{}: no LLM provider configured; call AppBuilder::with_llm_provider()",
+            "{}: tool registry unavailable (CHAT_TOOL_REGISTRY_COLLISION?)",
             CHAT_AGENT_START_FAILED
         )
     })?;
 
-    // Run resolution off the runtime (keeps the tokio executor responsive even if the provider
-    // implementation does blocking work internally).
-    let resolution = tokio::task::spawn_blocking({
-        let provider = provider.clone();
-        let prompt = prompt.clone();
-        let available = available_commands.clone();
-        move || {
-            tokio::runtime::Handle::current()
-                .block_on(async move { provider.resolve_command(&prompt, &available).await })
-        }
-    })
-    .await
-    .context("chat turn task join failed")?
-    .map_err(|e| anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?;
+    let workdir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let config = AgentConfig::from_env(workdir, stream, model)
+        .map_err(|e| anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?;
 
-    // Risk gate semantics for the resolved command mirror ask.
-    let command_category = available_commands
-        .iter()
-        .find(|m| m.id == resolution.command_id)
-        .and_then(|m| m.category.as_deref());
+    let gateway = OpenAiCompatProvider::new(config.timeout_secs, config.connect_timeout_secs)
+        .map_err(|e| anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?;
+    let gateway = Arc::new(gateway);
 
-    crate::command::ask::enforce_risk_gate(
-        &risk_policy,
-        &resolution,
-        command_category,
+    let tools: Vec<ToolDefinition> = tool_exec
+        .list_tools()
+        .into_iter()
+        .map(|t| ToolDefinition {
+            tool_type: "function".to_string(),
+            function: FunctionDefinition {
+                name: t.name,
+                description: Some(t.description),
+                parameters: t.input_schema,
+            },
+        })
+        .collect();
+
+    let mut messages = vec![LlmMessage {
+        role: "system".to_string(),
+        content: Some(build_chat_system_instructions()),
+        tool_calls: None,
+        tool_call_id: None,
+    }];
+    messages.push(LlmMessage {
+        role: "user".to_string(),
+        content: Some(prompt),
+        tool_calls: None,
+        tool_call_id: None,
+    });
+
+    let tool_opts = ChatToolCallOptions {
         yolo,
-        ailoop_client.is_some(),
-    )?;
+        interactive: crate::cli_mode::is_interactive(),
+        ailoop_client,
+    };
 
-    // Execute under the *real* ctx (no NoopContext).
-    let cmd = registry
-        .get(&resolution.command_id)
-        .ok_or_else(|| anyhow::anyhow!("Resolved command '{}' not found", resolution.command_id))?
-        .clone();
-
-    if let Some(exec) = tool_exec {
-        // Best-effort: if the tool name exists (root command ID), execute via tool path.
-        // This does not implement full multi-tool planning yet, but it exercises the same
-        // mapping/validation+execution code path as agent tool calls.
-        let tool_name = format!("{}.{}", exec.app_name(), resolution.command_id);
-        let mut args_obj = serde_json::Map::new();
-        if !resolution.args.positional.is_empty() {
-            args_obj.insert(
-                "_positional".to_string(),
-                Value::Array(
-                    resolution
-                        .args
-                        .positional
-                        .iter()
-                        .map(|s| Value::String(s.clone()))
-                        .collect(),
-                ),
-            );
-        }
-        for (k, v) in &resolution.args.named {
-            args_obj.insert(k.clone(), Value::String(v.clone()));
-        }
-
-        let opts = ChatToolCallOptions {
-            yolo,
-            interactive: crate::cli_mode::is_interactive(),
-            ailoop_client,
+    for _ in 0..config.max_iterations {
+        let req = LlmRequest {
+            model: config.model.clone(),
+            base_url: config.base_url.clone(),
+            api_key: config.api_key.clone(),
+            messages: messages.clone(),
+            tools: tools.clone(),
+            tool_choice: Some(ToolChoice::auto()),
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream,
         };
 
-        if exec.tools.contains_key(&tool_name) {
-            return exec
-                .call_tool(&tool_name, Value::Object(args_obj), ctx, &opts)
-                .await;
+        let resp = call_llm_off_runtime(Arc::clone(&gateway), req, stream).await?;
+
+        if !resp.tool_calls.is_empty() {
+            let tool_calls_for_ctx: Vec<MessageToolCall> = resp
+                .tool_calls
+                .iter()
+                .map(|tc| MessageToolCall {
+                    id: tc.id.clone(),
+                    call_type: "function".to_string(),
+                    function: MessageToolCallFunction {
+                        name: tc.function.name.clone(),
+                        arguments: tc.function.arguments.clone(),
+                    },
+                })
+                .collect();
+
+            messages.push(LlmMessage {
+                role: "assistant".to_string(),
+                content: resp.content.clone().filter(|s| !s.is_empty()),
+                tool_calls: Some(tool_calls_for_ctx),
+                tool_call_id: None,
+            });
+
+            for tc in resp.tool_calls {
+                let tool_name = tc.function.name;
+                let call_id = tc.id;
+                let args: Value =
+                    serde_json::from_str(&tc.function.arguments).unwrap_or(Value::Null);
+
+                // Tool calls are serialized by design.
+                let output = match tool_exec.call_tool(&tool_name, args, ctx, &tool_opts).await {
+                    Ok(()) => "OK".to_string(),
+                    Err(e) => e.to_string(),
+                };
+
+                messages.push(LlmMessage {
+                    role: "tool".to_string(),
+                    content: Some(output),
+                    tool_calls: None,
+                    tool_call_id: Some(call_id),
+                });
+            }
+
+            continue;
+        }
+
+        if let Some(text) = resp.content.as_ref() {
+            if !text.trim().is_empty() {
+                println!("{}", text.trim_end());
+            }
+        }
+
+        messages.push(LlmMessage {
+            role: "assistant".to_string(),
+            content: resp.content.clone(),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+
+        if resp.finish_reason.as_deref() == Some("stop") {
+            return Ok(());
         }
     }
 
-    (cmd.execute)(ctx, resolution.args).await
+    Err(anyhow::anyhow!(
+        "{}: exceeded max iterations ({})",
+        CHAT_AGENT_START_FAILED,
+        config.max_iterations
+    ))
+}
+
+fn build_chat_system_instructions() -> String {
+    let mut s = String::new();
+    s.push_str("You are an in-process CLI agent.\n");
+    s.push_str("You can only use the provided tools, which correspond to this app's registered CLI commands.\n");
+    s.push_str("Prefer using tools to perform actions. After completing tool calls, respond to the user with a short summary.\n");
+    s
+}
+
+struct LlmResponseEnvelope {
+    content: Option<String>,
+    tool_calls: Vec<aikit_agent::llm::types::ToolCall>,
+    finish_reason: Option<String>,
+}
+
+async fn call_llm_off_runtime(
+    gateway: Arc<OpenAiCompatProvider>,
+    req: LlmRequest,
+    stream: bool,
+) -> anyhow::Result<LlmResponseEnvelope> {
+    let handle = tokio::task::spawn_blocking(
+        move || -> Result<(Option<String>, Vec<aikit_agent::llm::types::ToolCall>, Option<String>), LlmError> {
+        if stream {
+            use aikit_agent::llm::types::LlmStreamEvent;
+            let mut content = String::new();
+            let mut tool_calls_by_id: std::collections::HashMap<String, (String, String)> =
+                std::collections::HashMap::new();
+            let mut finish_reason = None;
+
+            let stream_handle = gateway.stream(req)?;
+            for ev in stream_handle {
+                match ev? {
+                    LlmStreamEvent::TextDelta { content: delta } => {
+                        content.push_str(&delta);
+                    }
+                    LlmStreamEvent::ToolCallDelta {
+                        id,
+                        function_name,
+                        arguments_delta,
+                    } => {
+                        let entry = tool_calls_by_id
+                            .entry(id)
+                            .or_insert_with(|| (function_name.clone(), String::new()));
+                        entry.0 = function_name;
+                        entry.1.push_str(&arguments_delta);
+                    }
+                    LlmStreamEvent::Completed {
+                        finish_reason: r, ..
+                    } => {
+                        finish_reason = Some(r);
+                    }
+                    _ => {}
+                }
+            }
+
+            let tool_calls = tool_calls_by_id
+                .into_iter()
+                .map(|(id, (name, args))| aikit_agent::llm::types::ToolCall {
+                    id,
+                    call_type: None,
+                    function: aikit_agent::llm::types::ToolCallFunction {
+                        name,
+                        arguments: args,
+                    },
+                })
+                .collect();
+
+            Ok((Some(content), tool_calls, finish_reason))
+        } else {
+            let resp = gateway.complete(req)?;
+            Ok((resp.content, resp.tool_calls, resp.finish_reason))
+        }
+        },
+    );
+
+    let (content, tool_calls, finish_reason) =
+        handle
+            .await
+            .context("chat LLM call join failed")?
+            .map_err(|e| anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?;
+
+    Ok(LlmResponseEnvelope {
+        content,
+        tool_calls,
+        finish_reason,
+    })
 }

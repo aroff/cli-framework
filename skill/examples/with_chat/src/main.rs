@@ -1,8 +1,8 @@
 //! CLI with Chat Example
 //!
 //! Demonstrates how to enable the built-in `chat` command (feature `chat`).
-//! In this rollout phase, `chat` resolves and runs one command per turn,
-//! and executes commands against the real application context.
+//! In this rollout phase, `chat` runs an embedded agent and exposes only
+//! the app's registered commands as tools, executed against the real AppContext.
 
 use cli_framework::prelude::*;
 use std::sync::Arc;
@@ -71,13 +71,6 @@ async fn main() -> anyhow::Result<()> {
 
     let mut builder =
         AppBuilder::new().with_version(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
-
-    // Configure LLM provider from environment (optional at build-time; required at runtime for chat).
-    if std::env::var("OPENAI_API_KEY").is_ok() || std::env::var("ANTHROPIC_API_KEY").is_ok() {
-        builder = builder
-            .with_llm_from_env()?
-            .with_ailoop_channel("with_chat");
-    }
 
     builder = builder
         .register_command(inc_command)?

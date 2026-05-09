@@ -81,7 +81,6 @@ pub mod http_retry;
 // Spec and parser modules
 pub mod parser;
 pub mod spec;
-pub mod tool_args;
 
 // Command surface export — always compiled, no feature flag
 pub mod command_surface;

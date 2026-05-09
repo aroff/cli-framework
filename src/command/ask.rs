@@ -5,6 +5,8 @@ use crate::llm::{CommandMetadata, CommandResolution, LlmProvider};
 use crate::security::command_risk::CommandRiskPolicy;
 use std::sync::Arc;
 
+pub const ASK_DEPRECATED: &str = "ASK_DEPRECATED";
+
 pub fn create_ask_command(
     llm_provider: Arc<dyn LlmProvider>,
     registry: Arc<CommandRegistry>,
@@ -47,6 +49,12 @@ async fn execute_ask(
     risk_policy: CommandRiskPolicy,
     ailoop_client: Arc<AiloopClient>,
 ) -> CommandResult {
+    #[cfg(feature = "chat")]
+    eprintln!(
+        "{}: `ask` is deprecated; prefer `chat` (build with `--features chat`).",
+        ASK_DEPRECATED
+    );
+
     let query = match extract_query(&args) {
         Ok(q) => q,
         Err(_) => {

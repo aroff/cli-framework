@@ -6,13 +6,8 @@ pub mod transport_http;
 
 use crate::command::registry::CommandRegistry;
 use crate::command::Command;
-#[cfg(feature = "mcp-server")]
 use crate::command::CommandArgs;
-#[cfg(feature = "mcp-server")]
 use crate::spec::value::ArgValue;
-#[cfg(feature = "mcp-server")]
-use crate::tool_args::map_tool_args_to_command_args;
-#[cfg(feature = "mcp-server")]
 use anyhow::Result;
 #[cfg(feature = "mcp-server")]
 use rmcp::{
@@ -24,7 +19,6 @@ use rmcp::{
     RoleServer, ServerHandler,
 };
 use schema::{command_to_tool_descriptor, McpToolDescriptor};
-#[cfg(feature = "mcp-server")]
 use serde_json::Value;
 #[cfg(feature = "mcp-server")]
 use std::borrow::Cow;
@@ -139,6 +133,77 @@ struct McpAppContext;
 #[cfg(feature = "mcp-server")]
 impl crate::app::AppContext for McpAppContext {}
 
+pub(crate) fn json_value_to_arg_value(v: &Value) -> Option<ArgValue> {
+    match v {
+        Value::Bool(b) => Some(ArgValue::Bool(*b)),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Some(ArgValue::Int(i))
+            } else {
+                n.as_f64().map(ArgValue::Float)
+            }
+        }
+        Value::String(s) => Some(ArgValue::Str(s.clone())),
+        Value::Array(arr) => {
+            let items: Vec<ArgValue> = arr.iter().filter_map(json_value_to_arg_value).collect();
+            Some(ArgValue::List(items))
+        }
+        _ => None,
+    }
+}
+
+/// Map JSON tool-call arguments into `CommandArgs` (stringly) and typed args (`ArgValue`).
+///
+/// Parity contract (used by MCP and `chat`):
+/// - `_positional: [..]` maps to `CommandArgs.positional`
+/// - all other keys map to `CommandArgs.named` via stringification
+/// - typed values are converted via `json_value_to_arg_value`
+pub(crate) fn map_mcp_args_to_command_args_from_json(
+    arguments: Value,
+) -> anyhow::Result<(CommandArgs, HashMap<String, ArgValue>)> {
+    let obj = match arguments {
+        Value::Null => serde_json::Map::new(),
+        Value::Object(m) => m,
+        other => {
+            return Err(anyhow::anyhow!(
+                "expected tool arguments to be an object, got {}",
+                other
+            ));
+        }
+    };
+
+    let mut named = HashMap::new();
+    let mut positional = Vec::new();
+    let mut typed = HashMap::new();
+
+    if let Some(Value::Array(pos)) = obj.get("_positional") {
+        for v in pos {
+            positional.push(match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            });
+        }
+    }
+
+    for (k, v) in &obj {
+        if k == "_positional" {
+            continue;
+        }
+        named.insert(
+            k.clone(),
+            match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            },
+        );
+        if let Some(av) = json_value_to_arg_value(v) {
+            typed.insert(k.clone(), av);
+        }
+    }
+
+    Ok((CommandArgs { positional, named }, typed))
+}
+
 #[cfg(feature = "mcp-server")]
 fn map_mcp_args_to_command_args(
     arguments: Option<JsonObject>,
@@ -147,7 +212,7 @@ fn map_mcp_args_to_command_args(
         Some(obj) => Value::Object(obj),
         None => Value::Null,
     };
-    map_tool_args_to_command_args(v)
+    map_mcp_args_to_command_args_from_json(v)
 }
 
 #[cfg(feature = "mcp-server")]

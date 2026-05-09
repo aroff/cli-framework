@@ -207,7 +207,6 @@ impl AppBuilder {
             if self.command_registry.get("chat").is_none() {
                 let registry_snapshot = Arc::new(self.command_registry.clone());
                 let chat_command = crate::command::create_chat_command(
-                    self.llm_provider.clone(),
                     registry_snapshot,
                     self.risk_policy.clone(),
                     ailoop_client.clone().map(Arc::new),

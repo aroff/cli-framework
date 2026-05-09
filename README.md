@@ -173,6 +173,8 @@ cargo run -- hello Alice
 
 Natural-language **`ask`** is registered when an LLM is configured (**`with_llm_from_env()`** or **`with_llm_provider`**). **A paired `ailoop serve` process is also required** — `.build()` returns an error if `with_ailoop_channel()` or `with_ailoop_config()` has not been called when an LLM provider is set.
 
+When the `chat` feature is enabled, `ask` prints an `ASK_DEPRECATED` warning and is maintained for backward compatibility.
+
 Example with one registered command plus **`ask`**:
 
 ```rust
@@ -227,7 +229,13 @@ impl AppContext for MyContext {}
 - `cargo build` (default) does not compile the embedded chat stack
 - `cargo build --features chat` registers a root-level `chat` command
 
-In this rollout phase, `chat` runs a REPL (when stdin is a TTY) or a one-shot (when `--prompt/-p` is set or stdin is piped), and resolves **one command per turn** using the configured LLM provider. Agent-invoked commands execute against the **real AppContext** (no noop dispatch).
+In this rollout phase, `chat` runs an embedded agent that can call *only* the process's registered commands as tools (tool names and JSON schemas match the MCP export path). Tool-invoked commands execute against the **real AppContext** (no noop dispatch).
+
+`chat` selects mode at runtime:
+- One-shot: prompt provided via `--prompt/-p` or stdin is piped
+- REPL: no prompt and stdin is a TTY (exits on EOF / Ctrl+C)
+
+LLM configuration is resolved from environment variables used by `aikit-agent` (for example `OPENAI_API_KEY`, `AIKIT_LLM_URL`, `AIKIT_MODEL`), and can be overridden per-run with `--model`.
 
 Try it with the built-in example:
 
@@ -235,12 +243,12 @@ Try it with the built-in example:
 cargo run --example with_chat --features chat -- chat --help
 ```
 
-### Query syntax
+### Ask query syntax
 
 - `ask <query>` — positional words are joined into a single query
 - `ask --query "<query>"` — explicit named query
 
-### Confirmation
+### Ask confirmation
 
 After the LLM resolves your query, the command displays the resolved command,
 confidence score, and reasoning, then prompts:
@@ -256,7 +264,7 @@ Execute this command? (y/N):
 
 Exact formatting may vary slightly by version; only **`y`** or **`yes`** (case-insensitive) proceeds when confirmation is shown.
 
-### Non-interactive mode
+### Ask non-interactive mode
 
 Use `--yes` to skip the confirmation prompt:
 
