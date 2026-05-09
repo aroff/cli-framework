@@ -377,6 +377,14 @@ impl<'a, C: AppContext> AppContext for CliAppContextWrapper<'a, C> {
     fn opt_registry(&self) -> Option<&crate::command::CommandRegistry> {
         Some(self.command_registry)
     }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        self._inner.as_any()
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        self._inner.as_any_mut()
+    }
 }
 
 impl<'a, C: AppContext> crate::app::context::LlmContext for CliAppContextWrapper<'a, C> {

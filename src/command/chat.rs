@@ -5,7 +5,6 @@ use crate::parser::validator::SpecValidator;
 use crate::security::command_risk::{CommandRiskPolicy, CommandRiskTier};
 use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use crate::spec::command_tree::{CommandSpec, EnvVarEntry, ExitCodeEntry};
-use crate::spec::value::ArgValue;
 use anyhow::Context;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -196,7 +195,7 @@ async fn enforce_chat_risk_gate(
                     .request_confirmation(&format!("Execute command '{}'", cmd.id), None)
                     .await?
             } else {
-                prompt_confirm(&format!("Execute command '{}'? [y/N] ", cmd.id))?
+                prompt_confirm_blocking(format!("Execute command '{}'? [y/N] ", cmd.id)).await?
             };
             if !confirmed {
                 return Err(anyhow::anyhow!(
@@ -233,7 +232,8 @@ async fn enforce_chat_risk_gate(
                     )
                     .await?
             } else {
-                prompt_confirm(&format!("Execute DESTRUCTIVE command '{}'? [y/N] ", cmd.id))?
+                prompt_confirm_blocking(format!("Execute DESTRUCTIVE command '{}'? [y/N] ", cmd.id))
+                    .await?
             };
             if !confirmed {
                 return Err(anyhow::anyhow!(
@@ -247,17 +247,22 @@ async fn enforce_chat_risk_gate(
     }
 }
 
-fn prompt_confirm(prompt: &str) -> anyhow::Result<bool> {
-    let mut stderr = std::io::stderr();
-    write!(stderr, "{}", prompt)?;
-    stderr.flush()?;
+async fn prompt_confirm_blocking(prompt: String) -> anyhow::Result<bool> {
+    // Blocking stdin read must not run on the async runtime (§4.5).
+    tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
+        let mut stderr = std::io::stderr();
+        write!(stderr, "{}", prompt)?;
+        stderr.flush()?;
 
-    let mut line = String::new();
-    std::io::stdin()
-        .read_line(&mut line)
-        .context("failed to read confirmation from stdin")?;
-    let s = line.trim().to_ascii_lowercase();
-    Ok(matches!(s.as_str(), "y" | "yes"))
+        let mut line = String::new();
+        std::io::stdin()
+            .read_line(&mut line)
+            .context("failed to read confirmation from stdin")?;
+        let s = line.trim().to_ascii_lowercase();
+        Ok(matches!(s.as_str(), "y" | "yes"))
+    })
+    .await
+    .context("confirmation prompt task failed")?
 }
 
 pub fn create_chat_command(
@@ -301,6 +306,8 @@ Exit:\n\
 Notes:\n\
  - Tool calls are serialized (one command executes at a time).\n\
  - Tools are limited to this process's registered CLI commands.\n\
+ - Ctrl+C cancellation is best-effort; in-flight HTTP requests may not abort immediately.\n\
+ - LLM HTTP timeouts: connect=10s, request=60s (fixed in this rollout phase).\n\
  - Structured output modes (events/JSON) are not enabled in this rollout phase.\n\
  - LLM configuration is resolved from environment variables (OPENAI_API_KEY / AIKIT_*).\n\
 ",

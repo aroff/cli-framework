@@ -6,8 +6,11 @@ pub mod transport_http;
 
 use crate::command::registry::CommandRegistry;
 use crate::command::Command;
+#[cfg(any(feature = "mcp-server", feature = "chat"))]
 use crate::command::CommandArgs;
+#[cfg(any(feature = "mcp-server", feature = "chat"))]
 use crate::spec::value::ArgValue;
+#[cfg(feature = "mcp-server")]
 use anyhow::Result;
 #[cfg(feature = "mcp-server")]
 use rmcp::{
@@ -19,6 +22,7 @@ use rmcp::{
     RoleServer, ServerHandler,
 };
 use schema::{command_to_tool_descriptor, McpToolDescriptor};
+#[cfg(any(feature = "mcp-server", feature = "chat"))]
 use serde_json::Value;
 #[cfg(feature = "mcp-server")]
 use std::borrow::Cow;
@@ -133,6 +137,7 @@ struct McpAppContext;
 #[cfg(feature = "mcp-server")]
 impl crate::app::AppContext for McpAppContext {}
 
+#[cfg(any(feature = "mcp-server", feature = "chat"))]
 pub(crate) fn json_value_to_arg_value(v: &Value) -> Option<ArgValue> {
     match v {
         Value::Bool(b) => Some(ArgValue::Bool(*b)),
@@ -158,6 +163,7 @@ pub(crate) fn json_value_to_arg_value(v: &Value) -> Option<ArgValue> {
 /// - `_positional: [..]` maps to `CommandArgs.positional`
 /// - all other keys map to `CommandArgs.named` via stringification
 /// - typed values are converted via `json_value_to_arg_value`
+#[cfg(any(feature = "mcp-server", feature = "chat"))]
 pub(crate) fn map_mcp_args_to_command_args_from_json(
     arguments: Value,
 ) -> anyhow::Result<(CommandArgs, HashMap<String, ArgValue>)> {
