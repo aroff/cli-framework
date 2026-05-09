@@ -74,6 +74,8 @@ legacy-arg-coercion = []
 testkit = []
 # MCP server — expose registered commands as MCP tools via Streamable HTTP
 mcp-server = ["dep:rmcp", "dep:axum"]
+# MCP install — register this app as an MCP server in agent config files
+mcp-install = ["mcp-server"]
 # Doctor diagnostics framework — structured health checks with terminal/JSON output
 doctor = []
 # Project config — project root discovery and TOML loading (off by default)
@@ -222,4 +224,13 @@ path = "tests/unit/command_surface_render.rs"
 [[test]]
 name = "integration_spec_command"
 path = "tests/integration/spec_command.rs"
+
+[[test]]
+name = "integration_nested_command_routing"
+path = "tests/integration/nested_command_routing.rs"
+
+[[test]]
+name = "unit_mcp_install"
+path = "tests/unit/mcp_install.rs"
+required-features = ["mcp-install"]
 

@@ -24,7 +24,7 @@ use crate::parser::clap_mapper::{
     build_legacy_clap_command, build_typed_clap_command, map_matches_to_typed_args,
 };
 use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
-use crate::parser::error_codes::{E_UNKNOWN_COMMAND, E_UNKNOWN_FLAG};
+use crate::parser::error_codes::{E_NESTED_COMMAND_NOT_FOUND, E_UNKNOWN_COMMAND, E_UNKNOWN_FLAG};
 use crate::parser::outcome::ParseOutcome;
 use crate::spec::command_tree::CommandPath;
 
@@ -57,6 +57,7 @@ pub fn build_clap_root(
         }
     }
 
+    // Add root-level (depth-1) commands from the flat registry.
     for cmd in registry.commands() {
         let sub = if let Some(ref spec) = cmd.spec {
             build_typed_clap_command(cmd.id, spec)
@@ -64,6 +65,72 @@ pub fn build_clap_root(
             build_legacy_clap_command(cmd)
         };
         root = root.subcommand(sub);
+    }
+
+    // Build nested group subcommands from tree_commands (depth >= 2).
+    // Group paths by their first segment; skip if already a root-level command.
+    let mut nested_groups: std::collections::HashMap<
+        String,
+        Vec<(&str, &crate::command::Command)>,
+    > = std::collections::HashMap::new();
+    for (path_str, cmd) in registry.all_tree_commands() {
+        if path_str.contains('/') {
+            let first_slash = path_str.find('/').unwrap();
+            let first_segment = &path_str[..first_slash];
+            if registry.get(first_segment).is_none() {
+                nested_groups
+                    .entry(first_segment.to_string())
+                    .or_default()
+                    .push((path_str, cmd));
+            }
+        }
+    }
+
+    let mut group_names: Vec<String> = nested_groups.keys().cloned().collect();
+    group_names.sort();
+    for group_name in group_names {
+        let children = &nested_groups[&group_name];
+        let summary = registry
+            .group_metadata_for(&group_name)
+            .map(|m| m.summary)
+            .unwrap_or("Command group");
+
+        let mut child_cmds: Vec<clap::Command> = children
+            .iter()
+            .filter_map(|(path_str, cmd)| {
+                let rel_path = &path_str[group_name.len() + 1..];
+                if !rel_path.contains('/') {
+                    // Direct child (depth 2)
+                    let mut c = if let Some(ref spec) = cmd.spec {
+                        build_typed_clap_command(cmd.id, spec)
+                    } else {
+                        build_legacy_clap_command(cmd)
+                    };
+                    // Add spec aliases as Clap aliases (visible on the command)
+                    if let Some(ref spec) = cmd.spec {
+                        for alias in &spec.aliases {
+                            c = c.visible_alias(alias);
+                        }
+                    }
+                    Some(c)
+                } else {
+                    // Deeper nesting (depth > 2) — skip; recursive grouping not yet implemented
+                    None
+                }
+            })
+            .collect();
+        child_cmds.sort_by(|a, b| a.get_name().cmp(b.get_name()));
+
+        // Clap 4 requires `'static` for command names; leak is bounded by # of groups.
+        let static_name: &'static str = Box::leak(group_name.into_boxed_str());
+        let mut group_clap = clap::Command::new(static_name)
+            .about(summary)
+            .subcommand_required(true)
+            .arg_required_else_help(true);
+        for child in child_cmds {
+            group_clap = group_clap.subcommand(child);
+        }
+        root = root.subcommand(group_clap);
     }
 
     let has_version_cmd = registry.get("version").is_some();
@@ -88,7 +155,7 @@ pub fn build_clap_root(
                     .long("mcp-serve")
                     .action(clap::ArgAction::SetTrue)
                     .global(true)
-                    .help("Enable MCP server mode (Streamable HTTP)"),
+                    .help("Enable MCP server mode (Streamable HTTP) [DEPRECATED: use `mcp serve`]"),
             )
             .arg(
                 clap::Arg::new("mcp-host")
@@ -145,6 +212,32 @@ pub fn extract_mcp_flags(matches: &clap::ArgMatches) -> McpGlobalFlags {
     }
 }
 
+/// Recursively walk `ArgMatches` to extract the full `CommandPath` and the leaf `ArgMatches`.
+///
+/// Example: for `prog mcp serve --port 9090`, the root matches has "mcp" as subcommand,
+/// whose matches has "serve" as subcommand. Returns `CommandPath(["mcp", "serve"])` and
+/// the serve-level ArgMatches (which contains `--port`).
+pub fn extract_nested_command_path<'a>(
+    matches: &'a clap::ArgMatches,
+) -> (CommandPath, &'a clap::ArgMatches) {
+    let mut segments = Vec::new();
+    let leaf = walk_subcommands(matches, &mut segments);
+    (CommandPath(segments), leaf)
+}
+
+fn walk_subcommands<'a>(
+    matches: &'a clap::ArgMatches,
+    segments: &mut Vec<String>,
+) -> &'a clap::ArgMatches {
+    match matches.subcommand() {
+        Some((name, sub)) => {
+            segments.push(name.to_string());
+            walk_subcommands(sub, segments)
+        }
+        None => matches,
+    }
+}
+
 /// Parse argv against the clap command tree, returning a typed `ParseOutcome`.
 ///
 /// - `HelpShown` / `VersionShown`: clap wrote to stdout; caller should return `Ok(())`.
@@ -157,21 +250,28 @@ pub fn parse_with_clap(
 ) -> ParseOutcome {
     match root.clone().try_get_matches_from(&args) {
         Ok(matches) => {
-            let (name, sub_matches) = matches.subcommand().expect("subcommand required");
-            let command_path = CommandPath::root_for(name);
+            let (command_path, leaf_matches) = extract_nested_command_path(&matches);
+            let leaf_name = command_path.leaf().unwrap_or("");
 
-            let (cmd_args, typed_args) = if let Some(cmd) = registry.get(name) {
+            // Look up by full path for multi-segment, flat map for single-segment.
+            let cmd = if command_path.0.len() > 1 {
+                registry.resolve(&command_path)
+            } else {
+                registry.get(leaf_name)
+            };
+
+            let (cmd_args, typed_args) = if let Some(cmd) = cmd {
                 if let Some(ref spec) = cmd.spec {
-                    match map_matches_to_typed_args(spec, sub_matches) {
+                    match map_matches_to_typed_args(spec, leaf_matches) {
                         Ok(typed) => (CommandArgs::default(), Some(typed)),
                         Err(d) => return ParseOutcome::ParseError(d),
                     }
                 } else {
-                    (match_to_command_args(sub_matches), None)
+                    (match_to_command_args(leaf_matches), None)
                 }
             } else {
                 // Built-in commands (e.g. "version") not in the user registry
-                (match_to_command_args(sub_matches), None)
+                (match_to_command_args(leaf_matches), None)
             };
 
             ParseOutcome::Parsed {
@@ -200,13 +300,34 @@ pub fn parse_with_clap(
                 }),
                 _ => {
                     let cmd_arg = args.get(1).cloned().unwrap_or_default();
-                    ParseOutcome::ParseError(Diagnostic {
-                        code: E_UNKNOWN_COMMAND,
-                        category: DiagnosticCategory::Parse,
-                        message: format!("unrecognized subcommand '{}'", cmd_arg),
-                        suggestion: Some("Use --help to see available commands".to_string()),
-                        span: Some(cmd_arg),
-                    })
+                    // Heuristic: if there are more than 2 argv tokens (prog + group + sub),
+                    // this looks like a failed nested command lookup → E012.
+                    let is_nested_attempt = args.len() > 2
+                        && args.get(1).map(|a| !a.starts_with('-')).unwrap_or(false)
+                        && args.get(2).map(|a| !a.starts_with('-')).unwrap_or(false);
+                    if is_nested_attempt {
+                        let path_str = args[1..args.len().min(args.len())]
+                            .iter()
+                            .take_while(|a| !a.starts_with('-'))
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        ParseOutcome::ParseError(Diagnostic {
+                            code: E_NESTED_COMMAND_NOT_FOUND,
+                            category: DiagnosticCategory::Parse,
+                            message: format!("nested command path '{}' not found", path_str),
+                            suggestion: Some("Use --help to see available commands".to_string()),
+                            span: Some(cmd_arg),
+                        })
+                    } else {
+                        ParseOutcome::ParseError(Diagnostic {
+                            code: E_UNKNOWN_COMMAND,
+                            category: DiagnosticCategory::Parse,
+                            message: format!("unrecognized subcommand '{}'", cmd_arg),
+                            suggestion: Some("Use --help to see available commands".to_string()),
+                            span: Some(cmd_arg),
+                        })
+                    }
                 }
             }
         }

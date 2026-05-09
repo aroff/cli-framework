@@ -53,11 +53,42 @@ impl<'a> HelpRenderer<'a> {
         }
 
         // 2. GROUP COLLECTION
-        let mut groups: std::collections::HashMap<&str, Vec<&crate::command::Command>> =
-            std::collections::HashMap::new();
+        // Unified entry: (id, summary, syntax, category)
+        struct Entry<'e> {
+            id: &'e str,
+            summary: &'e str,
+            syntax: Option<&'e str>,
+            category: Option<&'e str>,
+        }
+
+        let mut all_entries: Vec<Entry<'_>> = Vec::new();
+
         for cmd in self.commands.commands() {
-            let key = cmd.category.unwrap_or(OTHER);
-            groups.entry(key).or_default().push(cmd);
+            all_entries.push(Entry {
+                id: cmd.id,
+                summary: cmd.summary,
+                syntax: cmd.syntax,
+                category: cmd.category,
+            });
+        }
+
+        // Include group nodes (e.g., "mcp") as navigable entries in "Other".
+        for (path_str, meta) in self.commands.groups() {
+            if !meta.hidden && !path_str.contains('/') {
+                all_entries.push(Entry {
+                    id: path_str,
+                    summary: meta.summary,
+                    syntax: None,
+                    category: None,
+                });
+            }
+        }
+
+        let mut groups: std::collections::HashMap<&str, Vec<&Entry<'_>>> =
+            std::collections::HashMap::new();
+        for entry in &all_entries {
+            let key = entry.category.unwrap_or(OTHER);
+            groups.entry(key).or_default().push(entry);
         }
 
         let mut group_keys: Vec<&str> = groups.keys().copied().collect();
@@ -77,35 +108,35 @@ impl<'a> HelpRenderer<'a> {
 
         // 3. PER-GROUP RENDERING
         for group in group_keys {
-            let Some(cmds) = groups.get_mut(group) else {
+            let Some(entries) = groups.get_mut(group) else {
                 continue;
             };
 
             out.push_str(&title_case(group));
             out.push_str(":\n");
 
-            cmds.sort_by(|a, b| {
+            entries.sort_by(|a, b| {
                 a.id.to_ascii_lowercase()
                     .cmp(&b.id.to_ascii_lowercase())
                     .then_with(|| a.id.cmp(b.id))
             });
 
-            let max_id_len = cmds.iter().map(|c| c.id.len()).max().unwrap_or(0);
+            let max_id_len = entries.iter().map(|e| e.id.len()).max().unwrap_or(0);
             let col_width = max_id_len + 2;
             let indent_len = 2 + col_width;
             let indent = " ".repeat(indent_len);
 
-            for cmd in cmds.iter() {
+            for entry in entries.iter() {
                 out.push_str("  ");
-                out.push_str(cmd.id);
-                let pad = col_width.saturating_sub(cmd.id.len());
+                out.push_str(entry.id);
+                let pad = col_width.saturating_sub(entry.id.len());
                 if pad > 0 {
                     out.push_str(&" ".repeat(pad));
                 }
-                out.push_str(cmd.summary);
+                out.push_str(entry.summary);
                 out.push('\n');
 
-                if let Some(syntax) = cmd.syntax {
+                if let Some(syntax) = entry.syntax {
                     out.push_str(&indent);
                     out.push_str("Usage: ");
                     out.push_str(syntax);

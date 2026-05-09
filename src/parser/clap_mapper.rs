@@ -103,6 +103,32 @@ fn build_clap_arg(arg_spec: &ArgSpec) -> clap::Arg {
         arg = arg.short(short);
     }
 
+    // Apply default_value for optional/repeated args that declare a default.
+    // Clap 4 requires `'static` strings; Box::leak is bounded by the number of
+    // unique default values across all arg specs, which is negligible at startup.
+    if arg_spec.cardinality != Cardinality::Required {
+        if let Some(ref default) = arg_spec.default {
+            use crate::spec::value::ArgValue;
+            let default_str: &'static str = match default {
+                ArgValue::Str(s) => Box::leak(s.clone().into_boxed_str()),
+                ArgValue::Enum(s) => Box::leak(s.clone().into_boxed_str()),
+                ArgValue::Bool(b) => {
+                    if *b {
+                        "true"
+                    } else {
+                        "false"
+                    }
+                }
+                ArgValue::Int(i) => Box::leak(i.to_string().into_boxed_str()),
+                ArgValue::Float(f) => Box::leak(f.to_string().into_boxed_str()),
+                _ => "",
+            };
+            if !default_str.is_empty() {
+                arg = arg.default_value(default_str);
+            }
+        }
+    }
+
     match arg_spec.kind {
         ArgKind::Flag => match arg_spec.cardinality {
             Cardinality::Repeated => {

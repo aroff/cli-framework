@@ -229,6 +229,73 @@ impl AppBuilder {
             log::warn!("'spec' command already registered; skipping built-in spec command");
         }
 
+        // Auto-register `mcp` group + `mcp serve` when mcp-server feature is enabled.
+        // Guard: skip if the user already registered a root-level "mcp" command or
+        // explicitly registered mcp/serve.
+        #[cfg(feature = "mcp-server")]
+        {
+            let mcp_is_root_cmd = self.command_registry.get("mcp").is_some();
+            let mcp_serve_path = CommandPath::new(&["mcp", "serve"]).unwrap();
+            let mcp_serve_exists = self.command_registry.resolve(&mcp_serve_path).is_some();
+
+            if !mcp_is_root_cmd && !mcp_serve_exists {
+                // Register the mcp group node.
+                let _ = self.command_registry.register_group(
+                    &CommandPath::root_for("mcp"),
+                    crate::mcp::commands::mcp_group_metadata(),
+                );
+
+                // Clone registry for the serve closure BEFORE registering mcp/serve
+                // (so the tool registry used by serve_mcp doesn't include mcp/serve itself).
+                let registry_arc_for_serve = Arc::new(self.command_registry.clone());
+                let risk_policy_for_serve = self.risk_policy.clone();
+                let export_policy_for_serve = self.mcp_export_policy;
+                let app_name_for_serve = self.app_name;
+
+                let serve_cmd = crate::mcp::commands::create_mcp_serve_command_with_deps(
+                    registry_arc_for_serve,
+                    app_name_for_serve,
+                    risk_policy_for_serve,
+                    export_policy_for_serve,
+                );
+                self.command_registry
+                    .register_at(&mcp_serve_path, serve_cmd)
+                    .expect("mcp serve auto-registration");
+            }
+        }
+
+        // Auto-register `mcp install` (alias `register`) and `mcp list` when mcp-install enabled.
+        #[cfg(feature = "mcp-install")]
+        {
+            let app_name_for_install = self.app_name;
+
+            let install_path = CommandPath::new(&["mcp", "install"]).unwrap();
+            if self.command_registry.resolve(&install_path).is_none() {
+                let install_cmd =
+                    crate::mcp::commands::create_mcp_install_command(app_name_for_install);
+                // Also prepare the register alias command (same impl, id "register")
+                let mut register_cmd = install_cmd.clone();
+                register_cmd.id = "register";
+                self.command_registry
+                    .register_at(&install_path, install_cmd)
+                    .expect("mcp install auto-registration");
+                let register_path = CommandPath::new(&["mcp", "register"]).unwrap();
+                if self.command_registry.resolve(&register_path).is_none() {
+                    self.command_registry
+                        .register_at(&register_path, register_cmd)
+                        .expect("mcp register auto-registration");
+                }
+            }
+
+            let list_path = CommandPath::new(&["mcp", "list"]).unwrap();
+            if self.command_registry.resolve(&list_path).is_none() {
+                let list_cmd = crate::mcp::commands::create_mcp_list_command();
+                self.command_registry
+                    .register_at(&list_path, list_cmd)
+                    .expect("mcp list auto-registration");
+            }
+        }
+
         let clap_root = crate::app::clap_adapter::build_clap_root(
             self.meta.as_ref(),
             &self.command_registry,
@@ -364,11 +431,14 @@ impl<C: AppContext> App<C> {
     pub async fn run_with_args(&mut self, args: Vec<String>) -> Result<()> {
         use crate::app::clap_adapter::parse_with_clap;
         use crate::app::diagnostic_reporter::DiagnosticReporter;
+        use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
+        use crate::parser::error_codes::E_NESTED_COMMAND_NOT_FOUND;
         use crate::parser::outcome::ParseOutcome;
 
         #[cfg(feature = "mcp-server")]
         {
             if args.iter().any(|a| a == "--mcp-serve") {
+                eprintln!("DEPRECATED: --mcp-serve is deprecated; use `mcp serve` instead");
                 let mcp_args = crate::mcp::extract_mcp_args_from_raw(&args);
                 return crate::mcp::serve_mcp(
                     Arc::clone(&self.command_registry),
@@ -395,8 +465,35 @@ impl<C: AppContext> App<C> {
                     self.framework_println(&format!("{} {}", self.app_name, self.app_version));
                     return Ok(());
                 }
-                self.execute_command_with_typed_args(&cmd_id, cmd_args, typed_args)
-                    .await
+
+                if command_path.0.len() > 1 {
+                    // Multi-segment path: use resolve() for dispatch.
+                    match self.command_registry.resolve(&command_path) {
+                        Some(cmd) => {
+                            let cmd_clone = cmd.clone();
+                            self.execute_command_direct(cmd_clone, cmd_args, typed_args)
+                                .await
+                        }
+                        None => {
+                            DiagnosticReporter::report(&Diagnostic {
+                                code: E_NESTED_COMMAND_NOT_FOUND,
+                                category: DiagnosticCategory::Parse,
+                                message: format!(
+                                    "nested command '{}' not found",
+                                    command_path.to_path_string()
+                                ),
+                                suggestion: Some(
+                                    "Use --help to see available commands".to_string(),
+                                ),
+                                span: None,
+                            });
+                            Ok(())
+                        }
+                    }
+                } else {
+                    self.execute_command_with_typed_args(&cmd_id, cmd_args, typed_args)
+                        .await
+                }
             }
             ParseOutcome::HelpShown(text) => {
                 self.framework_println(text.trim_end());
@@ -458,16 +555,26 @@ impl<C: AppContext> App<C> {
         args: crate::command::CommandArgs,
         typed_args: Option<HashMap<String, ArgValue>>,
     ) -> Result<()> {
-        use crate::app::diagnostic_reporter::DiagnosticReporter;
-
         let command = self
             .command_registry
             .get(command_id)
             .ok_or_else(|| anyhow::anyhow!("Command '{}' not found", command_id))?
             .clone();
+        self.execute_command_direct(command, args, typed_args).await
+    }
+
+    /// Execute an already-resolved `Command` with optional typed args.
+    /// Shared by both single-segment (`execute_command_with_typed_args`) and
+    /// multi-segment dispatch paths in `run_with_args`.
+    async fn execute_command_direct(
+        &mut self,
+        command: Command,
+        args: crate::command::CommandArgs,
+        typed_args: Option<HashMap<String, ArgValue>>,
+    ) -> Result<()> {
+        use crate::app::diagnostic_reporter::DiagnosticReporter;
 
         // Stage 6: Validation Pipeline
-        // If the command has a spec and we have typed args, run validation
         if let (Some(ref spec), Some(ref typed_args_map)) = (&command.spec, &typed_args) {
             // Spec-level validation (E003–E006)
             let spec_diagnostics = SpecValidator::validate(spec, typed_args_map);
@@ -530,6 +637,11 @@ impl<C: AppContext> App<C> {
 
         (command.execute)(&mut ctx_wrapper, effective_args).await?;
         Ok(())
+    }
+
+    /// Return a reference to the command registry.
+    pub fn command_registry(&self) -> &CommandRegistry {
+        self.command_registry.as_ref()
     }
 
     pub fn get_command_metadata(&self) -> Vec<crate::llm::CommandMetadata> {

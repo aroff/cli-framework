@@ -74,10 +74,11 @@ impl TreeNode {
 pub struct CommandRegistry {
     /// Flat id → Command index (root-level commands only, for backward compat).
     commands: HashMap<String, Command>,
-    /// Root-level tree nodes (keyed by first path segment).
-    // Not Clone-derived; we provide a manual Clone below.
+    /// All registered commands by full path string (leaf nodes only).
     #[allow(dead_code)]
-    tree_commands: HashMap<String, Command>, // stores all registered commands by full path string
+    tree_commands: HashMap<String, Command>,
+    /// Group metadata by path string (non-leaf group nodes).
+    groups: HashMap<String, GroupMetadata>,
 }
 
 impl CommandRegistry {
@@ -86,6 +87,7 @@ impl CommandRegistry {
         Self {
             commands: HashMap::new(),
             tree_commands: HashMap::new(),
+            groups: HashMap::new(),
         }
     }
 
@@ -128,20 +130,28 @@ impl CommandRegistry {
 
     /// Register a group node (no command, just metadata).
     ///
-    /// Returns `Err(RegistrationError::Collision)` if the path already has a command.
+    /// Returns `Err(RegistrationError::Collision)` if the path already has a command or group.
     pub fn register_group(
         &mut self,
         path: &CommandPath,
-        _metadata: GroupMetadata,
+        metadata: GroupMetadata,
     ) -> Result<(), RegistrationError> {
         let path_str = path.to_path_string();
-        if self.tree_commands.contains_key(&path_str) {
+        if self.tree_commands.contains_key(&path_str) || self.groups.contains_key(&path_str) {
             return Err(RegistrationError::Collision { path: path_str });
         }
-        // Group nodes don't go in the flat commands map; just note their existence.
-        // (A full tree impl would store GroupMetadata; this simplified version just
-        //  prevents collision without persisting the group node.)
+        self.groups.insert(path_str, metadata);
         Ok(())
+    }
+
+    /// Look up group metadata by path string (e.g., "mcp" for the mcp group).
+    pub fn group_metadata_for(&self, path_str: &str) -> Option<&GroupMetadata> {
+        self.groups.get(path_str)
+    }
+
+    /// Iterate over all registered group nodes.
+    pub fn groups(&self) -> impl Iterator<Item = (&str, &GroupMetadata)> {
+        self.groups.iter().map(|(k, v)| (k.as_str(), v))
     }
 
     /// Register a command at a specific `CommandPath`.
@@ -156,8 +166,8 @@ impl CommandRegistry {
     ) -> Result<(), RegistrationError> {
         let path_str = path.to_path_string();
 
-        // Collision check
-        if self.tree_commands.contains_key(&path_str) {
+        // Collision check — also prevent registering a leaf at a path already used as a group
+        if self.tree_commands.contains_key(&path_str) || self.groups.contains_key(&path_str) {
             return Err(RegistrationError::Collision { path: path_str });
         }
 
