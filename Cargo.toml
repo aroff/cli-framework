@@ -236,3 +236,8 @@ name = "unit_mcp_install"
 path = "tests/unit/mcp_install.rs"
 required-features = ["mcp-install"]
 
+[[test]]
+name = "integration_mcp_install"
+path = "tests/integration/mcp_install.rs"
+required-features = ["mcp-install"]
+

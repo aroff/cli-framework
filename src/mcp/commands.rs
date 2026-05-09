@@ -513,8 +513,8 @@ pub fn create_mcp_list_command() -> Command {
             Box::pin(async move {
                 let agents = aikit_sdk::mcp_supported_agents();
                 println!(
-                    "{:<15} {:<25} {:<45} {}",
-                    "AGENT", "NAME", "PROJECT PATH", "GLOBAL PATH"
+                    "{:<15} {:<25} {:<45} GLOBAL PATH",
+                    "AGENT", "NAME", "PROJECT PATH"
                 );
                 for row in &agents {
                     println!(

@@ -32,6 +32,7 @@
 //!             category: Some("greetings"),
 //!             spec: None,
 //!             validator: None,
+//!             expose_mcp: false,
 //!             execute: std::sync::Arc::new(|_ctx, args| Box::pin(async move {
 //!                 let name = args
 //!                     .named

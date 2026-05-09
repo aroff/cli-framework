@@ -131,10 +131,8 @@ fn json_value_to_arg_value(v: &Value) -> Option<ArgValue> {
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 Some(ArgValue::Int(i))
-            } else if let Some(f) = n.as_f64() {
-                Some(ArgValue::Float(f))
             } else {
-                None
+                n.as_f64().map(ArgValue::Float)
             }
         }
         Value::String(s) => Some(ArgValue::Str(s.clone())),
@@ -368,10 +366,17 @@ pub fn extract_mcp_args_from_raw(args: &[String]) -> McpServerArgs {
 ///
 /// ```rust,no_run
 /// # use cli_framework::mcp::build_mcp_axum_router;
+/// # use cli_framework::mcp::McpToolExportPolicy;
 /// # use cli_framework::command::CommandRegistry;
 /// # use cli_framework::security::CommandRiskPolicy;
 /// let registry = CommandRegistry::new();
-/// let router = build_mcp_axum_router(&registry, "myapp", "/mcp", CommandRiskPolicy::default());
+/// let router = build_mcp_axum_router(
+///     &registry,
+///     "myapp",
+///     "/mcp",
+///     CommandRiskPolicy::default(),
+///     McpToolExportPolicy::default(),
+/// );
 /// // nest into your existing axum router:
 /// // let app = axum::Router::new().merge(router);
 /// ```

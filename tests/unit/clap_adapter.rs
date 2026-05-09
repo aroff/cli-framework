@@ -582,6 +582,54 @@ fn parse_nested_argv_yields_multi_segment_path() {
 }
 
 #[test]
+fn parse_deep_nested_argv_uses_registered_path_segments() {
+    use cli_framework::command::CommandRegistry;
+    use cli_framework::spec::command_tree::{CommandPath, CommandSpec};
+    use std::sync::Arc;
+
+    let mut registry = CommandRegistry::new();
+    let path = CommandPath::new(&["cluster", "node", "get"]).unwrap();
+    registry
+        .register_at(
+            &path,
+            Command {
+                id: "lookup",
+                summary: "Get cluster node",
+                syntax: None,
+                category: None,
+                spec: Some(Arc::new(CommandSpec {
+                    summary: "Get cluster node",
+                    ..Default::default()
+                })),
+                validator: None,
+                expose_mcp: false,
+                execute: noop_execute(),
+            },
+        )
+        .unwrap();
+
+    let root =
+        cli_framework::app::clap_adapter::build_clap_root(None, &registry, "testapp", "0.1.0");
+    let outcome = cli_framework::app::clap_adapter::parse_with_clap(
+        &root,
+        &registry,
+        vec![
+            "testapp".to_string(),
+            "cluster".to_string(),
+            "node".to_string(),
+            "get".to_string(),
+        ],
+    );
+
+    match outcome {
+        ParseOutcome::Parsed { command_path, .. } => {
+            assert_eq!(command_path.0, vec!["cluster", "node", "get"]);
+        }
+        other => panic!("expected Parsed, got {:?}", other),
+    }
+}
+
+#[test]
 fn parse_nested_group_help_returns_help_shown() {
     use cli_framework::command::CommandRegistry;
     use cli_framework::spec::command_tree::{CommandPath, CommandSpec};

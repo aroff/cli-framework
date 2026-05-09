@@ -267,32 +267,40 @@ impl AppBuilder {
         // Auto-register `mcp install` (alias `register`) and `mcp list` when mcp-install enabled.
         #[cfg(feature = "mcp-install")]
         {
-            let app_name_for_install = self.app_name;
-
-            let install_path = CommandPath::new(&["mcp", "install"]).unwrap();
-            if self.command_registry.resolve(&install_path).is_none() {
-                let install_cmd =
-                    crate::mcp::commands::create_mcp_install_command(app_name_for_install);
-                // Also prepare the register alias command (same impl, id "register")
-                let mut register_cmd = install_cmd.clone();
-                register_cmd.id = "register";
-                self.command_registry
-                    .register_at(&install_path, install_cmd)
-                    .expect("mcp install auto-registration");
-                let register_path = CommandPath::new(&["mcp", "register"]).unwrap();
-                if self.command_registry.resolve(&register_path).is_none() {
-                    self.command_registry
-                        .register_at(&register_path, register_cmd)
-                        .expect("mcp register auto-registration");
-                }
+            if self.command_registry.get("mcp").is_none() {
+                let _ = self.command_registry.register_group(
+                    &CommandPath::root_for("mcp"),
+                    crate::mcp::commands::mcp_group_metadata(),
+                );
             }
 
-            let list_path = CommandPath::new(&["mcp", "list"]).unwrap();
-            if self.command_registry.resolve(&list_path).is_none() {
-                let list_cmd = crate::mcp::commands::create_mcp_list_command();
-                self.command_registry
-                    .register_at(&list_path, list_cmd)
-                    .expect("mcp list auto-registration");
+            if self.command_registry.get("mcp").is_none() {
+                let app_name_for_install = self.app_name;
+
+                let install_path = CommandPath::new(&["mcp", "install"]).unwrap();
+                if self.command_registry.resolve(&install_path).is_none() {
+                    let install_cmd =
+                        crate::mcp::commands::create_mcp_install_command(app_name_for_install);
+                    let mut register_cmd = install_cmd.clone();
+                    register_cmd.id = "register";
+                    self.command_registry
+                        .register_at(&install_path, install_cmd)
+                        .expect("mcp install auto-registration");
+                    let register_path = CommandPath::new(&["mcp", "register"]).unwrap();
+                    if self.command_registry.resolve(&register_path).is_none() {
+                        self.command_registry
+                            .register_at(&register_path, register_cmd)
+                            .expect("mcp register auto-registration");
+                    }
+                }
+
+                let list_path = CommandPath::new(&["mcp", "list"]).unwrap();
+                if self.command_registry.resolve(&list_path).is_none() {
+                    let list_cmd = crate::mcp::commands::create_mcp_list_command();
+                    self.command_registry
+                        .register_at(&list_path, list_cmd)
+                        .expect("mcp list auto-registration");
+                }
             }
         }
 
@@ -314,6 +322,7 @@ impl AppBuilder {
             meta: self.meta,
             app_name: self.app_name,
             app_version: self.app_version,
+            #[cfg(feature = "mcp-server")]
             risk_policy: self.risk_policy.clone(),
             clap_root,
             #[cfg(feature = "testkit")]
@@ -339,6 +348,7 @@ pub struct App<C: AppContext> {
     meta: Option<AppMeta>,
     app_name: &'static str,
     app_version: &'static str,
+    #[cfg(feature = "mcp-server")]
     risk_policy: crate::security::command_risk::CommandRiskPolicy,
     clap_root: clap::Command,
     /// Captures framework-level stdout output (version strings etc.) when testkit is active.
@@ -513,6 +523,8 @@ impl<C: AppContext> App<C> {
     /// Write a line of framework-level output. Routes through the testkit capture buffer
     /// when active; otherwise writes to real stdout.
     fn framework_println(&self, s: &str) {
+        use std::io::Write;
+
         #[cfg(feature = "testkit")]
         if let Some(ref buf) = self.stdout_capture {
             let mut lock = buf.lock().unwrap();
@@ -520,7 +532,9 @@ impl<C: AppContext> App<C> {
             lock.push(b'\n');
             return;
         }
-        println!("{}", s);
+
+        let mut stdout = std::io::stdout();
+        let _ = writeln!(stdout, "{}", s);
     }
 
     pub fn show_help(&self) {

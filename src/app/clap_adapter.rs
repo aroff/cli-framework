@@ -20,9 +20,7 @@
 
 use crate::app::AppMeta;
 use crate::command::{CommandArgs, CommandRegistry};
-use crate::parser::clap_mapper::{
-    build_legacy_clap_command, build_typed_clap_command, map_matches_to_typed_args,
-};
+use crate::parser::clap_mapper::{build_typed_clap_command, map_matches_to_typed_args};
 use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
 use crate::parser::error_codes::{E_NESTED_COMMAND_NOT_FOUND, E_UNKNOWN_COMMAND, E_UNKNOWN_FLAG};
 use crate::parser::outcome::ParseOutcome;
@@ -31,6 +29,37 @@ use crate::spec::command_tree::CommandPath;
 pub struct ParsedCommand {
     pub command_id: String,
     pub args: CommandArgs,
+}
+
+#[derive(Default)]
+struct ClapTreeNode<'a> {
+    command: Option<&'a crate::command::Command>,
+    children: std::collections::BTreeMap<String, ClapTreeNode<'a>>,
+}
+
+impl<'a> ClapTreeNode<'a> {
+    fn insert_command(&mut self, segments: &[&str], command: &'a crate::command::Command) {
+        if segments.is_empty() {
+            self.command = Some(command);
+            return;
+        }
+
+        self.children
+            .entry(segments[0].to_string())
+            .or_default()
+            .insert_command(&segments[1..], command);
+    }
+
+    fn insert_group(&mut self, segments: &[&str]) {
+        if segments.is_empty() {
+            return;
+        }
+
+        self.children
+            .entry(segments[0].to_string())
+            .or_default()
+            .insert_group(&segments[1..]);
+    }
 }
 
 pub fn build_clap_root(
@@ -57,80 +86,20 @@ pub fn build_clap_root(
         }
     }
 
-    // Add root-level (depth-1) commands from the flat registry.
-    for cmd in registry.commands() {
-        let sub = if let Some(ref spec) = cmd.spec {
-            build_typed_clap_command(cmd.id, spec)
-        } else {
-            build_legacy_clap_command(cmd)
-        };
-        root = root.subcommand(sub);
-    }
-
-    // Build nested group subcommands from tree_commands (depth >= 2).
-    // Group paths by their first segment; skip if already a root-level command.
-    let mut nested_groups: std::collections::HashMap<
-        String,
-        Vec<(&str, &crate::command::Command)>,
-    > = std::collections::HashMap::new();
+    let mut tree = ClapTreeNode::default();
     for (path_str, cmd) in registry.all_tree_commands() {
-        if path_str.contains('/') {
-            let first_slash = path_str.find('/').unwrap();
-            let first_segment = &path_str[..first_slash];
-            if registry.get(first_segment).is_none() {
-                nested_groups
-                    .entry(first_segment.to_string())
-                    .or_default()
-                    .push((path_str, cmd));
-            }
-        }
+        let segments: Vec<&str> = path_str.split('/').filter(|s| !s.is_empty()).collect();
+        tree.insert_command(&segments, cmd);
+    }
+    for (path_str, _) in registry.groups() {
+        let segments: Vec<&str> = path_str.split('/').filter(|s| !s.is_empty()).collect();
+        tree.insert_group(&segments);
     }
 
-    let mut group_names: Vec<String> = nested_groups.keys().cloned().collect();
-    group_names.sort();
-    for group_name in group_names {
-        let children = &nested_groups[&group_name];
-        let summary = registry
-            .group_metadata_for(&group_name)
-            .map(|m| m.summary)
-            .unwrap_or("Command group");
-
-        let mut child_cmds: Vec<clap::Command> = children
-            .iter()
-            .filter_map(|(path_str, cmd)| {
-                let rel_path = &path_str[group_name.len() + 1..];
-                if !rel_path.contains('/') {
-                    // Direct child (depth 2)
-                    let mut c = if let Some(ref spec) = cmd.spec {
-                        build_typed_clap_command(cmd.id, spec)
-                    } else {
-                        build_legacy_clap_command(cmd)
-                    };
-                    // Add spec aliases as Clap aliases (visible on the command)
-                    if let Some(ref spec) = cmd.spec {
-                        for alias in &spec.aliases {
-                            c = c.visible_alias(alias);
-                        }
-                    }
-                    Some(c)
-                } else {
-                    // Deeper nesting (depth > 2) — skip; recursive grouping not yet implemented
-                    None
-                }
-            })
-            .collect();
-        child_cmds.sort_by(|a, b| a.get_name().cmp(b.get_name()));
-
-        // Clap 4 requires `'static` for command names; leak is bounded by # of groups.
-        let static_name: &'static str = Box::leak(group_name.into_boxed_str());
-        let mut group_clap = clap::Command::new(static_name)
-            .about(summary)
-            .subcommand_required(true)
-            .arg_required_else_help(true);
-        for child in child_cmds {
-            group_clap = group_clap.subcommand(child);
+    for (segment, node) in &tree.children {
+        if let Some(sub) = build_clap_node(registry, segment, segment, node) {
+            root = root.subcommand(sub);
         }
-        root = root.subcommand(group_clap);
     }
 
     let has_version_cmd = registry.get("version").is_some();
@@ -187,6 +156,84 @@ pub fn build_clap_root(
     root
 }
 
+fn build_clap_node(
+    registry: &CommandRegistry,
+    segment: &str,
+    path_str: &str,
+    node: &ClapTreeNode<'_>,
+) -> Option<clap::Command> {
+    if node.children.is_empty() {
+        return node
+            .command
+            .map(|cmd| build_leaf_clap_command(segment, cmd));
+    }
+
+    let summary = registry
+        .group_metadata_for(path_str)
+        .map(|m| m.summary)
+        .or_else(|| node.command.map(|cmd| cmd.summary))
+        .unwrap_or("Command group");
+    let static_name: &'static str = Box::leak(segment.to_string().into_boxed_str());
+    let mut group = clap::Command::new(static_name)
+        .about(summary)
+        .subcommand_required(true)
+        .arg_required_else_help(true);
+
+    for (child_segment, child_node) in &node.children {
+        let child_path = format!("{}/{}", path_str, child_segment);
+        if let Some(child) = build_clap_node(registry, child_segment, &child_path, child_node) {
+            group = group.subcommand(child);
+        }
+    }
+
+    Some(group)
+}
+
+fn build_leaf_clap_command(segment: &str, cmd: &crate::command::Command) -> clap::Command {
+    let static_name: &'static str = Box::leak(segment.to_string().into_boxed_str());
+    let mut sub = if let Some(ref spec) = cmd.spec {
+        build_typed_clap_command(static_name, spec)
+    } else {
+        build_legacy_clap_command_with_name(static_name, cmd)
+    };
+
+    if let Some(ref spec) = cmd.spec {
+        for alias in &spec.aliases {
+            sub = sub.visible_alias(alias);
+        }
+    }
+
+    sub
+}
+
+fn build_legacy_clap_command_with_name(
+    name: &'static str,
+    cmd: &crate::command::Command,
+) -> clap::Command {
+    log::warn!(
+        "legacy-parse-path: command '{}' has no ArgSpec; using trailing var-arg",
+        cmd.id
+    );
+
+    let mut sub = clap::Command::new(name).about(cmd.summary);
+
+    #[cfg(not(feature = "strict-args"))]
+    {
+        sub = sub.arg(
+            clap::Arg::new("trailing")
+                .num_args(0..)
+                .trailing_var_arg(true)
+                .allow_hyphen_values(true),
+        );
+    }
+
+    if let Some(syntax) = cmd.syntax {
+        sub = sub.after_help(format!("Syntax: {}", syntax));
+    }
+
+    sub
+}
+
 #[cfg(feature = "mcp-server")]
 #[derive(Debug, Default)]
 pub struct McpGlobalFlags {
@@ -217,9 +264,7 @@ pub fn extract_mcp_flags(matches: &clap::ArgMatches) -> McpGlobalFlags {
 /// Example: for `prog mcp serve --port 9090`, the root matches has "mcp" as subcommand,
 /// whose matches has "serve" as subcommand. Returns `CommandPath(["mcp", "serve"])` and
 /// the serve-level ArgMatches (which contains `--port`).
-pub fn extract_nested_command_path<'a>(
-    matches: &'a clap::ArgMatches,
-) -> (CommandPath, &'a clap::ArgMatches) {
+pub fn extract_nested_command_path(matches: &clap::ArgMatches) -> (CommandPath, &clap::ArgMatches) {
     let mut segments = Vec::new();
     let leaf = walk_subcommands(matches, &mut segments);
     (CommandPath(segments), leaf)
@@ -343,8 +388,7 @@ fn match_to_command_args(sub_matches: &clap::ArgMatches) -> CommandArgs {
         let mut i = 0;
         while i < args.len() {
             let arg = args[i];
-            if arg.starts_with("--") {
-                let stripped = &arg[2..];
+            if let Some(stripped) = arg.strip_prefix("--") {
                 if stripped.is_empty() {
                     // Bare "--" after Clap's terminator: remaining items are positional.
                     i += 1;

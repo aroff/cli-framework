@@ -1,3 +1,4 @@
+use cli_framework::app::{AppBuilder, AppContext};
 use cli_framework::command::{Command, CommandArgs, CommandRegistry};
 use cli_framework::mcp::{serve_mcp, McpServerArgs, McpToolExportPolicy};
 use cli_framework::security::CommandRiskPolicy;
@@ -264,6 +265,103 @@ async fn test_tool_call_success_over_http() {
         json.pointer("/result").is_some() || json.pointer("/error").is_none(),
         "unexpected error in response: {}",
         json
+    );
+}
+
+/// Stage 2 requirement: `prog mcp serve --port <ephemeral>` starts the server via the subcommand
+/// dispatch path and exposes registered commands as MCP tools.
+#[tokio::test]
+async fn test_mcp_serve_subcommand_tools_list() {
+    let _ = env_logger::try_init();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    // Construct and start the app via `mcp serve` subcommand in a background thread
+    // so the blocking serve call does not stall the test.
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        rt.block_on(async move {
+            struct Ctx;
+            impl AppContext for Ctx {}
+
+            let mut app = AppBuilder::new()
+                .with_version("testapp", "0.1.0")
+                .register_command(Command {
+                    id: "widget",
+                    summary: "Widget command exposed via mcp serve subcommand",
+                    syntax: None,
+                    category: None,
+                    spec: None,
+                    validator: None,
+                    expose_mcp: true,
+                    execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
+                })
+                .unwrap()
+                .build(Ctx)
+                .unwrap();
+
+            let _ = app
+                .run_with_args(vec![
+                    "testapp".to_string(),
+                    "mcp".to_string(),
+                    "serve".to_string(),
+                    "--port".to_string(),
+                    port.to_string(),
+                ])
+                .await;
+        });
+    });
+
+    wait_for_server(&format!("127.0.0.1:{}", port)).await;
+
+    let client = reqwest::Client::new();
+    let base_url = format!("http://127.0.0.1:{}", port);
+    let session_id = initialize_session(&client, &base_url).await;
+
+    let mut req = client
+        .post(format!("{}/mcp", base_url))
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream");
+
+    if let Some(ref sid) = session_id {
+        req = req.header("Mcp-Session-Id", sid);
+    }
+
+    let resp = req
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "2",
+            "method": "tools/list"
+        }))
+        .send()
+        .await
+        .expect("tools/list request failed");
+
+    assert!(
+        resp.status().is_success(),
+        "tools/list status: {}",
+        resp.status()
+    );
+
+    let body = resp.text().await.unwrap();
+    let json = parse_sse_data(&body);
+
+    let tools = json
+        .pointer("/result/tools")
+        .and_then(|t| t.as_array())
+        .expect("result.tools array expected");
+
+    assert!(
+        tools
+            .iter()
+            .any(|t| t["name"].as_str() == Some("testapp.widget")),
+        "testapp.widget not found in tools: {:?}",
+        tools
     );
 }
 

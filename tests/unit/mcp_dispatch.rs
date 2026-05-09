@@ -1,10 +1,28 @@
+use cli_framework::app::{AppBuilder, AppContext};
 use cli_framework::command::{Command, CommandArgs, CommandRegistry};
 use cli_framework::mcp::{dispatch_tool_call, dispatch_tool_call_spawned, McpToolRegistry};
 use cli_framework::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
-use cli_framework::spec::command_tree::CommandSpec;
+use cli_framework::spec::command_tree::{CommandPath, CommandSpec};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+
+struct DummyCtx;
+impl AppContext for DummyCtx {}
+
+/// Stage 2 requirement: `mcp serve` is auto-registered after `build()` when `mcp-server` is on.
+#[cfg(feature = "mcp-server")]
+#[test]
+fn mcp_serve_registered_after_build() {
+    let app = AppBuilder::new()
+        .with_version("testapp", "0.1.0")
+        .build(DummyCtx)
+        .unwrap();
+
+    let path = CommandPath::new(&["mcp", "serve"]).unwrap();
+    let found = app.command_registry().resolve(&path).is_some();
+    assert!(found, "mcp/serve not registered in registry after build()");
+}
 
 fn noop_execute() -> Arc<
     dyn Fn(
