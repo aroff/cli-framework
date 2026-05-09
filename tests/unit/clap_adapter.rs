@@ -463,41 +463,35 @@ fn parse_with_clap_bare_flag_not_inserted_as_true() {
     }
 }
 
-// Stage 2: MCP flag presence tests (AC-G1)
 #[test]
 #[cfg(feature = "mcp-server")]
-fn test_mcp_flags_in_clap_root() {
+fn test_mcp_flags_absent_with_feature() {
     let root = cli_framework::app::clap_adapter::build_clap_root(
         None,
         &CommandRegistry::new(),
         "testapp",
         "0.1.0",
     );
-
-    let err = root
-        .clone()
-        .try_get_matches_from(["testapp", "--help"])
-        .unwrap_err();
-    let help_output = err.to_string();
+    let arg_longs: Vec<&str> = root.get_arguments().filter_map(|a| a.get_long()).collect();
     assert!(
-        help_output.contains("mcp-serve"),
-        "help must contain mcp-serve, got: {}",
-        help_output
+        !arg_longs.contains(&"mcp-serve"),
+        "mcp-serve must be absent with mcp-server feature, got: {:?}",
+        arg_longs
     );
     assert!(
-        help_output.contains("mcp-host"),
-        "help must contain mcp-host, got: {}",
-        help_output
+        !arg_longs.contains(&"mcp-host"),
+        "mcp-host must be absent with mcp-server feature, got: {:?}",
+        arg_longs
     );
     assert!(
-        help_output.contains("mcp-port"),
-        "help must contain mcp-port, got: {}",
-        help_output
+        !arg_longs.contains(&"mcp-port"),
+        "mcp-port must be absent with mcp-server feature, got: {:?}",
+        arg_longs
     );
     assert!(
-        help_output.contains("mcp-path"),
-        "help must contain mcp-path, got: {}",
-        help_output
+        !arg_longs.contains(&"mcp-path"),
+        "mcp-path must be absent with mcp-server feature, got: {:?}",
+        arg_longs
     );
 }
 

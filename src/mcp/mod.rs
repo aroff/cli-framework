@@ -327,35 +327,6 @@ pub async fn dispatch_tool_call_spawned(
     }
 }
 
-pub fn extract_mcp_args_from_raw(args: &[String]) -> McpServerArgs {
-    let mut host = "127.0.0.1".to_string();
-    let mut port = 8080u16;
-    let mut path = "/mcp".to_string();
-
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--mcp-host" if i + 1 < args.len() => {
-                host = args[i + 1].clone();
-                i += 2;
-            }
-            "--mcp-port" if i + 1 < args.len() => {
-                if let Ok(p) = args[i + 1].parse::<u16>() {
-                    port = p;
-                }
-                i += 2;
-            }
-            "--mcp-path" if i + 1 < args.len() => {
-                path = args[i + 1].clone();
-                i += 2;
-            }
-            _ => i += 1,
-        }
-    }
-
-    McpServerArgs { host, port, path }
-}
-
 /// Convenience builder: constructs an `axum::Router` for MCP without binding a port.
 ///
 /// Suitable for embedding MCP into an existing Axum application that already owns
