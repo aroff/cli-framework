@@ -220,6 +220,21 @@ struct MyContext;
 impl AppContext for MyContext {}
 ```
 
+## Chat Command (feature `chat`)
+
+`chat` is an opt-in, in-process command gated behind the Cargo feature `chat`:
+
+- `cargo build` (default) does not compile the embedded chat stack
+- `cargo build --features chat` registers a root-level `chat` command
+
+In this rollout phase, `chat` runs a REPL (when stdin is a TTY) or a one-shot (when `--prompt/-p` is set or stdin is piped), and resolves **one command per turn** using the configured LLM provider. Agent-invoked commands execute against the **real AppContext** (no noop dispatch).
+
+Try it with the built-in example:
+
+```bash
+cargo run --example with_chat --features chat -- chat --help
+```
+
 ### Query syntax
 
 - `ask <query>` — positional words are joined into a single query

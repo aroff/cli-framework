@@ -13,15 +13,15 @@ impl AppContext for TestContext {}
 fn noop_execute(
     _ctx: &mut dyn AppContext,
     _args: CommandArgs,
-) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> {
+) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
     Box::pin(async move { Ok(()) })
 }
 
 fn noop_arc_execute() -> Arc<
-    dyn Fn(
-            &mut dyn AppContext,
+    dyn for<'a> Fn(
+            &'a mut dyn AppContext,
             CommandArgs,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>
         + Send
         + Sync,
 > {

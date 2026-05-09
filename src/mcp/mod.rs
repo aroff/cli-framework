@@ -1,11 +1,20 @@
+#[cfg(feature = "mcp-server")]
 pub mod commands;
 pub mod schema;
+#[cfg(feature = "mcp-server")]
 pub mod transport_http;
 
 use crate::command::registry::CommandRegistry;
-use crate::command::{Command, CommandArgs};
+use crate::command::Command;
+#[cfg(feature = "mcp-server")]
+use crate::command::CommandArgs;
+#[cfg(feature = "mcp-server")]
 use crate::spec::value::ArgValue;
+#[cfg(feature = "mcp-server")]
+use crate::tool_args::map_tool_args_to_command_args;
+#[cfg(feature = "mcp-server")]
 use anyhow::Result;
+#[cfg(feature = "mcp-server")]
 use rmcp::{
     model::{
         CallToolRequestParams, CallToolResult, Content, ErrorData, JsonObject, ListToolsResult,
@@ -15,9 +24,12 @@ use rmcp::{
     RoleServer, ServerHandler,
 };
 use schema::{command_to_tool_descriptor, McpToolDescriptor};
+#[cfg(feature = "mcp-server")]
 use serde_json::Value;
+#[cfg(feature = "mcp-server")]
 use std::borrow::Cow;
 use std::collections::HashMap;
+#[cfg(feature = "mcp-server")]
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -122,64 +134,23 @@ impl McpToolRegistry {
     }
 }
 
+#[cfg(feature = "mcp-server")]
 struct McpAppContext;
+#[cfg(feature = "mcp-server")]
 impl crate::app::AppContext for McpAppContext {}
 
-fn json_value_to_arg_value(v: &Value) -> Option<ArgValue> {
-    match v {
-        Value::Bool(b) => Some(ArgValue::Bool(*b)),
-        Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Some(ArgValue::Int(i))
-            } else {
-                n.as_f64().map(ArgValue::Float)
-            }
-        }
-        Value::String(s) => Some(ArgValue::Str(s.clone())),
-        Value::Array(arr) => {
-            let items: Vec<ArgValue> = arr.iter().filter_map(json_value_to_arg_value).collect();
-            Some(ArgValue::List(items))
-        }
-        _ => None,
-    }
-}
-
+#[cfg(feature = "mcp-server")]
 fn map_mcp_args_to_command_args(
     arguments: Option<JsonObject>,
-) -> (CommandArgs, HashMap<String, ArgValue>) {
-    let arguments = arguments.unwrap_or_default();
-    let mut named = HashMap::new();
-    let mut positional = Vec::new();
-    let mut typed = HashMap::new();
-
-    if let Some(Value::Array(pos)) = arguments.get("_positional") {
-        for v in pos {
-            positional.push(match v {
-                Value::String(s) => s.clone(),
-                other => other.to_string(),
-            });
-        }
-    }
-
-    for (k, v) in &arguments {
-        if k == "_positional" {
-            continue;
-        }
-        named.insert(
-            k.clone(),
-            match v {
-                Value::String(s) => s.clone(),
-                other => other.to_string(),
-            },
-        );
-        if let Some(av) = json_value_to_arg_value(v) {
-            typed.insert(k.clone(), av);
-        }
-    }
-
-    (CommandArgs { positional, named }, typed)
+) -> anyhow::Result<(CommandArgs, HashMap<String, ArgValue>)> {
+    let v = match arguments {
+        Some(obj) => Value::Object(obj),
+        None => Value::Null,
+    };
+    map_tool_args_to_command_args(v)
 }
 
+#[cfg(feature = "mcp-server")]
 fn make_rmcp_tool(desc: &McpToolDescriptor) -> Tool {
     let input_schema: serde_json::Map<String, Value> = match &desc.input_schema {
         Value::Object(m) => m.clone(),
@@ -192,17 +163,20 @@ fn make_rmcp_tool(desc: &McpToolDescriptor) -> Tool {
     )
 }
 
+#[cfg(feature = "mcp-server")]
 #[derive(Clone)]
 pub struct CliFrameworkHandler {
     tool_registry: Arc<McpToolRegistry>,
 }
 
+#[cfg(feature = "mcp-server")]
 impl CliFrameworkHandler {
     pub fn new(tool_registry: Arc<McpToolRegistry>) -> Self {
         Self { tool_registry }
     }
 }
 
+#[cfg(feature = "mcp-server")]
 impl ServerHandler for CliFrameworkHandler {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::default()
@@ -235,6 +209,7 @@ impl ServerHandler for CliFrameworkHandler {
     }
 }
 
+#[cfg(feature = "mcp-server")]
 pub async fn dispatch_tool_call(
     tool_registry: &McpToolRegistry,
     tool_name: &str,
@@ -254,7 +229,13 @@ pub async fn dispatch_tool_call(
         })?
         .clone();
 
-    let (cmd_args, typed_args) = map_mcp_args_to_command_args(arguments);
+    let (cmd_args, typed_args) = map_mcp_args_to_command_args(arguments).map_err(|e| {
+        ErrorData::new(
+            rmcp::model::ErrorCode(-32002),
+            Cow::Owned(format!("MCP_ARG_VALIDATION_FAILED: {}", e)),
+            None,
+        )
+    })?;
 
     if let Some(ref spec) = cmd.spec {
         let diagnostics = crate::parser::validator::SpecValidator::validate(spec, &typed_args);
@@ -308,6 +289,7 @@ pub async fn dispatch_tool_call(
 
 /// Dispatches a tool call in a separate tokio task (§4.7).
 /// Panics in the task are caught as JoinError and returned as MCP_INTERNAL_ERROR.
+#[cfg(feature = "mcp-server")]
 pub async fn dispatch_tool_call_spawned(
     tool_registry: Arc<McpToolRegistry>,
     tool_name: String,
@@ -351,6 +333,7 @@ pub async fn dispatch_tool_call_spawned(
 /// // nest into your existing axum router:
 /// // let app = axum::Router::new().merge(router);
 /// ```
+#[cfg(feature = "mcp-server")]
 pub fn build_mcp_axum_router(
     registry: &CommandRegistry,
     app_name: &str,
@@ -365,6 +348,7 @@ pub fn build_mcp_axum_router(
     transport_http::mcp_axum_router(tool_registry, path)
 }
 
+#[cfg(feature = "mcp-server")]
 pub async fn serve_mcp(
     registry: Arc<CommandRegistry>,
     app_name: &str,

@@ -4,7 +4,7 @@ use crate::doctor::runner::DoctorReport;
 pub fn render_terminal(report: &DoctorReport) {
     #[cfg(feature = "table-advanced")]
     {
-        use comfy_table::{Cell, CellAlignment, Color, Table};
+        use comfy_table::{Cell, Color, Table};
         let mut table = Table::new();
         table.set_header(vec!["Severity", "ID", "Title", "Message", "Remediation"]);
         for finding in &report.findings {

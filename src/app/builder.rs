@@ -202,6 +202,23 @@ impl AppBuilder {
             self.command_registry.register(ask_command);
         }
 
+        #[cfg(feature = "chat")]
+        {
+            if self.command_registry.get("chat").is_none() {
+                let registry_snapshot = Arc::new(self.command_registry.clone());
+                let chat_command = crate::command::create_chat_command(
+                    self.llm_provider.clone(),
+                    registry_snapshot,
+                    self.risk_policy.clone(),
+                    ailoop_client.clone().map(Arc::new),
+                    self.app_name,
+                );
+                self.command_registry.register(chat_command);
+            } else {
+                log::warn!("'chat' command already registered; skipping built-in chat command");
+            }
+        }
+
         #[cfg(feature = "doctor")]
         {
             if !self.doctor_checks.is_empty() {

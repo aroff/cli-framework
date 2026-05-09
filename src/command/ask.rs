@@ -5,9 +5,6 @@ use crate::llm::{CommandMetadata, CommandResolution, LlmProvider};
 use crate::security::command_risk::CommandRiskPolicy;
 use std::sync::Arc;
 
-struct NoopContext;
-impl AppContext for NoopContext {}
-
 pub fn create_ask_command(
     llm_provider: Arc<dyn LlmProvider>,
     registry: Arc<CommandRegistry>,
@@ -28,20 +25,21 @@ pub fn create_ask_command(
         spec: None,
         validator: None,
         expose_mcp: false,
-        execute: Arc::new(move |_ctx, args| {
+        execute: Arc::new(move |ctx, args| {
             let provider = llm_provider.clone();
             let metadata = metadata_snapshot.clone();
             let registry = registry.clone();
             let policy = risk_policy.clone();
             let client = ailoop_client.clone();
             Box::pin(async move {
-                execute_ask(provider, metadata, registry, args, policy, client).await
+                execute_ask(ctx, provider, metadata, registry, args, policy, client).await
             })
         }),
     }
 }
 
 async fn execute_ask(
+    ctx: &mut dyn AppContext,
     llm_provider: Arc<dyn LlmProvider>,
     available_commands: Vec<CommandMetadata>,
     registry: Arc<CommandRegistry>,
@@ -95,7 +93,7 @@ async fn execute_ask(
         }
     }
 
-    dispatch_resolved_command(&registry, &resolution).await
+    dispatch_resolved_command(&registry, &resolution, ctx).await
 }
 
 fn extract_query(args: &CommandArgs) -> anyhow::Result<String> {
@@ -187,6 +185,7 @@ fn print_resolution(resolution: &CommandResolution) {
 async fn dispatch_resolved_command(
     registry: &CommandRegistry,
     resolution: &CommandResolution,
+    ctx: &mut dyn AppContext,
 ) -> CommandResult {
     let command = registry
         .get(&resolution.command_id)
@@ -198,6 +197,5 @@ async fn dispatch_resolved_command(
         })?
         .clone();
 
-    let mut ctx = NoopContext;
-    (command.execute)(&mut ctx, resolution.args.clone()).await
+    (command.execute)(ctx, resolution.args.clone()).await
 }

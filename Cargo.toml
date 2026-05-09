@@ -40,6 +40,8 @@ rmcp = { version = "1.6", features = ["server", "transport-streamable-http-serve
 axum = { version = "0.8", optional = true }
 # Optional MCP install dependency (aikit-sdk provides add_mcp_server and mcp_supported_agents)
 aikit-sdk = { git = "https://github.com/goaikit/aikit.git", package = "aikit-sdk", rev = "dff63ec966a6ad9f310f00e31a27d3e6f195a549", optional = true }
+## Optional embedded agent dependency (used by `chat` feature)
+aikit-agent = { git = "https://github.com/goaikit/aikit.git", package = "aikit-agent", rev = "dff63ec966a6ad9f310f00e31a27d3e6f195a549", optional = true }
 
 # Optional OpenTelemetry dependencies (applications can enable)
 # Note: Applications should add these dependencies themselves when using observability feature
@@ -82,6 +84,7 @@ mcp-install = ["mcp-server", "dep:aikit-sdk"]
 doctor = []
 # Project config — project root discovery and TOML loading (off by default)
 project-config = []
+chat = ["dep:aikit-agent"]
 
 [lib]
 name = "cli_framework"
@@ -98,6 +101,11 @@ path = "skill/examples/basic_cli/src/main.rs"
 [[example]]
 name = "with_ask"
 path = "skill/examples/with_ask/src/main.rs"
+
+[[example]]
+name = "with_chat"
+path = "skill/examples/with_chat/src/main.rs"
+required-features = ["chat"]
 
 [[example]]
 name = "with_plugins"
@@ -118,6 +126,11 @@ path = "tests/integration/ailoop_websocket.rs"
 [[test]]
 name = "unit_command_ask_resolution"
 path = "tests/unit/command/ask_resolution.rs"
+
+[[test]]
+name = "unit_command_chat_command"
+path = "tests/unit/command/chat_command.rs"
+required-features = ["chat"]
 
 [[test]]
 name = "unit_help_renderer"
@@ -240,4 +253,3 @@ required-features = ["mcp-install"]
 name = "integration_mcp_install"
 path = "tests/integration/mcp_install.rs"
 required-features = ["mcp-install"]
-
