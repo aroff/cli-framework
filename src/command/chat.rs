@@ -1,6 +1,7 @@
 use crate::ailoop::AiloopClient;
 use crate::app::context::AppContext;
 use crate::command::{Command, CommandArgs, CommandRegistry, CommandResult};
+use crate::llm::CommandResolution;
 use crate::security::command_risk::{CommandRiskPolicy, CommandRiskTier};
 use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use crate::spec::command_tree::{CommandSpec, EnvVarEntry, ExitCodeEntry};
@@ -131,11 +132,8 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
         let (cmd_args, typed_args) = crate::mcp::map_mcp_args_to_command_args_from_json(arguments)
             .map_err(|e| anyhow::anyhow!("{}: {}", CHAT_ARG_VALIDATION_FAILED, e))?;
 
-        let typed_args_for_validation = if cmd.spec.is_some() || cmd.validator.is_some() {
-            Some(typed_args)
-        } else {
-            None
-        };
+        let typed_args_for_validation =
+            (cmd.spec.is_some() || cmd.validator.is_some()).then_some(typed_args);
 
         if let Some(ref typed) = typed_args_for_validation {
             let diags = crate::app::dispatch::validate_typed_args(cmd, typed)
@@ -158,8 +156,6 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
         )
         .await?;
 
-        // CLI/MCP parity: execute via the same "effective args" mapping as normal CLI dispatch.
-        // Typed args were already validated above.
         let effective_args = crate::app::dispatch::effective_args_for_execution(
             cmd_args,
             typed_args_for_validation.as_ref(),
@@ -177,6 +173,40 @@ async fn enforce_chat_risk_gate(
     interactive: bool,
     ailoop_client: Option<&Arc<AiloopClient>>,
 ) -> anyhow::Result<()> {
+    // Reuse the same risk-gate semantics as `ask` for non-interactive constraints
+    // and destructive environment checks, then layer chat-specific prompting on top.
+    let resolution = CommandResolution {
+        command_id: cmd.id.to_string(),
+        args: CommandArgs::default(),
+        confidence: 1.0,
+        reasoning: None,
+    };
+    let ailoop_available = ailoop_client.is_some();
+    if let Err(e) = crate::command::ask::enforce_risk_gate(
+        policy,
+        &resolution,
+        cmd.category,
+        yolo,
+        ailoop_available,
+    ) {
+        let msg = e.to_string();
+        if msg.contains("SENSITIVE_COMMAND_REQUIRES_CONFIRMATION") {
+            return Err(anyhow::anyhow!(
+                "{}: command '{}' is sensitive and requires confirmation",
+                CHAT_RISK_REQUIRES_CONFIRMATION,
+                cmd.id
+            ));
+        }
+        if msg.contains("DESTRUCTIVE_COMMAND_BLOCKED") {
+            return Err(anyhow::anyhow!(
+                "{}: command '{}' is destructive; gated by ALLOW_DESTRUCTIVE_COMMANDS and interactive confirmation",
+                CHAT_DESTRUCTIVE_BLOCKED,
+                cmd.id
+            ));
+        }
+        return Err(e);
+    }
+
     let tier = policy.classify(cmd.id, cmd.category);
     match tier {
         CommandRiskTier::Safe => Ok(()),
@@ -184,19 +214,18 @@ async fn enforce_chat_risk_gate(
             if yolo {
                 return Ok(());
             }
-            if !interactive {
-                return Err(anyhow::anyhow!(
-                    "{}: command '{}' is sensitive and requires confirmation (use --yolo in non-interactive mode)",
-                    CHAT_RISK_REQUIRES_CONFIRMATION,
-                    cmd.id
-                ));
-            }
             let confirmed = if let Some(client) = ailoop_client {
                 client
                     .request_confirmation(&format!("Execute command '{}'", cmd.id), None)
                     .await?
-            } else {
+            } else if interactive {
                 prompt_confirm_blocking(format!("Execute command '{}'? [y/N] ", cmd.id)).await?
+            } else {
+                return Err(anyhow::anyhow!(
+                    "{}: command '{}' is sensitive and requires confirmation",
+                    CHAT_RISK_REQUIRES_CONFIRMATION,
+                    cmd.id
+                ));
             };
             if !confirmed {
                 return Err(anyhow::anyhow!(
@@ -208,23 +237,6 @@ async fn enforce_chat_risk_gate(
             Ok(())
         }
         CommandRiskTier::Destructive => {
-            let env_allowed = std::env::var("ALLOW_DESTRUCTIVE_COMMANDS")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false);
-            if !env_allowed {
-                return Err(anyhow::anyhow!(
-                    "{}: command '{}' is destructive; set ALLOW_DESTRUCTIVE_COMMANDS=1 and confirm interactively",
-                    CHAT_DESTRUCTIVE_BLOCKED,
-                    cmd.id
-                ));
-            }
-            if !interactive && ailoop_client.is_none() {
-                return Err(anyhow::anyhow!(
-                    "{}: command '{}' requires interactive confirmation or ailoop when ALLOW_DESTRUCTIVE_COMMANDS=1",
-                    CHAT_DESTRUCTIVE_BLOCKED,
-                    cmd.id
-                ));
-            }
             let confirmed = if let Some(client) = ailoop_client {
                 client
                     .request_confirmation(
@@ -232,9 +244,15 @@ async fn enforce_chat_risk_gate(
                         None,
                     )
                     .await?
-            } else {
+            } else if interactive {
                 prompt_confirm_blocking(format!("Execute DESTRUCTIVE command '{}'? [y/N] ", cmd.id))
                     .await?
+            } else {
+                return Err(anyhow::anyhow!(
+                    "{}: command '{}' is destructive; requires interactive confirmation",
+                    CHAT_DESTRUCTIVE_BLOCKED,
+                    cmd.id
+                ));
             };
             if !confirmed {
                 return Err(anyhow::anyhow!(
@@ -412,21 +430,23 @@ Notes:\n\
 
 async fn execute_chat(
     ctx: &mut dyn AppContext,
-    registry: Arc<CommandRegistry>,
+    registry_fallback: Arc<CommandRegistry>,
     risk_policy: CommandRiskPolicy,
     ailoop_client: Option<Arc<AiloopClient>>,
     app_name: &'static str,
     args: CommandArgs,
 ) -> CommandResult {
-    let tool_exec =
-        CommandsAsToolsExecutor::new(&registry, app_name, risk_policy).map_err(|e| {
-            // Deterministic error code for collision (construction-time).
-            if e.to_string().contains(CHAT_TOOL_REGISTRY_COLLISION) {
-                anyhow::anyhow!("{}", e)
-            } else {
-                anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e)
-            }
-        })?;
+    // MUST use the same frozen registry snapshot as the running `App<C>` when available (§4.3).
+    let registry = ctx.opt_registry().unwrap_or(registry_fallback.as_ref());
+
+    let tool_exec = CommandsAsToolsExecutor::new(registry, app_name, risk_policy).map_err(|e| {
+        // Deterministic error code for collision (construction-time).
+        if e.to_string().contains(CHAT_TOOL_REGISTRY_COLLISION) {
+            anyhow::anyhow!("{}", e)
+        } else {
+            anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e)
+        }
+    })?;
 
     let prompt_flag = args.named.get("prompt").cloned();
     let yolo = args.named.get("yolo").map(|v| v == "true").unwrap_or(false);

@@ -13,12 +13,6 @@ pub fn create_ask_command(
     risk_policy: CommandRiskPolicy,
     ailoop_client: Arc<AiloopClient>,
 ) -> Command {
-    let metadata_snapshot: Vec<CommandMetadata> = registry
-        .collect_metadata()
-        .into_iter()
-        .filter(|m| m.id != "ask")
-        .collect();
-
     Command {
         id: "ask",
         summary: "Resolve natural language queries to commands",
@@ -29,12 +23,11 @@ pub fn create_ask_command(
         expose_mcp: false,
         execute: Arc::new(move |ctx, args| {
             let provider = llm_provider.clone();
-            let metadata = metadata_snapshot.clone();
-            let registry = registry.clone();
+            let registry_fallback = registry.clone();
             let policy = risk_policy.clone();
             let client = ailoop_client.clone();
             Box::pin(async move {
-                execute_ask(ctx, provider, metadata, registry, args, policy, client).await
+                execute_ask(ctx, provider, registry_fallback, args, policy, client).await
             })
         }),
     }
@@ -43,8 +36,7 @@ pub fn create_ask_command(
 async fn execute_ask(
     ctx: &mut dyn AppContext,
     llm_provider: Arc<dyn LlmProvider>,
-    available_commands: Vec<CommandMetadata>,
-    registry: Arc<CommandRegistry>,
+    registry_fallback: Arc<CommandRegistry>,
     args: CommandArgs,
     risk_policy: CommandRiskPolicy,
     ailoop_client: Arc<AiloopClient>,
@@ -61,6 +53,15 @@ async fn execute_ask(
             println!("No query provided. Usage: ask <query> or ask --query \"<query>\"");
             return Ok(());
         }
+    };
+
+    let available_commands: Vec<CommandMetadata> = {
+        let registry = ctx.opt_registry().unwrap_or(registry_fallback.as_ref());
+        registry
+            .collect_metadata()
+            .into_iter()
+            .filter(|m| m.id != "ask")
+            .collect()
     };
 
     let resolution = llm_provider
@@ -101,7 +102,7 @@ async fn execute_ask(
         }
     }
 
-    dispatch_resolved_command(&registry, &resolution, ctx).await
+    dispatch_resolved_command(registry_fallback.as_ref(), &resolution, ctx).await
 }
 
 fn extract_query(args: &CommandArgs) -> anyhow::Result<String> {
@@ -191,19 +192,22 @@ fn print_resolution(resolution: &CommandResolution) {
 }
 
 async fn dispatch_resolved_command(
-    registry: &CommandRegistry,
+    registry_fallback: &CommandRegistry,
     resolution: &CommandResolution,
     ctx: &mut dyn AppContext,
 ) -> CommandResult {
-    let command = registry
-        .get(&resolution.command_id)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Resolved command '{}' not found in registry",
-                resolution.command_id
-            )
-        })?
-        .clone();
+    let command = {
+        let registry = ctx.opt_registry().unwrap_or(registry_fallback);
+        registry
+            .get(&resolution.command_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Resolved command '{}' not found in registry",
+                    resolution.command_id
+                )
+            })?
+            .clone()
+    };
 
     (command.execute)(ctx, resolution.args.clone()).await
 }

@@ -445,6 +445,17 @@ impl<C: AppContext> App<C> {
                 Ok(())
             }
             ParseOutcome::ParseError(d) => {
+                #[cfg(not(feature = "chat"))]
+                {
+                    // Deterministic error when `chat` is invoked without the `chat` feature.
+                    if d.code == crate::parser::error_codes::E_UNKNOWN_COMMAND
+                        && args.get(1).is_some_and(|s| s == "chat")
+                    {
+                        return Err(anyhow::anyhow!(
+                            "CHAT_FEATURE_DISABLED: `chat` requires building with `--features chat`"
+                        ));
+                    }
+                }
                 DiagnosticReporter::report(&d);
                 Ok(())
             }
