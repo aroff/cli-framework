@@ -2,6 +2,7 @@
 //! side-effect-free.
 
 use crate::parser::diagnostic::Diagnostic;
+use std::io::Write;
 
 #[cfg(feature = "testkit")]
 use std::sync::{Mutex, OnceLock};
@@ -38,7 +39,8 @@ impl DiagnosticReporter {
             }
         }
 
-        eprint!("{}", msg);
+        let mut stderr = std::io::stderr();
+        let _ = stderr.write_all(msg.as_bytes());
     }
 
     /// Write all diagnostics to stderr.

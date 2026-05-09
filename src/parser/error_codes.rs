@@ -14,3 +14,11 @@ pub const E_UNSATISFIED_REQUIRES: &str = "E006";
 pub const E_REGISTRATION_COLLISION: &str = "E007";
 /// A `CommandSpec::aliases` entry matches an existing command path or registered alias.
 pub const E_ALIAS_CONFLICT: &str = "E008";
+/// Returned when `mcp serve` cannot bind the requested address/port.
+pub const E_MCP_BIND_FAILED: &str = "E009";
+/// Returned when `mcp install` cannot locate the current executable path.
+pub const E_MCP_INSTALL_EXE_NOT_FOUND: &str = "E010";
+/// Returned when `mcp install` fails to write the agent config entry.
+pub const E_MCP_INSTALL_WRITE_FAILED: &str = "E011";
+/// Returned when a nested command path is requested but no command is registered at that path.
+pub const E_NESTED_COMMAND_NOT_FOUND: &str = "E012";

@@ -530,6 +530,205 @@ fn test_mcp_flags_absent_without_feature() {
     );
 }
 
+// Stage 1: Multi-segment CommandPath routing (AC-G1 §4.2)
+
+#[test]
+fn parse_nested_argv_yields_multi_segment_path() {
+    use cli_framework::command::CommandRegistry;
+    use cli_framework::spec::command_tree::{CommandPath, CommandSpec};
+    use std::sync::Arc;
+
+    let mut registry = CommandRegistry::new();
+    let path = CommandPath::new(&["cluster", "get"]).unwrap();
+    registry
+        .register_at(
+            &path,
+            Command {
+                id: "get",
+                summary: "Get cluster",
+                syntax: None,
+                category: None,
+                spec: Some(Arc::new(CommandSpec {
+                    summary: "Get cluster",
+                    ..Default::default()
+                })),
+                validator: None,
+                expose_mcp: false,
+                execute: noop_execute(),
+            },
+        )
+        .unwrap();
+
+    let root =
+        cli_framework::app::clap_adapter::build_clap_root(None, &registry, "testapp", "0.1.0");
+    let outcome = cli_framework::app::clap_adapter::parse_with_clap(
+        &root,
+        &registry,
+        vec![
+            "testapp".to_string(),
+            "cluster".to_string(),
+            "get".to_string(),
+        ],
+    );
+
+    match outcome {
+        ParseOutcome::Parsed { command_path, .. } => {
+            assert_eq!(command_path.0.len(), 2, "expected 2-segment path");
+            assert_eq!(command_path.0[0], "cluster");
+            assert_eq!(command_path.0[1], "get");
+        }
+        other => panic!("expected Parsed, got {:?}", other),
+    }
+}
+
+#[test]
+fn parse_deep_nested_argv_uses_registered_path_segments() {
+    use cli_framework::command::CommandRegistry;
+    use cli_framework::spec::command_tree::{CommandPath, CommandSpec};
+    use std::sync::Arc;
+
+    let mut registry = CommandRegistry::new();
+    let path = CommandPath::new(&["cluster", "node", "get"]).unwrap();
+    registry
+        .register_at(
+            &path,
+            Command {
+                id: "lookup",
+                summary: "Get cluster node",
+                syntax: None,
+                category: None,
+                spec: Some(Arc::new(CommandSpec {
+                    summary: "Get cluster node",
+                    ..Default::default()
+                })),
+                validator: None,
+                expose_mcp: false,
+                execute: noop_execute(),
+            },
+        )
+        .unwrap();
+
+    let root =
+        cli_framework::app::clap_adapter::build_clap_root(None, &registry, "testapp", "0.1.0");
+    let outcome = cli_framework::app::clap_adapter::parse_with_clap(
+        &root,
+        &registry,
+        vec![
+            "testapp".to_string(),
+            "cluster".to_string(),
+            "node".to_string(),
+            "get".to_string(),
+        ],
+    );
+
+    match outcome {
+        ParseOutcome::Parsed { command_path, .. } => {
+            assert_eq!(command_path.0, vec!["cluster", "node", "get"]);
+        }
+        other => panic!("expected Parsed, got {:?}", other),
+    }
+}
+
+#[test]
+fn parse_nested_group_help_returns_help_shown() {
+    use cli_framework::command::CommandRegistry;
+    use cli_framework::spec::command_tree::{CommandPath, CommandSpec};
+    use std::sync::Arc;
+
+    let mut registry = CommandRegistry::new();
+    let path = CommandPath::new(&["cluster", "get"]).unwrap();
+    registry
+        .register_at(
+            &path,
+            Command {
+                id: "get",
+                summary: "Get cluster",
+                syntax: None,
+                category: None,
+                spec: Some(Arc::new(CommandSpec {
+                    summary: "Get cluster",
+                    ..Default::default()
+                })),
+                validator: None,
+                expose_mcp: false,
+                execute: noop_execute(),
+            },
+        )
+        .unwrap();
+
+    let root =
+        cli_framework::app::clap_adapter::build_clap_root(None, &registry, "testapp", "0.1.0");
+    let outcome = cli_framework::app::clap_adapter::parse_with_clap(
+        &root,
+        &registry,
+        vec![
+            "testapp".to_string(),
+            "cluster".to_string(),
+            "--help".to_string(),
+        ],
+    );
+
+    assert!(
+        matches!(outcome, ParseOutcome::HelpShown(_)),
+        "expected HelpShown for group --help, got {:?}",
+        outcome
+    );
+}
+
+#[test]
+fn parse_unknown_nested_subcommand_returns_e012() {
+    use cli_framework::command::CommandRegistry;
+    use cli_framework::spec::command_tree::{CommandPath, CommandSpec};
+    use std::sync::Arc;
+
+    let mut registry = CommandRegistry::new();
+    // Register cluster/get so cluster group exists
+    let path = CommandPath::new(&["cluster", "get"]).unwrap();
+    registry
+        .register_at(
+            &path,
+            Command {
+                id: "get",
+                summary: "Get cluster",
+                syntax: None,
+                category: None,
+                spec: Some(Arc::new(CommandSpec {
+                    summary: "Get cluster",
+                    ..Default::default()
+                })),
+                validator: None,
+                expose_mcp: false,
+                execute: noop_execute(),
+            },
+        )
+        .unwrap();
+
+    let root =
+        cli_framework::app::clap_adapter::build_clap_root(None, &registry, "testapp", "0.1.0");
+    // Invoke a non-existent nested command
+    let outcome = cli_framework::app::clap_adapter::parse_with_clap(
+        &root,
+        &registry,
+        vec![
+            "testapp".to_string(),
+            "cluster".to_string(),
+            "nonexistent".to_string(),
+        ],
+    );
+
+    match &outcome {
+        ParseOutcome::ParseError(d) => {
+            assert_eq!(
+                d.code,
+                cli_framework::parser::error_codes::E_NESTED_COMMAND_NOT_FOUND,
+                "expected E012, got code: {}",
+                d.code
+            );
+        }
+        other => panic!("expected ParseError(E012), got {:?}", other),
+    }
+}
+
 // Verify that --key value and --key=value produce identical CommandArgs (AC-G1.2).
 #[test]
 #[cfg(not(feature = "strict-args"))]

@@ -64,7 +64,10 @@ pub fn create_spec_command(app_name: &'static str, app_version: &'static str) ->
                         anyhow::anyhow!("CS002: failed to write to '{}': {}", path, e)
                     })?;
                 } else {
-                    println!("{}", rendered);
+                    use std::io::Write;
+
+                    let mut stdout = std::io::stdout();
+                    writeln!(stdout, "{}", rendered)?;
                 }
 
                 Ok(())
