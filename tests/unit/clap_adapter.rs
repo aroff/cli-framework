@@ -37,6 +37,7 @@ fn build_clap_root_subcommand_count_matches_registry() {
             category: None,
             spec: None,
             validator: None,
+            expose_mcp: false,
             execute: noop_execute(),
         },
         Command {
@@ -46,6 +47,7 @@ fn build_clap_root_subcommand_count_matches_registry() {
             category: None,
             spec: None,
             validator: None,
+            expose_mcp: false,
             execute: noop_execute(),
         },
     ]);
@@ -154,6 +156,7 @@ fn build_clap_root_no_version_subcommand_when_user_registers_version() {
         category: None,
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: noop_execute(),
     }]);
 
@@ -189,6 +192,7 @@ fn parse_with_clap_key_value() {
         category: None,
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: noop_execute(),
     }]);
 
@@ -228,6 +232,7 @@ fn parse_with_clap_key_equals_value() {
         category: None,
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: noop_execute(),
     }]);
 
@@ -265,6 +270,7 @@ fn parse_with_clap_positional_after_double_dash() {
         category: None,
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: noop_execute(),
     }]);
 
@@ -380,6 +386,7 @@ fn parse_with_clap_mixed_positional_and_named() {
         category: None,
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: noop_execute(),
     }]);
 
@@ -421,6 +428,7 @@ fn parse_with_clap_bare_flag_not_inserted_as_true() {
         category: None,
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: noop_execute(),
     }]);
 
@@ -533,6 +541,7 @@ fn parse_with_clap_key_value_and_equals_value_parity() {
         category: None,
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: noop_execute(),
     }]);
 

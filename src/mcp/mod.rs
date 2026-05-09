@@ -36,6 +36,17 @@ impl Default for McpServerArgs {
     }
 }
 
+/// Controls which commands are registered as MCP tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum McpToolExportPolicy {
+    /// Register all commands (backward-compatible default).
+    /// `Command::expose_mcp` is ignored.
+    #[default]
+    AllCommands,
+    /// Register only commands where `expose_mcp == true`.
+    ExposeMcpOnly,
+}
+
 pub struct McpToolRegistry {
     tools: HashMap<String, Command>,
     app_name: String,
@@ -43,20 +54,40 @@ pub struct McpToolRegistry {
 }
 
 impl McpToolRegistry {
+    /// Backward-compatible constructor. Equivalent to calling
+    /// `from_command_registry_with_policy(registry, app_name, McpToolExportPolicy::AllCommands)`.
     pub fn from_command_registry(registry: &CommandRegistry, app_name: &str) -> Self {
+        Self::from_command_registry_with_policy(registry, app_name, McpToolExportPolicy::default())
+    }
+
+    /// Primary constructor. Applies `policy` to filter which commands become tools.
+    pub fn from_command_registry_with_policy(
+        registry: &CommandRegistry,
+        app_name: &str,
+        policy: McpToolExportPolicy,
+    ) -> Self {
         if app_name == "unknown" {
             log::warn!("MCP: app_name is 'unknown'; use with_version() to set a proper name");
         }
         let mut tools = HashMap::new();
         for (path_str, cmd) in registry.all_tree_commands() {
-            let tool_name = format!("{}.{}", app_name, path_str.replace('/', "."));
+            if policy == McpToolExportPolicy::ExposeMcpOnly && !cmd.expose_mcp {
+                continue;
+            }
             if cmd.spec.is_none() {
                 log::warn!(
                     "MCP: command '{}' has no CommandSpec; using permissive schema",
                     cmd.id
                 );
             }
+            let tool_name = format!("{}.{}", app_name, path_str.replace('/', "."));
             tools.insert(tool_name, cmd.clone());
+        }
+        if tools.is_empty() && policy == McpToolExportPolicy::ExposeMcpOnly {
+            log::warn!(
+                "MCP: ExposeMcpOnly policy produced an empty tool set; \
+                 no commands have expose_mcp: true"
+            );
         }
         Self {
             tools,
@@ -348,9 +379,11 @@ pub fn build_mcp_axum_router(
     app_name: &str,
     path: &str,
     risk_policy: crate::security::CommandRiskPolicy,
+    export_policy: McpToolExportPolicy,
 ) -> axum::Router {
     let tool_registry = Arc::new(
-        McpToolRegistry::from_command_registry(registry, app_name).with_risk_policy(risk_policy),
+        McpToolRegistry::from_command_registry_with_policy(registry, app_name, export_policy)
+            .with_risk_policy(risk_policy),
     );
     transport_http::mcp_axum_router(tool_registry, path)
 }
@@ -360,9 +393,11 @@ pub async fn serve_mcp(
     app_name: &str,
     args: McpServerArgs,
     risk_policy: crate::security::CommandRiskPolicy,
+    export_policy: McpToolExportPolicy,
 ) -> Result<()> {
     let tool_registry = Arc::new(
-        McpToolRegistry::from_command_registry(&registry, app_name).with_risk_policy(risk_policy),
+        McpToolRegistry::from_command_registry_with_policy(&registry, app_name, export_policy)
+            .with_risk_policy(risk_policy),
     );
 
     transport_http::start_streamable_http(tool_registry, &args).await

@@ -244,6 +244,7 @@ mod tests {
             category: None,
             spec: None,
             validator: None,
+            expose_mcp: false,
             execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
         }
     }

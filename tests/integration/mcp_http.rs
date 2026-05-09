@@ -1,5 +1,5 @@
 use cli_framework::command::{Command, CommandArgs, CommandRegistry};
-use cli_framework::mcp::{serve_mcp, McpServerArgs};
+use cli_framework::mcp::{serve_mcp, McpServerArgs, McpToolExportPolicy};
 use cli_framework::security::CommandRiskPolicy;
 use std::future::Future;
 use std::pin::Pin;
@@ -81,6 +81,7 @@ async fn test_tools_list_over_http() {
         category: None,
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: noop_execute(),
     });
     registry.register(Command {
@@ -90,6 +91,7 @@ async fn test_tools_list_over_http() {
         category: None,
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: noop_execute(),
     });
 
@@ -114,6 +116,7 @@ async fn test_tools_list_over_http() {
             "testapp",
             args_clone,
             CommandRiskPolicy::default(),
+            McpToolExportPolicy::AllCommands,
         )
         .await;
     });
@@ -187,6 +190,7 @@ async fn test_tool_call_success_over_http() {
         category: None,
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: noop_execute(),
     });
 
@@ -210,6 +214,7 @@ async fn test_tool_call_success_over_http() {
             "testapp",
             args_clone,
             CommandRiskPolicy::default(),
+            McpToolExportPolicy::AllCommands,
         )
         .await;
     });
@@ -278,7 +283,14 @@ async fn test_bind_failure() {
     };
 
     // Try to start the MCP server on the already-bound port
-    let result = serve_mcp(registry, "testapp", args, CommandRiskPolicy::default()).await;
+    let result = serve_mcp(
+        registry,
+        "testapp",
+        args,
+        CommandRiskPolicy::default(),
+        McpToolExportPolicy::AllCommands,
+    )
+    .await;
 
     assert!(result.is_err(), "expected bind failure error");
     let err_msg = result.unwrap_err().to_string();

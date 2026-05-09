@@ -50,6 +50,7 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
         category: Some("Services"),
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: noop_arc_execute(),
     });
     registry.register(Command {
@@ -59,6 +60,7 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
         category: Some("Services"),
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: noop_arc_execute(),
     });
     registry.register(Command {
@@ -68,6 +70,7 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
         category: Some("Services"),
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: noop_arc_execute(),
     });
 
@@ -79,6 +82,7 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
         category: Some("Observability"),
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: noop_arc_execute(),
     });
     registry.register(Command {
@@ -88,6 +92,7 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
         category: None,
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: noop_arc_execute(),
     });
 
@@ -118,6 +123,7 @@ fn t8_renders_fixed_width_id_column_per_group() {
         category: None,
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: noop_arc_execute(),
     });
     registry.register(Command {
@@ -127,6 +133,7 @@ fn t8_renders_fixed_width_id_column_per_group() {
         category: None,
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: noop_arc_execute(),
     });
 

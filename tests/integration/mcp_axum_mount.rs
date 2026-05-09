@@ -1,6 +1,8 @@
 use axum::routing::get;
 use cli_framework::command::{Command, CommandArgs, CommandRegistry};
-use cli_framework::mcp::{build_mcp_axum_router, transport_http::mcp_axum_router, McpToolRegistry};
+use cli_framework::mcp::{
+    build_mcp_axum_router, transport_http::mcp_axum_router, McpToolExportPolicy, McpToolRegistry,
+};
 use cli_framework::security::CommandRiskPolicy;
 use std::future::Future;
 use std::pin::Pin;
@@ -80,6 +82,7 @@ async fn test_mcp_and_health_on_same_listener() {
         category: None,
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: noop_execute(),
     });
 
@@ -165,6 +168,7 @@ async fn test_build_mcp_axum_router_tool_count() {
         category: None,
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: noop_execute(),
     });
     registry.register(Command {
@@ -174,11 +178,17 @@ async fn test_build_mcp_axum_router_tool_count() {
         category: None,
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: noop_execute(),
     });
 
-    let mcp_router =
-        build_mcp_axum_router(&registry, "testapp", "/mcp", CommandRiskPolicy::default());
+    let mcp_router = build_mcp_axum_router(
+        &registry,
+        "testapp",
+        "/mcp",
+        CommandRiskPolicy::default(),
+        McpToolExportPolicy::AllCommands,
+    );
     let app = axum::Router::new().merge(mcp_router);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -1,5 +1,5 @@
 use cli_framework::command::{Command, CommandArgs, CommandRegistry};
-use cli_framework::mcp::McpToolRegistry;
+use cli_framework::mcp::{McpToolExportPolicy, McpToolRegistry};
 use cli_framework::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use cli_framework::spec::command_tree::{CommandPath, CommandSpec};
 use insta;
@@ -26,6 +26,7 @@ fn make_cmd(id: &'static str, summary: &'static str) -> Command {
         category: None,
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: noop_execute(),
     }
 }
@@ -38,6 +39,7 @@ fn make_cmd_with_spec(id: &'static str, summary: &'static str, spec: CommandSpec
         category: None,
         spec: Some(Arc::new(spec)),
         validator: None,
+        expose_mcp: false,
         execute: noop_execute(),
     }
 }
@@ -203,4 +205,89 @@ fn test_tool_descriptor_snapshot() {
     settings.bind(|| {
         insta::assert_json_snapshot!("tool_descriptor", tool);
     });
+}
+
+#[test]
+fn test_expose_mcp_only_filters_commands() {
+    let mut registry = CommandRegistry::new();
+    registry.register(Command {
+        id: "included",
+        summary: "Included command",
+        syntax: None,
+        category: None,
+        spec: None,
+        validator: None,
+        expose_mcp: true,
+        execute: noop_execute(),
+    });
+    registry.register(Command {
+        id: "excluded",
+        summary: "Excluded command",
+        syntax: None,
+        category: None,
+        spec: None,
+        validator: None,
+        expose_mcp: false,
+        execute: noop_execute(),
+    });
+
+    let tool_registry = McpToolRegistry::from_command_registry_with_policy(
+        &registry,
+        "myapp",
+        McpToolExportPolicy::ExposeMcpOnly,
+    );
+    let tools = tool_registry.list_tools();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "myapp.included");
+}
+
+#[test]
+fn test_expose_mcp_only_empty_set() {
+    let mut registry = CommandRegistry::new();
+    registry.register(make_cmd("cmd-a", "Command A"));
+    registry.register(make_cmd("cmd-b", "Command B"));
+
+    let tool_registry = McpToolRegistry::from_command_registry_with_policy(
+        &registry,
+        "myapp",
+        McpToolExportPolicy::ExposeMcpOnly,
+    );
+    assert_eq!(tool_registry.tool_count(), 0);
+}
+
+#[tokio::test]
+async fn test_call_excluded_tool_returns_not_found() {
+    use cli_framework::mcp::dispatch_tool_call;
+
+    let mut registry = CommandRegistry::new();
+    registry.register(make_cmd("excluded", "An excluded command"));
+
+    let tool_registry = McpToolRegistry::from_command_registry_with_policy(
+        &registry,
+        "myapp",
+        McpToolExportPolicy::ExposeMcpOnly,
+    );
+
+    let result = dispatch_tool_call(&tool_registry, "myapp.excluded", None).await;
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        err.message.starts_with("MCP_CMD_NOT_FOUND:"),
+        "expected MCP_CMD_NOT_FOUND error, got: {}",
+        err.message
+    );
+}
+
+#[test]
+fn test_all_commands_policy_ignores_flag() {
+    let mut registry = CommandRegistry::new();
+    registry.register(make_cmd("cmd-a", "Command A"));
+    registry.register(make_cmd("cmd-b", "Command B"));
+
+    let tool_registry = McpToolRegistry::from_command_registry_with_policy(
+        &registry,
+        "myapp",
+        McpToolExportPolicy::AllCommands,
+    );
+    assert_eq!(tool_registry.list_tools().len(), 2);
 }

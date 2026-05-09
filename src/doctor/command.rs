@@ -15,6 +15,7 @@ pub fn create_doctor_command(checks: Vec<Arc<dyn DoctorCheck>>) -> Command {
         category: Some("ops"),
         spec: Some(doctor_spec()),
         validator: None,
+        expose_mcp: false,
         execute: Arc::new(move |ctx, args| {
             let is_json = args.named.get("json").map(|v| v == "true").unwrap_or(false);
             let filter_id = args.named.get("check").cloned();

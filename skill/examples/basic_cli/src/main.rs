@@ -22,6 +22,7 @@ async fn main() -> anyhow::Result<()> {
         category: Some("utilities"),
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: Arc::new(|_ctx, args| {
             Box::pin(async move {
                 let name = args
@@ -44,6 +45,7 @@ async fn main() -> anyhow::Result<()> {
         category: Some("utilities"),
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: Arc::new(|_ctx, _args| {
             Box::pin(async move {
                 // This is a simplified example - in practice, you'd need proper context access

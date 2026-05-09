@@ -27,6 +27,7 @@ pub fn create_ask_command(
         category: Some("ai"),
         spec: None,
         validator: None,
+        expose_mcp: false,
         execute: Arc::new(move |_ctx, args| {
             let provider = llm_provider.clone();
             let metadata = metadata_snapshot.clone();

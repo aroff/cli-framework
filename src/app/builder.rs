@@ -29,6 +29,8 @@ pub struct AppBuilder {
     risk_policy: crate::security::command_risk::CommandRiskPolicy,
     #[cfg(feature = "doctor")]
     doctor_checks: Vec<Arc<dyn crate::doctor::check::DoctorCheck>>,
+    #[cfg(feature = "mcp-server")]
+    mcp_export_policy: crate::mcp::McpToolExportPolicy,
 }
 
 impl AppBuilder {
@@ -45,7 +47,17 @@ impl AppBuilder {
             risk_policy: crate::security::command_risk::CommandRiskPolicy::default(),
             #[cfg(feature = "doctor")]
             doctor_checks: Vec::new(),
+            #[cfg(feature = "mcp-server")]
+            mcp_export_policy: crate::mcp::McpToolExportPolicy::default(),
         }
+    }
+
+    /// Set the MCP export policy used when `--mcp-serve` starts the embedded server.
+    /// Default: `McpToolExportPolicy::AllCommands` (backward compatible).
+    #[cfg(feature = "mcp-server")]
+    pub fn with_mcp_export_policy(mut self, policy: crate::mcp::McpToolExportPolicy) -> Self {
+        self.mcp_export_policy = policy;
+        self
     }
 
     /// Override the default (all-Safe) command risk policy.
@@ -239,6 +251,8 @@ impl AppBuilder {
             clap_root,
             #[cfg(feature = "testkit")]
             stdout_capture: None,
+            #[cfg(feature = "mcp-server")]
+            mcp_export_policy: self.mcp_export_policy,
         })
     }
 }
@@ -263,6 +277,8 @@ pub struct App<C: AppContext> {
     /// Captures framework-level stdout output (version strings etc.) when testkit is active.
     #[cfg(feature = "testkit")]
     pub stdout_capture: Option<Arc<Mutex<Vec<u8>>>>,
+    #[cfg(feature = "mcp-server")]
+    mcp_export_policy: crate::mcp::McpToolExportPolicy,
 }
 
 struct CliAppContextWrapper<'a, C: AppContext> {
@@ -359,6 +375,7 @@ impl<C: AppContext> App<C> {
                     self.app_name,
                     mcp_args,
                     self.risk_policy.clone(),
+                    self.mcp_export_policy,
                 )
                 .await;
             }

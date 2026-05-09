@@ -254,6 +254,7 @@ fn test_ask_command_registered_with_llm_and_ailoop() {
             category: None,
             spec: None,
             validator: None,
+            expose_mcp: false,
             execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
         })
         .unwrap()
@@ -295,6 +296,7 @@ async fn test_ask_command_calls_authorize_not_stdin() {
             category: None,
             spec: None,
             validator: None,
+            expose_mcp: false,
             execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
         })
         .unwrap()
