@@ -38,6 +38,8 @@ indicatif = { version = "0.17", optional = true }
 # Optional MCP server dependencies
 rmcp = { version = "1.6", features = ["server", "transport-streamable-http-server"], optional = true }
 axum = { version = "0.8", optional = true }
+# Optional MCP install dependency (aikit-sdk provides add_mcp_server and mcp_supported_agents)
+aikit-sdk = { git = "https://github.com/goaikit/aikit.git", package = "aikit-sdk", rev = "dff63ec966a6ad9f310f00e31a27d3e6f195a549", optional = true }
 
 # Optional OpenTelemetry dependencies (applications can enable)
 # Note: Applications should add these dependencies themselves when using observability feature
@@ -75,7 +77,7 @@ testkit = []
 # MCP server — expose registered commands as MCP tools via Streamable HTTP
 mcp-server = ["dep:rmcp", "dep:axum"]
 # MCP install — register this app as an MCP server in agent config files
-mcp-install = ["mcp-server"]
+mcp-install = ["mcp-server", "dep:aikit-sdk"]
 # Doctor diagnostics framework — structured health checks with terminal/JSON output
 doctor = []
 # Project config — project root discovery and TOML loading (off by default)

@@ -83,3 +83,55 @@ async fn mcp_list_prints_agents() {
 
     assert!(result.is_ok(), "mcp list failed: {:?}", result);
 }
+
+/// `mcp install` with an unknown agent key triggers `McpDeployError` → E011.
+#[tokio::test]
+async fn mcp_install_unknown_agent_returns_e011() {
+    let mut app = AppBuilder::new()
+        .with_version("testapp", "0.1.0")
+        .build(DummyCtx)
+        .unwrap();
+
+    let result = app
+        .run_with_args(vec![
+            "testapp".to_string(),
+            "mcp".to_string(),
+            "install".to_string(),
+            "--agent".to_string(),
+            "not-a-real-agent".to_string(),
+        ])
+        .await;
+
+    assert!(result.is_err(), "expected error for unknown agent");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("E011"),
+        "expected E011 error code in: {}",
+        err_msg
+    );
+}
+
+/// `mcp install --dry-run --stdio` prints stdio dry-run message and returns Ok.
+#[tokio::test]
+async fn mcp_install_dry_run_stdio_succeeds() {
+    let mut app = AppBuilder::new()
+        .with_version("testapp", "0.1.0")
+        .build(DummyCtx)
+        .unwrap();
+
+    let result = app
+        .run_with_args(vec![
+            "testapp".to_string(),
+            "mcp".to_string(),
+            "install".to_string(),
+            "--stdio".to_string(),
+            "--dry-run".to_string(),
+        ])
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "mcp install --stdio --dry-run failed: {:?}",
+        result
+    );
+}

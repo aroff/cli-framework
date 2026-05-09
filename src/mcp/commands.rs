@@ -107,14 +107,17 @@ pub fn create_mcp_serve_command_with_deps(
 
 /// Returns the `mcp install` leaf command (requires `mcp-install` feature).
 ///
-/// Installs this app as an MCP server entry in an agent configuration file.
-/// When `--dry-run` is set, prints what would be done without writing anything.
+/// Installs this app as an MCP server entry in an agent configuration file via
+/// `aikit_sdk::add_mcp_server`. When `--dry-run` is set, prints what would be
+/// done without writing anything.
 #[cfg(feature = "mcp-install")]
-pub fn create_mcp_install_command(_app_name: &'static str) -> Command {
+pub fn create_mcp_install_command(app_name: &'static str) -> Command {
     Command {
         id: "install",
         summary: "Install this app as an MCP server in an agent configuration",
-        syntax: Some("mcp install [--agent AGENT] [--scope SCOPE] [--name NAME] [--url URL]"),
+        syntax: Some(
+            "mcp install [--agent AGENT] [--scope SCOPE] [--name NAME] [--url URL | --stdio]",
+        ),
         category: Some("mcp"),
         spec: Some(Arc::new(CommandSpec {
             summary: "Install this app as an MCP server in an agent configuration",
@@ -154,6 +157,18 @@ pub fn create_mcp_install_command(_app_name: &'static str) -> Command {
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "Server name in config (defaults to app name)",
+                },
+                ArgSpec {
+                    name: "project",
+                    kind: ArgKind::Option,
+                    short: None,
+                    long: Some("project"),
+                    value_type: ArgValueType::String,
+                    cardinality: Cardinality::Optional,
+                    default: None,
+                    conflicts_with: vec![],
+                    requires: vec![],
+                    help: "Project root directory (default: current directory, for project scope)",
                 },
                 ArgSpec {
                     name: "url",
@@ -204,6 +219,18 @@ pub fn create_mcp_install_command(_app_name: &'static str) -> Command {
                     help: "MCP HTTP path prefix (used when --url is not set)",
                 },
                 ArgSpec {
+                    name: "header",
+                    kind: ArgKind::Option,
+                    short: None,
+                    long: Some("header"),
+                    value_type: ArgValueType::String,
+                    cardinality: Cardinality::Repeated,
+                    default: None,
+                    conflicts_with: vec!["stdio"],
+                    requires: vec![],
+                    help: "HTTP header KEY=value (repeat for multiple; HTTP mode only)",
+                },
+                ArgSpec {
                     name: "stdio",
                     kind: ArgKind::Flag,
                     short: None,
@@ -214,6 +241,30 @@ pub fn create_mcp_install_command(_app_name: &'static str) -> Command {
                     conflicts_with: vec!["url"],
                     requires: vec![],
                     help: "Use stdio transport (current_exe as command)",
+                },
+                ArgSpec {
+                    name: "arg",
+                    kind: ArgKind::Option,
+                    short: None,
+                    long: Some("arg"),
+                    value_type: ArgValueType::String,
+                    cardinality: Cardinality::Repeated,
+                    default: None,
+                    conflicts_with: vec![],
+                    requires: vec![],
+                    help: "Additional argv token for stdio command (repeat for multiple)",
+                },
+                ArgSpec {
+                    name: "env",
+                    kind: ArgKind::Option,
+                    short: None,
+                    long: Some("env"),
+                    value_type: ArgValueType::String,
+                    cardinality: Cardinality::Repeated,
+                    default: None,
+                    conflicts_with: vec![],
+                    requires: vec![],
+                    help: "Environment variable KEY=value for stdio (repeat for multiple)",
                 },
                 ArgSpec {
                     name: "overwrite",
@@ -246,6 +297,10 @@ pub fn create_mcp_install_command(_app_name: &'static str) -> Command {
         expose_mcp: false,
         execute: Arc::new(move |_ctx, args: CommandArgs| {
             Box::pin(async move {
+                use crate::parser::error_codes::{
+                    E_MCP_INSTALL_EXE_NOT_FOUND, E_MCP_INSTALL_WRITE_FAILED,
+                };
+
                 let dry_run = args
                     .named
                     .get("dry-run")
@@ -261,31 +316,98 @@ pub fn create_mcp_install_command(_app_name: &'static str) -> Command {
                     .get("agent")
                     .cloned()
                     .unwrap_or_else(|| "claude".to_string());
-                let scope = args
+                let scope_str = args
                     .named
                     .get("scope")
                     .cloned()
                     .unwrap_or_else(|| "project".to_string());
+                let server_name = args
+                    .named
+                    .get("name")
+                    .cloned()
+                    .unwrap_or_else(|| app_name.to_string());
+                let overwrite = args
+                    .named
+                    .get("overwrite")
+                    .map(|v| v == "true")
+                    .unwrap_or(false);
 
-                if stdio_mode {
+                let project_root = args
+                    .named
+                    .get("project")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| {
+                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    });
+                let project_root = project_root.canonicalize().unwrap_or(project_root.clone());
+
+                let scope = if scope_str == "global" {
+                    aikit_sdk::McpScope::Global
+                } else {
+                    aikit_sdk::McpScope::Project
+                };
+
+                let agent_key = aikit_sdk::normalize_mcp_agent_key(&agent).to_string();
+
+                // Helper: split a comma-joined repeated-arg string into a Vec<String>.
+                // Repeated args with Cardinality::Repeated are joined with ',' by the
+                // framework's typed-arg-to-CommandArgs conversion.
+                let split_repeated = |raw: &str| -> Vec<String> {
+                    if raw.is_empty() {
+                        vec![]
+                    } else {
+                        raw.split(',').map(|s| s.to_string()).collect()
+                    }
+                };
+
+                let transport = if stdio_mode {
                     let exe_path = std::env::current_exe().map_err(|e| {
                         anyhow::anyhow!(
                             "[{}] failed to locate current executable: {}",
-                            crate::parser::error_codes::E_MCP_INSTALL_EXE_NOT_FOUND,
+                            E_MCP_INSTALL_EXE_NOT_FOUND,
                             e
                         )
                     })?;
+
+                    let exe_args: Vec<String> = args
+                        .named
+                        .get("arg")
+                        .map(|r| split_repeated(r))
+                        .unwrap_or_default();
+
+                    let env_pairs: Vec<String> = args
+                        .named
+                        .get("env")
+                        .map(|r| split_repeated(r))
+                        .unwrap_or_default();
+                    let env_map = if env_pairs.is_empty() {
+                        None
+                    } else {
+                        Some(aikit_sdk::parse_env_pairs(&env_pairs).map_err(|e| {
+                            anyhow::anyhow!(
+                                "[{}] invalid --env value: {}",
+                                E_MCP_INSTALL_WRITE_FAILED,
+                                e
+                            )
+                        })?)
+                    };
+
                     if dry_run {
                         println!(
-                            "dry-run: would install stdio MCP server for agent '{}' (scope: {}) using exe: {:?}",
-                            agent, scope, exe_path
+                            "dry-run: would install stdio MCP server for agent '{}' (scope: {:?}) using exe: {} args: {:?}",
+                            agent_key,
+                            scope,
+                            exe_path.display(),
+                            exe_args
                         );
                         return Ok(());
                     }
-                    println!(
-                        "Installed stdio MCP server for agent '{}' (scope: {}) using exe: {:?}",
-                        agent, scope, exe_path
-                    );
+
+                    aikit_sdk::McpServerTransport::Stdio {
+                        command: exe_path.to_string_lossy().into_owned(),
+                        args: exe_args,
+                        env: env_map,
+                    }
                 } else {
                     let host = args
                         .named
@@ -308,18 +430,62 @@ pub fn create_mcp_install_command(_app_name: &'static str) -> Command {
                         .cloned()
                         .unwrap_or_else(|| format!("http://{}:{}{}", host, port, path));
 
+                    let header_pairs: Vec<String> = args
+                        .named
+                        .get("header")
+                        .map(|r| split_repeated(r))
+                        .unwrap_or_default();
+                    let headers = if header_pairs.is_empty() {
+                        None
+                    } else {
+                        Some(aikit_sdk::parse_header_pairs(&header_pairs).map_err(|e| {
+                            anyhow::anyhow!(
+                                "[{}] invalid --header value: {}",
+                                E_MCP_INSTALL_WRITE_FAILED,
+                                e
+                            )
+                        })?)
+                    };
+
                     if dry_run {
                         println!(
-                            "dry-run: would install HTTP MCP server for agent '{}' (scope: {}) at {}",
-                            agent, scope, url
+                            "dry-run: would install HTTP MCP server for agent '{}' (scope: {:?}) at {}",
+                            agent_key, scope, url
                         );
                         return Ok(());
                     }
-                    println!(
-                        "Installed HTTP MCP server for agent '{}' (scope: {}) at {}",
-                        agent, scope, url
-                    );
-                }
+
+                    aikit_sdk::McpServerTransport::Http { url, headers }
+                };
+
+                let opts = aikit_sdk::AddMcpServerOptions {
+                    agent_key,
+                    scope,
+                    project_root,
+                    server_name,
+                    transport,
+                    overwrite,
+                };
+
+                let written_path =
+                    tokio::task::spawn_blocking(move || aikit_sdk::add_mcp_server(opts))
+                        .await
+                        .map_err(|e| {
+                            anyhow::anyhow!(
+                                "[{}] internal error: {}",
+                                E_MCP_INSTALL_WRITE_FAILED,
+                                e
+                            )
+                        })?
+                        .map_err(|e| {
+                            anyhow::anyhow!(
+                                "[{}] failed to install MCP server: {}",
+                                E_MCP_INSTALL_WRITE_FAILED,
+                                e
+                            )
+                        })?;
+
+                println!("MCP server installed to: {}", written_path.display());
                 Ok(())
             })
         }),
@@ -328,7 +494,7 @@ pub fn create_mcp_install_command(_app_name: &'static str) -> Command {
 
 /// Returns the `mcp list` leaf command (requires `mcp-install` feature).
 ///
-/// Prints a table of supported MCP agent targets.
+/// Prints a table of supported MCP agent targets from `aikit_sdk::mcp_supported_agents()`.
 #[cfg(feature = "mcp-install")]
 pub fn create_mcp_list_command() -> Command {
     Command {
@@ -345,40 +511,19 @@ pub fn create_mcp_list_command() -> Command {
         expose_mcp: false,
         execute: Arc::new(|_ctx, _args: CommandArgs| {
             Box::pin(async move {
+                let agents = aikit_sdk::mcp_supported_agents();
                 println!(
-                    "{:<15} {:<25} {:<40} {}",
+                    "{:<15} {:<25} {:<45} {}",
                     "AGENT", "NAME", "PROJECT PATH", "GLOBAL PATH"
                 );
-                let agents = [
-                    (
-                        "claude",
-                        "Claude Desktop",
-                        ".claude/mcp.json",
-                        "~/.claude/mcp.json",
-                    ),
-                    (
-                        "cursor-agent",
-                        "Cursor",
-                        ".cursor/mcp.json",
-                        "~/.cursor/mcp.json",
-                    ),
-                    ("gemini", "Gemini CLI", "(none)", "~/.gemini/mcp.json"),
-                    (
-                        "copilot",
-                        "GitHub Copilot",
-                        ".vscode/mcp.json",
-                        "~/.vscode/mcp.json",
-                    ),
-                    (
-                        "opencode",
-                        "OpenCode",
-                        ".opencode/mcp.json",
-                        "~/.opencode/mcp.json",
-                    ),
-                    ("codex", "Codex CLI", "(none)", "~/.codex/mcp.json"),
-                ];
-                for (key, name, proj, global) in &agents {
-                    println!("{:<15} {:<25} {:<40} {}", key, name, proj, global);
+                for row in &agents {
+                    println!(
+                        "{:<15} {:<25} {:<45} {}",
+                        row.agent_key,
+                        row.display_name,
+                        row.project_config_path,
+                        row.global_config_path
+                    );
                 }
                 Ok(())
             })
