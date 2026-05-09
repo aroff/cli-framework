@@ -240,3 +240,103 @@ async fn test_build_mcp_axum_router_tool_count() {
 
     assert_eq!(tools.len(), 2, "expected 2 tools, got {}", tools.len());
 }
+
+#[tokio::test]
+async fn test_expose_mcp_only_via_http_router() {
+    let _ = env_logger::try_init();
+
+    let mut registry = CommandRegistry::new();
+    registry.register(Command {
+        id: "visible",
+        summary: "Visible via MCP",
+        syntax: None,
+        category: None,
+        spec: None,
+        validator: None,
+        expose_mcp: true,
+        execute: noop_execute(),
+    });
+    registry.register(Command {
+        id: "hidden",
+        summary: "Hidden from MCP",
+        syntax: None,
+        category: None,
+        spec: None,
+        validator: None,
+        expose_mcp: false,
+        execute: noop_execute(),
+    });
+
+    let mcp_router = build_mcp_axum_router(
+        &registry,
+        "testapp",
+        "/mcp",
+        CommandRiskPolicy::default(),
+        McpToolExportPolicy::ExposeMcpOnly,
+    );
+    let app = axum::Router::new().merge(mcp_router);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    wait_for_server(&format!("127.0.0.1:{}", port)).await;
+
+    let client = reqwest::Client::new();
+    let base_url = format!("http://127.0.0.1:{}", port);
+
+    let session_id = initialize_session(&client, &base_url).await;
+
+    let mut req = client
+        .post(format!("{}/mcp", base_url))
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream");
+
+    if let Some(ref sid) = session_id {
+        req = req.header("Mcp-Session-Id", sid);
+    }
+
+    let resp = req
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "2",
+            "method": "tools/list"
+        }))
+        .send()
+        .await
+        .expect("tools/list request failed");
+
+    assert!(
+        resp.status().is_success(),
+        "tools/list status: {}",
+        resp.status()
+    );
+
+    let body = resp.text().await.unwrap();
+    let json = parse_sse_data(&body);
+
+    let tools = json
+        .pointer("/result/tools")
+        .and_then(|t| t.as_array())
+        .expect("result.tools array expected");
+
+    assert_eq!(
+        tools.len(),
+        1,
+        "expected 1 tool under ExposeMcpOnly, got {}",
+        tools.len()
+    );
+
+    let tool_name = tools[0]
+        .get("name")
+        .and_then(|n| n.as_str())
+        .expect("tool name expected");
+    assert!(
+        tool_name.contains("visible"),
+        "expected visible command in tool list, got: {}",
+        tool_name
+    );
+}
