@@ -89,9 +89,9 @@ pub fn create_doctor_command(checks: Vec<Arc<dyn DoctorCheck>>) -> Command {
 
                 let report = DoctorReport::from_findings(findings);
                 if is_json {
-                    render_json(&report)?;
+                    render_json(ctx, &report)?;
                 } else {
-                    render_terminal(&report);
+                    render_terminal(ctx, &report);
                 }
 
                 if report.errors > 0 {

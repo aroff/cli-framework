@@ -209,7 +209,7 @@ required-features = ["doctor"]
 [[test]]
 name = "integration_doctor_command"
 path = "tests/integration/doctor_command.rs"
-required-features = ["doctor"]
+required-features = ["doctor", "testkit"]
 
 [[example]]
 name = "with_project_config"

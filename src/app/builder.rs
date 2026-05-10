@@ -561,6 +561,8 @@ impl<C: AppContext> App<C> {
             command_registry: self.command_registry.as_ref(),
             llm_provider: &self.llm_provider,
             ailoop_client: &self.ailoop_client,
+            #[cfg(feature = "testkit")]
+            stdout_capture: self.stdout_capture.clone(),
         };
         let mut ctx_wrapper = crate::app::dispatch::CliAppContextWrapper::new(&mut self.ctx, env);
 

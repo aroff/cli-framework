@@ -1,6 +1,12 @@
 use cli_framework::command::{enforce_risk_gate, CommandArgs};
 use cli_framework::llm::CommandResolution;
 use cli_framework::security::command_risk::{CommandRiskPolicy, CommandRiskTier};
+use std::sync::{Mutex, OnceLock};
+
+fn env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 fn make_resolution(command_id: &str) -> CommandResolution {
     CommandResolution {
@@ -31,6 +37,7 @@ fn test_safe_tier_always_ok_true() {
 // AC6: Destructive command blocked when ALLOW_DESTRUCTIVE_COMMANDS not set
 #[test]
 fn test_destructive_blocked_without_env() {
+    let _guard = env_lock().lock().unwrap();
     std::env::remove_var("ALLOW_DESTRUCTIVE_COMMANDS");
     let policy = CommandRiskPolicy::default();
     let resolution = make_resolution("drop-db");
@@ -54,6 +61,7 @@ fn test_destructive_blocked_without_env() {
 // AC6: Destructive command blocked regardless of assume_yes
 #[test]
 fn test_destructive_blocked_assume_yes_true() {
+    let _guard = env_lock().lock().unwrap();
     std::env::remove_var("ALLOW_DESTRUCTIVE_COMMANDS");
     let policy = CommandRiskPolicy::default();
     let resolution = make_resolution("rm-all");
@@ -68,6 +76,7 @@ fn test_destructive_blocked_assume_yes_true() {
 
 #[test]
 fn test_destructive_blocked_assume_yes_false() {
+    let _guard = env_lock().lock().unwrap();
     std::env::remove_var("ALLOW_DESTRUCTIVE_COMMANDS");
     let policy = CommandRiskPolicy::default();
     let resolution = make_resolution("rm-all");
@@ -115,6 +124,7 @@ fn test_sensitive_allowed_with_ailoop() {
 // Destructive command allowed when ailoop + ALLOW_DESTRUCTIVE_COMMANDS=1
 #[test]
 fn test_destructive_allowed_with_ailoop_and_env() {
+    let _guard = env_lock().lock().unwrap();
     std::env::set_var("ALLOW_DESTRUCTIVE_COMMANDS", "1");
     let policy = CommandRiskPolicy::default();
     let resolution = make_resolution("drop-db");
@@ -131,6 +141,7 @@ fn test_destructive_allowed_with_ailoop_and_env() {
 // Destructive command still blocked without ALLOW_DESTRUCTIVE_COMMANDS even with ailoop
 #[test]
 fn test_destructive_still_blocked_without_env_even_with_ailoop() {
+    let _guard = env_lock().lock().unwrap();
     std::env::remove_var("ALLOW_DESTRUCTIVE_COMMANDS");
     let policy = CommandRiskPolicy::default();
     let resolution = make_resolution("drop-db");
@@ -232,6 +243,7 @@ fn test_per_command_override_wins() {
 // or DESTRUCTIVE_COMMAND_BLOCKED when non-interactive without ailoop (as in CI/test environments).
 #[test]
 fn test_ac7_destructive_allowed_with_env_and_interactive() {
+    let _guard = env_lock().lock().unwrap();
     std::env::set_var("ALLOW_DESTRUCTIVE_COMMANDS", "1");
     let policy = CommandRiskPolicy::default();
     let resolution = make_resolution("drop-db");
