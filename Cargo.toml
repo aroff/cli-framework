@@ -92,6 +92,11 @@ chat = ["dep:aikit-agent"]
 name = "cli_framework"
 path = "src/lib.rs"
 
+[[bin]]
+name = "cfw_mcp_stdio_test_server"
+path = "tests/bin/mcp_stdio_test_server.rs"
+required-features = ["mcp-server"]
+
 [[example]]
 name = "http_retry_demo"
 path = "skill/examples/http_retry_demo/main.rs"

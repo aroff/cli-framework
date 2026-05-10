@@ -481,6 +481,102 @@ async fn test_tools_list_and_call_over_stdio_transport() {
 }
 
 #[tokio::test]
+async fn test_tools_list_and_call_via_mcp_serve_stdio_subcommand() {
+    let _ = env_logger::try_init();
+
+    use std::process::Stdio;
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+    use tokio::process::Command as TokioCommand;
+
+    struct ChildTransport {
+        reader: tokio::process::ChildStdout,
+        writer: tokio::process::ChildStdin,
+    }
+
+    impl AsyncRead for ChildTransport {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.reader).poll_read(cx, buf)
+        }
+    }
+
+    impl AsyncWrite for ChildTransport {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            data: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::pin::Pin::new(&mut self.writer).poll_write(cx, data)
+        }
+
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.writer).poll_flush(cx)
+        }
+
+        fn poll_shutdown(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.writer).poll_shutdown(cx)
+        }
+    }
+
+    let server_exe = env!("CARGO_BIN_EXE_cfw_mcp_stdio_test_server");
+    let mut child = TokioCommand::new(server_exe)
+        .args(["mcp", "serve", "--transport", "stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn mcp stdio server");
+
+    let child_stdin = child.stdin.take().expect("child stdin");
+    let child_stdout = child.stdout.take().expect("child stdout");
+    let transport = ChildTransport {
+        reader: child_stdout,
+        writer: child_stdin,
+    };
+
+    let client = rmcp::serve_client((), transport)
+        .await
+        .expect("serve_client failed");
+
+    let tools = client
+        .peer()
+        .list_tools(Default::default())
+        .await
+        .expect("tools/list failed");
+
+    assert!(
+        tools
+            .tools
+            .iter()
+            .any(|t| t.name == "cfw-mcp-stdio-test-server.ping"),
+        "expected cfw-mcp-stdio-test-server.ping in tools: {:?}",
+        tools.tools
+    );
+
+    let call = client
+        .peer()
+        .call_tool(rmcp::model::CallToolRequestParams::new(
+            "cfw-mcp-stdio-test-server.ping",
+        ))
+        .await
+        .expect("tools/call failed");
+
+    assert_eq!(call.is_error, Some(false));
+
+    let _ = client.cancel().await;
+    let _ = child.kill().await;
+}
+
+#[tokio::test]
 async fn test_mcp_serve_stdio_rejects_http_flags() {
     struct Ctx;
     impl AppContext for Ctx {}

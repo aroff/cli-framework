@@ -58,19 +58,20 @@ else
 fi
 echo ""
 
-# Step 5: Run all tests
-echo -e "${YELLOW}[5/6] Running all tests (all features)...${NC}"
-if cargo test --all-features --verbose; then
-    echo -e "${GREEN}✓ All tests passed${NC}"
-else
-    echo -e "${RED}✗ Tests failed${NC}"
-    exit 1
-fi
+# Step 5: Run tests (feature matrix)
+echo -e "${YELLOW}[5/6] Running tests (feature matrix)...${NC}"
+set -x
+cargo test --verbose
+cargo test --features chat --verbose
+cargo test --features mcp-server --verbose
+cargo test --features "chat,mcp-server" --verbose
+set +x
+echo -e "${GREEN}✓ Feature-matrix tests passed${NC}"
 echo ""
 
-# Step 6: Run integration tests
-echo -e "${YELLOW}[6/6] Running integration tests (all features)...${NC}"
-if cargo test --all-features --test '*' --verbose; then
+# Step 6: Run integration tests (ensure MCP server coverage)
+echo -e "${YELLOW}[6/6] Running integration tests (mcp-server)...${NC}"
+if cargo test --features mcp-server --test '*' --verbose; then
     echo -e "${GREEN}✓ Integration tests passed${NC}"
 else
     echo -e "${RED}✗ Integration tests failed${NC}"

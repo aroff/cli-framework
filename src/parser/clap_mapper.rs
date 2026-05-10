@@ -58,35 +58,49 @@ pub fn map_matches_to_typed_args(
 ) -> Result<HashMap<String, ArgValue>, Diagnostic> {
     let mut result = HashMap::new();
 
+    fn is_user_provided(matches: &clap::ArgMatches, name: &str) -> bool {
+        matches
+            .value_source(name)
+            .is_some_and(|s| s == clap::parser::ValueSource::CommandLine)
+    }
+
     for arg_spec in &spec.args {
         match arg_spec.kind {
             ArgKind::Flag => match arg_spec.cardinality {
                 Cardinality::Repeated => {
-                    let count = matches.get_count(arg_spec.name);
-                    if count > 0 {
-                        result.insert(arg_spec.name.to_string(), ArgValue::Count(count.into()));
+                    if is_user_provided(matches, arg_spec.name) {
+                        let count = matches.get_count(arg_spec.name);
+                        if count > 0 {
+                            result.insert(arg_spec.name.to_string(), ArgValue::Count(count.into()));
+                        }
                     }
                 }
                 _ => {
-                    let val = matches.get_flag(arg_spec.name);
-                    if val {
-                        result.insert(arg_spec.name.to_string(), ArgValue::Bool(true));
+                    if is_user_provided(matches, arg_spec.name) {
+                        let val = matches.get_flag(arg_spec.name);
+                        if val {
+                            result.insert(arg_spec.name.to_string(), ArgValue::Bool(true));
+                        }
                     }
                 }
             },
             ArgKind::Option | ArgKind::Positional => match arg_spec.cardinality {
                 Cardinality::Repeated => {
-                    if let Some(vals) = matches.get_many::<String>(arg_spec.name) {
-                        let list: Vec<ArgValue> = vals
-                            .map(|v| coerce_value(v, &arg_spec.value_type, arg_spec.name))
-                            .collect::<Result<Vec<_>, _>>()?;
-                        result.insert(arg_spec.name.to_string(), ArgValue::List(list));
+                    if is_user_provided(matches, arg_spec.name) {
+                        if let Some(vals) = matches.get_many::<String>(arg_spec.name) {
+                            let list: Vec<ArgValue> = vals
+                                .map(|v| coerce_value(v, &arg_spec.value_type, arg_spec.name))
+                                .collect::<Result<Vec<_>, _>>()?;
+                            result.insert(arg_spec.name.to_string(), ArgValue::List(list));
+                        }
                     }
                 }
                 _ => {
-                    if let Some(val) = matches.get_one::<String>(arg_spec.name) {
-                        let typed = coerce_value(val, &arg_spec.value_type, arg_spec.name)?;
-                        result.insert(arg_spec.name.to_string(), typed);
+                    if is_user_provided(matches, arg_spec.name) {
+                        if let Some(val) = matches.get_one::<String>(arg_spec.name) {
+                            let typed = coerce_value(val, &arg_spec.value_type, arg_spec.name)?;
+                            result.insert(arg_spec.name.to_string(), typed);
+                        }
                     }
                 }
             },
