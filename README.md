@@ -12,7 +12,7 @@ A Rust library for building CLIs with optional AI-assisted command resolution (*
 - **Command registry**: Central registration, optional typed `CommandSpec`, and grouping metadata
 - **CLI output helpers**: Tables, JSON, progress (behind Cargo features where applicable)
 - **Security defaults**: Output sanitization, risk tiers for ask, hardened HTTP helpers
-- **MCP Server Mode**: Expose all registered commands as MCP tools over Streamable HTTP (opt-in via `mcp-server` feature)
+- **MCP Server Mode**: Expose registered commands as MCP tools over Streamable HTTP or stdio (opt-in via `mcp-server` feature)
 - **Project Config**: Project root discovery and TOML loading (opt-in via `project-config` feature)
 
 ## Cargo Features
@@ -23,7 +23,7 @@ A Rust library for building CLIs with optional AI-assisted command resolution (*
 | `table-advanced` | no | Rich table output via `comfy-table` |
 | `progress` | no | Progress bars via `indicatif` |
 | `testkit` | no | `CliTestHarness` for in-process testing |
-| `mcp-server` | no | Expose commands as MCP tools over Streamable HTTP |
+| `mcp-server` | no | Expose commands as MCP tools over HTTP or stdio |
 | `doctor` | no | Structured health-check framework with terminal/JSON output |
 | `project-config` | no | Project root discovery and TOML loading (`PC001`–`PC005` error codes) |
 
@@ -40,19 +40,16 @@ Add the `mcp-server` feature in your binary's `Cargo.toml`:
 cli-framework = { version = "0.4", features = ["mcp-server"] }
 ```
 
-### CLI flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--mcp-serve` | (flag, disabled) | Start MCP Streamable HTTP server |
-| `--mcp-host` | `127.0.0.1` | Bind address |
-| `--mcp-port` | `8080` | Bind port |
-| `--mcp-path` | `/mcp` | HTTP path prefix for the MCP endpoint |
-
 ### Running
 
+When built with `mcp-server`, `cli-framework` auto-registers an `mcp` command group that includes `mcp serve`:
+
 ```bash
-my-app --mcp-serve --mcp-port 9000
+# Streamable HTTP (default transport)
+my-app mcp serve --port 9000 --path /mcp
+
+# stdio transport (stdin/stdout JSON-RPC)
+my-app mcp serve --transport stdio
 ```
 
 ### Tool naming convention
@@ -89,7 +86,12 @@ Commands without a `CommandSpec` use a permissive schema `{ "type": "object", "a
 
 ### Security
 
-All MCP tool calls are routed through the same validation pipeline as CLI calls: `SpecValidator`, custom validators, and risk policy checks all apply. Network-level access control is the operator's responsibility (the MCP endpoint has no built-in authentication).
+All MCP tool calls are routed through the same validation pipeline as CLI calls: `SpecValidator`, custom validators, and risk policy checks all apply.
+
+- **HTTP MCP**: transport-level authentication/authorization is the operator's responsibility (the MCP endpoint has no built-in auth).
+- **stdio MCP**: assumes **local trust** (a local process can spawn and fully control the server). There is no transport auth.
+- **stdio stdout constraint**: in stdio mode, **stdout is reserved for JSON-RPC**. Commands and hosts MUST NOT write to stdout (use stderr or structured logging). Writing to stdout will corrupt the MCP transport.
+- **Destructive commands**: `ALLOW_DESTRUCTIVE_COMMANDS` and interactive confirmations apply to `ask`/`chat`; MCP tool calls do not prompt. If you need allowlisting/confirmation for MCP, configure an MCP tool gate via `AppBuilder::with_mcp_tool_gate(...)`.
 
 Choose this crate when you want one stack for classical subcommands plus optional LLM resolution and scripted workflows, without assembling parsing, sanitization, and policy from scratch.
 

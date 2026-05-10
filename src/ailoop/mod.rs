@@ -179,29 +179,78 @@ impl AiloopClient {
         }
     }
 
-    /// Ask a question and get user response via ailoop WebSocket `ask`.
+    /// Ask a structured multi-option question via ailoop WebSocket `ask_decision`
+    /// (`MessageContent::Decision`).
     ///
-    /// Returns the user's answer as a `String`, or `Err` on failure.
+    /// Returns the selected option as a `String` (canonical option id from the
+    /// server, matching the provided choice when ids are the choice text).
     /// No fallback to stdin. Requires a paired `ailoop serve` process.
     ///
-    /// Note: `choices` are forwarded to the server; the server may present them
-    /// to the user as options. If the user's response does not match a choice,
-    /// the raw text response is returned.
+    /// **Requires** `choices` with **at least two** non-empty options. Open-ended
+    /// prompts without fixed choices are not supported; use `request_confirmation`
+    /// or another flow.
     pub async fn ask_question(
         &self,
         question: &str,
         choices: Option<Vec<String>>,
     ) -> Result<String> {
-        use ailoop_core::models::{MessageContent, ResponseType};
+        use ailoop_core::models::{DecisionOption, MessageContent, ResponseType};
 
+        let Some(choice_list) = choices else {
+            return Err(anyhow!(
+                "Ailoop question failed: at least two choices are required; \
+                 open-ended questions are not supported with the current ailoop protocol"
+            ));
+        };
+        let trimmed: Vec<String> = choice_list
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if trimmed.len() < 2 {
+            return Err(anyhow!(
+                "Ailoop question failed: at least two non-empty choices are required; got {}",
+                trimmed.len()
+            ));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for c in &trimmed {
+            if !seen.insert(c.as_str()) {
+                return Err(anyhow!("Ailoop question failed: duplicate choice {:?}", c));
+            }
+        }
+
+        let options: Vec<DecisionOption> = trimmed
+            .iter()
+            .map(|c| DecisionOption {
+                id: c.clone(),
+                label: c.clone(),
+                detail_markdown: None,
+            })
+            .collect();
+
+        const MAX_SUMMARY: usize = 500;
+        let q = question.trim();
+        let (summary, context_markdown) = if q.len() <= MAX_SUMMARY {
+            (q.to_string(), None)
+        } else {
+            let summary: String = q.chars().take(MAX_SUMMARY).collect();
+            (summary, Some(q.to_string()))
+        };
+
+        let decision_id = format!("cli-framework-{}", uuid::Uuid::new_v4());
         let server = self.effective_server_url();
+        let timeout = self.timeout_seconds();
 
-        let response = ailoop_core::client::ask(
+        let response = ailoop_core::client::ask_decision(
             &server,
             &self.config.channel,
-            question,
-            self.timeout_seconds(),
-            choices,
+            decision_id,
+            summary,
+            context_markdown,
+            options,
+            None,
+            timeout,
         )
         .await
         .map_err(|e| anyhow!("Ailoop question failed: {}", e))?;
@@ -214,7 +263,9 @@ impl AiloopClient {
                     response_type,
                 } => match response_type {
                     ResponseType::Text => {
-                        answer.ok_or_else(|| anyhow!("Ailoop question failed: empty answer"))
+                        let a = answer
+                            .ok_or_else(|| anyhow!("Ailoop question failed: empty answer"))?;
+                        Ok(a)
                     }
                     ResponseType::Timeout => Err(anyhow!("Ailoop question failed: timed out")),
                     ResponseType::Cancelled => Err(anyhow!("Ailoop question failed: cancelled")),

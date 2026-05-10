@@ -1,6 +1,9 @@
 use cli_framework::app::{AppBuilder, AppContext};
 use cli_framework::command::{Command, CommandArgs, CommandRegistry};
-use cli_framework::mcp::{dispatch_tool_call, dispatch_tool_call_spawned, McpToolRegistry};
+use cli_framework::mcp::{
+    dispatch_tool_call, dispatch_tool_call_spawned, McpToolCallContext, McpToolGate,
+    McpToolGateError, McpToolRegistry, McpTransportKind,
+};
 use cli_framework::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use cli_framework::spec::command_tree::{CommandPath, CommandSpec};
 use std::future::Future;
@@ -70,7 +73,8 @@ async fn test_tool_call_success() {
     let cmd = make_cmd("hello");
     let tool_registry = make_registry_with_cmd("hello", cmd);
 
-    let result = dispatch_tool_call(&tool_registry, "myapp.hello", None).await;
+    let result =
+        dispatch_tool_call(&tool_registry, "myapp.hello", None, McpTransportKind::Http).await;
     assert!(result.is_ok());
     let call_result = result.unwrap();
     assert_eq!(call_result.is_error, Some(false));
@@ -80,7 +84,13 @@ async fn test_tool_call_success() {
 async fn test_tool_call_cmd_not_found() {
     let tool_registry = McpToolRegistry::from_command_registry(&CommandRegistry::new(), "myapp");
 
-    let result = dispatch_tool_call(&tool_registry, "myapp.nonexistent", None).await;
+    let result = dispatch_tool_call(
+        &tool_registry,
+        "myapp.nonexistent",
+        None,
+        McpTransportKind::Http,
+    )
+    .await;
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(
@@ -123,7 +133,13 @@ async fn test_tool_call_arg_validation_failed() {
     let tool_registry = McpToolRegistry::from_command_registry(&registry, "myapp");
 
     // Call without required arg
-    let result = dispatch_tool_call(&tool_registry, "myapp.test-cmd", None).await;
+    let result = dispatch_tool_call(
+        &tool_registry,
+        "myapp.test-cmd",
+        None,
+        McpTransportKind::Http,
+    )
+    .await;
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(
@@ -148,7 +164,13 @@ async fn test_tool_call_execution_failed() {
 
     let tool_registry = make_registry_with_cmd("fail-cmd", cmd);
 
-    let result = dispatch_tool_call(&tool_registry, "myapp.fail-cmd", None).await;
+    let result = dispatch_tool_call(
+        &tool_registry,
+        "myapp.fail-cmd",
+        None,
+        McpTransportKind::Http,
+    )
+    .await;
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(
@@ -184,13 +206,90 @@ async fn test_tool_call_internal_error() {
     registry.register(panicking_cmd);
     let tool_registry = Arc::new(McpToolRegistry::from_command_registry(&registry, "myapp"));
 
-    let result =
-        dispatch_tool_call_spawned(tool_registry, "myapp.panic-cmd".to_string(), None).await;
+    let result = dispatch_tool_call_spawned(
+        tool_registry,
+        "myapp.panic-cmd".to_string(),
+        None,
+        McpTransportKind::Http,
+    )
+    .await;
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(
         err.message.starts_with("MCP_INTERNAL_ERROR:"),
         "expected MCP_INTERNAL_ERROR, got: {}",
+        err.message
+    );
+}
+
+#[derive(Debug)]
+struct DenyGate;
+
+#[async_trait::async_trait]
+impl McpToolGate for DenyGate {
+    async fn before_execute(
+        &self,
+        _ctx: &McpToolCallContext,
+        _args: &cli_framework::command::CommandArgs,
+    ) -> Result<(), McpToolGateError> {
+        Err(McpToolGateError::Denied {
+            message: "blocked by test gate".to_string(),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct FailGate;
+
+#[async_trait::async_trait]
+impl McpToolGate for FailGate {
+    async fn before_execute(
+        &self,
+        _ctx: &McpToolCallContext,
+        _args: &cli_framework::command::CommandArgs,
+    ) -> Result<(), McpToolGateError> {
+        Err(McpToolGateError::Failed {
+            message: "gate crashed".to_string(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn test_gate_denied_maps_to_mcp_tool_denied() {
+    let cmd = make_cmd("hello");
+    let mut registry = CommandRegistry::new();
+    registry.register(cmd);
+    let tool_registry =
+        McpToolRegistry::from_command_registry(&registry, "myapp").with_gate(Arc::new(DenyGate));
+
+    let err = dispatch_tool_call(&tool_registry, "myapp.hello", None, McpTransportKind::Http)
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code, rmcp::model::ErrorCode(-32005));
+    assert!(
+        err.message.starts_with("MCP_TOOL_DENIED:"),
+        "got: {}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn test_gate_failed_maps_to_mcp_tool_gate_failed() {
+    let cmd = make_cmd("hello");
+    let mut registry = CommandRegistry::new();
+    registry.register(cmd);
+    let tool_registry =
+        McpToolRegistry::from_command_registry(&registry, "myapp").with_gate(Arc::new(FailGate));
+
+    let err = dispatch_tool_call(&tool_registry, "myapp.hello", None, McpTransportKind::Http)
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code, rmcp::model::ErrorCode(-32006));
+    assert!(
+        err.message.starts_with("MCP_TOOL_GATE_FAILED:"),
+        "got: {}",
         err.message
     );
 }

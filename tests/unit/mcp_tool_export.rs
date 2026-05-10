@@ -268,7 +268,13 @@ async fn test_call_excluded_tool_returns_not_found() {
         McpToolExportPolicy::ExposeMcpOnly,
     );
 
-    let result = dispatch_tool_call(&tool_registry, "myapp.excluded", None).await;
+    let result = dispatch_tool_call(
+        &tool_registry,
+        "myapp.excluded",
+        None,
+        cli_framework::mcp::McpTransportKind::Http,
+    )
+    .await;
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(

@@ -26,7 +26,7 @@ dirs = "5.0"
 uuid = { version = "1.0", features = ["v4"] }
 crossterm = "0.28"
 # ailoop-core integration
-ailoop-core = { git = "https://github.com/goailoop/ailoop.git", rev = "83508e764a18b9073bfc5f34a9060247634b3833" }
+ailoop-core = { git = "https://github.com/goailoop/ailoop.git", branch = "main", default-features = false }
 # LLM providers
 async-openai = "0.20"
 anthropic-sdk = "0.1"
@@ -36,7 +36,9 @@ comfy-table = { version = "7.0", optional = true }
 indicatif = { version = "0.17", optional = true }
 
 # Optional MCP server dependencies
-rmcp = { version = "1.6", features = ["server", "transport-streamable-http-server"], optional = true }
+# - transport-io: server-side stdio transport (Phase 2 rollout #50)
+# - client: enabled so integration tests can exercise stdio-style transports without TCP
+rmcp = { version = "1.6", features = ["server", "client", "transport-streamable-http-server", "transport-io"], optional = true }
 axum = { version = "0.8", optional = true }
 # Optional MCP install dependency (aikit-sdk provides add_mcp_server and mcp_supported_agents)
 aikit-sdk = { git = "https://github.com/goaikit/aikit.git", package = "aikit-sdk", rev = "dff63ec966a6ad9f310f00e31a27d3e6f195a549", optional = true }
@@ -89,6 +91,11 @@ chat = ["dep:aikit-agent"]
 [lib]
 name = "cli_framework"
 path = "src/lib.rs"
+
+[[bin]]
+name = "cfw_mcp_stdio_test_server"
+path = "tests/bin/mcp_stdio_test_server.rs"
+required-features = ["mcp-server"]
 
 [[example]]
 name = "http_retry_demo"

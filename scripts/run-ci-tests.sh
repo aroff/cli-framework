@@ -29,8 +29,8 @@ fi
 echo ""
 
 # Step 2: Run Clippy
-echo -e "${YELLOW}[2/6] Running Clippy lints...${NC}"
-if cargo clippy -- -D warnings; then
+echo -e "${YELLOW}[2/6] Running Clippy lints (all features)...${NC}"
+if cargo clippy --all-features -- -D warnings; then
     echo -e "${GREEN}✓ Clippy check passed${NC}"
 else
     echo -e "${RED}✗ Clippy check failed${NC}"
@@ -49,8 +49,8 @@ fi
 echo ""
 
 # Step 4: Build release binary
-echo -e "${YELLOW}[4/6] Building release binary...${NC}"
-if cargo build --release --verbose; then
+echo -e "${YELLOW}[4/6] Building release binary (all features)...${NC}"
+if cargo build --all-features --release --verbose; then
     echo -e "${GREEN}✓ Release build succeeded${NC}"
 else
     echo -e "${RED}✗ Release build failed${NC}"
@@ -58,19 +58,20 @@ else
 fi
 echo ""
 
-# Step 5: Run all tests
-echo -e "${YELLOW}[5/6] Running all tests...${NC}"
-if cargo test --verbose; then
-    echo -e "${GREEN}✓ All tests passed${NC}"
-else
-    echo -e "${RED}✗ Tests failed${NC}"
-    exit 1
-fi
+# Step 5: Run tests (feature matrix)
+echo -e "${YELLOW}[5/6] Running tests (feature matrix)...${NC}"
+set -x
+cargo test --verbose
+cargo test --features chat --verbose
+cargo test --features mcp-server --verbose
+cargo test --features "chat,mcp-server" --verbose
+set +x
+echo -e "${GREEN}✓ Feature-matrix tests passed${NC}"
 echo ""
 
-# Step 6: Run integration tests
-echo -e "${YELLOW}[6/6] Running integration tests...${NC}"
-if cargo test --test '*' --verbose; then
+# Step 6: Run integration tests (ensure MCP server coverage)
+echo -e "${YELLOW}[6/6] Running integration tests (mcp-server)...${NC}"
+if cargo test --features mcp-server --test '*' --verbose; then
     echo -e "${GREEN}✓ Integration tests passed${NC}"
 else
     echo -e "${RED}✗ Integration tests failed${NC}"
@@ -81,4 +82,3 @@ echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}All CI checks passed! ✓${NC}"
 echo -e "${GREEN}========================================${NC}"
-
