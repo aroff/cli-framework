@@ -470,7 +470,12 @@ async fn execute_chat(
                 cancel.cancel();
                 return Ok(());
             }
-            res = run_agent_one_shot(ctx, ailoop_client, tool_exec, yolo, stream, model, prompt, cancel.clone()) => {
+            res = run_agent_one_shot(
+                ctx,
+                AgentRunOpts { ailoop_client, tool_exec, yolo, stream, model },
+                prompt,
+                cancel.clone(),
+            ) => {
                 res?;
             }
         }
@@ -484,7 +489,17 @@ async fn execute_chat(
         ));
     }
 
-    repl_loop(ctx, ailoop_client, tool_exec, yolo, stream, model).await
+    repl_loop(
+        ctx,
+        AgentRunOpts {
+            ailoop_client,
+            tool_exec,
+            yolo,
+            stream,
+            model,
+        },
+    )
+    .await
 }
 
 async fn read_stdin_all() -> anyhow::Result<String> {
@@ -495,14 +510,22 @@ async fn read_stdin_all() -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&buf).trim().to_string())
 }
 
-async fn repl_loop(
-    ctx: &mut dyn AppContext,
+struct AgentRunOpts {
     ailoop_client: Option<Arc<AiloopClient>>,
     tool_exec: CommandsAsToolsExecutor,
     yolo: bool,
     stream: bool,
     model: Option<String>,
-) -> CommandResult {
+}
+
+async fn repl_loop(ctx: &mut dyn AppContext, opts: AgentRunOpts) -> CommandResult {
+    let AgentRunOpts {
+        ailoop_client,
+        tool_exec,
+        yolo,
+        stream,
+        model,
+    } = opts;
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     eprintln!("Entering chat REPL. Ctrl+D to exit. Ctrl+C cancels the current turn and exits.");
@@ -536,11 +559,13 @@ async fn repl_loop(
         let cancel = CancellationToken::new();
         let turn_fut = run_agent_one_shot(
             ctx,
-            ailoop_client.clone(),
-            tool_exec.clone(),
-            yolo,
-            stream,
-            model.clone(),
+            AgentRunOpts {
+                ailoop_client: ailoop_client.clone(),
+                tool_exec: tool_exec.clone(),
+                yolo,
+                stream,
+                model: model.clone(),
+            },
             prompt.to_string(),
             cancel.clone(),
         );
@@ -562,14 +587,17 @@ async fn repl_loop(
 
 async fn run_agent_one_shot(
     ctx: &mut dyn AppContext,
-    ailoop_client: Option<Arc<AiloopClient>>,
-    tool_exec: CommandsAsToolsExecutor,
-    yolo: bool,
-    stream: bool,
-    model: Option<String>,
+    opts: AgentRunOpts,
     prompt: String,
     cancel: CancellationToken,
 ) -> CommandResult {
+    let AgentRunOpts {
+        ailoop_client,
+        tool_exec,
+        yolo,
+        stream,
+        model,
+    } = opts;
     let workdir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let config = AgentConfig::from_env(workdir, stream, model)
         .map_err(|e| anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?;

@@ -392,6 +392,9 @@ impl<C: AppContext> App<C> {
         use crate::parser::error_codes::E_NESTED_COMMAND_NOT_FOUND;
         use crate::parser::outcome::ParseOutcome;
 
+        #[cfg(not(feature = "chat"))]
+        let second_arg = args.get(1).cloned();
+
         match parse_with_clap(&self.clap_root, &self.command_registry, args) {
             ParseOutcome::Parsed {
                 command_path,
@@ -449,7 +452,7 @@ impl<C: AppContext> App<C> {
                 {
                     // Deterministic error when `chat` is invoked without the `chat` feature.
                     if d.code == crate::parser::error_codes::E_UNKNOWN_COMMAND
-                        && args.get(1).is_some_and(|s| s == "chat")
+                        && second_arg.as_deref() == Some("chat")
                     {
                         return Err(anyhow::anyhow!(
                             "CHAT_FEATURE_DISABLED: `chat` requires building with `--features chat`"

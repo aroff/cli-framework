@@ -139,23 +139,3 @@ pub(crate) fn effective_args_for_execution(
         named,
     }
 }
-
-/// Execute a command using the same typed-arg validation + "effective args" mapping
-/// as the normal CLI dispatch path (`App::execute_command_direct`), but without
-/// emitting diagnostics to stdout/stderr.
-pub(crate) async fn execute_validated_command(
-    ctx: &mut dyn AppContext,
-    command: &Command,
-    args: CommandArgs,
-    typed_args: Option<&HashMap<String, ArgValue>>,
-) -> anyhow::Result<()> {
-    if let Some(typed_args_map) = typed_args {
-        let diags = validate_typed_args(command, typed_args_map)?;
-        if let Some(first) = diags.first() {
-            return Err(anyhow::anyhow!("{}", first.message));
-        }
-    }
-
-    let effective_args = effective_args_for_execution(args, typed_args);
-    (command.execute)(ctx, effective_args).await
-}
