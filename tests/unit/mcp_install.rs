@@ -135,3 +135,55 @@ async fn mcp_install_dry_run_stdio_succeeds() {
         result
     );
 }
+
+/// `mcp install --stdio` defaults argv to `mcp serve --transport stdio` when no `--arg` provided.
+#[tokio::test]
+async fn mcp_install_stdio_defaults_argv() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+
+    let mut app = AppBuilder::new()
+        .with_version("testapp", "0.1.0")
+        .build(DummyCtx)
+        .unwrap();
+
+    let result = app
+        .run_with_args(vec![
+            "testapp".to_string(),
+            "mcp".to_string(),
+            "install".to_string(),
+            "--stdio".to_string(),
+            "--scope".to_string(),
+            "project".to_string(),
+            "--project".to_string(),
+            tempdir.path().to_str().unwrap().to_string(),
+            "--agent".to_string(),
+            "claude".to_string(),
+            "--overwrite".to_string(),
+        ])
+        .await;
+
+    assert!(result.is_ok(), "mcp install --stdio failed: {:?}", result);
+
+    let path = aikit_sdk::mcp_config_path("claude", aikit_sdk::McpScope::Project, tempdir.path())
+        .expect("mcp_config_path");
+
+    let contents = std::fs::read_to_string(&path).expect("read config");
+    let json: serde_json::Value = serde_json::from_str(&contents).expect("parse config json");
+
+    let args = json
+        .pointer("/mcpServers/testapp/args")
+        .and_then(|v| v.as_array())
+        .expect("expected mcpServers.testapp.args array");
+
+    let args: Vec<String> = args
+        .iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+
+    assert_eq!(
+        args,
+        vec!["mcp", "serve", "--transport", "stdio"],
+        "unexpected default argv: {:?}",
+        args
+    );
+}

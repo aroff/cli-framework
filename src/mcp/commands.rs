@@ -21,15 +21,28 @@ pub fn create_mcp_serve_command_with_deps(
     app_name: &'static str,
     risk_policy: crate::security::command_risk::CommandRiskPolicy,
     export_policy: crate::mcp::McpToolExportPolicy,
+    gate: Option<std::sync::Arc<dyn crate::mcp::McpToolGate>>,
 ) -> Command {
     Command {
         id: "serve",
-        summary: "Start the MCP Streamable HTTP server",
-        syntax: Some("mcp serve [--host H] [--port P] [--path PATH]"),
+        summary: "Start the MCP server (http or stdio)",
+        syntax: Some("mcp serve [--transport http|stdio] [--host H] [--port P] [--path PATH]"),
         category: Some("mcp"),
         spec: Some(Arc::new(CommandSpec {
-            summary: "Start the MCP Streamable HTTP server",
+            summary: "Start the MCP server (http or stdio)",
             args: vec![
+                ArgSpec {
+                    name: "transport",
+                    kind: ArgKind::Option,
+                    short: None,
+                    long: Some("transport"),
+                    value_type: ArgValueType::Enum(vec!["http", "stdio"]),
+                    cardinality: Cardinality::Optional,
+                    default: Some(ArgValue::Enum("http".to_string())),
+                    conflicts_with: vec![],
+                    requires: vec![],
+                    help: "Transport: http (Streamable HTTP) or stdio (stdin/stdout JSON-RPC)",
+                },
                 ArgSpec {
                     name: "host",
                     kind: ArgKind::Option,
@@ -37,7 +50,7 @@ pub fn create_mcp_serve_command_with_deps(
                     long: Some("host"),
                     value_type: ArgValueType::String,
                     cardinality: Cardinality::Optional,
-                    default: Some(ArgValue::Str("127.0.0.1".to_string())),
+                    default: None,
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "Bind address for the MCP server",
@@ -49,7 +62,7 @@ pub fn create_mcp_serve_command_with_deps(
                     long: Some("port"),
                     value_type: ArgValueType::String,
                     cardinality: Cardinality::Optional,
-                    default: Some(ArgValue::Str("8080".to_string())),
+                    default: None,
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "Bind port for the MCP server",
@@ -61,7 +74,7 @@ pub fn create_mcp_serve_command_with_deps(
                     long: Some("path"),
                     value_type: ArgValueType::String,
                     cardinality: Cardinality::Optional,
-                    default: Some(ArgValue::Str("/mcp".to_string())),
+                    default: None,
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "HTTP path prefix for MCP endpoints",
@@ -74,7 +87,34 @@ pub fn create_mcp_serve_command_with_deps(
         execute: Arc::new(move |_ctx, args: CommandArgs| {
             let registry = Arc::clone(&registry);
             let risk_policy = risk_policy.clone();
+            let gate = gate.clone();
             Box::pin(async move {
+                let transport = args
+                    .named
+                    .get("transport")
+                    .cloned()
+                    .unwrap_or_else(|| "http".to_string());
+
+                if transport == "stdio" {
+                    if args.named.contains_key("host")
+                        || args.named.contains_key("port")
+                        || args.named.contains_key("path")
+                    {
+                        return Err(anyhow::anyhow!(
+                            "[E004] invalid usage: '--host', '--port', and '--path' are only valid when --transport=http"
+                        ));
+                    }
+
+                    return crate::mcp::serve_mcp_stdio(
+                        registry,
+                        app_name,
+                        risk_policy,
+                        export_policy,
+                        gate,
+                    )
+                    .await;
+                }
+
                 let host = args
                     .named
                     .get("host")
@@ -98,8 +138,15 @@ pub fn create_mcp_serve_command_with_deps(
                     .unwrap_or_else(|| "/mcp".to_string());
 
                 let mcp_args = crate::mcp::McpServerArgs { host, port, path };
-                crate::mcp::serve_mcp(registry, app_name, mcp_args, risk_policy, export_policy)
-                    .await
+                crate::mcp::serve_mcp_with_gate(
+                    registry,
+                    app_name,
+                    mcp_args,
+                    risk_policy,
+                    export_policy,
+                    gate,
+                )
+                .await
             })
         }),
     }
@@ -374,6 +421,16 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                         .get("arg")
                         .map(|r| split_repeated(r))
                         .unwrap_or_default();
+                    let exe_args = if exe_args.is_empty() {
+                        vec![
+                            "mcp".to_string(),
+                            "serve".to_string(),
+                            "--transport".to_string(),
+                            "stdio".to_string(),
+                        ]
+                    } else {
+                        exe_args
+                    };
 
                     let env_pairs: Vec<String> = args
                         .named

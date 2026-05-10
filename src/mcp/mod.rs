@@ -3,6 +3,8 @@ pub mod commands;
 pub mod schema;
 #[cfg(feature = "mcp-server")]
 pub mod transport_http;
+#[cfg(feature = "mcp-server")]
+pub mod transport_stdio;
 
 use crate::command::registry::CommandRegistry;
 use crate::command::Command;
@@ -29,6 +31,8 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 #[cfg(feature = "mcp-server")]
 use std::sync::Arc;
+#[cfg(feature = "mcp-server")]
+use tokio::sync::Mutex;
 
 #[derive(Debug, Clone)]
 pub struct McpServerArgs {
@@ -62,6 +66,8 @@ pub struct McpToolRegistry {
     tools: HashMap<String, Command>,
     app_name: String,
     risk_policy: crate::security::CommandRiskPolicy,
+    #[cfg(feature = "mcp-server")]
+    gate: Option<std::sync::Arc<dyn McpToolGate>>,
 }
 
 impl McpToolRegistry {
@@ -104,11 +110,19 @@ impl McpToolRegistry {
             tools,
             app_name: app_name.to_string(),
             risk_policy: crate::security::CommandRiskPolicy::default(),
+            #[cfg(feature = "mcp-server")]
+            gate: None,
         }
     }
 
     pub fn with_risk_policy(mut self, policy: crate::security::CommandRiskPolicy) -> Self {
         self.risk_policy = policy;
+        self
+    }
+
+    #[cfg(feature = "mcp-server")]
+    pub fn with_gate(mut self, gate: std::sync::Arc<dyn McpToolGate>) -> Self {
+        self.gate = Some(gate);
         self
     }
 
@@ -130,6 +144,43 @@ impl McpToolRegistry {
     pub fn app_name(&self) -> &str {
         &self.app_name
     }
+}
+
+#[cfg(feature = "mcp-server")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpTransportKind {
+    Http,
+    Stdio,
+}
+
+#[cfg(feature = "mcp-server")]
+#[derive(Debug, Clone)]
+pub struct McpToolCallContext {
+    pub transport: McpTransportKind,
+    pub tool_name: String,
+    pub command_id: &'static str,
+    pub command_category: Option<&'static str>,
+    pub risk_tier: crate::security::CommandRiskTier,
+}
+
+#[cfg(feature = "mcp-server")]
+#[async_trait::async_trait]
+pub trait McpToolGate: Send + Sync {
+    async fn before_execute(
+        &self,
+        ctx: &McpToolCallContext,
+        args: &crate::command::CommandArgs,
+    ) -> Result<(), McpToolGateError>;
+}
+
+#[cfg(feature = "mcp-server")]
+#[derive(Debug, thiserror::Error)]
+pub enum McpToolGateError {
+    #[error("MCP_TOOL_DENIED: {message}")]
+    Denied { message: String },
+
+    #[error("MCP_TOOL_GATE_FAILED: {message}")]
+    Failed { message: String },
 }
 
 #[cfg(feature = "mcp-server")]
@@ -238,12 +289,23 @@ fn make_rmcp_tool(desc: &McpToolDescriptor) -> Tool {
 #[derive(Clone)]
 pub struct CliFrameworkHandler {
     tool_registry: Arc<McpToolRegistry>,
+    transport: McpTransportKind,
+    stdio_serialize: Option<Arc<Mutex<()>>>,
 }
 
 #[cfg(feature = "mcp-server")]
 impl CliFrameworkHandler {
-    pub fn new(tool_registry: Arc<McpToolRegistry>) -> Self {
-        Self { tool_registry }
+    pub fn new(tool_registry: Arc<McpToolRegistry>, transport: McpTransportKind) -> Self {
+        Self {
+            tool_registry,
+            transport,
+            stdio_serialize: None,
+        }
+    }
+
+    pub fn with_stdio_serialization(mut self, lock: Arc<Mutex<()>>) -> Self {
+        self.stdio_serialize = Some(lock);
+        self
     }
 }
 
@@ -275,8 +337,17 @@ impl ServerHandler for CliFrameworkHandler {
         let tool_name = request.name.to_string();
         let arguments = request.arguments;
         let registry = Arc::clone(&self.tool_registry);
+        let transport = self.transport;
+        let serialize = self.stdio_serialize.as_ref().map(Arc::clone);
 
-        async move { dispatch_tool_call_spawned(registry, tool_name, arguments).await }
+        async move {
+            if let Some(lock) = serialize {
+                let _guard = lock.lock().await;
+                dispatch_tool_call_spawned(registry, tool_name, arguments, transport).await
+            } else {
+                dispatch_tool_call_spawned(registry, tool_name, arguments, transport).await
+            }
+        }
     }
 }
 
@@ -285,6 +356,7 @@ pub async fn dispatch_tool_call(
     tool_registry: &McpToolRegistry,
     tool_name: &str,
     arguments: Option<JsonObject>,
+    transport: McpTransportKind,
 ) -> Result<CallToolResult, ErrorData> {
     let cmd = tool_registry
         .resolve_tool(tool_name)
@@ -332,18 +404,34 @@ pub async fn dispatch_tool_call(
     }
 
     // Apply CommandRiskPolicy check (§4.6, G4, G5 — risk tiers enforced for MCP callers).
-    {
-        let tier = tool_registry.risk_policy.classify(cmd.id, cmd.category);
-        if tier == crate::security::CommandRiskTier::Destructive {
-            log::warn!(
-                "MCP: command '{}' has Destructive risk tier; executing under MCP authority",
-                cmd.id
-            );
-        } else if tier == crate::security::CommandRiskTier::Sensitive {
-            log::info!(
-                "MCP: command '{}' has Sensitive risk tier; executing under MCP authority",
-                cmd.id
-            );
+    let tier = tool_registry.risk_policy.classify(cmd.id, cmd.category);
+    if tier == crate::security::CommandRiskTier::Destructive {
+        log::warn!(
+            "MCP: command '{}' has Destructive risk tier; executing under MCP authority",
+            cmd.id
+        );
+    } else if tier == crate::security::CommandRiskTier::Sensitive {
+        log::info!(
+            "MCP: command '{}' has Sensitive risk tier; executing under MCP authority",
+            cmd.id
+        );
+    }
+
+    #[cfg(feature = "mcp-server")]
+    if let Some(ref gate) = tool_registry.gate {
+        let ctx = McpToolCallContext {
+            transport,
+            tool_name: tool_name.to_string(),
+            command_id: cmd.id,
+            command_category: cmd.category,
+            risk_tier: tier,
+        };
+        if let Err(e) = gate.before_execute(&ctx, &cmd_args).await {
+            let (code, msg) = match e {
+                McpToolGateError::Denied { .. } => (rmcp::model::ErrorCode(-32005), e.to_string()),
+                McpToolGateError::Failed { .. } => (rmcp::model::ErrorCode(-32006), e.to_string()),
+            };
+            return Err(ErrorData::new(code, Cow::Owned(msg), None));
         }
     }
 
@@ -365,11 +453,11 @@ pub async fn dispatch_tool_call_spawned(
     tool_registry: Arc<McpToolRegistry>,
     tool_name: String,
     arguments: Option<JsonObject>,
+    transport: McpTransportKind,
 ) -> Result<CallToolResult, ErrorData> {
-    let handle =
-        tokio::spawn(
-            async move { dispatch_tool_call(&tool_registry, &tool_name, arguments).await },
-        );
+    let handle = tokio::spawn(async move {
+        dispatch_tool_call(&tool_registry, &tool_name, arguments, transport).await
+    });
     match handle.await {
         Ok(result) => result,
         Err(join_err) => Err(ErrorData::new(
@@ -427,10 +515,43 @@ pub async fn serve_mcp(
     risk_policy: crate::security::CommandRiskPolicy,
     export_policy: McpToolExportPolicy,
 ) -> Result<()> {
-    let tool_registry = Arc::new(
+    serve_mcp_with_gate(registry, app_name, args, risk_policy, export_policy, None).await
+}
+
+#[cfg(feature = "mcp-server")]
+pub async fn serve_mcp_with_gate(
+    registry: Arc<CommandRegistry>,
+    app_name: &str,
+    args: McpServerArgs,
+    risk_policy: crate::security::CommandRiskPolicy,
+    export_policy: McpToolExportPolicy,
+    gate: Option<std::sync::Arc<dyn McpToolGate>>,
+) -> Result<()> {
+    let mut tool_registry =
         McpToolRegistry::from_command_registry_with_policy(&registry, app_name, export_policy)
-            .with_risk_policy(risk_policy),
-    );
+            .with_risk_policy(risk_policy);
+    if let Some(gate) = gate {
+        tool_registry = tool_registry.with_gate(gate);
+    }
+    let tool_registry = Arc::new(tool_registry);
 
     transport_http::start_streamable_http(tool_registry, &args).await
+}
+
+#[cfg(feature = "mcp-server")]
+pub async fn serve_mcp_stdio(
+    registry: Arc<CommandRegistry>,
+    app_name: &str,
+    risk_policy: crate::security::CommandRiskPolicy,
+    export_policy: McpToolExportPolicy,
+    gate: Option<std::sync::Arc<dyn McpToolGate>>,
+) -> anyhow::Result<()> {
+    let mut tool_registry =
+        McpToolRegistry::from_command_registry_with_policy(&registry, app_name, export_policy)
+            .with_risk_policy(risk_policy);
+    if let Some(gate) = gate {
+        tool_registry = tool_registry.with_gate(gate);
+    }
+    let tool_registry = Arc::new(tool_registry);
+    transport_stdio::start_stdio(tool_registry).await
 }

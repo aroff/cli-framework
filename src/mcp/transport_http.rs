@@ -1,4 +1,4 @@
-use crate::mcp::{CliFrameworkHandler, McpServerArgs, McpToolRegistry};
+use crate::mcp::{CliFrameworkHandler, McpServerArgs, McpToolRegistry, McpTransportKind};
 use anyhow::Result;
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
@@ -22,7 +22,12 @@ pub fn mcp_axum_router(tool_registry: Arc<McpToolRegistry>, path: &str) -> axum:
     let service = StreamableHttpService::new(
         {
             let tool_registry = Arc::clone(&tool_registry);
-            move || Ok(CliFrameworkHandler::new(Arc::clone(&tool_registry)))
+            move || {
+                Ok(CliFrameworkHandler::new(
+                    Arc::clone(&tool_registry),
+                    McpTransportKind::Http,
+                ))
+            }
         },
         session_manager,
         config,

@@ -30,6 +30,8 @@ pub struct AppBuilder {
     doctor_checks: Vec<Arc<dyn crate::doctor::check::DoctorCheck>>,
     #[cfg(feature = "mcp-server")]
     mcp_export_policy: crate::mcp::McpToolExportPolicy,
+    #[cfg(feature = "mcp-server")]
+    mcp_tool_gate: Option<std::sync::Arc<dyn crate::mcp::McpToolGate>>,
 }
 
 impl AppBuilder {
@@ -48,6 +50,8 @@ impl AppBuilder {
             doctor_checks: Vec::new(),
             #[cfg(feature = "mcp-server")]
             mcp_export_policy: crate::mcp::McpToolExportPolicy::default(),
+            #[cfg(feature = "mcp-server")]
+            mcp_tool_gate: None,
         }
     }
 
@@ -56,6 +60,15 @@ impl AppBuilder {
     #[cfg(feature = "mcp-server")]
     pub fn with_mcp_export_policy(mut self, policy: crate::mcp::McpToolExportPolicy) -> Self {
         self.mcp_export_policy = policy;
+        self
+    }
+
+    /// Configure an optional pre-execution gate for MCP tool calls.
+    ///
+    /// When unset, MCP behavior remains backward compatible (no gate).
+    #[cfg(feature = "mcp-server")]
+    pub fn with_mcp_tool_gate(mut self, gate: std::sync::Arc<dyn crate::mcp::McpToolGate>) -> Self {
+        self.mcp_tool_gate = Some(gate);
         self
     }
 
@@ -266,12 +279,14 @@ impl AppBuilder {
                 let risk_policy_for_serve = self.risk_policy.clone();
                 let export_policy_for_serve = self.mcp_export_policy;
                 let app_name_for_serve = self.app_name;
+                let gate_for_serve = self.mcp_tool_gate.clone();
 
                 let serve_cmd = crate::mcp::commands::create_mcp_serve_command_with_deps(
                     registry_arc_for_serve,
                     app_name_for_serve,
                     risk_policy_for_serve,
                     export_policy_for_serve,
+                    gate_for_serve,
                 );
                 self.command_registry
                     .register_at(&mcp_serve_path, serve_cmd)

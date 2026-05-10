@@ -216,10 +216,7 @@ impl AiloopClient {
         let mut seen = std::collections::HashSet::new();
         for c in &trimmed {
             if !seen.insert(c.as_str()) {
-                return Err(anyhow!(
-                    "Ailoop question failed: duplicate choice {:?}",
-                    c
-                ));
+                return Err(anyhow!("Ailoop question failed: duplicate choice {:?}", c));
             }
         }
 
@@ -266,7 +263,8 @@ impl AiloopClient {
                     response_type,
                 } => match response_type {
                     ResponseType::Text => {
-                        let a = answer.ok_or_else(|| anyhow!("Ailoop question failed: empty answer"))?;
+                        let a = answer
+                            .ok_or_else(|| anyhow!("Ailoop question failed: empty answer"))?;
                         Ok(a)
                     }
                     ResponseType::Timeout => Err(anyhow!("Ailoop question failed: timed out")),

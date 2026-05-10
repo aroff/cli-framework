@@ -1,6 +1,9 @@
 use cli_framework::app::{AppBuilder, AppContext};
 use cli_framework::command::{Command, CommandArgs, CommandRegistry};
-use cli_framework::mcp::{serve_mcp, McpServerArgs, McpToolExportPolicy};
+use cli_framework::mcp::{
+    serve_mcp, CliFrameworkHandler, McpServerArgs, McpToolExportPolicy, McpToolRegistry,
+    McpTransportKind,
+};
 use cli_framework::security::CommandRiskPolicy;
 use cli_framework::spec::command_tree::CommandSpec;
 use std::future::Future;
@@ -403,4 +406,103 @@ async fn test_bind_failure() {
     );
 
     drop(listener);
+}
+
+#[tokio::test]
+async fn test_tools_list_and_call_over_stdio_transport() {
+    let _ = env_logger::try_init();
+
+    let mut registry = CommandRegistry::new();
+    registry.register(Command {
+        id: "hello",
+        summary: "Say hello",
+        syntax: None,
+        category: None,
+        spec: None,
+        validator: None,
+        expose_mcp: false,
+        execute: noop_execute(),
+    });
+    let registry = Arc::new(registry);
+
+    let tool_registry = Arc::new(
+        McpToolRegistry::from_command_registry_with_policy(
+            &registry,
+            "testapp",
+            McpToolExportPolicy::AllCommands,
+        )
+        .with_risk_policy(CommandRiskPolicy::default()),
+    );
+
+    // Use an in-memory duplex stream to simulate stdio (no TCP).
+    let (server_stream, client_stream) = tokio::io::duplex(64 * 1024);
+
+    let serialize = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+    let server_task = tokio::spawn(async move {
+        rmcp::serve_server(
+            CliFrameworkHandler::new(tool_registry, McpTransportKind::Stdio)
+                .with_stdio_serialization(serialize),
+            server_stream,
+        )
+        .await
+    });
+
+    let client = rmcp::serve_client((), client_stream)
+        .await
+        .expect("serve_client failed");
+
+    let server = server_task
+        .await
+        .expect("server task join")
+        .expect("serve_server (stdio-like) failed");
+
+    let tools = client
+        .peer()
+        .list_tools(Default::default())
+        .await
+        .expect("tools/list failed");
+
+    assert!(
+        tools.tools.iter().any(|t| t.name == "testapp.hello"),
+        "expected testapp.hello in tools: {:?}",
+        tools.tools
+    );
+
+    let call = client
+        .peer()
+        .call_tool(rmcp::model::CallToolRequestParams::new("testapp.hello"))
+        .await
+        .expect("tools/call failed");
+
+    assert_eq!(call.is_error, Some(false));
+
+    let _ = client.cancel().await;
+    let _ = server.cancel().await;
+}
+
+#[tokio::test]
+async fn test_mcp_serve_stdio_rejects_http_flags() {
+    struct Ctx;
+    impl AppContext for Ctx {}
+
+    let mut app = AppBuilder::new()
+        .with_version("testapp", "0.1.0")
+        .build(Ctx)
+        .unwrap();
+
+    let result = app
+        .run_with_args(vec![
+            "testapp".to_string(),
+            "mcp".to_string(),
+            "serve".to_string(),
+            "--transport".to_string(),
+            "stdio".to_string(),
+            "--port".to_string(),
+            "9999".to_string(),
+        ])
+        .await;
+
+    assert!(result.is_err(), "expected error for invalid stdio usage");
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("E004"), "expected E004, got: {}", msg);
 }
