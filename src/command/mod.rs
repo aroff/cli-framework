@@ -1,9 +1,13 @@
 pub mod ask;
+#[cfg(feature = "chat")]
+pub mod chat;
 pub mod parser;
 pub mod registry;
 
 pub use ask::create_ask_command;
 pub use ask::enforce_risk_gate;
+#[cfg(feature = "chat")]
+pub use chat::create_chat_command;
 pub use registry::CommandRegistry;
 
 use crate::app::context::AppContext;
@@ -58,10 +62,10 @@ pub struct Command {
     /// Uses `Arc<dyn Fn>` to allow closures that capture state (e.g. the ask command).
     #[allow(clippy::type_complexity)]
     pub execute: Arc<
-        dyn Fn(
-                &mut dyn AppContext,
+        dyn for<'a> Fn(
+                &'a mut dyn AppContext,
                 CommandArgs,
-            ) -> Pin<Box<dyn Future<Output = CommandResult> + Send>>
+            ) -> Pin<Box<dyn Future<Output = CommandResult> + Send + 'a>>
             + Send
             + Sync,
     >,

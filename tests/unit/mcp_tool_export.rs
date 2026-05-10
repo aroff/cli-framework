@@ -8,10 +8,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 fn noop_execute() -> Arc<
-    dyn Fn(
-            &mut dyn cli_framework::app::AppContext,
+    dyn for<'a> Fn(
+            &'a mut dyn cli_framework::app::AppContext,
             CommandArgs,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>
         + Send
         + Sync,
 > {

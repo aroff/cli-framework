@@ -2,6 +2,9 @@
 //!
 //! Demonstrates how to create a CLI application with AI-powered natural language
 //! command resolution using the "ask" command.
+//!
+//! Note: when `cli-framework` is built with `--features chat`, `ask` prints an
+//! `ASK_DEPRECATED` warning and `chat` is the preferred interface.
 
 use cli_framework::prelude::*;
 use std::io::{self, Write};

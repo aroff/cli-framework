@@ -89,8 +89,9 @@ pub mod command_surface;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 
-// MCP server — compile only when the `mcp-server` feature is active
-#[cfg(feature = "mcp-server")]
+// MCP schema + optional server support.
+// `mcp-server` gates the server transport and `rmcp`/`axum` deps, but the schema and
+// tool descriptor helpers are always available for in-process tool execution (e.g. `chat`).
 pub mod mcp;
 
 // Doctor diagnostics framework — compile only when the `doctor` feature is active

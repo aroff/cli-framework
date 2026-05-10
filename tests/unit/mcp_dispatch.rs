@@ -25,10 +25,10 @@ fn mcp_serve_registered_after_build() {
 }
 
 fn noop_execute() -> Arc<
-    dyn Fn(
-            &mut dyn cli_framework::app::AppContext,
+    dyn for<'a> Fn(
+            &'a mut dyn cli_framework::app::AppContext,
             CommandArgs,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>
         + Send
         + Sync,
 > {
@@ -36,10 +36,10 @@ fn noop_execute() -> Arc<
 }
 
 fn failing_execute() -> Arc<
-    dyn Fn(
-            &mut dyn cli_framework::app::AppContext,
+    dyn for<'a> Fn(
+            &'a mut dyn cli_framework::app::AppContext,
             CommandArgs,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>
         + Send
         + Sync,
 > {
@@ -59,7 +59,7 @@ fn make_cmd(id: &'static str) -> Command {
     }
 }
 
-fn make_registry_with_cmd(id: &'static str, cmd: Command) -> McpToolRegistry {
+fn make_registry_with_cmd(_id: &'static str, cmd: Command) -> McpToolRegistry {
     let mut registry = CommandRegistry::new();
     registry.register(cmd);
     McpToolRegistry::from_command_registry(&registry, "myapp")

@@ -20,6 +20,19 @@ pub trait AppContext: Send + Sync {
     fn opt_registry(&self) -> Option<&crate::command::CommandRegistry> {
         None
     }
+
+    /// Optional downcasting support for commands that need access to concrete app context types.
+    ///
+    /// Framework-internal wrapper contexts are not `'static` and therefore cannot support
+    /// `Any` downcasting; they return `None` by default.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
+    /// Optional mutable downcasting support for commands that need to mutate concrete context state.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
 }
 
 /// Extension trait for AppContext to provide LLM provider access
