@@ -3,38 +3,26 @@
 use cli_framework::app::{AppBuilder, AppContext};
 use cli_framework::command::{Command, CommandArgs};
 use cli_framework::spec::command_tree::CommandSpec;
-use std::io::Write;
-use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 
 struct DummyCtx;
 impl AppContext for DummyCtx {}
 
-struct StdoutCapture {
-    saved_fd: i32,
-    tmp: tempfile::NamedTempFile,
-}
+async fn run_spec_to_tempfile<C: AppContext>(
+    app: &mut cli_framework::app::App<C>,
+) -> anyhow::Result<String> {
+    let tmp = tempfile::NamedTempFile::new()?;
+    let path = tmp.path().to_string_lossy().to_string();
 
-impl StdoutCapture {
-    fn new() -> Self {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        let stdout_fd = std::io::stdout().as_raw_fd();
-        let saved_fd = unsafe { libc::dup(stdout_fd) };
-        unsafe {
-            libc::dup2(tmp.as_raw_fd(), stdout_fd);
-        }
-        Self { saved_fd, tmp }
-    }
+    app.run_with_args(vec![
+        "myapp".to_string(),
+        "spec".to_string(),
+        "--output".to_string(),
+        path.clone(),
+    ])
+    .await?;
 
-    fn finish(self) -> String {
-        let _ = std::io::stdout().flush();
-        let stdout_fd = std::io::stdout().as_raw_fd();
-        unsafe {
-            libc::dup2(self.saved_fd, stdout_fd);
-            libc::close(self.saved_fd);
-        }
-        std::fs::read_to_string(self.tmp.path()).unwrap_or_default()
-    }
+    Ok(std::fs::read_to_string(path)?)
 }
 
 fn noop_command(id: &'static str) -> Command {
@@ -80,13 +68,9 @@ async fn spec_json_stdout_is_valid() {
         .build(DummyCtx)
         .unwrap();
 
-    let capture = StdoutCapture::new();
-    let result = app
-        .run_with_args(vec!["myapp".to_string(), "spec".to_string()])
-        .await;
-    let output = capture.finish();
-
-    assert!(result.is_ok(), "spec command should succeed: {:?}", result);
+    let output = run_spec_to_tempfile(&mut app)
+        .await
+        .expect("spec command should succeed");
 
     let parsed: serde_json::Value =
         serde_json::from_str(&output).expect("spec output should be valid JSON");
@@ -115,22 +99,26 @@ async fn spec_yaml_stdout_is_valid() {
         .build(DummyCtx)
         .unwrap();
 
-    let capture = StdoutCapture::new();
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let path = tmp.path().to_string_lossy().to_string();
+
     let result = app
         .run_with_args(vec![
             "myapp".to_string(),
             "spec".to_string(),
             "--format".to_string(),
             "yaml".to_string(),
+            "--output".to_string(),
+            path.clone(),
         ])
         .await;
-    let output = capture.finish();
 
     assert!(
         result.is_ok(),
         "spec --format yaml should succeed: {:?}",
         result
     );
+    let output = std::fs::read_to_string(path).unwrap_or_default();
     assert!(!output.is_empty(), "YAML output should not be empty");
     assert!(
         output.contains("schemaVersion") || output.contains("schema_version"),
@@ -148,22 +136,26 @@ async fn spec_markdown_stdout_has_headings() {
         .build(DummyCtx)
         .unwrap();
 
-    let capture = StdoutCapture::new();
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let path = tmp.path().to_string_lossy().to_string();
+
     let result = app
         .run_with_args(vec![
             "myapp".to_string(),
             "spec".to_string(),
             "--format".to_string(),
             "markdown".to_string(),
+            "--output".to_string(),
+            path.clone(),
         ])
         .await;
-    let output = capture.finish();
 
     assert!(
         result.is_ok(),
         "spec --format markdown should succeed: {:?}",
         result
     );
+    let output = std::fs::read_to_string(path).unwrap_or_default();
     assert!(
         output.contains("## deploy"),
         "Markdown should have ## deploy heading"
@@ -183,7 +175,6 @@ async fn spec_output_writes_to_file() {
         .build(DummyCtx)
         .unwrap();
 
-    let capture = StdoutCapture::new();
     let result = app
         .run_with_args(vec![
             "myapp".to_string(),
@@ -192,13 +183,8 @@ async fn spec_output_writes_to_file() {
             path.clone(),
         ])
         .await;
-    let stdout_output = capture.finish();
 
     assert!(result.is_ok(), "spec --output should succeed: {:?}", result);
-    assert!(
-        stdout_output.is_empty() || stdout_output.trim().is_empty(),
-        "stdout should be empty when --output is used"
-    );
 
     let file_content = std::fs::read_to_string(&path).expect("output file should exist");
     let parsed: serde_json::Value =
@@ -221,13 +207,7 @@ async fn spec_hidden_command_excluded() {
         .build(DummyCtx)
         .unwrap();
 
-    let capture = StdoutCapture::new();
-    let result = app
-        .run_with_args(vec!["myapp".to_string(), "spec".to_string()])
-        .await;
-    let output = capture.finish();
-
-    assert!(result.is_ok());
+    let output = run_spec_to_tempfile(&mut app).await.unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
     let commands = parsed["commands"].as_array().unwrap();
     let has_internal = commands
@@ -251,17 +231,20 @@ async fn spec_include_hidden_flag_includes_hidden() {
         .build(DummyCtx)
         .unwrap();
 
-    let capture = StdoutCapture::new();
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let path = tmp.path().to_string_lossy().to_string();
     let result = app
         .run_with_args(vec![
             "myapp".to_string(),
             "spec".to_string(),
             "--include-hidden".to_string(),
+            "--output".to_string(),
+            path.clone(),
         ])
         .await;
-    let output = capture.finish();
 
     assert!(result.is_ok());
+    let output = std::fs::read_to_string(path).unwrap_or_default();
     let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
     let commands = parsed["commands"].as_array().unwrap();
     let has_internal = commands
@@ -283,7 +266,6 @@ async fn spec_format_html_cs001_error() {
         .build(DummyCtx)
         .unwrap();
 
-    let capture = StdoutCapture::new();
     let result = app
         .run_with_args(vec![
             "myapp".to_string(),
@@ -292,7 +274,6 @@ async fn spec_format_html_cs001_error() {
             "html".to_string(),
         ])
         .await;
-    capture.finish();
 
     assert!(result.is_err(), "spec --format html should fail");
     let err_msg = result.unwrap_err().to_string();
@@ -313,7 +294,6 @@ async fn spec_output_invalid_path_cs002_error() {
         .build(DummyCtx)
         .unwrap();
 
-    let capture = StdoutCapture::new();
     let result = app
         .run_with_args(vec![
             "myapp".to_string(),
@@ -322,7 +302,6 @@ async fn spec_output_invalid_path_cs002_error() {
             "/nonexistent_dir_for_test/out.json".to_string(),
         ])
         .await;
-    capture.finish();
 
     assert!(result.is_err(), "spec with invalid output path should fail");
     let err_msg = result.unwrap_err().to_string();

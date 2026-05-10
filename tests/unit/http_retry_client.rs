@@ -1,9 +1,7 @@
 //! Unit tests for RetryableHttpClient
 
 use cli_framework::http_retry::RetryableHttpClient;
-use cli_framework::retry::policy::RetryPolicy;
 use reqwest::Client;
-use std::time::Duration;
 
 #[test]
 fn test_retryable_http_client_default_policy() {
@@ -44,7 +42,7 @@ fn test_retryable_http_client_policy_cloning_for_per_request_overrides() {
     let client = Client::new();
     let default_policy =
         RetryPolicy::exponential_backoff(3, Duration::from_secs(1), Duration::from_secs(10));
-    let retry_client = RetryableHttpClient::with_policy(client, default_policy.clone());
+    let _retry_client = RetryableHttpClient::with_policy(client, default_policy.clone());
 
     // Verify that policies can be cloned and used independently
     let custom_policy = RetryPolicy::fixed_delay(5, Duration::from_millis(100));
@@ -63,7 +61,7 @@ fn test_custom_error_classifier_thread_safety() {
     use std::sync::Arc;
 
     let client = Client::new();
-    let retry_client = RetryableHttpClient::new(client);
+    let _retry_client = RetryableHttpClient::new(client);
 
     // Create a classifier that uses shared state (Arc for thread safety)
     let retry_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -96,7 +94,7 @@ fn test_retry_after_header_parsing_seconds_integer() {
     use reqwest::Client;
 
     let client = Client::new();
-    let retry_client = RetryableHttpClient::new(client);
+    let _retry_client = RetryableHttpClient::new(client);
 
     // The parse_retry_after_header function is tested through integration tests
     // that verify 429 responses with Retry-After headers are handled correctly

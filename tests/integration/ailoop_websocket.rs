@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use cli_framework::ailoop::{AiloopClient, AiloopConfig};
 use cli_framework::app::{AppBuilder, AppContext};
-use cli_framework::command::{Command, CommandArgs, CommandRegistry};
+use cli_framework::command::{Command, CommandArgs};
 use cli_framework::llm::{CommandMetadata, CommandResolution, LlmProvider};
-use cli_framework::security::command_risk::{CommandRiskPolicy, CommandRiskTier};
+use cli_framework::security::command_risk::CommandRiskPolicy;
 
 use async_trait::async_trait;
 

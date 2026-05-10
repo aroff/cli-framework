@@ -4,10 +4,15 @@ use cli_framework::app::{AppBuilder, AppContext};
 use cli_framework::doctor::check::{CheckSeverity, DoctorCheck, DoctorFinding, DoctorFuture};
 use std::io::Write;
 use std::os::unix::io::AsRawFd;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 struct DummyCtx;
 impl AppContext for DummyCtx {}
+
+fn stdio_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 fn make_ok_check() -> Arc<dyn DoctorCheck> {
     struct OkCheck;
@@ -60,19 +65,25 @@ fn make_error_check() -> Arc<dyn DoctorCheck> {
 }
 
 struct StdoutCapture {
+    _guard: MutexGuard<'static, ()>,
     saved_fd: i32,
     tmp: tempfile::NamedTempFile,
 }
 
 impl StdoutCapture {
     fn new() -> Self {
+        let guard = stdio_lock().lock().unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let stdout_fd = std::io::stdout().as_raw_fd();
         let saved_fd = unsafe { libc::dup(stdout_fd) };
         unsafe {
             libc::dup2(tmp.as_raw_fd(), stdout_fd);
         }
-        Self { saved_fd, tmp }
+        Self {
+            _guard: guard,
+            saved_fd,
+            tmp,
+        }
     }
 
     fn finish(self) -> String {

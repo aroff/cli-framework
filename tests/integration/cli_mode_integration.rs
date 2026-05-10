@@ -5,9 +5,17 @@
 
 use cli_framework::cli_mode;
 use std::env;
+use std::sync::{Mutex, OnceLock};
+
+fn env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 #[test]
 fn test_color_detection_integration() {
+    let _guard = env_lock().lock().unwrap();
+
     // Integration test for color detection in interactive terminal vs piped output
     // T022: Add integration test for color detection in interactive terminal vs piped output
     let original_no_color = env::var("NO_COLOR").ok();
@@ -54,6 +62,7 @@ fn test_color_detection_integration() {
 fn test_output_format_integration() {
     // Integration test for output format selection in interactive terminal vs piped output
     // T040: Add integration test for output format selection in interactive terminal vs piped output
+    let _guard = env_lock().lock().unwrap();
     let original_format = env::var("OUTPUT_FORMAT").ok();
     
     // Test scenario: Explicit format override (takes precedence over TTY detection)
@@ -139,6 +148,7 @@ fn test_mixed_stream_states() {
 #[test]
 fn test_progress_indicator_integration() {
     // Integration test for progress indicator detection
+    let _guard = env_lock().lock().unwrap();
     let original_quiet = env::var("QUIET").ok();
     
     // Test that progress detection considers both TTY and quiet mode
@@ -154,4 +164,3 @@ fn test_progress_indicator_integration() {
         env::set_var("QUIET", val);
     }
 }
-
