@@ -3,8 +3,11 @@
 use cli_framework::cli_mode;
 use std::env;
 
+mod common;
+
 #[test]
 fn test_color_detection_no_color_set() {
+    let _guard = common::env_lock().lock().unwrap();
     // Test that NO_COLOR disables colors regardless of TTY status
     let original_no_color = env::var("NO_COLOR").ok();
     let original_force_color = env::var("FORCE_COLOR").ok();
@@ -36,6 +39,7 @@ fn test_color_detection_no_color_set() {
 
 #[test]
 fn test_color_detection_force_color_set() {
+    let _guard = common::env_lock().lock().unwrap();
     // Test that FORCE_COLOR enables colors when NO_COLOR is not set
     let original_no_color = env::var("NO_COLOR").ok();
     let original_force_color = env::var("FORCE_COLOR").ok();
@@ -67,6 +71,7 @@ fn test_color_detection_force_color_set() {
 
 #[test]
 fn test_color_detection_no_env_vars() {
+    let _guard = common::env_lock().lock().unwrap();
     // Test TTY-based detection when no environment variables are set
     let original_no_color = env::var("NO_COLOR").ok();
     let original_force_color = env::var("FORCE_COLOR").ok();
@@ -93,6 +98,7 @@ fn test_color_detection_no_env_vars() {
 
 #[test]
 fn test_color_detection_no_color_overrides_force_color() {
+    let _guard = common::env_lock().lock().unwrap();
     // Test that NO_COLOR takes precedence over FORCE_COLOR
     let original_no_color = env::var("NO_COLOR").ok();
     let original_force_color = env::var("FORCE_COLOR").ok();
@@ -124,6 +130,7 @@ fn test_color_detection_no_color_overrides_force_color() {
 
 #[test]
 fn test_color_detection_detection_failure() {
+    let _guard = common::env_lock().lock().unwrap();
     // Test that detection failures return safe default (false)
     // This is tested implicitly through the safe_tty_check wrapper
     // The function should never panic, even if TTY detection fails

@@ -71,7 +71,9 @@ echo ""
 
 # Step 6: Run integration tests (ensure MCP server coverage)
 echo -e "${YELLOW}[6/6] Running integration tests (mcp-server)...${NC}"
-if cargo test --features mcp-server --test '*' --verbose; then
+# NOTE: Avoid `--test '*'` here: explicitly selecting all test targets includes
+# targets gated by other features (e.g. `doctor`), which causes Cargo to error.
+if cargo test --features mcp-server --test integration_mcp_http --test integration_mcp_axum_mount --verbose; then
     echo -e "${GREEN}✓ Integration tests passed${NC}"
 else
     echo -e "${RED}✗ Integration tests failed${NC}"

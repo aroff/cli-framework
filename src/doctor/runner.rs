@@ -179,7 +179,7 @@ impl DoctorRunner {
             }
         }
 
-        let findings: Vec<DoctorFinding> = slots.into_iter().filter_map(|s| s).collect();
+        let findings: Vec<DoctorFinding> = slots.into_iter().flatten().collect();
         DoctorReport::from_findings(findings)
     }
 }

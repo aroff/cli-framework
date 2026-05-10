@@ -4,6 +4,8 @@
 
 use cli_framework::cli_output::{should_use_color, FormattingOptions, OutputMode};
 
+mod common;
+
 #[test]
 fn test_output_mode_detection() {
     // OutputMode::detect() should return Tui if stdout is TTY, Cli otherwise
@@ -21,6 +23,7 @@ fn test_output_mode_default() {
 
 #[test]
 fn test_should_use_color() {
+    let _guard = common::env_lock().lock().unwrap();
     // Test that should_use_color respects NO_COLOR
     // Save original value
     let original_no_color = std::env::var("NO_COLOR").ok();

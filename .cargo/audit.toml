@@ -1,0 +1,24 @@
+# cargo-audit configuration
+#
+# This repository aims to keep `cargo audit` green as part of CI parity
+# (`scripts/run-ci-tests.sh`). When an upstream dependency has no compatible
+# patched release available, we document and temporarily ignore the advisory
+# until the upstream is updated.
+#
+# See: https://github.com/RustSec/rustsec/tree/main/cargo-audit
+
+[advisories]
+# `ailoop-core` currently depends on `reqwest 0.11` (rustls 0.21), which pulls
+# `rustls-webpki 0.101.x`. RustSec advisories RUSTSEC-2026-0098/0099/0104 are
+# patched in `rustls-webpki >=0.103.12` and do not have a compatible fix for
+# the 0.101.x line. `cli-framework` does not use the `reqwest`-based code paths
+# in `ailoop-core` (it uses WebSocket HITL calls), but the crate is still in the
+# dependency graph.
+#
+# Track removal of these ignores in issue #51 by upgrading `ailoop-core` to a
+# revision which no longer pulls `rustls-webpki 0.101.x`.
+ignore = [
+  "RUSTSEC-2026-0098",
+  "RUSTSEC-2026-0099",
+  "RUSTSEC-2026-0104",
+]
