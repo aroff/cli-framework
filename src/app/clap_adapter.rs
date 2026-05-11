@@ -71,7 +71,17 @@ pub fn build_clap_root(
 ) -> clap::Command {
     let name = meta.map(|m| m.name).unwrap_or(app_name);
     let version = meta.map(|m| m.version).unwrap_or(app_version);
-    let version = crate::app::version::format_clap_version_component(version, app_git_sha_short);
+    // Clap always formats the version output as "{display_name} {ver}\n" (see clap_builder's
+    // `Command::_render_version`). To keep the *rendered* output consistent with the framework's
+    // canonical display version string, derive the "ver" component by stripping the leading
+    // "{name} " prefix from the canonical formatter output.
+    let display_version =
+        crate::app::version::format_display_version(name, version, app_git_sha_short);
+    let prefix = format!("{name} ");
+    let version = display_version
+        .strip_prefix(&prefix)
+        .unwrap_or(&display_version)
+        .to_string();
 
     let mut root = clap::Command::new(name)
         .version(version)

@@ -41,15 +41,3 @@ pub fn format_display_version(
         format!("{app_name} {app_version}")
     }
 }
-
-pub fn format_clap_version_component(
-    app_version: &'static str,
-    app_git_sha_short: Option<&'static str>,
-) -> &'static str {
-    let sha = sanitize_git_sha_short(app_git_sha_short);
-    if let Some(sha) = sha {
-        Box::leak(format!("{app_version} ({sha})").into_boxed_str())
-    } else {
-        app_version
-    }
-}
