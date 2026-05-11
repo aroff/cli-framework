@@ -1,5 +1,6 @@
 //! Integration tests for the built-in `version` command.
 
+use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 
 use cli_framework::app::{AppBuilder, AppContext};
@@ -32,6 +33,21 @@ impl log::Log for LogCollector {
         }
     }
     fn flush(&self) {}
+}
+
+static TEST_LOG_RECORDS: OnceLock<Arc<Mutex<Vec<String>>>> = OnceLock::new();
+
+fn install_test_logger() -> Arc<Mutex<Vec<String>>> {
+    let records = TEST_LOG_RECORDS.get_or_init(|| {
+        let records: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let collector = LogCollector {
+            records: records.clone(),
+        };
+        let _ = log::set_boxed_logger(Box::new(collector));
+        log::set_max_level(log::LevelFilter::Warn);
+        records
+    });
+    records.clone()
 }
 
 #[tokio::test]
@@ -137,12 +153,8 @@ fn show_help_version_appears_before_registered_commands() {
 
 #[test]
 fn warn_log_emitted_when_version_not_configured() {
-    let records: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let collector = LogCollector {
-        records: records.clone(),
-    };
-    log::set_boxed_logger(Box::new(collector)).unwrap();
-    log::set_max_level(log::LevelFilter::Warn);
+    let records = install_test_logger();
+    records.lock().unwrap().clear();
 
     let mut app = AppBuilder::new().build(DummyCtx).unwrap();
 
@@ -156,8 +168,69 @@ fn warn_log_emitted_when_version_not_configured() {
     assert!(msgs
         .iter()
         .any(|m| m.contains("with_version() was not configured")));
+}
 
-    log::set_max_level(log::LevelFilter::Off);
+#[tokio::test]
+#[cfg(feature = "testkit")]
+async fn version_and_flags_include_git_sha_when_configured() {
+    let app = AppBuilder::new()
+        .with_version("myapp", "1.2.3")
+        .with_git_sha_short(Some("abc1234"))
+        .build(DummyCtx)
+        .unwrap();
+
+    let mut harness = CliTestHarness::new(app);
+
+    let out = harness.run(&["myapp", "--version"]).await;
+    out.assert_exit_code(0);
+    assert_eq!(out.stdout.trim_end(), "myapp 1.2.3 (abc1234)");
+
+    let out = harness.run(&["myapp", "-V"]).await;
+    out.assert_exit_code(0);
+    assert_eq!(out.stdout.trim_end(), "myapp 1.2.3 (abc1234)");
+
+    let out = harness.run(&["myapp", "version"]).await;
+    out.assert_exit_code(0);
+    assert_eq!(out.stdout.trim_end(), "myapp 1.2.3 (abc1234)");
+}
+
+#[tokio::test]
+#[cfg(feature = "testkit")]
+async fn version_flags_omit_git_sha_when_unset() {
+    let app = AppBuilder::new()
+        .with_version("myapp", "1.2.3")
+        .with_git_sha_short(None)
+        .build(DummyCtx)
+        .unwrap();
+
+    let mut harness = CliTestHarness::new(app);
+    let out = harness.run(&["myapp", "--version"]).await;
+    out.assert_exit_code(0);
+    let line = out.stdout.trim_end();
+    assert!(line.contains("myapp 1.2.3"));
+    assert!(!line.contains('('));
+    assert!(!line.contains(')'));
+}
+
+#[tokio::test]
+#[cfg(feature = "testkit")]
+async fn invalid_git_sha_is_omitted_and_warns() {
+    let records = install_test_logger();
+    records.lock().unwrap().clear();
+
+    let app = AppBuilder::new()
+        .with_version("myapp", "1.2.3")
+        .with_git_sha_short(Some("not-a-sha"))
+        .build(DummyCtx)
+        .unwrap();
+
+    let mut harness = CliTestHarness::new(app);
+    let out = harness.run(&["myapp", "version"]).await;
+    out.assert_exit_code(0);
+    assert_eq!(out.stdout.trim_end(), "myapp 1.2.3");
+
+    let msgs = records.lock().unwrap();
+    assert!(msgs.iter().any(|m| m.contains("ERR_VERSION_SHA_001")));
 }
 
 #[cfg(feature = "clap-dispatch")]

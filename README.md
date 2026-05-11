@@ -171,6 +171,24 @@ cargo run
 cargo run -- hello Alice
 ```
 
+## Version output
+
+The framework provides a built-in `version` subcommand and Clap `--version` / `-V`.
+
+- Default output: `{name} {semver}` (e.g. `myapp 1.2.3`)
+- Opt-in build id: `{name} {semver} ({short_sha})` (e.g. `myapp 1.2.3 (abc1234)`)
+
+Opt-in without runtime git I/O (compile-time env var):
+
+```rust
+use cli_framework::app::AppBuilder;
+
+let app = AppBuilder::new()
+    .with_version(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
+    .with_git_sha_short(option_env!("VERGEN_GIT_SHA"))
+    .build(ctx)?;
+```
+
 ## AI Ask Command
 
 Natural-language **`ask`** is registered when an LLM is configured (**`with_llm_from_env()`** or **`with_llm_provider`**). **A paired `ailoop serve` process is also required** — `.build()` returns an error if `with_ailoop_channel()` or `with_ailoop_config()` has not been called when an LLM provider is set.

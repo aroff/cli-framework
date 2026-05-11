@@ -6,6 +6,7 @@ pub mod meta;
 pub mod module;
 
 pub mod clap_adapter;
+pub(crate) mod version;
 
 pub use builder::{App, AppBuilder};
 pub use context::AppContext;
