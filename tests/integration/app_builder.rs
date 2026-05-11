@@ -3,7 +3,6 @@
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 
-use cli_framework::app::AppMeta;
 use cli_framework::app::{AppBuilder, AppContext};
 use cli_framework::command::CommandArgs;
 
