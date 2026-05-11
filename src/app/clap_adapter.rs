@@ -71,20 +71,12 @@ pub fn build_clap_root(
 ) -> clap::Command {
     let name = meta.map(|m| m.name).unwrap_or(app_name);
     let version = meta.map(|m| m.version).unwrap_or(app_version);
-    // Clap always formats the version output as "{display_name} {ver}\n" (see clap_builder's
-    // `Command::_render_version`). To keep the *rendered* output consistent with the framework's
-    // canonical display version string, derive the "ver" component by stripping the leading
-    // "{name} " prefix from the canonical formatter output.
+    // Canonical display version (single source of truth across `--version`, `-V`, and `version`).
     let display_version =
         crate::app::version::format_display_version(name, version, app_git_sha_short);
-    let prefix = format!("{name} ");
-    let version = display_version
-        .strip_prefix(&prefix)
-        .unwrap_or(&display_version)
-        .to_string();
 
     let mut root = clap::Command::new(name)
-        .version(version)
+        .version(display_version)
         .propagate_version(true)
         .subcommand_required(true)
         .arg_required_else_help(true);
@@ -283,8 +275,11 @@ pub fn parse_with_clap(
                     ParseOutcome::HelpShown(e.to_string())
                 }
                 ErrorKind::DisplayVersion => {
-                    // Stage 2: Parser is side-effect-free; return text for app layer to print
-                    ParseOutcome::VersionShown(e.to_string())
+                    // Prefer the framework's canonical version string (as set on the clap root)
+                    // over clap's default "{display_name} {ver}" rendering, to keep output
+                    // consistent with `App::version_string()`.
+                    let text = root.get_version().unwrap_or_default().to_string();
+                    ParseOutcome::VersionShown(text)
                 }
                 ErrorKind::UnknownArgument => ParseOutcome::ParseError(Diagnostic {
                     code: E_UNKNOWN_FLAG,
