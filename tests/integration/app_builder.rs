@@ -3,6 +3,7 @@
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 
+use cli_framework::app::AppMeta;
 use cli_framework::app::{AppBuilder, AppContext};
 use cli_framework::command::CommandArgs;
 
@@ -231,6 +232,32 @@ async fn invalid_git_sha_is_omitted_and_warns() {
 
     let msgs = records.lock().unwrap();
     assert!(msgs.iter().any(|m| m.contains("ERR_VERSION_SHA_001")));
+}
+
+#[tokio::test]
+#[cfg(feature = "testkit")]
+async fn meta_overrides_name_and_version_consistently_for_version_output() {
+    let app = AppBuilder::new()
+        .with_version("builder-name", "0.0.1")
+        .with_meta(AppMeta {
+            name: "meta-name",
+            version: "9.9.9",
+            description: "desc",
+            usage: None,
+        })
+        .with_git_sha_short(Some("abc1234"))
+        .build(DummyCtx)
+        .unwrap();
+
+    let mut harness = CliTestHarness::new(app);
+
+    let out = harness.run(&["meta-name", "--version"]).await;
+    out.assert_exit_code(0);
+    assert_eq!(out.stdout.trim_end(), "meta-name 9.9.9 (abc1234)");
+
+    let out = harness.run(&["meta-name", "version"]).await;
+    out.assert_exit_code(0);
+    assert_eq!(out.stdout.trim_end(), "meta-name 9.9.9 (abc1234)");
 }
 
 #[cfg(feature = "clap-dispatch")]

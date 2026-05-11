@@ -531,11 +531,9 @@ impl<C: AppContext> App<C> {
     }
 
     pub fn version_string(&self) -> String {
-        crate::app::version::format_display_version(
-            self.app_name,
-            self.app_version,
-            self.app_git_sha_short,
-        )
+        let app_name = self.meta.map(|m| m.name).unwrap_or(self.app_name);
+        let app_version = self.meta.map(|m| m.version).unwrap_or(self.app_version);
+        crate::app::version::format_display_version(app_name, app_version, self.app_git_sha_short)
     }
 
     pub async fn execute_command(
