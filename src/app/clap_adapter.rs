@@ -278,7 +278,13 @@ pub fn parse_with_clap(
                     // Prefer the framework's canonical version string (as set on the clap root)
                     // over clap's default "{display_name} {ver}" rendering, to keep output
                     // consistent with `App::version_string()`.
-                    let text = root.get_version().unwrap_or_default().to_string();
+                    // Note: clap typically renders version output with a trailing newline.
+                    // Preserve that shape so callers that print `ParseOutcome::VersionShown`
+                    // verbatim still emit a single line.
+                    let mut text = root.get_version().unwrap_or_default().to_string();
+                    if !text.ends_with('\n') {
+                        text.push('\n');
+                    }
                     ParseOutcome::VersionShown(text)
                 }
                 ErrorKind::UnknownArgument => ParseOutcome::ParseError(Diagnostic {

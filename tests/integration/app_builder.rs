@@ -184,15 +184,15 @@ async fn version_and_flags_include_git_sha_when_configured() {
 
     let out = harness.run(&["myapp", "--version"]).await;
     out.assert_exit_code(0);
-    assert_eq!(out.stdout.trim_end(), "myapp 1.2.3 (abc1234)");
+    assert_eq!(out.stdout, "myapp 1.2.3 (abc1234)\n");
 
     let out = harness.run(&["myapp", "-V"]).await;
     out.assert_exit_code(0);
-    assert_eq!(out.stdout.trim_end(), "myapp 1.2.3 (abc1234)");
+    assert_eq!(out.stdout, "myapp 1.2.3 (abc1234)\n");
 
     let out = harness.run(&["myapp", "version"]).await;
     out.assert_exit_code(0);
-    assert_eq!(out.stdout.trim_end(), "myapp 1.2.3 (abc1234)");
+    assert_eq!(out.stdout, "myapp 1.2.3 (abc1234)\n");
 }
 
 #[tokio::test]
