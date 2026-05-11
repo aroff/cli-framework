@@ -65,6 +65,13 @@ cargo test
 
 Requires `cargo install cargo-audit`. Matches fmt, clippy `-D warnings`, audit, release build, tests.
 
+### `cargo audit` ignores
+
+CI runs `cargo audit`. If an upstream dependency has no compatible patched
+release available for a RustSec advisory, this repo may temporarily ignore the
+advisory via `.cargo/audit.toml` and document why. Any ignores must be treated
+as temporary and removed once upstream is updated.
+
 ## Conventions
 
 - `cargo fmt --all`

@@ -2,13 +2,11 @@
 
 use cli_framework::cli_mode;
 use std::env;
-use std::sync::Mutex;
-
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+mod common;
 
 #[test]
 fn test_output_format_from_env_table() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = common::env_lock().lock().unwrap();
     let original_format = env::var("OUTPUT_FORMAT").ok();
 
     env::set_var("OUTPUT_FORMAT", "table");
@@ -34,7 +32,7 @@ fn test_output_format_from_env_table() {
 
 #[test]
 fn test_output_format_from_env_json() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = common::env_lock().lock().unwrap();
     let original_format = env::var("OUTPUT_FORMAT").ok();
 
     env::set_var("OUTPUT_FORMAT", "json");
@@ -60,7 +58,7 @@ fn test_output_format_from_env_json() {
 
 #[test]
 fn test_output_format_from_env_plain() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = common::env_lock().lock().unwrap();
     let original_format = env::var("OUTPUT_FORMAT").ok();
 
     // Ensure clean state
@@ -85,7 +83,7 @@ fn test_output_format_from_env_plain() {
 
 #[test]
 fn test_output_format_from_env_invalid() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = common::env_lock().lock().unwrap();
     let original_format = env::var("OUTPUT_FORMAT").ok();
 
     env::set_var("OUTPUT_FORMAT", "invalid");
@@ -101,7 +99,7 @@ fn test_output_format_from_env_invalid() {
 
 #[test]
 fn test_output_format_from_env_missing() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = common::env_lock().lock().unwrap();
     let original_format = env::var("OUTPUT_FORMAT").ok();
 
     // Ensure clean state
@@ -128,7 +126,7 @@ fn test_output_format_default() {
 
 #[test]
 fn test_get_output_format_with_env_var() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = common::env_lock().lock().unwrap();
     let original_format = env::var("OUTPUT_FORMAT").ok();
 
     // Ensure clean state first
@@ -154,7 +152,7 @@ fn test_get_output_format_with_env_var() {
 
 #[test]
 fn test_get_output_format_without_env_var() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = common::env_lock().lock().unwrap();
     let original_format = env::var("OUTPUT_FORMAT").ok();
 
     // Test that default is used when OUTPUT_FORMAT is not set
@@ -174,7 +172,7 @@ fn test_get_output_format_without_env_var() {
 
 #[test]
 fn test_get_output_format_invalid_value_fallback() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = common::env_lock().lock().unwrap();
     let original_format = env::var("OUTPUT_FORMAT").ok();
 
     // Test that invalid OUTPUT_FORMAT values fallback to default

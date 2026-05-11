@@ -6,11 +6,15 @@ use crate::parser::validator::SpecValidator;
 use crate::spec::value::ArgValue;
 use std::collections::HashMap;
 use std::sync::Arc;
+#[cfg(feature = "testkit")]
+use std::sync::Mutex;
 
 pub(crate) struct DispatchEnv<'a> {
     pub(crate) command_registry: &'a crate::command::CommandRegistry,
     pub(crate) llm_provider: &'a Option<Arc<dyn LlmProvider>>,
     pub(crate) ailoop_client: &'a Option<AiloopClient>,
+    #[cfg(feature = "testkit")]
+    pub(crate) stdout_capture: Option<Arc<Mutex<Vec<u8>>>>,
 }
 
 pub(crate) struct CliAppContextWrapper<'a> {
@@ -27,6 +31,21 @@ impl<'a> CliAppContextWrapper<'a> {
 impl<'a> AppContext for CliAppContextWrapper<'a> {
     fn opt_registry(&self) -> Option<&crate::command::CommandRegistry> {
         Some(self.env.command_registry)
+    }
+
+    fn framework_println(&self, s: &str) {
+        use std::io::Write;
+
+        #[cfg(feature = "testkit")]
+        if let Some(ref buf) = self.env.stdout_capture {
+            let mut lock = buf.lock().unwrap();
+            lock.extend_from_slice(s.as_bytes());
+            lock.push(b'\n');
+            return;
+        }
+
+        let mut stdout = std::io::stdout();
+        let _ = writeln!(stdout, "{}", s);
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {

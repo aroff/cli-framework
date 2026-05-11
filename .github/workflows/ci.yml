@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  ci:
+    name: Check / Lint / Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry & build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (all features)
+        run: cargo clippy --all-features -- -D warnings
+
+      - name: Audit
+        run: cargo audit
+
+      - name: Build release (all features)
+        run: cargo build --all-features --release
+
+      - name: Test (default features)
+        run: cargo test --verbose
+
+      - name: Test (chat)
+        run: cargo test --features chat --verbose
+
+      - name: Test (mcp-server)
+        run: cargo test --features mcp-server --verbose
+
+      - name: Test (chat + mcp-server)
+        run: cargo test --features "chat,mcp-server" --verbose
+
+      - name: Integration tests (mcp-server)
+        run: >
+          cargo test
+          --features mcp-server
+          --test integration_mcp_http
+          --test integration_mcp_axum_mount
+          --verbose

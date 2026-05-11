@@ -84,15 +84,14 @@ pub fn create_doctor_command(checks: Vec<Arc<dyn DoctorCheck>>) -> Command {
                     }
                 }
 
-                let mut findings: Vec<DoctorFinding> =
-                    slots.into_iter().filter_map(|s| s).collect();
+                let mut findings: Vec<DoctorFinding> = slots.into_iter().flatten().collect();
                 findings.extend(pre_findings);
 
                 let report = DoctorReport::from_findings(findings);
                 if is_json {
-                    render_json(&report)?;
+                    render_json(ctx, &report)?;
                 } else {
-                    render_terminal(&report);
+                    render_terminal(ctx, &report);
                 }
 
                 if report.errors > 0 {

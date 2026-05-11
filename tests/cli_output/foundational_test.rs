@@ -2,7 +2,10 @@
 //!
 //! Tests for terminal detection, output mode detection, and formatting options.
 
-use cli_framework::cli_output::{FormattingOptions, OutputMode, should_use_color};
+use cli_framework::cli_output::{should_use_color, FormattingOptions, OutputMode};
+
+#[path = "../common/mod.rs"]
+mod common;
 
 #[test]
 fn test_output_mode_detection() {
@@ -21,6 +24,7 @@ fn test_output_mode_default() {
 
 #[test]
 fn test_should_use_color() {
+    let _guard = common::env_lock().lock().unwrap();
     // Test that should_use_color respects NO_COLOR
     // Save original value
     let original_no_color = std::env::var("NO_COLOR").ok();
@@ -60,4 +64,3 @@ fn test_formatting_options_custom() {
     assert_eq!(opts.terminal_width, Some(100));
     assert_eq!(opts.json_indent, 4);
 }
-

@@ -26,7 +26,7 @@ dirs = "5.0"
 uuid = { version = "1.0", features = ["v4"] }
 crossterm = "0.28"
 # ailoop-core integration
-ailoop-core = { git = "https://github.com/goailoop/ailoop.git", branch = "main", default-features = false }
+ailoop-core = { git = "https://github.com/goailoop/ailoop.git", rev = "dd186c055dbfcbf5c32c8e58b251eaf0bf07343b", default-features = false }
 # LLM providers
 async-openai = "0.20"
 anthropic-sdk = "0.1"
@@ -41,9 +41,9 @@ indicatif = { version = "0.17", optional = true }
 rmcp = { version = "1.6", features = ["server", "client", "transport-streamable-http-server", "transport-io"], optional = true }
 axum = { version = "0.8", optional = true }
 # Optional MCP install dependency (aikit-sdk provides add_mcp_server and mcp_supported_agents)
-aikit-sdk = { git = "https://github.com/goaikit/aikit.git", package = "aikit-sdk", rev = "dff63ec966a6ad9f310f00e31a27d3e6f195a549", optional = true }
+aikit-sdk = { git = "https://github.com/goaikit/aikit.git", package = "aikit-sdk", rev = "9b68c1282bf3dc1dc53bf46026ae4e51cf304bce", optional = true }
 ## Optional embedded agent dependency (used by `chat` feature)
-aikit-agent = { git = "https://github.com/goaikit/aikit.git", package = "aikit-agent", rev = "dff63ec966a6ad9f310f00e31a27d3e6f195a549", optional = true }
+aikit-agent = { git = "https://github.com/goaikit/aikit.git", package = "aikit-agent", rev = "9b68c1282bf3dc1dc53bf46026ae4e51cf304bce", optional = true }
 
 # Optional OpenTelemetry dependencies (applications can enable)
 # Note: Applications should add these dependencies themselves when using observability feature
@@ -209,7 +209,7 @@ required-features = ["doctor"]
 [[test]]
 name = "integration_doctor_command"
 path = "tests/integration/doctor_command.rs"
-required-features = ["doctor"]
+required-features = ["doctor", "testkit"]
 
 [[example]]
 name = "with_project_config"

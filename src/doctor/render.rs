@@ -1,7 +1,7 @@
 use crate::doctor::check::CheckSeverity;
 use crate::doctor::runner::DoctorReport;
 
-pub fn render_terminal(report: &DoctorReport) {
+pub fn render_terminal(ctx: &dyn crate::app::AppContext, report: &DoctorReport) {
     #[cfg(feature = "table-advanced")]
     {
         use comfy_table::{Cell, Color, Table};
@@ -22,7 +22,7 @@ pub fn render_terminal(report: &DoctorReport) {
                 Cell::new(finding.remediation.as_deref().unwrap_or("")),
             ]);
         }
-        println!("{table}");
+        ctx.framework_println(&format!("{table}"));
     }
 
     #[cfg(not(feature = "table-advanced"))]
@@ -34,23 +34,23 @@ pub fn render_terminal(report: &DoctorReport) {
                 CheckSeverity::Error => "[error]",
                 CheckSeverity::Skipped => "[skip] ",
             };
-            println!(
+            ctx.framework_println(&format!(
                 "{} {:20} | {:30} | {}",
                 sev_str, finding.check_id, finding.title, finding.message
-            );
+            ));
             if let Some(ref rem) = finding.remediation {
-                println!("         → {}", rem);
+                ctx.framework_println(&format!("         → {}", rem));
             }
         }
     }
 
-    println!(
+    ctx.framework_println(&format!(
         "\n{} passed, {} warnings, {} errors, {} skipped.",
         report.ok, report.warnings, report.errors, report.skipped
-    );
+    ));
 }
 
-pub fn render_json(report: &DoctorReport) -> anyhow::Result<()> {
+pub fn render_json(ctx: &dyn crate::app::AppContext, report: &DoctorReport) -> anyhow::Result<()> {
     #[derive(serde::Serialize)]
     struct JsonReport<'a> {
         findings: &'a Vec<crate::doctor::check::DoctorFinding>,
@@ -74,6 +74,6 @@ pub fn render_json(report: &DoctorReport) -> anyhow::Result<()> {
             skipped: report.skipped,
         },
     };
-    println!("{}", serde_json::to_string_pretty(&json_report)?);
+    ctx.framework_println(&serde_json::to_string_pretty(&json_report)?);
     Ok(())
 }

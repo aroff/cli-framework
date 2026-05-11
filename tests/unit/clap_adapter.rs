@@ -5,9 +5,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-struct TestContext;
-impl cli_framework::app::AppContext for TestContext {}
-
 fn noop_execute() -> Arc<
     dyn for<'a> Fn(
             &'a mut dyn cli_framework::app::AppContext,

@@ -4,17 +4,23 @@
 //! behavior for the ailoop-backed HITL system.
 
 use std::sync::Arc;
+use std::sync::{Mutex, OnceLock};
 
 use cli_framework::ailoop::{AiloopClient, AiloopConfig};
 use cli_framework::app::{AppBuilder, AppContext};
-use cli_framework::command::{Command, CommandArgs, CommandRegistry};
+use cli_framework::command::{Command, CommandArgs};
 use cli_framework::llm::{CommandMetadata, CommandResolution, LlmProvider};
-use cli_framework::security::command_risk::{CommandRiskPolicy, CommandRiskTier};
+use cli_framework::security::command_risk::CommandRiskPolicy;
 
 use async_trait::async_trait;
 
 struct DummyCtx;
 impl AppContext for DummyCtx {}
+
+fn env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 struct MockLlmProvider;
 
@@ -135,6 +141,7 @@ fn test_ailoop_client_http_url_accepted() {
 // AC9: If AILOOP_SERVER env not set, default to ws://localhost:8080
 #[test]
 fn test_default_server_url_when_env_unset() {
+    let _guard = env_lock().lock().unwrap();
     let saved = std::env::var("AILOOP_SERVER").ok();
     std::env::remove_var("AILOOP_SERVER");
 
@@ -200,6 +207,7 @@ fn test_risk_gate_sensitive_blocked_without_ailoop() {
 fn test_risk_gate_destructive_allowed_with_ailoop_and_env() {
     use cli_framework::command::enforce_risk_gate;
 
+    let _guard = env_lock().lock().unwrap();
     std::env::set_var("ALLOW_DESTRUCTIVE_COMMANDS", "1");
     let policy = CommandRiskPolicy::default();
     let resolution = CommandResolution {
@@ -223,6 +231,7 @@ fn test_risk_gate_destructive_allowed_with_ailoop_and_env() {
 fn test_risk_gate_destructive_still_blocked_without_env() {
     use cli_framework::command::enforce_risk_gate;
 
+    let _guard = env_lock().lock().unwrap();
     std::env::remove_var("ALLOW_DESTRUCTIVE_COMMANDS");
     let policy = CommandRiskPolicy::default();
     let resolution = CommandResolution {

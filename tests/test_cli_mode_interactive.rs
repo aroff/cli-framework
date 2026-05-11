@@ -1,6 +1,7 @@
 //! Tests for interactive mode detection
 
 use cli_framework::cli_mode;
+mod common;
 
 #[test]
 fn test_is_interactive_both_tty() {
@@ -25,6 +26,7 @@ fn test_is_quiet() {
     use std::env;
 
     // Test quiet mode detection
+    let _guard = common::env_lock().lock().unwrap();
     let original_quiet = env::var("QUIET").ok();
 
     env::set_var("QUIET", "1");
@@ -50,6 +52,7 @@ fn test_should_show_progress() {
     use std::env;
 
     // Test progress indicator detection
+    let _guard = common::env_lock().lock().unwrap();
     let original_quiet = env::var("QUIET").ok();
 
     // Test with QUIET set - progress should be suppressed
@@ -77,6 +80,7 @@ fn test_should_show_progress_combines_tty_and_quiet() {
     use std::env;
 
     // Test that progress detection considers both TTY and quiet mode
+    let _guard = common::env_lock().lock().unwrap();
     let original_quiet = env::var("QUIET").ok();
 
     // Even if TTY, quiet mode should suppress progress

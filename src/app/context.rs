@@ -33,6 +33,16 @@ pub trait AppContext: Send + Sync {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         None
     }
+
+    /// Write a line of user-visible output.
+    ///
+    /// Commands should prefer this over `println!` so framework consumers can
+    /// capture output deterministically in tests.
+    fn framework_println(&self, s: &str) {
+        use std::io::Write;
+        let mut stdout = std::io::stdout();
+        let _ = writeln!(stdout, "{}", s);
+    }
 }
 
 /// Extension trait for AppContext to provide LLM provider access
