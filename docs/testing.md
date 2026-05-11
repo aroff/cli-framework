@@ -58,6 +58,10 @@ async fn test_version_flag_output() {
 
     out.assert_exit_code(0);
     out.assert_stdout_contains("myapp 1.0.0 (abc1234)");
+
+    let out = harness.run(&["myapp", "-V"]).await;
+    out.assert_exit_code(0);
+    out.assert_stdout_contains("myapp 1.0.0 (abc1234)");
 }
 ```
 

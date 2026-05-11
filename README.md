@@ -189,6 +189,38 @@ let app = AppBuilder::new()
     .build(ctx)?;
 ```
 
+One explicit way to provide `VERGEN_GIT_SHA` at build time (consumer crate):
+
+`Cargo.toml`:
+
+```toml
+[build-dependencies]
+vergen = "8"
+```
+
+`build.rs`:
+
+```rust
+fn main() {
+    // Populate a compile-time env var with the current commit short SHA.
+    // This runs at build time (not runtime). Consumers may use `vergen` or any other mechanism.
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output();
+
+    if let Ok(out) = output {
+        if out.status.success() {
+            if let Ok(sha) = String::from_utf8(out.stdout) {
+                let sha = sha.trim();
+                if !sha.is_empty() {
+                    println!("cargo:rustc-env=VERGEN_GIT_SHA={sha}");
+                }
+            }
+        }
+    }
+}
+```
+
 ## AI Ask Command
 
 Natural-language **`ask`** is registered when an LLM is configured (**`with_llm_from_env()`** or **`with_llm_provider`**). **A paired `ailoop serve` process is also required** — `.build()` returns an error if `with_ailoop_channel()` or `with_ailoop_config()` has not been called when an LLM provider is set.
