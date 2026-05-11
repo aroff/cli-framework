@@ -8,9 +8,7 @@ pub fn sanitize_git_sha_short(sha: Option<&'static str>) -> Option<&'static str>
         }
     });
 
-    let Some(sha) = sha else {
-        return None;
-    };
+    let sha = sha?;
 
     let len = sha.len();
     let is_valid_len = (7..=40).contains(&len);
