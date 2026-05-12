@@ -91,7 +91,7 @@ fn unknown_nested_command_parse_error_e012() {
     use cli_framework::parser::{error_codes::E_NESTED_COMMAND_NOT_FOUND, outcome::ParseOutcome};
 
     let registry = CommandRegistry::new();
-    let root = build_clap_root(None, &registry, "testapp", "0.1.0");
+    let root = build_clap_root(None, &registry, "testapp", "0.1.0", None);
 
     let outcome = parse_with_clap(
         &root,

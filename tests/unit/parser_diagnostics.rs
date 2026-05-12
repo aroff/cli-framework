@@ -47,8 +47,9 @@ fn str_arg(name: &'static str, cardinality: Cardinality) -> ArgSpec {
 #[test]
 fn e001_unknown_subcommand_produces_e001_diagnostic() {
     let registry = CommandRegistry::new();
-    let root =
-        cli_framework::app::clap_adapter::build_clap_root(None, &registry, "testapp", "0.1.0");
+    let root = cli_framework::app::clap_adapter::build_clap_root(
+        None, &registry, "testapp", "0.1.0", None,
+    );
 
     let outcome = cli_framework::app::clap_adapter::parse_with_clap(
         &root,
@@ -95,8 +96,9 @@ fn e002_unknown_arg_on_typed_command_produces_e002_diagnostic() {
     let mut registry = CommandRegistry::new();
     registry.register(cmd);
 
-    let root =
-        cli_framework::app::clap_adapter::build_clap_root(None, &registry, "testapp", "0.1.0");
+    let root = cli_framework::app::clap_adapter::build_clap_root(
+        None, &registry, "testapp", "0.1.0", None,
+    );
 
     let outcome = cli_framework::app::clap_adapter::parse_with_clap(
         &root,

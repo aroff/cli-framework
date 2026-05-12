@@ -32,6 +32,9 @@ impl AppContext for MyCtx {}
 async fn test_version_output() {
     let app = AppBuilder::new()
         .with_version("myapp", "1.0.0")
+        // Opt-in: include a build-time git commit id when available.
+        // Use `option_env!` so builds without the env var still compile.
+        .with_git_sha_short(option_env!("VERGEN_GIT_SHA"))
         .build(MyCtx)
         .unwrap();
 
@@ -40,6 +43,25 @@ async fn test_version_output() {
 
     out.assert_exit_code(0);
     out.assert_stdout_contains("myapp 1.0.0");
+}
+
+#[tokio::test]
+async fn test_version_flag_output() {
+    let app = AppBuilder::new()
+        .with_version("myapp", "1.0.0")
+        .with_git_sha_short(Some("abc1234"))
+        .build(MyCtx)
+        .unwrap();
+
+    let mut harness = CliTestHarness::new(app);
+    let out = harness.run(&["myapp", "--version"]).await;
+
+    out.assert_exit_code(0);
+    out.assert_stdout_contains("myapp 1.0.0 (abc1234)");
+
+    let out = harness.run(&["myapp", "-V"]).await;
+    out.assert_exit_code(0);
+    out.assert_stdout_contains("myapp 1.0.0 (abc1234)");
 }
 ```
 

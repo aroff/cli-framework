@@ -9,12 +9,30 @@ use crate::command::CommandRegistry;
 pub struct HelpRenderer<'a> {
     meta: Option<&'a AppMeta>,
     commands: &'a CommandRegistry,
+    version_string: Option<String>,
 }
 
 impl<'a> HelpRenderer<'a> {
     /// Create a new renderer.
     pub fn new(meta: Option<&'a AppMeta>, commands: &'a CommandRegistry) -> Self {
-        Self { meta, commands }
+        Self {
+            meta,
+            commands,
+            version_string: None,
+        }
+    }
+
+    /// Provide a canonical display version string for rendering the `--version, -V` help line.
+    ///
+    /// When unset, the version option line is only rendered when `AppMeta` provides a non-empty
+    /// `version` (backward compatible behavior).
+    pub fn with_version_string(mut self, version_string: String) -> Self {
+        if version_string.trim().is_empty() {
+            self.version_string = None;
+        } else {
+            self.version_string = Some(version_string);
+        }
+        self
     }
 
     /// Render help to an owned `String`. Infallible.
@@ -148,7 +166,11 @@ impl<'a> HelpRenderer<'a> {
         // 4. OPTIONS BLOCK
         out.push_str("Options:\n");
         out.push_str("  --help, -h      Print this help message.\n");
-        if let Some(meta) = self.meta {
+        if let Some(ref version) = self.version_string {
+            out.push_str("  --version, -V   Print version (");
+            out.push_str(version);
+            out.push_str(").\n");
+        } else if let Some(meta) = self.meta {
             if !meta.version.is_empty() {
                 out.push_str("  --version, -V   Print version (");
                 out.push_str(meta.version);

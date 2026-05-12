@@ -25,6 +25,7 @@ pub struct AppBuilder {
     meta: Option<AppMeta>,
     app_name: &'static str,
     app_version: &'static str,
+    app_git_sha_short: Option<&'static str>,
     risk_policy: crate::security::command_risk::CommandRiskPolicy,
     #[cfg(feature = "doctor")]
     doctor_checks: Vec<Arc<dyn crate::doctor::check::DoctorCheck>>,
@@ -45,6 +46,7 @@ impl AppBuilder {
             meta: None,
             app_name: "unknown",
             app_version: "unknown",
+            app_git_sha_short: None,
             risk_policy: crate::security::command_risk::CommandRiskPolicy::default(),
             #[cfg(feature = "doctor")]
             doctor_checks: Vec::new(),
@@ -167,6 +169,16 @@ impl AppBuilder {
     pub fn with_version(mut self, name: &'static str, version: &'static str) -> Self {
         self.app_name = name;
         self.app_version = version;
+        self
+    }
+
+    /// Opt-in build metadata to include a short git commit id in version output.
+    ///
+    /// - `None` clears the value.
+    /// - Empty / whitespace-only strings are treated as `None`.
+    /// - Invalid values are omitted and a warning is logged (ERR_VERSION_SHA_001).
+    pub fn with_git_sha_short(mut self, sha: Option<&'static str>) -> Self {
+        self.app_git_sha_short = crate::app::version::sanitize_git_sha_short(sha);
         self
     }
 
@@ -339,6 +351,7 @@ impl AppBuilder {
             &self.command_registry,
             self.app_name,
             self.app_version,
+            self.app_git_sha_short,
         );
 
         let registry_arc = Arc::new(self.command_registry);
@@ -352,6 +365,7 @@ impl AppBuilder {
             meta: self.meta,
             app_name: self.app_name,
             app_version: self.app_version,
+            app_git_sha_short: self.app_git_sha_short,
             clap_root,
             #[cfg(feature = "testkit")]
             stdout_capture: None,
@@ -374,6 +388,7 @@ pub struct App<C: AppContext> {
     meta: Option<AppMeta>,
     app_name: &'static str,
     app_version: &'static str,
+    app_git_sha_short: Option<&'static str>,
     clap_root: clap::Command,
     /// Captures framework-level stdout output (version strings etc.) when testkit is active.
     #[cfg(feature = "testkit")]
@@ -397,6 +412,7 @@ impl<C: AppContext> App<C> {
             &self.command_registry,
             self.app_name,
             self.app_version,
+            self.app_git_sha_short,
         );
     }
 
@@ -421,7 +437,7 @@ impl<C: AppContext> App<C> {
                     if self.app_name == "unknown" {
                         log::warn!("version called but with_version() was not configured");
                     }
-                    self.framework_println(&format!("{} {}", self.app_name, self.app_version));
+                    self.framework_println(&self.version_string());
                     return Ok(());
                 }
 
@@ -499,19 +515,25 @@ impl<C: AppContext> App<C> {
 
     pub fn show_help(&self) {
         println!("  version - Print version information");
-        HelpRenderer::new(self.meta.as_ref(), self.command_registry.as_ref()).print();
+        HelpRenderer::new(self.meta.as_ref(), self.command_registry.as_ref())
+            .with_version_string(self.version_string())
+            .print();
     }
 
     pub fn render_help(&self) -> String {
         let mut out = String::from("  version - Print version information\n");
         out.push_str(
-            &HelpRenderer::new(self.meta.as_ref(), self.command_registry.as_ref()).render(),
+            &HelpRenderer::new(self.meta.as_ref(), self.command_registry.as_ref())
+                .with_version_string(self.version_string())
+                .render(),
         );
         out
     }
 
     pub fn version_string(&self) -> String {
-        format!("{} {}", self.app_name, self.app_version)
+        let app_name = self.meta.map(|m| m.name).unwrap_or(self.app_name);
+        let app_version = self.meta.map(|m| m.version).unwrap_or(self.app_version);
+        crate::app::version::format_display_version(app_name, app_version, self.app_git_sha_short)
     }
 
     pub async fn execute_command(
