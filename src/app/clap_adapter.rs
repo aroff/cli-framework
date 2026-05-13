@@ -247,6 +247,17 @@ pub fn parse_with_clap(
                 registry.get(leaf_name)
             };
 
+            if let Some(cmd) = cmd {
+                if cmd.spec.is_none() && legacy_trailing_requests_help(leaf_matches) {
+                    let argv0 = args.get(0).map(|s| s.as_str()).unwrap_or("<program>");
+                    return ParseOutcome::HelpShown(render_legacy_command_help(
+                        argv0,
+                        &command_path,
+                        cmd,
+                    ));
+                }
+            }
+
             let (cmd_args, typed_args) = if let Some(cmd) = cmd {
                 if let Some(ref spec) = cmd.spec {
                     match map_matches_to_typed_args(spec, leaf_matches) {
@@ -328,6 +339,53 @@ pub fn parse_with_clap(
             }
         }
     }
+}
+
+fn legacy_trailing_requests_help(leaf_matches: &clap::ArgMatches) -> bool {
+    let Some(values) = leaf_matches.get_many::<String>("trailing") else {
+        return false;
+    };
+
+    for token in values.map(|s| s.as_str()) {
+        if token == "--" {
+            break;
+        }
+        if token == "--help" || token == "-h" {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn render_legacy_command_help(
+    argv0: &str,
+    command_path: &CommandPath,
+    cmd: &crate::command::Command,
+) -> String {
+    let bin = if argv0.is_empty() { "<program>" } else { argv0 };
+    let path = if command_path.0.is_empty() {
+        cmd.id.to_string()
+    } else {
+        command_path.0.join(" ")
+    };
+
+    let mut out = String::new();
+    out.push_str("Command help (legacy)\n\n");
+    out.push_str(&format!("Usage: {} {} [-- <args>]\n", bin, path));
+    out.push('\n');
+    out.push_str(&format!("Summary: {}\n", cmd.summary));
+
+    if let Some(syntax) = cmd.syntax {
+        out.push_str(&format!("\nSyntax: {}\n", syntax));
+    }
+
+    out.push_str(&format!(
+        "\nFor the full command list, run: {} --help\n",
+        bin
+    ));
+
+    out
 }
 
 fn match_to_command_args(sub_matches: &clap::ArgMatches) -> CommandArgs {

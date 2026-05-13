@@ -306,6 +306,112 @@ fn parse_with_clap_positional_after_double_dash() {
 }
 
 #[test]
+#[cfg(not(feature = "strict-args"))]
+fn parse_with_clap_legacy_leaf_trailing_help_flag_returns_help_shown() {
+    let registry = make_registry_with(vec![Command {
+        id: "hello",
+        summary: "Say hello",
+        syntax: Some("testapp hello [-- <args>]"),
+        category: None,
+        spec: None,
+        validator: None,
+        expose_mcp: false,
+        execute: noop_execute(),
+    }]);
+
+    let root = cli_framework::app::clap_adapter::build_clap_root(
+        None, &registry, "testapp", "0.1.0", None,
+    );
+
+    let outcome = cli_framework::app::clap_adapter::parse_with_clap(
+        &root,
+        &registry,
+        vec![
+            "testapp".to_string(),
+            "hello".to_string(),
+            "--help".to_string(),
+        ],
+    );
+
+    match outcome {
+        ParseOutcome::HelpShown(text) => {
+            assert!(text.contains("testapp"));
+            assert!(text.contains("hello"));
+            assert!(text.contains("Say hello"));
+            assert!(text.contains("Syntax:"));
+        }
+        other => panic!("expected HelpShown, got {:?}", other),
+    }
+}
+
+#[test]
+#[cfg(not(feature = "strict-args"))]
+fn parse_with_clap_legacy_leaf_trailing_h_flag_returns_help_shown() {
+    let registry = make_registry_with(vec![Command {
+        id: "hello",
+        summary: "Say hello",
+        syntax: None,
+        category: None,
+        spec: None,
+        validator: None,
+        expose_mcp: false,
+        execute: noop_execute(),
+    }]);
+
+    let root = cli_framework::app::clap_adapter::build_clap_root(
+        None, &registry, "testapp", "0.1.0", None,
+    );
+
+    let outcome = cli_framework::app::clap_adapter::parse_with_clap(
+        &root,
+        &registry,
+        vec!["testapp".to_string(), "hello".to_string(), "-h".to_string()],
+    );
+
+    assert!(
+        matches!(outcome, ParseOutcome::HelpShown(_)),
+        "expected HelpShown, got {:?}",
+        outcome
+    );
+}
+
+#[test]
+#[cfg(not(feature = "strict-args"))]
+fn parse_with_clap_legacy_leaf_help_after_terminator_is_positional() {
+    let registry = make_registry_with(vec![Command {
+        id: "hello",
+        summary: "Say hello",
+        syntax: None,
+        category: None,
+        spec: None,
+        validator: None,
+        expose_mcp: false,
+        execute: noop_execute(),
+    }]);
+
+    let root = cli_framework::app::clap_adapter::build_clap_root(
+        None, &registry, "testapp", "0.1.0", None,
+    );
+
+    let outcome = cli_framework::app::clap_adapter::parse_with_clap(
+        &root,
+        &registry,
+        vec![
+            "testapp".to_string(),
+            "hello".to_string(),
+            "--".to_string(),
+            "--help".to_string(),
+        ],
+    );
+
+    assert!(
+        matches!(outcome, ParseOutcome::Parsed { .. }),
+        "expected Parsed, got {:?}",
+        outcome
+    );
+}
+
+#[test]
 fn parse_with_clap_help_returns_help_shown() {
     let registry = CommandRegistry::new();
     let root = cli_framework::app::clap_adapter::build_clap_root(
