@@ -15,6 +15,15 @@ cd cli-framework
 cargo build
 ```
 
+## Git hooks
+
+A pre-commit hook runs `cargo fmt --check` and `cargo clippy --all-features -- -D warnings` before every commit, matching CI exactly.
+
+```bash
+cp scripts/hooks/pre-commit .git/hooks/pre-commit
+chmod +x .git/hooks/pre-commit
+```
+
 ## Repository layout
 
 | Path | Role |
