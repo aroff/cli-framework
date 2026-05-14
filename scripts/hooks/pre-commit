@@ -1,0 +1,21 @@
+#!/bin/bash
+set -e
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+echo -e "${YELLOW}[pre-commit] cargo fmt --check...${NC}"
+if ! cargo fmt --all -- --check; then
+    echo -e "${RED}[pre-commit] Formatting errors. Run 'cargo fmt --all' to fix.${NC}"
+    exit 1
+fi
+echo -e "${GREEN}[pre-commit] fmt ok${NC}"
+
+echo -e "${YELLOW}[pre-commit] cargo clippy --all-features...${NC}"
+if ! RUSTFLAGS="-D warnings" cargo clippy --all-features -- -D warnings; then
+    echo -e "${RED}[pre-commit] Clippy errors. Fix them before committing.${NC}"
+    exit 1
+fi
+echo -e "${GREEN}[pre-commit] clippy ok${NC}"

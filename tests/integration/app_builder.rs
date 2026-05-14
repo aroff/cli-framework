@@ -7,6 +7,8 @@ use cli_framework::app::{AppBuilder, AppContext};
 use cli_framework::command::CommandArgs;
 
 #[cfg(feature = "testkit")]
+use cli_framework::app::AppMeta;
+#[cfg(feature = "testkit")]
 use cli_framework::testkit::CliTestHarness;
 
 #[path = "../stdio_capture.rs"]
