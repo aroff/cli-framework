@@ -248,7 +248,7 @@ pub fn parse_with_clap(
             };
 
             if let Some(cmd) = cmd {
-                if cmd.spec.is_none() && legacy_trailing_requests_help(leaf_matches) {
+                if cmd.spec.is_none() && legacy_trailing_requests_help(&args) {
                     let argv0 = args.first().map(|s| s.as_str()).unwrap_or("<program>");
                     return ParseOutcome::HelpShown(render_legacy_command_help(
                         argv0,
@@ -341,20 +341,15 @@ pub fn parse_with_clap(
     }
 }
 
-fn legacy_trailing_requests_help(leaf_matches: &clap::ArgMatches) -> bool {
-    let Some(values) = leaf_matches.get_many::<String>("trailing") else {
-        return false;
-    };
-
-    for token in values.map(|s| s.as_str()) {
-        if token == "--" {
-            break;
-        }
-        if token == "--help" || token == "-h" {
+fn legacy_trailing_requests_help(args: &[String]) -> bool {
+    let mut past_terminator = false;
+    for arg in args {
+        if arg == "--" {
+            past_terminator = true;
+        } else if !past_terminator && (arg == "--help" || arg == "-h") {
             return true;
         }
     }
-
     false
 }
 
