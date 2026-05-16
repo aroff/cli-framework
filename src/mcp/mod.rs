@@ -389,6 +389,19 @@ pub async fn dispatch_tool_call(
         ConfirmationMode,
     };
 
+    struct McpNoopBridgeGate;
+    #[async_trait::async_trait]
+    impl BridgeGate for McpNoopBridgeGate {
+        async fn before_execute(
+            &self,
+            _cmd: &Command,
+            _args: &CommandArgs,
+            _tier: crate::security::command_risk::CommandRiskTier,
+        ) -> Result<(), BridgeError> {
+            Ok(())
+        }
+    }
+
     let cmd = tool_registry.resolve_tool(tool_name).ok_or_else(|| {
         mcp_error(
             -32001,
@@ -397,21 +410,23 @@ pub async fn dispatch_tool_call(
     })?;
 
     let bridge = CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone());
-    let bridge = if let Some(ref configured) = tool_registry.gate {
-        let gate: Arc<dyn BridgeGate> = Arc::new(McpToolGateBridgeAdapter {
-            gate: Arc::clone(configured),
-            transport,
-            tool_name: tool_name.to_string(),
-        });
+    let bridge = {
+        let gate: Arc<dyn BridgeGate> = if let Some(ref configured) = tool_registry.gate {
+            Arc::new(McpToolGateBridgeAdapter {
+                gate: Arc::clone(configured),
+                transport,
+                tool_name: tool_name.to_string(),
+            })
+        } else {
+            Arc::new(McpNoopBridgeGate)
+        };
         bridge.with_gate(gate)
-    } else {
-        bridge
     };
 
     let arguments_value = arguments.map(Value::Object).unwrap_or(Value::Null);
     let mut ctx = McpAppContext;
     let res = bridge
-        .invoke_mcp(
+        .invoke(
             &mut ctx,
             BridgeInvocation {
                 command: cmd,

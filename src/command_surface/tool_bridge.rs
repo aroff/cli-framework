@@ -117,37 +117,26 @@ impl CommandAsToolBridge {
         ctx: &mut dyn AppContext,
         invocation: BridgeInvocation<'_>,
     ) -> Result<(), BridgeError> {
-        self.invoke_inner(ctx, invocation, InvocationSemantics::AskChat)
-            .await
-    }
-
-    /// MCP invocation semantics: never enforce risk preflight and never prompt/confirm (§4.1).
-    ///
-    /// This is intentionally a separate entry point so MCP callers can opt into the current
-    /// behavior without forcing a dummy gate or mutating the bridge's stored state.
-    pub async fn invoke_mcp(
-        &self,
-        ctx: &mut dyn AppContext,
-        invocation: BridgeInvocation<'_>,
-    ) -> Result<(), BridgeError> {
-        self.invoke_inner(ctx, invocation, InvocationSemantics::Mcp)
-            .await
+        self.invoke_inner(ctx, invocation).await
     }
 
     async fn invoke_inner(
         &self,
         ctx: &mut dyn AppContext,
         invocation: BridgeInvocation<'_>,
-        semantics: InvocationSemantics,
     ) -> Result<(), BridgeError> {
         let cmd = invocation.command;
+        let is_mcp_surface = self.gate.is_some();
 
         let parsed = self.parse_args(cmd, invocation.input)?;
 
         if let Some(ref typed) = parsed.typed {
-            let should_validate = match semantics {
-                InvocationSemantics::Mcp => cmd.spec.is_some(),
-                InvocationSemantics::AskChat => cmd.spec.is_some() || cmd.validator.is_some(),
+            let should_validate = if is_mcp_surface {
+                // Preserve MCP behavior: typed validation only runs when `spec.is_some()`.
+                cmd.spec.is_some()
+            } else {
+                // Preserve chat behavior: validate when `spec` or custom `validator` exists.
+                cmd.spec.is_some() || cmd.validator.is_some()
             };
             if should_validate {
                 let diagnostics = crate::app::dispatch::validate_typed_args(cmd, typed)
@@ -161,38 +150,35 @@ impl CommandAsToolBridge {
         let enforcer = RiskEnforcer::new(self.risk_policy.clone());
         let tier = enforcer.classify(cmd.id, cmd.category);
 
-        match semantics {
-            InvocationSemantics::AskChat => {
-                let assume_yes = matches!(invocation.confirmation, ConfirmationMode::AssumeYes);
-                let ailoop_available = matches!(
-                    invocation.confirmation,
-                    ConfirmationMode::Ailoop(_) | ConfirmationMode::InteractiveStdin
-                );
-                if let Err(e) =
-                    enforcer.enforce_preflight(cmd.id, cmd.category, assume_yes, ailoop_available)
-                {
-                    let msg = e.to_string();
-                    if msg.starts_with("SENSITIVE_COMMAND_REQUIRES_CONFIRMATION:") {
-                        return Err(BridgeError::SensitiveRequiresConfirmation(
-                            cmd.id.to_string(),
-                        ));
-                    }
-                    return Err(BridgeError::DestructiveBlocked(cmd.id.to_string()));
+        if !is_mcp_surface {
+            let assume_yes = matches!(invocation.confirmation, ConfirmationMode::AssumeYes);
+            let ailoop_available = matches!(
+                invocation.confirmation,
+                ConfirmationMode::Ailoop(_) | ConfirmationMode::InteractiveStdin
+            );
+            if let Err(e) =
+                enforcer.enforce_preflight(cmd.id, cmd.category, assume_yes, ailoop_available)
+            {
+                let msg = e.to_string();
+                if msg.starts_with("SENSITIVE_COMMAND_REQUIRES_CONFIRMATION:") {
+                    return Err(BridgeError::SensitiveRequiresConfirmation(
+                        cmd.id.to_string(),
+                    ));
                 }
+                return Err(BridgeError::DestructiveBlocked(cmd.id.to_string()));
+            }
 
-                if !assume_yes {
-                    match tier {
-                        CommandRiskTier::Safe => {}
-                        CommandRiskTier::Sensitive => {
-                            request_confirmation(&invocation.confirmation, cmd, false).await?;
-                        }
-                        CommandRiskTier::Destructive => {
-                            request_confirmation(&invocation.confirmation, cmd, true).await?;
-                        }
+            if !assume_yes {
+                match tier {
+                    CommandRiskTier::Safe => {}
+                    CommandRiskTier::Sensitive => {
+                        request_confirmation(&invocation.confirmation, cmd, false).await?;
+                    }
+                    CommandRiskTier::Destructive => {
+                        request_confirmation(&invocation.confirmation, cmd, true).await?;
                     }
                 }
             }
-            InvocationSemantics::Mcp => {}
         }
 
         if let Some(ref gate) = self.gate {
@@ -211,12 +197,6 @@ impl CommandAsToolBridge {
             .map_err(BridgeError::Execution)?;
         Ok(())
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InvocationSemantics {
-    AskChat,
-    Mcp,
 }
 
 async fn request_confirmation(
@@ -310,6 +290,19 @@ mod tests {
 
     struct NoopCtx;
     impl AppContext for NoopCtx {}
+
+    struct NoopGate;
+    #[async_trait::async_trait]
+    impl BridgeGate for NoopGate {
+        async fn before_execute(
+            &self,
+            _cmd: &Command,
+            _args: &CommandArgs,
+            _tier: CommandRiskTier,
+        ) -> Result<(), BridgeError> {
+            Ok(())
+        }
+    }
 
     fn noop_execute() -> Arc<
         dyn for<'a> Fn(
@@ -428,10 +421,10 @@ mod tests {
             }),
         };
 
-        let bridge = CommandAsToolBridge::new(policy);
+        let bridge = CommandAsToolBridge::new(policy).with_gate(Arc::new(NoopGate));
         let mut ctx = NoopCtx;
         bridge
-            .invoke_mcp(
+            .invoke(
                 &mut ctx,
                 BridgeInvocation {
                     command: &cmd,
