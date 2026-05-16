@@ -132,9 +132,8 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
                 ctx,
                 crate::command_surface::tool_bridge::BridgeInvocation {
                     command: cmd,
-                    surface: crate::command_surface::tool_bridge::BridgeSurface::AskChat,
                     input: crate::command_surface::tool_bridge::BridgeInput::Json(arguments),
-                    confirmation,
+                    confirmation: confirmation.clone(),
                 },
             )
             .await;
@@ -147,12 +146,11 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
             Err(
                 crate::command_surface::tool_bridge::BridgeError::SensitiveRequiresConfirmation(
                     cmd_id,
-                    reason,
                 ),
             ) => {
                 if matches!(
-                    reason,
-                    crate::command_surface::tool_bridge::ConfirmationFailureReason::Unavailable
+                    confirmation,
+                    crate::command_surface::tool_bridge::ConfirmationMode::NonInteractive
                 ) {
                     Err(anyhow::anyhow!(
                         "{}: command '{}' is sensitive and requires confirmation",
@@ -167,26 +165,35 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
                     ))
                 }
             }
-            Err(crate::command_surface::tool_bridge::BridgeError::DestructiveBlocked(
-                cmd_id,
-                reason,
-            )) => {
-                match reason {
-                    crate::command_surface::tool_bridge::DestructiveBlockedReason::ConfirmationDeclined => Err(anyhow::anyhow!(
-                        "{}: user declined confirmation for '{}'",
-                        CHAT_DESTRUCTIVE_BLOCKED,
-                        cmd_id
-                    )),
-                    crate::command_surface::tool_bridge::DestructiveBlockedReason::ConfirmationUnavailable => Err(anyhow::anyhow!(
-                        "{}: command '{}' is destructive; requires interactive confirmation",
-                        CHAT_DESTRUCTIVE_BLOCKED,
-                        cmd_id
-                    )),
-                    crate::command_surface::tool_bridge::DestructiveBlockedReason::PreflightBlocked => Err(anyhow::anyhow!(
+            Err(crate::command_surface::tool_bridge::BridgeError::DestructiveBlocked(cmd_id)) => {
+                let env_allowed = std::env::var("ALLOW_DESTRUCTIVE_COMMANDS")
+                    .map(|v| v == "1" || v == "true")
+                    .unwrap_or(false);
+                let ailoop_available = opts.ailoop_client.is_some();
+                let interactive = crate::cli_mode::is_interactive();
+
+                if !env_allowed {
+                    Err(anyhow::anyhow!(
                         "{}: command '{}' is destructive; gated by ALLOW_DESTRUCTIVE_COMMANDS and interactive confirmation",
                         CHAT_DESTRUCTIVE_BLOCKED,
                         cmd_id
-                    )),
+                    ))
+                } else if matches!(
+                    confirmation,
+                    crate::command_surface::tool_bridge::ConfirmationMode::NonInteractive
+                ) || (!interactive && !ailoop_available)
+                {
+                    Err(anyhow::anyhow!(
+                        "{}: command '{}' is destructive; requires interactive confirmation",
+                        CHAT_DESTRUCTIVE_BLOCKED,
+                        cmd_id
+                    ))
+                } else {
+                    Err(anyhow::anyhow!(
+                        "{}: user declined confirmation for '{}'",
+                        CHAT_DESTRUCTIVE_BLOCKED,
+                        cmd_id
+                    ))
                 }
             }
             Err(crate::command_surface::tool_bridge::BridgeError::Execution(e)) => {

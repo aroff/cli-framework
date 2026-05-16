@@ -108,7 +108,6 @@ async fn execute_ask(
             ctx,
             crate::command_surface::tool_bridge::BridgeInvocation {
                 command: &command,
-                surface: crate::command_surface::tool_bridge::BridgeSurface::AskChat,
                 input: crate::command_surface::tool_bridge::BridgeInput::Args(resolution.args),
                 confirmation,
             },
@@ -119,9 +118,8 @@ async fn execute_ask(
         Ok(()) => Ok(()),
         Err(crate::command_surface::tool_bridge::BridgeError::SensitiveRequiresConfirmation(
             _cmd_id,
-            _,
         ))
-        | Err(crate::command_surface::tool_bridge::BridgeError::DestructiveBlocked(_cmd_id, _)) => {
+        | Err(crate::command_surface::tool_bridge::BridgeError::DestructiveBlocked(_cmd_id)) => {
             // Preserve prior ask behavior: a denied/blocked run is treated as "cancelled by user"
             // and returns Ok(()) (no panic, no execution).
             println!("Command cancelled by user");
