@@ -405,8 +405,8 @@ pub async fn dispatch_tool_call(
             Err(mcp_error(-32003, format!("MCP_EXECUTION_FAILED: {}", e)))
         }
         Err(other) => Err(mcp_error(
-            -32003,
-            format!("MCP_EXECUTION_FAILED: {}", other),
+            -32004,
+            format!("MCP_INTERNAL_ERROR: unexpected bridge error: {}", other),
         )),
     }
 }
@@ -422,16 +422,34 @@ async fn invoke_mcp_bridge(
     use crate::command_surface::tool_bridge::{BridgeInput, BridgeInvocation, CommandAsToolBridge};
 
     // MCP invariants (§4.1): no preflight enforcement and no confirmation prompts.
-    // This is an explicit adapter choice; do not infer MCP behavior from gate presence.
-    let mut bridge =
-        CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone()).as_mcp_surface();
-    if let Some(ref configured) = tool_registry.gate {
-        bridge = bridge.with_gate(Arc::new(McpToolGateBridgeAdapter {
-            gate: Arc::clone(configured),
-            transport,
-            tool_name: tool_name.to_string(),
-        }));
+    // The bridge detects MCP semantics via the presence of a gate; provide a no-op
+    // gate when the registry is not configured with one.
+    struct NoopGate;
+    #[async_trait::async_trait]
+    impl crate::command_surface::tool_bridge::BridgeGate for NoopGate {
+        async fn before_execute(
+            &self,
+            _cmd: &Command,
+            _args: &CommandArgs,
+            _tier: crate::security::command_risk::CommandRiskTier,
+        ) -> Result<(), crate::command_surface::tool_bridge::BridgeError> {
+            Ok(())
+        }
     }
+
+    let gate: Arc<dyn crate::command_surface::tool_bridge::BridgeGate> =
+        if let Some(ref configured) = tool_registry.gate {
+            Arc::new(McpToolGateBridgeAdapter {
+                gate: Arc::clone(configured),
+                transport,
+                tool_name: tool_name.to_string(),
+            })
+        } else {
+            Arc::new(NoopGate)
+        };
+
+    let bridge =
+        CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone()).with_gate(gate);
     let arguments_value = arguments.map(Value::Object).unwrap_or(Value::Null);
     let mut ctx = McpAppContext;
     bridge
