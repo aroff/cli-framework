@@ -186,6 +186,111 @@ struct McpAppContext;
 #[cfg(feature = "mcp-server")]
 impl crate::app::AppContext for McpAppContext {}
 
+#[cfg(feature = "mcp-server")]
+struct McpToolGateBridgeAdapter {
+    gate: Arc<dyn McpToolGate>,
+    transport: McpTransportKind,
+    tool_name: String,
+}
+
+#[cfg(feature = "mcp-server")]
+#[async_trait::async_trait]
+impl crate::command_surface::tool_bridge::BridgeGate for McpToolGateBridgeAdapter {
+    async fn before_execute(
+        &self,
+        cmd: &Command,
+        args: &CommandArgs,
+        tier: crate::security::CommandRiskTier,
+    ) -> Result<(), crate::command_surface::tool_bridge::BridgeError> {
+        let ctx = McpToolCallContext {
+            transport: self.transport,
+            tool_name: self.tool_name.clone(),
+            command_id: cmd.id,
+            command_category: cmd.category,
+            risk_tier: tier,
+        };
+
+        match self.gate.before_execute(&ctx, args).await {
+            Ok(()) => Ok(()),
+            Err(e @ McpToolGateError::Denied { .. }) => {
+                Err(crate::command_surface::tool_bridge::BridgeError::GateDenied(e.to_string()))
+            }
+            Err(e @ McpToolGateError::Failed { .. }) => {
+                Err(crate::command_surface::tool_bridge::BridgeError::GateFailed(e.to_string()))
+            }
+        }
+    }
+}
+
+#[cfg(feature = "mcp-server")]
+async fn invoke_mcp_tool_call(
+    tool_registry: &McpToolRegistry,
+    cmd: &Command,
+    tool_name: &str,
+    arguments: Option<JsonObject>,
+    transport: McpTransportKind,
+) -> Result<CallToolResult, ErrorData> {
+    use crate::command_surface::tool_bridge::{
+        BridgeError, BridgeInput, BridgeInvocation, CommandAsToolBridge, ConfirmationMode,
+    };
+    use std::borrow::Cow;
+
+    let mut bridge =
+        CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone()).for_mcp();
+    if let Some(ref gate) = tool_registry.gate {
+        bridge = bridge.with_gate(Arc::new(McpToolGateBridgeAdapter {
+            gate: Arc::clone(gate),
+            transport,
+            tool_name: tool_name.to_string(),
+        }));
+    }
+
+    let arguments_value = match arguments {
+        Some(obj) => Value::Object(obj),
+        None => Value::Null,
+    };
+
+    let mut ctx = McpAppContext;
+    match bridge
+        .invoke(
+            &mut ctx,
+            BridgeInvocation {
+                command: cmd,
+                input: BridgeInput::Json(arguments_value),
+                confirmation: ConfirmationMode::NonInteractive,
+            },
+        )
+        .await
+    {
+        Ok(()) => Ok(CallToolResult::success(vec![Content::text("OK")])),
+        Err(BridgeError::ArgValidation(msg)) => Err(ErrorData::new(
+            rmcp::model::ErrorCode(-32002),
+            Cow::Owned(format!("MCP_ARG_VALIDATION_FAILED: {}", msg)),
+            None,
+        )),
+        Err(BridgeError::GateDenied(msg)) => Err(ErrorData::new(
+            rmcp::model::ErrorCode(-32005),
+            Cow::Owned(msg),
+            None,
+        )),
+        Err(BridgeError::GateFailed(msg)) => Err(ErrorData::new(
+            rmcp::model::ErrorCode(-32006),
+            Cow::Owned(msg),
+            None,
+        )),
+        Err(BridgeError::Execution(e)) => Err(ErrorData::new(
+            rmcp::model::ErrorCode(-32003),
+            Cow::Owned(format!("MCP_EXECUTION_FAILED: {}", e)),
+            None,
+        )),
+        Err(other) => Err(ErrorData::new(
+            rmcp::model::ErrorCode(-32006),
+            Cow::Owned(format!("MCP_INTERNAL_ERROR: {}", other)),
+            None,
+        )),
+    }
+}
+
 pub(crate) fn json_value_to_arg_value(v: &Value) -> Option<ArgValue> {
     match v {
         Value::Bool(b) => Some(ArgValue::Bool(*b)),
@@ -343,11 +448,6 @@ pub async fn dispatch_tool_call(
     arguments: Option<JsonObject>,
     transport: McpTransportKind,
 ) -> Result<CallToolResult, ErrorData> {
-    use crate::command_surface::tool_bridge::{
-        BridgeError, BridgeGate, BridgeInput, BridgeInvocation, CommandAsToolBridge,
-        ConfirmationMode,
-    };
-
     let cmd = tool_registry.resolve_tool(tool_name).ok_or_else(|| {
         ErrorData::new(
             rmcp::model::ErrorCode(-32001),
@@ -359,99 +459,7 @@ pub async fn dispatch_tool_call(
         )
     })?;
 
-    let arguments_value = match arguments {
-        Some(obj) => Value::Object(obj),
-        None => Value::Null,
-    };
-
-    struct McpToolGateAdapter {
-        gate: Option<Arc<dyn McpToolGate>>,
-        transport: McpTransportKind,
-        tool_name: String,
-    }
-
-    #[async_trait::async_trait]
-    impl BridgeGate for McpToolGateAdapter {
-        async fn before_execute(
-            &self,
-            cmd: &Command,
-            args: &CommandArgs,
-            tier: crate::security::CommandRiskTier,
-        ) -> Result<(), BridgeError> {
-            let Some(ref gate) = self.gate else {
-                return Ok(());
-            };
-
-            let ctx = McpToolCallContext {
-                transport: self.transport,
-                tool_name: self.tool_name.clone(),
-                command_id: cmd.id,
-                command_category: cmd.category,
-                risk_tier: tier,
-            };
-
-            match gate.before_execute(&ctx, args).await {
-                Ok(()) => Ok(()),
-                Err(e @ McpToolGateError::Denied { .. }) => {
-                    Err(BridgeError::GateDenied(e.to_string()))
-                }
-                Err(e @ McpToolGateError::Failed { .. }) => {
-                    Err(BridgeError::GateFailed(e.to_string()))
-                }
-            }
-        }
-    }
-
-    // ^ The impl above is intentionally small; error mapping happens below to preserve MCP codes.
-
-    let gate_adapter: Arc<dyn BridgeGate> = Arc::new(McpToolGateAdapter {
-        gate: tool_registry.gate.clone(),
-        transport,
-        tool_name: tool_name.to_string(),
-    });
-
-    let bridge = CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone())
-        .with_gate(gate_adapter);
-
-    let mut ctx = McpAppContext;
-    match bridge
-        .invoke(
-            &mut ctx,
-            BridgeInvocation {
-                command: cmd,
-                input: BridgeInput::Json(arguments_value),
-                confirmation: ConfirmationMode::NonInteractive,
-            },
-        )
-        .await
-    {
-        Ok(()) => Ok(CallToolResult::success(vec![Content::text("OK")])),
-        Err(BridgeError::ArgValidation(msg)) => Err(ErrorData::new(
-            rmcp::model::ErrorCode(-32002),
-            Cow::Owned(format!("MCP_ARG_VALIDATION_FAILED: {}", msg)),
-            None,
-        )),
-        Err(BridgeError::GateDenied(msg)) => Err(ErrorData::new(
-            rmcp::model::ErrorCode(-32005),
-            Cow::Owned(msg),
-            None,
-        )),
-        Err(BridgeError::GateFailed(msg)) => Err(ErrorData::new(
-            rmcp::model::ErrorCode(-32006),
-            Cow::Owned(msg),
-            None,
-        )),
-        Err(BridgeError::Execution(e)) => Err(ErrorData::new(
-            rmcp::model::ErrorCode(-32003),
-            Cow::Owned(format!("MCP_EXECUTION_FAILED: {}", e)),
-            None,
-        )),
-        Err(other) => Err(ErrorData::new(
-            rmcp::model::ErrorCode(-32006),
-            Cow::Owned(format!("MCP_INTERNAL_ERROR: {}", other)),
-            None,
-        )),
-    }
+    invoke_mcp_tool_call(tool_registry, cmd, tool_name, arguments, transport).await
 }
 
 /// Dispatches a tool call in a separate tokio task (§4.7).

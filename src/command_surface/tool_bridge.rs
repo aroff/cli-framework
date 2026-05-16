@@ -9,6 +9,13 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BridgeSurface {
+    Chat,
+    Ask,
+    Mcp,
+}
+
 pub enum BridgeInput {
     Json(serde_json::Value),
     Args(CommandArgs),
@@ -70,6 +77,7 @@ pub trait BridgeGate: Send + Sync {
 pub struct CommandAsToolBridge {
     risk_policy: CommandRiskPolicy,
     gate: Option<Arc<dyn BridgeGate>>,
+    surface: BridgeSurface,
 }
 
 impl CommandAsToolBridge {
@@ -77,7 +85,22 @@ impl CommandAsToolBridge {
         Self {
             risk_policy,
             gate: None,
+            surface: BridgeSurface::Chat,
         }
+    }
+
+    pub fn for_ask(mut self) -> Self {
+        self.surface = BridgeSurface::Ask;
+        self
+    }
+
+    /// Configure this bridge for MCP tool-call semantics:
+    /// - no risk preflight enforcement
+    /// - no confirmation prompts
+    /// - typed validation only when `cmd.spec.is_some()`
+    pub fn for_mcp(mut self) -> Self {
+        self.surface = BridgeSurface::Mcp;
+        self
     }
 
     pub fn with_gate(mut self, gate: Arc<dyn BridgeGate>) -> Self {
@@ -121,34 +144,15 @@ impl CommandAsToolBridge {
 
         let parsed = self.parse_args(cmd, invocation.input)?;
 
-        let is_mcp = self.gate.is_some()
-            && matches!(invocation.confirmation, ConfirmationMode::NonInteractive);
-
-        let typed_args_for_validation = match (&parsed.typed, is_mcp) {
-            (Some(typed), true) => cmd.spec.as_ref().map(|_spec| typed),
-            (Some(typed), false) => {
-                (cmd.spec.is_some() || cmd.validator.is_some()).then_some(typed)
-            }
-            (None, _) => None,
-        };
-
-        if let Some(typed) = typed_args_for_validation {
-            if is_mcp {
-                // MCP validation quirk: only validate when spec.is_some(). When spec is None,
-                // skip both spec validation and custom validator even if validator exists.
-                if let Some(ref spec) = cmd.spec {
-                    let diagnostics = spec.validate_typed_args(typed);
-                    if let Some(first) = diagnostics.first() {
-                        return Err(BridgeError::ArgValidation(first.message.clone()));
-                    }
-                    if let Some(ref validator) = cmd.validator {
-                        let diagnostics = validator(typed);
-                        if let Some(first) = diagnostics.first() {
-                            return Err(BridgeError::ArgValidation(first.message.clone()));
-                        }
-                    }
+        // Typed validation rules vary per surface and MUST remain stable (§4.1).
+        if let Some(ref typed) = parsed.typed {
+            let should_validate = match self.surface {
+                BridgeSurface::Mcp => cmd.spec.is_some(),
+                BridgeSurface::Chat | BridgeSurface::Ask => {
+                    cmd.spec.is_some() || cmd.validator.is_some()
                 }
-            } else {
+            };
+            if should_validate {
                 let diagnostics = crate::app::dispatch::validate_typed_args(cmd, typed)
                     .map_err(|e| BridgeError::ArgValidation(e.to_string()))?;
                 if let Some(first) = diagnostics.first() {
@@ -160,7 +164,7 @@ impl CommandAsToolBridge {
         let enforcer = RiskEnforcer::new(self.risk_policy.clone());
         let tier = enforcer.classify(cmd.id, cmd.category);
 
-        if !is_mcp {
+        if matches!(self.surface, BridgeSurface::Chat | BridgeSurface::Ask) {
             let assume_yes = matches!(invocation.confirmation, ConfirmationMode::AssumeYes);
             let ailoop_available = matches!(invocation.confirmation, ConfirmationMode::Ailoop(_));
             if let Err(e) =
@@ -179,7 +183,22 @@ impl CommandAsToolBridge {
             }
 
             match tier {
-                CommandRiskTier::Safe => {}
+                CommandRiskTier::Safe => {
+                    // Ask uses ailoop confirmation even for "Safe" commands, because the command
+                    // was resolved by an LLM and the authorization flow should be exercised.
+                    if self.surface == BridgeSurface::Ask
+                        && !assume_yes
+                        && matches!(invocation.confirmation, ConfirmationMode::Ailoop(_))
+                    {
+                        let confirmed =
+                            request_confirmation(&invocation.confirmation, cmd, false).await?;
+                        if !confirmed {
+                            return Err(BridgeError::SensitiveRequiresConfirmation(
+                                cmd.id.to_string(),
+                            ));
+                        }
+                    }
+                }
                 CommandRiskTier::Sensitive => {
                     if !assume_yes {
                         let confirmed =
@@ -207,12 +226,12 @@ impl CommandAsToolBridge {
             gate.before_execute(cmd, &parsed.args, tier).await?;
         }
 
-        let effective_args = match typed_args_for_validation {
-            Some(typed) => {
-                crate::app::dispatch::effective_args_for_execution(parsed.args, Some(typed))
-            }
-            None => parsed.args,
-        };
+        let mut effective_args = crate::app::dispatch::effective_args_for_execution(
+            parsed.args.clone(),
+            parsed.typed.as_ref(),
+        );
+        // Preserve positional args from JSON parsing (effective_args_for_execution focuses on typed flags).
+        effective_args.positional = parsed.args.positional;
         (cmd.execute)(ctx, effective_args)
             .await
             .map_err(BridgeError::Execution)?;
