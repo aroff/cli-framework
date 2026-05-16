@@ -46,6 +46,9 @@ pub enum BridgeError {
     #[error("DESTRUCTIVE_BLOCKED: command '{0}' is destructive; requires confirmation")]
     DestructiveBlocked(String),
 
+    #[error("CONFIRMATION_DECLINED: user declined confirmation for '{0}' (tier={1:?})")]
+    ConfirmationDeclined(String, CommandRiskTier),
+
     #[error("GATE_DENIED: {0}")]
     GateDenied(String),
 
@@ -192,8 +195,9 @@ impl CommandAsToolBridge {
                         let confirmed =
                             request_confirmation(&invocation.confirmation, cmd, false).await?;
                         if !confirmed {
-                            return Err(BridgeError::SensitiveRequiresConfirmation(
+                            return Err(BridgeError::ConfirmationDeclined(
                                 cmd.id.to_string(),
+                                tier,
                             ));
                         }
                     }
@@ -201,7 +205,10 @@ impl CommandAsToolBridge {
                         let confirmed =
                             request_confirmation(&invocation.confirmation, cmd, true).await?;
                         if !confirmed {
-                            return Err(BridgeError::DestructiveBlocked(cmd.id.to_string()));
+                            return Err(BridgeError::ConfirmationDeclined(
+                                cmd.id.to_string(),
+                                tier,
+                            ));
                         }
                     }
                 }
