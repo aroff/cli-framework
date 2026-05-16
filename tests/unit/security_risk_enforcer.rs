@@ -1,3 +1,5 @@
+use cli_framework::command::enforce_risk_gate;
+use cli_framework::llm::CommandResolution;
 use cli_framework::security::{CommandRiskPolicy, CommandRiskTier, RiskEnforcer};
 use std::sync::{Mutex, OnceLock};
 
@@ -48,6 +50,39 @@ fn test_preflight_sensitive_blocks_non_interactive_without_assume_yes_or_ailoop(
 }
 
 #[test]
+fn test_preflight_sensitive_error_message_is_golden() {
+    // Tests run in non-interactive mode (no TTY).
+    let enforcer = RiskEnforcer::new(CommandRiskPolicy::default());
+    let err = enforcer
+        .enforce_preflight("config-update", Some("config"), false, false)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        err,
+        "SENSITIVE_COMMAND_REQUIRES_CONFIRMATION: command 'config-update' is sensitive and requires interactive confirmation"
+    );
+}
+
+#[test]
+fn test_ask_enforce_risk_gate_sensitive_error_message_is_golden() {
+    // Tests run in non-interactive mode (no TTY).
+    let policy = CommandRiskPolicy::default();
+    let resolution = CommandResolution {
+        command_id: "config-update".to_string(),
+        args: Default::default(),
+        confidence: 1.0,
+        reasoning: None,
+    };
+    let err = enforce_risk_gate(&policy, &resolution, Some("config"), false, false)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        err,
+        "SENSITIVE_COMMAND_REQUIRES_CONFIRMATION: command 'config-update' is sensitive and requires interactive confirmation"
+    );
+}
+
+#[test]
 fn test_preflight_sensitive_allows_with_ailoop() {
     let enforcer = RiskEnforcer::new(CommandRiskPolicy::default());
     assert!(
@@ -74,6 +109,21 @@ fn test_preflight_destructive_blocks_without_env() {
 }
 
 #[test]
+fn test_preflight_destructive_without_env_error_message_is_golden() {
+    let _guard = env_lock().lock().unwrap();
+    std::env::remove_var("ALLOW_DESTRUCTIVE_COMMANDS");
+    let enforcer = RiskEnforcer::new(CommandRiskPolicy::default());
+    let err = enforcer
+        .enforce_preflight("drop-db", Some("destructive"), true, true)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        err,
+        "DESTRUCTIVE_COMMAND_BLOCKED: command 'drop-db' is destructive; set ALLOW_DESTRUCTIVE_COMMANDS=1 and confirm interactively"
+    );
+}
+
+#[test]
 fn test_preflight_destructive_blocks_non_interactive_without_ailoop_even_with_env() {
     let _guard = env_lock().lock().unwrap();
     std::env::set_var("ALLOW_DESTRUCTIVE_COMMANDS", "1");
@@ -90,3 +140,18 @@ fn test_preflight_destructive_blocks_non_interactive_without_ailoop_even_with_en
     std::env::remove_var("ALLOW_DESTRUCTIVE_COMMANDS");
 }
 
+#[test]
+fn test_preflight_destructive_non_interactive_without_ailoop_error_message_is_golden() {
+    let _guard = env_lock().lock().unwrap();
+    std::env::set_var("ALLOW_DESTRUCTIVE_COMMANDS", "1");
+    let enforcer = RiskEnforcer::new(CommandRiskPolicy::default());
+    let err = enforcer
+        .enforce_preflight("drop-db", Some("destructive"), false, false)
+        .unwrap_err()
+        .to_string();
+    std::env::remove_var("ALLOW_DESTRUCTIVE_COMMANDS");
+    assert_eq!(
+        err,
+        "DESTRUCTIVE_COMMAND_BLOCKED: command 'drop-db' requires an interactive terminal or ailoop when ALLOW_DESTRUCTIVE_COMMANDS=1"
+    );
+}
