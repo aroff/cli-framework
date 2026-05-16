@@ -105,6 +105,25 @@ The optional opt-in style where Commands carry a `CommandSpec`. Contrasted
 with the untyped style (`spec: None`). A migration concept used in prose,
 not a runtime distinction.
 
+**AppContext**:
+The **user-supplied** trait carrying application state and services (API
+clients, config, …). The Command's `execute` callback receives it. Anything
+specific to the consuming binary lives here.
+
+**DispatchEnv**:
+The **framework-internal** struct (`src/app/dispatch.rs`) carrying services
+the framework owns during a dispatch: the Command registry, ailoop client,
+stdout capture, etc. Combined with `AppContext` at Dispatch time inside a
+wrapper context. Not part of the public API — but the user/framework split
+is a real architectural concept and the right mental model when reading the
+code.
+_Avoid_ stuffing framework-owned services into user `AppContext`, or
+user state into `DispatchEnv`.
+
+**AiloopContext**:
+A narrow trait the wrapper implements to hand the ailoop client to code
+that needs HITL. Conceptually a slice of `DispatchEnv`, not of `AppContext`.
+
 **Plugin**:
 A third-party bundle of declarative command metadata loaded from a
 **Plugin manifest**. Today plugins are **metadata-only** — registering a
@@ -161,3 +180,51 @@ channel.
   Dispatch; the MCP path inserts an **MCP tool gate** instead.
 - A **Confirmation** is one kind of **HITL** interaction; the Risk gate
   requests a Confirmation when the **Risk tier** requires one.
+- A **Command**'s `execute` receives both `AppContext` (user state) and
+  framework services from `DispatchEnv` via the wrapper.
+- The **Ask LLM stack** powers Ask resolution; the **Chat agent stack**
+  powers `chat`. They are independent today; `chat` is intended to replace
+  `ask` (see ADR 0001).
+- A **Plugin** contributes **PluginCommand** metadata only — no Command is
+  added to the registry and no Dispatch path exists (see ADR 0002).
+
+## Example dialogue
+
+> **Dev:** "If a user types `myapp ask 'wipe staging'` and the LLM picks
+> the `deploy` command, what stops it from running?"
+>
+> **Domain expert:** "Ask resolution returns a `(Command, CommandArgs)`
+> pair like any other Resolution. But before Dispatch, the Risk gate looks
+> up `deploy` in the Risk policy — `deployment` is Destructive by default,
+> so the gate blocks unless `ALLOW_DESTRUCTIVE_COMMANDS=1`, and even then
+> it requires a Confirmation routed through ailoop (HITL). Only then does
+> Dispatch invoke `execute`."
+>
+> **Dev:** "And if the same command is called through MCP?"
+>
+> **Domain expert:** "MCP skips the Risk gate entirely — the MCP entry
+> path goes through the MCP tool gate instead, and that's opt-in via
+> `with_mcp_tool_gate`. A Command exposed as a Tool over MCP has no
+> automatic Confirmation. That's deliberate: MCP clients aren't humans."
+>
+> **Dev:** "What about a `PluginCommand` named `deploy` in some manifest?"
+>
+> **Domain expert:** "It can't be dispatched at all. Plugins are metadata
+> only today — Ask resolution can *see* a PluginCommand for discovery, but
+> there's no execution path. If the LLM picks one, Dispatch fails."
+
+## Flagged ambiguities
+
+- **"Tool"** is sometimes used loosely to mean Command — restrict it to the
+  MCP/chat surface only.
+- **"LLM"** is ambiguous because two independent stacks exist (Ask vs
+  Chat) — always qualify which.
+- **"Validator"** is ambiguous — Spec validator and Custom validator both
+  run; the lists are concatenated, not fallbacks.
+- **"Args"** is ambiguous — `CommandArgs` is runtime, `ArgSpec` is
+  declaration-time.
+- **"Load a plugin"** does *not* register a Command. The README's
+  "load third-party commands" phrasing is `[PLANNED]` (see ADR 0002).
+- **"Account" / "User" / "Project"** — not part of this domain; if any
+  consumer crate uses these, they belong in *that* crate's CONTEXT.md, not
+  here.
