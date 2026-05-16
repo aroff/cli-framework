@@ -227,6 +227,27 @@ impl crate::command_surface::tool_bridge::BridgeGate for McpToolGateBridgeAdapte
     }
 }
 
+#[cfg(feature = "mcp-server")]
+impl McpToolRegistry {
+    fn bridge_for_call(
+        &self,
+        transport: McpTransportKind,
+        tool_name: &str,
+    ) -> crate::command_surface::tool_bridge::CommandAsToolBridge {
+        use crate::command_surface::tool_bridge::CommandAsToolBridge;
+
+        let bridge = CommandAsToolBridge::new(self.risk_enforcer.policy().clone());
+        match self.gate.as_ref() {
+            Some(gate) => bridge.with_gate(Arc::new(McpToolGateBridgeAdapter {
+                gate: Arc::clone(gate),
+                transport,
+                tool_name: tool_name.to_string(),
+            })),
+            None => bridge,
+        }
+    }
+}
+
 pub(crate) fn json_value_to_arg_value(v: &Value) -> Option<ArgValue> {
     match v {
         Value::Bool(b) => Some(ArgValue::Bool(*b)),
@@ -385,22 +406,8 @@ pub async fn dispatch_tool_call(
     transport: McpTransportKind,
 ) -> Result<CallToolResult, ErrorData> {
     use crate::command_surface::tool_bridge::{
-        BridgeError, BridgeGate, BridgeInput, BridgeInvocation, CommandAsToolBridge,
-        ConfirmationMode,
+        BridgeError, BridgeInput, BridgeInvocation, BridgeSurface, ConfirmationMode,
     };
-
-    struct McpNoopBridgeGate;
-    #[async_trait::async_trait]
-    impl BridgeGate for McpNoopBridgeGate {
-        async fn before_execute(
-            &self,
-            _cmd: &Command,
-            _args: &CommandArgs,
-            _tier: crate::security::command_risk::CommandRiskTier,
-        ) -> Result<(), BridgeError> {
-            Ok(())
-        }
-    }
 
     let cmd = tool_registry.resolve_tool(tool_name).ok_or_else(|| {
         mcp_error(
@@ -409,19 +416,7 @@ pub async fn dispatch_tool_call(
         )
     })?;
 
-    let bridge = CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone());
-    let bridge = {
-        let gate: Arc<dyn BridgeGate> = if let Some(ref configured) = tool_registry.gate {
-            Arc::new(McpToolGateBridgeAdapter {
-                gate: Arc::clone(configured),
-                transport,
-                tool_name: tool_name.to_string(),
-            })
-        } else {
-            Arc::new(McpNoopBridgeGate)
-        };
-        bridge.with_gate(gate)
-    };
+    let bridge = tool_registry.bridge_for_call(transport, tool_name);
 
     let arguments_value = arguments.map(Value::Object).unwrap_or(Value::Null);
     let mut ctx = McpAppContext;
@@ -429,6 +424,7 @@ pub async fn dispatch_tool_call(
         .invoke(
             &mut ctx,
             BridgeInvocation {
+                surface: BridgeSurface::Mcp,
                 command: cmd,
                 input: BridgeInput::Json(arguments_value),
                 confirmation: ConfirmationMode::NonInteractive,

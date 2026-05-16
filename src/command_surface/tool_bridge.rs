@@ -9,6 +9,13 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeSurface {
+    Chat,
+    Ask,
+    Mcp,
+}
+
 pub enum BridgeInput {
     Json(serde_json::Value),
     Args(CommandArgs),
@@ -28,6 +35,7 @@ pub struct ParsedArgs {
 }
 
 pub struct BridgeInvocation<'a> {
+    pub surface: BridgeSurface,
     pub command: &'a Command,
     pub input: BridgeInput,
     pub confirmation: ConfirmationMode,
@@ -126,7 +134,7 @@ impl CommandAsToolBridge {
         invocation: BridgeInvocation<'_>,
     ) -> Result<(), BridgeError> {
         let cmd = invocation.command;
-        let is_mcp_surface = self.gate.is_some();
+        let is_mcp_surface = invocation.surface == BridgeSurface::Mcp;
 
         let parsed = self.parse_args(cmd, invocation.input)?;
 
@@ -152,10 +160,7 @@ impl CommandAsToolBridge {
 
         if !is_mcp_surface {
             let assume_yes = matches!(invocation.confirmation, ConfirmationMode::AssumeYes);
-            let ailoop_available = matches!(
-                invocation.confirmation,
-                ConfirmationMode::Ailoop(_) | ConfirmationMode::InteractiveStdin
-            );
+            let ailoop_available = matches!(invocation.confirmation, ConfirmationMode::Ailoop(_));
             if let Err(e) =
                 enforcer.enforce_preflight(cmd.id, cmd.category, assume_yes, ailoop_available)
             {
@@ -165,7 +170,10 @@ impl CommandAsToolBridge {
                         cmd.id.to_string(),
                     ));
                 }
-                return Err(BridgeError::DestructiveBlocked(cmd.id.to_string()));
+                if msg.starts_with("DESTRUCTIVE_COMMAND_BLOCKED:") {
+                    return Err(BridgeError::DestructiveBlocked(cmd.id.to_string()));
+                }
+                return Err(BridgeError::Execution(e));
             }
 
             if !assume_yes {
@@ -349,6 +357,7 @@ mod tests {
             .invoke(
                 &mut ctx,
                 BridgeInvocation {
+                    surface: BridgeSurface::Chat,
                     command: &cmd,
                     input: BridgeInput::Json(serde_json::json!({})),
                     confirmation: ConfirmationMode::AssumeYes,
@@ -385,6 +394,7 @@ mod tests {
             .invoke(
                 &mut ctx,
                 BridgeInvocation {
+                    surface: BridgeSurface::Ask,
                     command: &cmd,
                     input: BridgeInput::Args(CommandArgs::default()),
                     confirmation: ConfirmationMode::NonInteractive,
@@ -427,6 +437,7 @@ mod tests {
             .invoke(
                 &mut ctx,
                 BridgeInvocation {
+                    surface: BridgeSurface::Mcp,
                     command: &cmd,
                     input: BridgeInput::Json(serde_json::json!({})),
                     confirmation: ConfirmationMode::NonInteractive,

@@ -131,6 +131,7 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
             .invoke(
                 ctx,
                 crate::command_surface::tool_bridge::BridgeInvocation {
+                    surface: crate::command_surface::tool_bridge::BridgeSurface::Chat,
                     command: cmd,
                     input: crate::command_surface::tool_bridge::BridgeInput::Json(arguments),
                     confirmation: confirmation.clone(),
