@@ -376,7 +376,13 @@ impl AppContext for MyAppContext {}
 
 ### Plugin System
 
-Load third-party commands from manifest files:
+> **`[PLANNED]`** — Today the plugin system loads **metadata only**: plugin
+> registry + manifest files are parsed and their command descriptions are
+> surfaced for discovery (e.g. by the `ask` resolver). There is no dispatch
+> path that actually executes a plugin command (`CommandExecution::Subprocess`
+> is declarative only). See [docs/adr/0002-plugins-metadata-only.md](docs/adr/0002-plugins-metadata-only.md).
+
+Declare third-party commands in a manifest file:
 
 ```toml
 # plugin-registry.toml

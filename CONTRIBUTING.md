@@ -87,6 +87,21 @@ as temporary and removed once upstream is updated.
 - Clippy clean (CI uses `RUSTFLAGS="-D warnings"`)
 - [Conventional Commits](https://www.conventionalcommits.org/)
 
+### Documentation status tags
+
+Use these inline tags in `README.md`, `docs/`, and `specs/` when a documented
+feature does not match the shipped behavior. Tags MUST appear as the first
+token of a blockquote so they stand out:
+
+| Tag | Meaning |
+|------|---------|
+| `[PLANNED]` | On the roadmap, not yet implemented. Surrounding prose describes the intended shape; the code does not yet do this. |
+| `[PARTIAL]` | Implemented in part. Quote which part works and which does not. |
+| `[DEPRECATED]` | Still works but slated for removal. Link to the replacement. |
+
+Every `[PLANNED]` or `[PARTIAL]` tag SHOULD link to an ADR or spec that
+records *why* the gap exists.
+
 ## Pull requests
 
 - Describe change; link issues.
