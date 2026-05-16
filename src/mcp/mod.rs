@@ -398,12 +398,13 @@ pub async fn dispatch_tool_call(
         )
     })?;
 
-    let bridge = CommandAsToolBridge::new_mcp(tool_registry.risk_enforcer.policy().clone())
-        .with_gate(Arc::new(McpToolGateBridgeAdapter {
+    let bridge = CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone()).with_gate(
+        Arc::new(McpToolGateBridgeAdapter {
             gate: tool_registry.gate.as_ref().map(Arc::clone),
             transport,
             tool_name: tool_name.to_string(),
-        }));
+        }),
+    );
 
     let arguments_value = arguments.map(Value::Object).unwrap_or(Value::Null);
     let mut ctx = McpAppContext;
@@ -420,9 +421,6 @@ pub async fn dispatch_tool_call(
         .await
     {
         Ok(()) => Ok(CallToolResult::success(vec![Content::text("OK")])),
-        Err(BridgeError::ToolNotFound(msg)) => {
-            Err(mcp_error(-32001, format!("MCP_CMD_NOT_FOUND: {}", msg)))
-        }
         Err(BridgeError::ArgValidation(msg)) => Err(mcp_error(
             -32002,
             format!("MCP_ARG_VALIDATION_FAILED: {}", msg),
