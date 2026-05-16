@@ -69,7 +69,7 @@ pub trait BridgeGate: Send + Sync {
 pub struct CommandAsToolBridge {
     risk_policy: CommandRiskPolicy,
     gate: Option<Arc<dyn BridgeGate>>,
-    surface: BridgeSurface,
+    mode: BridgeMode,
 }
 
 impl CommandAsToolBridge {
@@ -77,17 +77,21 @@ impl CommandAsToolBridge {
         Self {
             risk_policy,
             gate: None,
-            surface: BridgeSurface::ChatOrAsk,
+            mode: BridgeMode::ChatOrAsk,
         }
     }
 
-    /// Configure the bridge for MCP dispatch semantics (§4.1).
+    /// MCP-specific constructor.
     ///
-    /// - Never enforce risk preflight or prompt for confirmation.
-    /// - Typed validation from JSON runs only when `cmd.spec.is_some()`.
-    pub fn as_mcp(mut self) -> Self {
-        self.surface = BridgeSurface::Mcp;
-        self
+    /// This makes MCP semantics impossible to forget at call sites:
+    /// - never enforce risk preflight or prompt for confirmation
+    /// - typed validation from JSON runs only when `cmd.spec.is_some()`
+    pub fn new_mcp(risk_policy: CommandRiskPolicy) -> Self {
+        Self {
+            risk_policy,
+            gate: None,
+            mode: BridgeMode::Mcp,
+        }
     }
 
     pub fn with_gate(mut self, gate: Arc<dyn BridgeGate>) -> Self {
@@ -133,12 +137,12 @@ impl CommandAsToolBridge {
 
         // Typed validation rules vary per surface and MUST remain stable (§4.1).
         if let Some(ref typed) = parsed.typed {
-            let should_validate = match self.surface {
-                BridgeSurface::Mcp => {
+            let should_validate = match self.mode {
+                BridgeMode::Mcp => {
                     // MCP: validate only when spec is present.
                     cmd.spec.is_some()
                 }
-                BridgeSurface::ChatOrAsk => {
+                BridgeMode::ChatOrAsk => {
                     // Chat: validate when spec OR custom validator exists.
                     cmd.spec.is_some() || cmd.validator.is_some()
                 }
@@ -156,7 +160,7 @@ impl CommandAsToolBridge {
         let tier = enforcer.classify(cmd.id, cmd.category);
 
         // Ask/chat: enforce preflight + confirmation; MCP: never enforce or prompt (§4.1).
-        if self.surface == BridgeSurface::ChatOrAsk {
+        if self.mode == BridgeMode::ChatOrAsk {
             let assume_yes = matches!(invocation.confirmation, ConfirmationMode::AssumeYes);
             let confirmation_available = matches!(
                 invocation.confirmation,
@@ -176,7 +180,9 @@ impl CommandAsToolBridge {
                 if msg.contains("DESTRUCTIVE_COMMAND_BLOCKED") {
                     return Err(BridgeError::DestructiveBlocked(cmd.id.to_string()));
                 }
-                return Err(BridgeError::ArgValidation(msg));
+                // Preflight only emits the above errors today; preserve category by treating
+                // unexpected failures as execution/internal.
+                return Err(BridgeError::Execution(anyhow::anyhow!(msg)));
             }
 
             if !assume_yes {
@@ -208,13 +214,7 @@ impl CommandAsToolBridge {
 
         let effective_args = match parsed.typed.as_ref() {
             Some(typed) => {
-                let mut args = crate::app::dispatch::effective_args_for_execution(
-                    parsed.args.clone(),
-                    Some(typed),
-                );
-                // Preserve positional args from JSON parsing (effective_args_for_execution focuses on typed flags).
-                args.positional = parsed.args.positional.clone();
-                args
+                crate::app::dispatch::effective_args_for_execution(parsed.args.clone(), Some(typed))
             }
             None => parsed.args,
         };
@@ -227,7 +227,7 @@ impl CommandAsToolBridge {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BridgeSurface {
+enum BridgeMode {
     ChatOrAsk,
     Mcp,
 }
@@ -431,8 +431,7 @@ mod tests {
                 Ok(())
             }
         }
-        let bridge = CommandAsToolBridge::new(policy).with_gate(Arc::new(NoopGate));
-        let bridge = bridge.as_mcp();
+        let bridge = CommandAsToolBridge::new_mcp(policy).with_gate(Arc::new(NoopGate));
         let mut ctx = NoopCtx;
         bridge
             .invoke(
