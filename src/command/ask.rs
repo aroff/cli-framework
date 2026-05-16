@@ -116,31 +116,28 @@ async fn execute_ask(
 
     match res {
         Ok(()) => Ok(()),
-        Err(crate::command_surface::tool_bridge::BridgeError::SensitiveConfirmationDeclined(
-            _cmd_id,
-        )) => {
-            println!("Command cancelled by user");
-            Ok(())
-        }
         Err(crate::command_surface::tool_bridge::BridgeError::SensitiveRequiresConfirmation(
-            cmd_id,
-        )) => Err(anyhow::anyhow!(
-            "SENSITIVE_COMMAND_REQUIRES_CONFIRMATION: command '{}' is sensitive \
-             and requires interactive confirmation",
-            cmd_id
-        )),
-        Err(crate::command_surface::tool_bridge::BridgeError::DestructiveConfirmationDeclined(
             _cmd_id,
         )) => {
+            // Ask confirmations run through ailoop (HITL). A declined confirmation is treated as
+            // "cancelled by user" and returns Ok(()) to preserve existing behavior.
             println!("Command cancelled by user");
             Ok(())
         }
         Err(crate::command_surface::tool_bridge::BridgeError::DestructiveBlocked(cmd_id)) => {
-            Err(anyhow::anyhow!(
-                "DESTRUCTIVE_COMMAND_BLOCKED: command '{}' is destructive; \
-                 set ALLOW_DESTRUCTIVE_COMMANDS=1 and confirm interactively",
-                cmd_id
-            ))
+            let env_allowed = std::env::var("ALLOW_DESTRUCTIVE_COMMANDS")
+                .map(|v| v == "1" || v == "true")
+                .unwrap_or(false);
+            if env_allowed {
+                println!("Command cancelled by user");
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!(
+                    "DESTRUCTIVE_COMMAND_BLOCKED: command '{}' is destructive; \
+                     set ALLOW_DESTRUCTIVE_COMMANDS=1 and confirm interactively",
+                    cmd_id
+                ))
+            }
         }
         Err(crate::command_surface::tool_bridge::BridgeError::Execution(e)) => Err(e),
         Err(other) => Err(anyhow::anyhow!("{}", other)),

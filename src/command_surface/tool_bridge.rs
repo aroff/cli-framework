@@ -43,14 +43,8 @@ pub enum BridgeError {
     #[error("RISK_REQUIRES_CONFIRMATION: command '{0}' is sensitive and requires confirmation")]
     SensitiveRequiresConfirmation(String),
 
-    #[error("RISK_CONFIRMATION_DECLINED: command '{0}' confirmation declined by user")]
-    SensitiveConfirmationDeclined(String),
-
     #[error("DESTRUCTIVE_BLOCKED: command '{0}' is destructive; requires confirmation")]
     DestructiveBlocked(String),
-
-    #[error("DESTRUCTIVE_CONFIRMATION_DECLINED: command '{0}' confirmation declined by user")]
-    DestructiveConfirmationDeclined(String),
 
     #[error("GATE_DENIED: {0}")]
     GateDenied(String),
@@ -123,8 +117,8 @@ impl CommandAsToolBridge {
         invocation: BridgeInvocation<'_>,
     ) -> Result<(), BridgeError> {
         let cmd = invocation.command;
-
-        let is_mcp_surface = self.is_mcp_surface(&invocation);
+        let is_mcp_surface =
+            self.gate.is_some() && matches!(invocation.input, BridgeInput::Json(_));
 
         let parsed = self.parse_args(cmd, invocation.input)?;
 
@@ -152,14 +146,9 @@ impl CommandAsToolBridge {
         // Ask/chat: enforce preflight + confirmation; MCP: never enforce or prompt (§4.1).
         if !is_mcp_surface {
             let assume_yes = matches!(invocation.confirmation, ConfirmationMode::AssumeYes);
-            let confirmation_available = matches!(
-                invocation.confirmation,
-                ConfirmationMode::AssumeYes
-                    | ConfirmationMode::Ailoop(_)
-                    | ConfirmationMode::InteractiveStdin
-            );
+            let ailoop_available = matches!(invocation.confirmation, ConfirmationMode::Ailoop(_));
             if let Err(e) =
-                enforcer.enforce_preflight(cmd.id, cmd.category, assume_yes, confirmation_available)
+                enforcer.enforce_preflight(cmd.id, cmd.category, assume_yes, ailoop_available)
             {
                 // Preflight currently only emits these two error families.
                 let msg = e.to_string();
@@ -178,7 +167,7 @@ impl CommandAsToolBridge {
                         let confirmed =
                             request_confirmation(&invocation.confirmation, cmd, false).await?;
                         if !confirmed {
-                            return Err(BridgeError::SensitiveConfirmationDeclined(
+                            return Err(BridgeError::SensitiveRequiresConfirmation(
                                 cmd.id.to_string(),
                             ));
                         }
@@ -187,9 +176,7 @@ impl CommandAsToolBridge {
                         let confirmed =
                             request_confirmation(&invocation.confirmation, cmd, true).await?;
                         if !confirmed {
-                            return Err(BridgeError::DestructiveConfirmationDeclined(
-                                cmd.id.to_string(),
-                            ));
+                            return Err(BridgeError::DestructiveBlocked(cmd.id.to_string()));
                         }
                     }
                 }
@@ -211,14 +198,6 @@ impl CommandAsToolBridge {
             .await
             .map_err(BridgeError::Execution)?;
         Ok(())
-    }
-
-    fn is_mcp_surface(&self, invocation: &BridgeInvocation<'_>) -> bool {
-        matches!(invocation.input, BridgeInput::Json(_))
-            && matches!(invocation.confirmation, ConfirmationMode::NonInteractive)
-            // MCP calls may have an optional gate; MCP adapters MUST install a noop
-            // gate when none is configured so the bridge can preserve MCP invariants.
-            && self.gate.is_some()
     }
 }
 
@@ -403,10 +382,6 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, BridgeError::SensitiveRequiresConfirmation(_)));
     }
-
-    // Note: declined-vs-unavailable confirmation is surfaced via distinct BridgeError variants,
-    // but we don't unit-test the decline path here because it requires a live ailoop server or
-    // interactive stdin.
 
     #[tokio::test]
     async fn mcp_calls_never_enforce_preflight_or_prompt() {
