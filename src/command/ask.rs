@@ -98,17 +98,10 @@ async fn execute_ask(
     let bridge = crate::command_surface::tool_bridge::CommandAsToolBridge::new(risk_policy);
     let confirmation = if assume_yes {
         crate::command_surface::tool_bridge::ConfirmationMode::AssumeYes
-    } else if std::env::var("AILOOP_SERVER").is_ok() {
-        crate::command_surface::tool_bridge::ConfirmationMode::Ailoop(ailoop_client)
-    } else if crate::cli_mode::is_interactive() {
-        crate::command_surface::tool_bridge::ConfirmationMode::InteractiveStdin
     } else {
-        crate::command_surface::tool_bridge::ConfirmationMode::NonInteractive
+        // Preserve prior ask behavior: confirmations run through ailoop (HITL).
+        crate::command_surface::tool_bridge::ConfirmationMode::Ailoop(ailoop_client)
     };
-    let confirmation_is_noninteractive = matches!(
-        confirmation,
-        crate::command_surface::tool_bridge::ConfirmationMode::NonInteractive
-    );
 
     let res = bridge
         .invoke(
@@ -123,37 +116,31 @@ async fn execute_ask(
 
     match res {
         Ok(()) => Ok(()),
+        Err(crate::command_surface::tool_bridge::BridgeError::SensitiveConfirmationDeclined(
+            _cmd_id,
+        )) => {
+            println!("Command cancelled by user");
+            Ok(())
+        }
         Err(crate::command_surface::tool_bridge::BridgeError::SensitiveRequiresConfirmation(
             cmd_id,
+        )) => Err(anyhow::anyhow!(
+            "SENSITIVE_COMMAND_REQUIRES_CONFIRMATION: command '{}' is sensitive \
+             and requires interactive confirmation",
+            cmd_id
+        )),
+        Err(crate::command_surface::tool_bridge::BridgeError::DestructiveConfirmationDeclined(
+            _cmd_id,
         )) => {
-            if confirmation_is_noninteractive {
-                Err(anyhow::anyhow!(
-                    "SENSITIVE_COMMAND_REQUIRES_CONFIRMATION: command '{}' is sensitive \
-                     and requires interactive confirmation",
-                    cmd_id
-                ))
-            } else {
-                // Ask treats confirmation denial as a non-fatal cancellation.
-                println!("Command cancelled by user");
-                Ok(())
-            }
+            println!("Command cancelled by user");
+            Ok(())
         }
         Err(crate::command_surface::tool_bridge::BridgeError::DestructiveBlocked(cmd_id)) => {
-            // If destructive commands are allowed, this error means the user declined
-            // confirmation (the bridge does not use a distinct "declined" variant).
-            let env_allowed = std::env::var("ALLOW_DESTRUCTIVE_COMMANDS")
-                .map(|v| v == "1" || v == "true")
-                .unwrap_or(false);
-            if env_allowed {
-                println!("Command cancelled by user");
-                Ok(())
-            } else {
-                Err(anyhow::anyhow!(
-                    "DESTRUCTIVE_COMMAND_BLOCKED: command '{}' is destructive; \
-                     set ALLOW_DESTRUCTIVE_COMMANDS=1 and confirm interactively",
-                    cmd_id
-                ))
-            }
+            Err(anyhow::anyhow!(
+                "DESTRUCTIVE_COMMAND_BLOCKED: command '{}' is destructive; \
+                 set ALLOW_DESTRUCTIVE_COMMANDS=1 and confirm interactively",
+                cmd_id
+            ))
         }
         Err(crate::command_surface::tool_bridge::BridgeError::Execution(e)) => Err(e),
         Err(other) => Err(anyhow::anyhow!("{}", other)),
