@@ -396,37 +396,22 @@ pub async fn dispatch_tool_call(
         )
     })?;
 
-    let mut bridge = CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone());
-    // Ensure MCP semantics even when no gate is configured: MCP must never run risk
-    // preflight or prompt/confirm (§4.1). MCP semantics are selected by constructing
-    // the bridge with a gate (no-op if needed).
-    let gate: Arc<dyn BridgeGate> = if let Some(ref configured) = tool_registry.gate {
-        Arc::new(McpToolGateBridgeAdapter {
+    let bridge = CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone());
+    let bridge = if let Some(ref configured) = tool_registry.gate {
+        let gate: Arc<dyn BridgeGate> = Arc::new(McpToolGateBridgeAdapter {
             gate: Arc::clone(configured),
             transport,
             tool_name: tool_name.to_string(),
-        })
+        });
+        bridge.with_gate(gate)
     } else {
-        struct NoopGate;
-        #[async_trait::async_trait]
-        impl BridgeGate for NoopGate {
-            async fn before_execute(
-                &self,
-                _cmd: &Command,
-                _args: &CommandArgs,
-                _tier: crate::security::command_risk::CommandRiskTier,
-            ) -> Result<(), BridgeError> {
-                Ok(())
-            }
-        }
-        Arc::new(NoopGate)
+        bridge
     };
-    bridge = bridge.with_gate(gate);
 
     let arguments_value = arguments.map(Value::Object).unwrap_or(Value::Null);
     let mut ctx = McpAppContext;
     let res = bridge
-        .invoke(
+        .invoke_mcp(
             &mut ctx,
             BridgeInvocation {
                 command: cmd,
