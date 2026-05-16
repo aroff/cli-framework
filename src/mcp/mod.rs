@@ -235,15 +235,18 @@ async fn invoke_mcp_tool_call(
     };
     use std::borrow::Cow;
 
-    let mut bridge =
-        CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone()).for_mcp();
-    if let Some(ref gate) = tool_registry.gate {
-        bridge = bridge.with_gate(Arc::new(McpToolGateBridgeAdapter {
+    let mut bridge = CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone());
+    bridge = if let Some(ref gate) = tool_registry.gate {
+        bridge.with_gate(Arc::new(McpToolGateBridgeAdapter {
             gate: Arc::clone(gate),
             transport,
             tool_name: tool_name.to_string(),
-        }));
-    }
+        }))
+    } else {
+        bridge.with_gate(Arc::new(
+            crate::command_surface::tool_bridge::NoopBridgeGate,
+        ))
+    };
 
     let arguments_value = match arguments {
         Some(obj) => Value::Object(obj),
@@ -263,6 +266,11 @@ async fn invoke_mcp_tool_call(
         .await
     {
         Ok(()) => Ok(CallToolResult::success(vec![Content::text("OK")])),
+        Err(BridgeError::ToolNotFound(name)) => Err(ErrorData::new(
+            rmcp::model::ErrorCode(-32001),
+            Cow::Owned(format!("MCP_CMD_NOT_FOUND: tool '{}' not registered", name)),
+            None,
+        )),
         Err(BridgeError::ArgValidation(msg)) => Err(ErrorData::new(
             rmcp::model::ErrorCode(-32002),
             Cow::Owned(format!("MCP_ARG_VALIDATION_FAILED: {}", msg)),
@@ -448,16 +456,24 @@ pub async fn dispatch_tool_call(
     arguments: Option<JsonObject>,
     transport: McpTransportKind,
 ) -> Result<CallToolResult, ErrorData> {
-    let cmd = tool_registry.resolve_tool(tool_name).ok_or_else(|| {
-        ErrorData::new(
-            rmcp::model::ErrorCode(-32001),
-            Cow::Owned(format!(
-                "MCP_CMD_NOT_FOUND: tool '{}' not registered",
-                tool_name
-            )),
-            None,
-        )
-    })?;
+    let cmd = match tool_registry.resolve_tool(tool_name) {
+        Some(cmd) => cmd,
+        None => {
+            let err = crate::command_surface::tool_bridge::BridgeError::ToolNotFound(
+                tool_name.to_string(),
+            );
+            return match err {
+                crate::command_surface::tool_bridge::BridgeError::ToolNotFound(name) => {
+                    Err(ErrorData::new(
+                        rmcp::model::ErrorCode(-32001),
+                        Cow::Owned(format!("MCP_CMD_NOT_FOUND: tool '{}' not registered", name)),
+                        None,
+                    ))
+                }
+                _ => unreachable!("tool-not-found mapping must be exhaustive"),
+            };
+        }
+    };
 
     invoke_mcp_tool_call(tool_registry, cmd, tool_name, arguments, transport).await
 }

@@ -1,7 +1,7 @@
 use crate::ailoop::AiloopClient;
 use crate::app::context::AppContext;
 use crate::command::{Command, CommandArgs, CommandRegistry, CommandResult};
-use crate::security::command_risk::{CommandRiskPolicy, CommandRiskTier};
+use crate::security::command_risk::CommandRiskPolicy;
 use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use crate::spec::command_tree::{CommandSpec, EnvVarEntry, ExitCodeEntry};
 use async_trait::async_trait;
@@ -107,18 +107,22 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
         ctx: &mut dyn AppContext,
         opts: &ChatToolCallOptions,
     ) -> anyhow::Result<()> {
-        let cmd = self.tools.get(tool_name).ok_or_else(|| {
-            anyhow::anyhow!(
-                "{}: tool '{}' not registered",
-                CHAT_TOOL_NOT_FOUND,
-                tool_name
-            )
-        })?;
+        let cmd = match self.tools.get(tool_name) {
+            Some(cmd) => cmd,
+            None => {
+                let err = crate::command_surface::tool_bridge::BridgeError::ToolNotFound(
+                    tool_name.to_string(),
+                );
+                return match err {
+                    crate::command_surface::tool_bridge::BridgeError::ToolNotFound(name) => Err(
+                        anyhow::anyhow!("{}: tool '{}' not registered", CHAT_TOOL_NOT_FOUND, name),
+                    ),
+                    _ => unreachable!("tool-not-found mapping must be exhaustive"),
+                };
+            }
+        };
 
-        let enforcer = crate::security::RiskEnforcer::new(self.risk_policy.clone());
-        let tier = enforcer.classify(cmd.id, cmd.category);
-
-        let confirmation = if opts.yolo && tier == CommandRiskTier::Sensitive {
+        let confirmation = if opts.yolo {
             crate::command_surface::tool_bridge::ConfirmationMode::AssumeYes
         } else if let Some(ref client) = opts.ailoop_client {
             crate::command_surface::tool_bridge::ConfirmationMode::Ailoop(Arc::clone(client))
@@ -127,6 +131,10 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
         } else {
             crate::command_surface::tool_bridge::ConfirmationMode::NonInteractive
         };
+        let confirmation_is_noninteractive = matches!(
+            confirmation,
+            crate::command_surface::tool_bridge::ConfirmationMode::NonInteractive
+        );
 
         let bridge =
             crate::command_surface::tool_bridge::CommandAsToolBridge::new(self.risk_policy.clone());
@@ -136,7 +144,7 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
                 crate::command_surface::tool_bridge::BridgeInvocation {
                     command: cmd,
                     input: crate::command_surface::tool_bridge::BridgeInput::Json(arguments),
-                    confirmation: confirmation.clone(),
+                    confirmation,
                 },
             )
             .await;
@@ -151,10 +159,7 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
                     cmd_id,
                 ),
             ) => {
-                if matches!(
-                    confirmation,
-                    crate::command_surface::tool_bridge::ConfirmationMode::NonInteractive
-                ) {
+                if confirmation_is_noninteractive {
                     Err(anyhow::anyhow!(
                         "{}: command '{}' is sensitive and requires confirmation",
                         CHAT_RISK_REQUIRES_CONFIRMATION,
@@ -178,10 +183,7 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
                         CHAT_DESTRUCTIVE_BLOCKED,
                         cmd_id
                     ))
-                } else if matches!(
-                    confirmation,
-                    crate::command_surface::tool_bridge::ConfirmationMode::NonInteractive
-                ) {
+                } else if confirmation_is_noninteractive {
                     Err(anyhow::anyhow!(
                         "{}: command '{}' is destructive; requires interactive confirmation",
                         CHAT_DESTRUCTIVE_BLOCKED,

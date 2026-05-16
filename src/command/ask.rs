@@ -95,13 +95,16 @@ async fn execute_ask(
             .clone()
     };
 
-    let bridge =
-        crate::command_surface::tool_bridge::CommandAsToolBridge::new(risk_policy).for_ask();
+    let bridge = crate::command_surface::tool_bridge::CommandAsToolBridge::new(risk_policy);
     let confirmation = if assume_yes {
         crate::command_surface::tool_bridge::ConfirmationMode::AssumeYes
     } else {
         crate::command_surface::tool_bridge::ConfirmationMode::Ailoop(ailoop_client)
     };
+    let confirmation_is_noninteractive = matches!(
+        confirmation,
+        crate::command_surface::tool_bridge::ConfirmationMode::NonInteractive
+    );
 
     let res = bridge
         .invoke(
@@ -117,8 +120,15 @@ async fn execute_ask(
     match res {
         Ok(()) => Ok(()),
         Err(crate::command_surface::tool_bridge::BridgeError::SensitiveRequiresConfirmation(_)) => {
-            println!("Command cancelled by user");
-            Ok(())
+            if confirmation_is_noninteractive {
+                Err(anyhow::anyhow!(
+                    "SENSITIVE_COMMAND_REQUIRES_CONFIRMATION: command '{}' is sensitive and requires interactive confirmation",
+                    command.id
+                ))
+            } else {
+                println!("Command cancelled by user");
+                Ok(())
+            }
         }
         Err(crate::command_surface::tool_bridge::BridgeError::DestructiveBlocked(cmd_id)) => {
             let env_allowed = std::env::var("ALLOW_DESTRUCTIVE_COMMANDS")

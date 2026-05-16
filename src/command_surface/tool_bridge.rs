@@ -9,19 +9,11 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BridgeSurface {
-    Chat,
-    Ask,
-    Mcp,
-}
-
 pub enum BridgeInput {
     Json(serde_json::Value),
     Args(CommandArgs),
 }
 
-#[derive(Clone)]
 pub enum ConfirmationMode {
     AssumeYes,
     Ailoop(Arc<AiloopClient>),
@@ -74,10 +66,23 @@ pub trait BridgeGate: Send + Sync {
     ) -> Result<(), BridgeError>;
 }
 
+pub(crate) struct NoopBridgeGate;
+
+#[async_trait]
+impl BridgeGate for NoopBridgeGate {
+    async fn before_execute(
+        &self,
+        _cmd: &Command,
+        _args: &CommandArgs,
+        _tier: CommandRiskTier,
+    ) -> Result<(), BridgeError> {
+        Ok(())
+    }
+}
+
 pub struct CommandAsToolBridge {
     risk_policy: CommandRiskPolicy,
     gate: Option<Arc<dyn BridgeGate>>,
-    surface: BridgeSurface,
 }
 
 impl CommandAsToolBridge {
@@ -85,22 +90,7 @@ impl CommandAsToolBridge {
         Self {
             risk_policy,
             gate: None,
-            surface: BridgeSurface::Chat,
         }
-    }
-
-    pub fn for_ask(mut self) -> Self {
-        self.surface = BridgeSurface::Ask;
-        self
-    }
-
-    /// Configure this bridge for MCP tool-call semantics:
-    /// - no risk preflight enforcement
-    /// - no confirmation prompts
-    /// - typed validation only when `cmd.spec.is_some()`
-    pub fn for_mcp(mut self) -> Self {
-        self.surface = BridgeSurface::Mcp;
-        self
     }
 
     pub fn with_gate(mut self, gate: Arc<dyn BridgeGate>) -> Self {
@@ -144,13 +134,19 @@ impl CommandAsToolBridge {
 
         let parsed = self.parse_args(cmd, invocation.input)?;
 
+        // MCP semantics (§4.1) are selected by the MCP adapter providing a gate.
+        // This keeps the bridge free of hidden surface state while still allowing
+        // per-surface quirks to remain stable.
+        let mcp_semantics = self.gate.is_some()
+            && matches!(invocation.confirmation, ConfirmationMode::NonInteractive)
+            && parsed.typed.is_some();
+
         // Typed validation rules vary per surface and MUST remain stable (§4.1).
         if let Some(ref typed) = parsed.typed {
-            let should_validate = match self.surface {
-                BridgeSurface::Mcp => cmd.spec.is_some(),
-                BridgeSurface::Chat | BridgeSurface::Ask => {
-                    cmd.spec.is_some() || cmd.validator.is_some()
-                }
+            let should_validate = if mcp_semantics {
+                cmd.spec.is_some()
+            } else {
+                cmd.spec.is_some() || cmd.validator.is_some()
             };
             if should_validate {
                 let diagnostics = crate::app::dispatch::validate_typed_args(cmd, typed)
@@ -164,7 +160,7 @@ impl CommandAsToolBridge {
         let enforcer = RiskEnforcer::new(self.risk_policy.clone());
         let tier = enforcer.classify(cmd.id, cmd.category);
 
-        if matches!(self.surface, BridgeSurface::Chat | BridgeSurface::Ask) {
+        if !mcp_semantics {
             let assume_yes = matches!(invocation.confirmation, ConfirmationMode::AssumeYes);
             let ailoop_available = matches!(invocation.confirmation, ConfirmationMode::Ailoop(_));
             if let Err(e) =
@@ -211,12 +207,19 @@ impl CommandAsToolBridge {
             gate.before_execute(cmd, &parsed.args, tier).await?;
         }
 
-        let mut effective_args = crate::app::dispatch::effective_args_for_execution(
-            parsed.args.clone(),
-            parsed.typed.as_ref(),
-        );
-        // Preserve positional args from JSON parsing (effective_args_for_execution focuses on typed flags).
-        effective_args.positional = parsed.args.positional;
+        let effective_args = match parsed.typed.as_ref() {
+            Some(typed) => {
+                let mut args = crate::app::dispatch::effective_args_for_execution(
+                    parsed.args.clone(),
+                    Some(typed),
+                );
+                // Preserve positional args from JSON parsing (effective_args_for_execution focuses on typed flags).
+                args.positional = parsed.args.positional.clone();
+                args
+            }
+            None => parsed.args,
+        };
+
         (cmd.execute)(ctx, effective_args)
             .await
             .map_err(BridgeError::Execution)?;
