@@ -199,22 +199,6 @@ struct McpToolGateBridgeAdapter {
 }
 
 #[cfg(feature = "mcp-server")]
-struct McpNoopBridgeGate;
-
-#[cfg(feature = "mcp-server")]
-#[async_trait::async_trait]
-impl crate::command_surface::tool_bridge::BridgeGate for McpNoopBridgeGate {
-    async fn before_execute(
-        &self,
-        _cmd: &Command,
-        _args: &CommandArgs,
-        _tier: crate::security::command_risk::CommandRiskTier,
-    ) -> Result<(), crate::command_surface::tool_bridge::BridgeError> {
-        Ok(())
-    }
-}
-
-#[cfg(feature = "mcp-server")]
 #[async_trait::async_trait]
 impl crate::command_surface::tool_bridge::BridgeGate for McpToolGateBridgeAdapter {
     async fn before_execute(
@@ -438,21 +422,16 @@ async fn invoke_mcp_bridge(
     use crate::command_surface::tool_bridge::{BridgeInput, BridgeInvocation, CommandAsToolBridge};
 
     // MCP invariants (§4.1): no preflight enforcement and no confirmation prompts.
-    // The bridge detects MCP mode via (NonInteractive + gate present); install a noop gate
-    // when no gate is configured so these invariants always hold.
-    let gate: Arc<dyn crate::command_surface::tool_bridge::BridgeGate> =
-        if let Some(ref configured) = tool_registry.gate {
-            Arc::new(McpToolGateBridgeAdapter {
-                gate: Arc::clone(configured),
-                transport,
-                tool_name: tool_name.to_string(),
-            })
-        } else {
-            Arc::new(McpNoopBridgeGate)
-        };
-
-    let bridge =
-        CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone()).with_gate(gate);
+    // This is an explicit adapter choice; do not infer MCP behavior from gate presence.
+    let mut bridge =
+        CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone()).as_mcp_surface();
+    if let Some(ref configured) = tool_registry.gate {
+        bridge = bridge.with_gate(Arc::new(McpToolGateBridgeAdapter {
+            gate: Arc::clone(configured),
+            transport,
+            tool_name: tool_name.to_string(),
+        }));
+    }
     let arguments_value = arguments.map(Value::Object).unwrap_or(Value::Null);
     let mut ctx = McpAppContext;
     bridge
