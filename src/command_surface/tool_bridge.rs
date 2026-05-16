@@ -9,12 +9,6 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BridgeSurfaceKind {
-    ChatOrAsk,
-    Mcp,
-}
-
 pub enum BridgeInput {
     Json(serde_json::Value),
     Args(CommandArgs),
@@ -75,7 +69,6 @@ pub trait BridgeGate: Send + Sync {
 pub struct CommandAsToolBridge {
     risk_policy: CommandRiskPolicy,
     gate: Option<Arc<dyn BridgeGate>>,
-    surface: BridgeSurfaceKind,
 }
 
 impl CommandAsToolBridge {
@@ -83,13 +76,7 @@ impl CommandAsToolBridge {
         Self {
             risk_policy,
             gate: None,
-            surface: BridgeSurfaceKind::ChatOrAsk,
         }
-    }
-
-    pub fn for_mcp(mut self) -> Self {
-        self.surface = BridgeSurfaceKind::Mcp;
-        self
     }
 
     pub fn with_gate(mut self, gate: Arc<dyn BridgeGate>) -> Self {
@@ -131,9 +118,10 @@ impl CommandAsToolBridge {
     ) -> Result<(), BridgeError> {
         let cmd = invocation.command;
 
-        let is_args_input = matches!(&invocation.input, BridgeInput::Args(_));
         let parsed = self.parse_args(cmd, invocation.input)?;
-        let is_mcp_surface = self.surface == BridgeSurfaceKind::Mcp;
+        let is_mcp_surface = self.gate.is_some()
+            && matches!(invocation.confirmation, ConfirmationMode::NonInteractive)
+            && parsed.typed.is_some();
 
         // Typed validation rules vary per surface and MUST remain stable (§4.1).
         if let Some(ref typed) = parsed.typed {
@@ -183,21 +171,6 @@ impl CommandAsToolBridge {
             }
 
             if !assume_yes {
-                // Ask behavior: even Safe commands resolved by `ask` are confirmed via ailoop
-                // (no stdin fallback). This is signaled by `BridgeInput::Args` + `Ailoop`.
-                // Chat never uses `BridgeInput::Args`, so this does not affect chat behavior.
-                if is_args_input
-                    && matches!(invocation.confirmation, ConfirmationMode::Ailoop(_))
-                    && tier == CommandRiskTier::Safe
-                {
-                    let confirmed =
-                        request_confirmation(&invocation.confirmation, cmd, false).await?;
-                    if !confirmed {
-                        return Err(BridgeError::SensitiveRequiresConfirmation(
-                            cmd.id.to_string(),
-                        ));
-                    }
-                }
                 match tier {
                     CommandRiskTier::Safe => {}
                     CommandRiskTier::Sensitive => {
@@ -437,9 +410,7 @@ mod tests {
                 Ok(())
             }
         }
-        let bridge = CommandAsToolBridge::new(policy)
-            .for_mcp()
-            .with_gate(Arc::new(NoopGate));
+        let bridge = CommandAsToolBridge::new(policy).with_gate(Arc::new(NoopGate));
         let mut ctx = NoopCtx;
         bridge
             .invoke(
