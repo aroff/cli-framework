@@ -9,6 +9,28 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeSemantics {
+    /// Ask/chat semantics:
+    /// - Enforce RiskEnforcer preflight
+    /// - Confirm sensitive/destructive (unless AssumeYes)
+    /// - Typed validation for JSON inputs when `spec.is_some() || validator.is_some()`
+    Chat,
+    /// MCP semantics:
+    /// - Do not enforce risk preflight
+    /// - Do not prompt / confirm
+    /// - Typed validation for JSON inputs only when `spec.is_some()`
+    Mcp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmationPromptStyle {
+    /// Matches historical `chat` behavior: destructive prompts include `DESTRUCTIVE`.
+    Chat,
+    /// Matches historical `ask` behavior: prompts never include `DESTRUCTIVE`.
+    Ask,
+}
+
 pub enum BridgeInput {
     Json(serde_json::Value),
     Args(CommandArgs),
@@ -69,6 +91,8 @@ pub trait BridgeGate: Send + Sync {
 pub struct CommandAsToolBridge {
     risk_policy: CommandRiskPolicy,
     gate: Option<Arc<dyn BridgeGate>>,
+    semantics: BridgeSemantics,
+    prompt_style: ConfirmationPromptStyle,
 }
 
 impl CommandAsToolBridge {
@@ -76,11 +100,23 @@ impl CommandAsToolBridge {
         Self {
             risk_policy,
             gate: None,
+            semantics: BridgeSemantics::Chat,
+            prompt_style: ConfirmationPromptStyle::Chat,
         }
     }
 
     pub fn with_gate(mut self, gate: Arc<dyn BridgeGate>) -> Self {
         self.gate = Some(gate);
+        self
+    }
+
+    pub fn with_semantics(mut self, semantics: BridgeSemantics) -> Self {
+        self.semantics = semantics;
+        self
+    }
+
+    pub fn with_prompt_style(mut self, prompt_style: ConfirmationPromptStyle) -> Self {
+        self.prompt_style = prompt_style;
         self
     }
 
@@ -120,20 +156,11 @@ impl CommandAsToolBridge {
 
         let parsed = self.parse_args(cmd, invocation.input)?;
 
-        // Semantics inference (internal):
-        // - Ask uses BridgeInput::Args (stringly args, risk gate + confirmation, no typed validation).
-        // - Chat uses BridgeInput::Json with no gate (risk gate + confirmation, typed validation when
-        //   `spec` or `validator` is present).
-        // - MCP uses BridgeInput::Json with a gate (no risk preflight, no confirmation; typed validation
-        //   only when `spec.is_some()`). MCP adapters MUST set a gate, using a no-op gate when needed.
-        let is_mcp = parsed.typed.is_some() && self.gate.is_some();
-
         // Typed validation rules vary per surface and MUST remain stable (§4.1).
         if let Some(ref typed) = parsed.typed {
-            let should_validate = if is_mcp {
-                cmd.spec.is_some()
-            } else {
-                cmd.spec.is_some() || cmd.validator.is_some()
+            let should_validate = match self.semantics {
+                BridgeSemantics::Mcp => cmd.spec.is_some(),
+                BridgeSemantics::Chat => cmd.spec.is_some() || cmd.validator.is_some(),
             };
             if should_validate {
                 let diagnostics = crate::app::dispatch::validate_typed_args(cmd, typed)
@@ -147,7 +174,7 @@ impl CommandAsToolBridge {
         let enforcer = RiskEnforcer::new(self.risk_policy.clone());
         let tier = enforcer.classify(cmd.id, cmd.category);
 
-        if !is_mcp {
+        if self.semantics == BridgeSemantics::Chat {
             let assume_yes = matches!(invocation.confirmation, ConfirmationMode::AssumeYes);
             let ailoop_available = matches!(invocation.confirmation, ConfirmationMode::Ailoop(_));
             if let Err(e) =
@@ -169,8 +196,13 @@ impl CommandAsToolBridge {
                 CommandRiskTier::Safe => {}
                 CommandRiskTier::Sensitive => {
                     if !assume_yes {
-                        let confirmed =
-                            request_confirmation(&invocation.confirmation, cmd, false).await?;
+                        let confirmed = request_confirmation(
+                            self.prompt_style,
+                            &invocation.confirmation,
+                            cmd,
+                            false,
+                        )
+                        .await?;
                         if !confirmed {
                             return Err(BridgeError::SensitiveRequiresConfirmation(
                                 cmd.id.to_string(),
@@ -180,8 +212,13 @@ impl CommandAsToolBridge {
                 }
                 CommandRiskTier::Destructive => {
                     if !assume_yes {
-                        let confirmed =
-                            request_confirmation(&invocation.confirmation, cmd, true).await?;
+                        let confirmed = request_confirmation(
+                            self.prompt_style,
+                            &invocation.confirmation,
+                            cmd,
+                            true,
+                        )
+                        .await?;
                         if !confirmed {
                             return Err(BridgeError::DestructiveBlocked(cmd.id.to_string()));
                         }
@@ -215,14 +252,24 @@ impl CommandAsToolBridge {
 }
 
 async fn request_confirmation(
+    prompt_style: ConfirmationPromptStyle,
     mode: &ConfirmationMode,
     cmd: &Command,
     destructive: bool,
 ) -> Result<bool, BridgeError> {
-    let action = if destructive {
-        format!("Execute DESTRUCTIVE command '{}'", cmd.id)
-    } else {
-        format!("Execute command '{}'", cmd.id)
+    let (action, prompt) = match (prompt_style, destructive) {
+        (ConfirmationPromptStyle::Ask, _) => (
+            format!("Execute command '{}'", cmd.id),
+            format!("Execute command '{}'? [y/N] ", cmd.id),
+        ),
+        (ConfirmationPromptStyle::Chat, false) => (
+            format!("Execute command '{}'", cmd.id),
+            format!("Execute command '{}'? [y/N] ", cmd.id),
+        ),
+        (ConfirmationPromptStyle::Chat, true) => (
+            format!("Execute DESTRUCTIVE command '{}'", cmd.id),
+            format!("Execute DESTRUCTIVE command '{}'? [y/N] ", cmd.id),
+        ),
     };
     match mode {
         ConfirmationMode::AssumeYes => Ok(true),
@@ -230,16 +277,9 @@ async fn request_confirmation(
             .request_confirmation(&action, None)
             .await
             .map_err(BridgeError::Execution),
-        ConfirmationMode::InteractiveStdin => {
-            let prompt = if destructive {
-                format!("Execute DESTRUCTIVE command '{}'? [y/N] ", cmd.id)
-            } else {
-                format!("Execute command '{}'? [y/N] ", cmd.id)
-            };
-            prompt_confirm_blocking(prompt)
-                .await
-                .map_err(BridgeError::Execution)
-        }
+        ConfirmationMode::InteractiveStdin => prompt_confirm_blocking(prompt)
+            .await
+            .map_err(BridgeError::Execution),
         ConfirmationMode::NonInteractive => {
             if destructive {
                 Err(BridgeError::DestructiveBlocked(cmd.id.to_string()))
@@ -402,7 +442,7 @@ mod tests {
             }),
         };
 
-        let bridge = CommandAsToolBridge::new(policy);
+        let bridge = CommandAsToolBridge::new(policy).with_semantics(BridgeSemantics::Mcp);
         struct NoopGate;
         #[async_trait]
         impl BridgeGate for NoopGate {

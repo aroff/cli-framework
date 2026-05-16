@@ -93,7 +93,11 @@ impl CommandsAsToolsExecutor {
 impl HostToolExecutor for CommandsAsToolsExecutor {
     fn list_tools(&self) -> Vec<crate::mcp::schema::McpToolDescriptor> {
         let bridge =
-            crate::command_surface::tool_bridge::CommandAsToolBridge::new(self.risk_policy.clone());
+            crate::command_surface::tool_bridge::CommandAsToolBridge::new(self.risk_policy.clone())
+                .with_semantics(crate::command_surface::tool_bridge::BridgeSemantics::Chat)
+                .with_prompt_style(
+                    crate::command_surface::tool_bridge::ConfirmationPromptStyle::Chat,
+                );
         self.tools
             .iter()
             .map(|(name, cmd)| bridge.describe(name, cmd))
@@ -130,7 +134,11 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
         );
 
         let bridge =
-            crate::command_surface::tool_bridge::CommandAsToolBridge::new(self.risk_policy.clone());
+            crate::command_surface::tool_bridge::CommandAsToolBridge::new(self.risk_policy.clone())
+                .with_semantics(crate::command_surface::tool_bridge::BridgeSemantics::Chat)
+                .with_prompt_style(
+                    crate::command_surface::tool_bridge::ConfirmationPromptStyle::Chat,
+                );
         let res = bridge
             .invoke(
                 ctx,

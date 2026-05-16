@@ -95,7 +95,9 @@ async fn execute_ask(
             .clone()
     };
 
-    let bridge = crate::command_surface::tool_bridge::CommandAsToolBridge::new(risk_policy);
+    let bridge = crate::command_surface::tool_bridge::CommandAsToolBridge::new(risk_policy)
+        .with_prompt_style(crate::command_surface::tool_bridge::ConfirmationPromptStyle::Ask)
+        .with_semantics(crate::command_surface::tool_bridge::BridgeSemantics::Chat);
     let confirmation = if assume_yes {
         crate::command_surface::tool_bridge::ConfirmationMode::AssumeYes
     } else {
