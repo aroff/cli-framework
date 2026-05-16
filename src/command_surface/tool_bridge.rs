@@ -9,6 +9,16 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeSemantics {
+    /// Chat tool calls (JSON input, risk gate + confirmation).
+    Chat,
+    /// Ask resolved invocations (stringly `CommandArgs`, risk gate + confirmation).
+    Ask,
+    /// MCP tool calls (JSON input, no risk preflight and no confirmation).
+    Mcp,
+}
+
 pub enum BridgeInput {
     Json(serde_json::Value),
     Args(CommandArgs),
@@ -66,20 +76,6 @@ pub trait BridgeGate: Send + Sync {
     ) -> Result<(), BridgeError>;
 }
 
-pub(crate) struct NoopBridgeGate;
-
-#[async_trait]
-impl BridgeGate for NoopBridgeGate {
-    async fn before_execute(
-        &self,
-        _cmd: &Command,
-        _args: &CommandArgs,
-        _tier: CommandRiskTier,
-    ) -> Result<(), BridgeError> {
-        Ok(())
-    }
-}
-
 pub struct CommandAsToolBridge {
     risk_policy: CommandRiskPolicy,
     gate: Option<Arc<dyn BridgeGate>>,
@@ -130,23 +126,27 @@ impl CommandAsToolBridge {
         ctx: &mut dyn AppContext,
         invocation: BridgeInvocation<'_>,
     ) -> Result<(), BridgeError> {
+        self.invoke_with_semantics(ctx, invocation, BridgeSemantics::Chat)
+            .await
+    }
+
+    pub async fn invoke_with_semantics(
+        &self,
+        ctx: &mut dyn AppContext,
+        invocation: BridgeInvocation<'_>,
+        semantics: BridgeSemantics,
+    ) -> Result<(), BridgeError> {
         let cmd = invocation.command;
 
         let parsed = self.parse_args(cmd, invocation.input)?;
 
-        // MCP semantics (§4.1) are selected by the MCP adapter providing a gate.
-        // This keeps the bridge free of hidden surface state while still allowing
-        // per-surface quirks to remain stable.
-        let mcp_semantics = self.gate.is_some()
-            && matches!(invocation.confirmation, ConfirmationMode::NonInteractive)
-            && parsed.typed.is_some();
-
         // Typed validation rules vary per surface and MUST remain stable (§4.1).
         if let Some(ref typed) = parsed.typed {
-            let should_validate = if mcp_semantics {
-                cmd.spec.is_some()
-            } else {
-                cmd.spec.is_some() || cmd.validator.is_some()
+            let should_validate = match semantics {
+                BridgeSemantics::Mcp => cmd.spec.is_some(),
+                BridgeSemantics::Chat => cmd.spec.is_some() || cmd.validator.is_some(),
+                // Ask does not run typed validation today.
+                BridgeSemantics::Ask => false,
             };
             if should_validate {
                 let diagnostics = crate::app::dispatch::validate_typed_args(cmd, typed)
@@ -160,7 +160,7 @@ impl CommandAsToolBridge {
         let enforcer = RiskEnforcer::new(self.risk_policy.clone());
         let tier = enforcer.classify(cmd.id, cmd.category);
 
-        if !mcp_semantics {
+        if semantics != BridgeSemantics::Mcp {
             let assume_yes = matches!(invocation.confirmation, ConfirmationMode::AssumeYes);
             let ailoop_available = matches!(invocation.confirmation, ConfirmationMode::Ailoop(_));
             if let Err(e) =
@@ -185,9 +185,10 @@ impl CommandAsToolBridge {
                         let confirmed =
                             request_confirmation(&invocation.confirmation, cmd, false).await?;
                         if !confirmed {
-                            return Err(BridgeError::SensitiveRequiresConfirmation(
-                                cmd.id.to_string(),
-                            ));
+                            return Err(BridgeError::Execution(anyhow::anyhow!(
+                                "USER_DECLINED_CONFIRMATION: sensitive command '{}'",
+                                cmd.id
+                            )));
                         }
                     }
                 }
@@ -196,7 +197,10 @@ impl CommandAsToolBridge {
                         let confirmed =
                             request_confirmation(&invocation.confirmation, cmd, true).await?;
                         if !confirmed {
-                            return Err(BridgeError::DestructiveBlocked(cmd.id.to_string()));
+                            return Err(BridgeError::Execution(anyhow::anyhow!(
+                                "USER_DECLINED_CONFIRMATION: destructive command '{}'",
+                                cmd.id
+                            )));
                         }
                     }
                 }
@@ -293,6 +297,7 @@ mod tests {
     use crate::spec::command_tree::CommandSpec;
     use std::future::Future;
     use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct NoopCtx;
     impl AppContext for NoopCtx {}
@@ -386,5 +391,49 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, BridgeError::SensitiveRequiresConfirmation(_)));
+    }
+
+    #[tokio::test]
+    async fn mcp_semantics_never_enforces_preflight_or_prompts() {
+        let mut policy = CommandRiskPolicy::default();
+        policy
+            .tiers
+            .insert("sensitive".to_string(), CommandRiskTier::Sensitive);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_exec = Arc::clone(&calls);
+        let cmd = Command {
+            id: "sensitive",
+            summary: "test",
+            syntax: None,
+            category: None,
+            spec: None,
+            validator: None,
+            expose_mcp: false,
+            execute: Arc::new(move |_ctx, _args| {
+                let calls_for_exec = Arc::clone(&calls_for_exec);
+                Box::pin(async move {
+                    calls_for_exec.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            }),
+        };
+
+        let bridge = CommandAsToolBridge::new(policy);
+        let mut ctx = NoopCtx;
+        bridge
+            .invoke_with_semantics(
+                &mut ctx,
+                BridgeInvocation {
+                    command: &cmd,
+                    input: BridgeInput::Json(serde_json::json!({})),
+                    confirmation: ConfirmationMode::NonInteractive,
+                },
+                BridgeSemantics::Mcp,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

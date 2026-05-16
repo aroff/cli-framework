@@ -341,7 +341,7 @@ mod tests {
 
         let parent = CommandPath::root_for("cluster");
         let mut children = registry.list_children(&parent);
-        children.sort_by(|a, b| a.to_path_string().cmp(&b.to_path_string()));
+        children.sort_by_key(|p| p.to_path_string());
         assert_eq!(
             children
                 .iter()

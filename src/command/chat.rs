@@ -2,6 +2,7 @@ use crate::ailoop::AiloopClient;
 use crate::app::context::AppContext;
 use crate::command::{Command, CommandArgs, CommandRegistry, CommandResult};
 use crate::security::command_risk::CommandRiskPolicy;
+use crate::security::RiskEnforcer;
 use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use crate::spec::command_tree::{CommandSpec, EnvVarEntry, ExitCodeEntry};
 use async_trait::async_trait;
@@ -107,20 +108,13 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
         ctx: &mut dyn AppContext,
         opts: &ChatToolCallOptions,
     ) -> anyhow::Result<()> {
-        let cmd = match self.tools.get(tool_name) {
-            Some(cmd) => cmd,
-            None => {
-                let err = crate::command_surface::tool_bridge::BridgeError::ToolNotFound(
-                    tool_name.to_string(),
-                );
-                return match err {
-                    crate::command_surface::tool_bridge::BridgeError::ToolNotFound(name) => Err(
-                        anyhow::anyhow!("{}: tool '{}' not registered", CHAT_TOOL_NOT_FOUND, name),
-                    ),
-                    _ => unreachable!("tool-not-found mapping must be exhaustive"),
-                };
-            }
-        };
+        let cmd = self.tools.get(tool_name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "{}: tool '{}' not registered",
+                CHAT_TOOL_NOT_FOUND,
+                tool_name
+            )
+        })?;
 
         let confirmation = if opts.yolo {
             crate::command_surface::tool_bridge::ConfirmationMode::AssumeYes
@@ -139,13 +133,14 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
         let bridge =
             crate::command_surface::tool_bridge::CommandAsToolBridge::new(self.risk_policy.clone());
         let res = bridge
-            .invoke(
+            .invoke_with_semantics(
                 ctx,
                 crate::command_surface::tool_bridge::BridgeInvocation {
                     command: cmd,
                     input: crate::command_surface::tool_bridge::BridgeInput::Json(arguments),
                     confirmation,
                 },
+                crate::command_surface::tool_bridge::BridgeSemantics::Chat,
             )
             .await;
 
@@ -198,6 +193,28 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
                 }
             }
             Err(crate::command_surface::tool_bridge::BridgeError::Execution(e)) => {
+                let msg = e.to_string();
+                if msg.starts_with("USER_DECLINED_CONFIRMATION:") {
+                    let tier =
+                        RiskEnforcer::new(self.risk_policy.clone()).classify(cmd.id, cmd.category);
+                    match tier {
+                        crate::security::CommandRiskTier::Sensitive => {
+                            return Err(anyhow::anyhow!(
+                                "{}: user declined confirmation for '{}'",
+                                CHAT_RISK_REQUIRES_CONFIRMATION,
+                                cmd.id
+                            ));
+                        }
+                        crate::security::CommandRiskTier::Destructive => {
+                            return Err(anyhow::anyhow!(
+                                "{}: user declined confirmation for '{}'",
+                                CHAT_DESTRUCTIVE_BLOCKED,
+                                cmd.id
+                            ));
+                        }
+                        crate::security::CommandRiskTier::Safe => {}
+                    }
+                }
                 Err(anyhow::anyhow!("{}: {}", CHAT_COMMAND_EXECUTION_FAILED, e))
             }
             Err(other) => Err(anyhow::anyhow!(

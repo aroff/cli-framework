@@ -222,83 +222,6 @@ impl crate::command_surface::tool_bridge::BridgeGate for McpToolGateBridgeAdapte
     }
 }
 
-#[cfg(feature = "mcp-server")]
-async fn invoke_mcp_tool_call(
-    tool_registry: &McpToolRegistry,
-    cmd: &Command,
-    tool_name: &str,
-    arguments: Option<JsonObject>,
-    transport: McpTransportKind,
-) -> Result<CallToolResult, ErrorData> {
-    use crate::command_surface::tool_bridge::{
-        BridgeError, BridgeInput, BridgeInvocation, CommandAsToolBridge, ConfirmationMode,
-    };
-    use std::borrow::Cow;
-
-    let mut bridge = CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone());
-    bridge = if let Some(ref gate) = tool_registry.gate {
-        bridge.with_gate(Arc::new(McpToolGateBridgeAdapter {
-            gate: Arc::clone(gate),
-            transport,
-            tool_name: tool_name.to_string(),
-        }))
-    } else {
-        bridge.with_gate(Arc::new(
-            crate::command_surface::tool_bridge::NoopBridgeGate,
-        ))
-    };
-
-    let arguments_value = match arguments {
-        Some(obj) => Value::Object(obj),
-        None => Value::Null,
-    };
-
-    let mut ctx = McpAppContext;
-    match bridge
-        .invoke(
-            &mut ctx,
-            BridgeInvocation {
-                command: cmd,
-                input: BridgeInput::Json(arguments_value),
-                confirmation: ConfirmationMode::NonInteractive,
-            },
-        )
-        .await
-    {
-        Ok(()) => Ok(CallToolResult::success(vec![Content::text("OK")])),
-        Err(BridgeError::ToolNotFound(name)) => Err(ErrorData::new(
-            rmcp::model::ErrorCode(-32001),
-            Cow::Owned(format!("MCP_CMD_NOT_FOUND: tool '{}' not registered", name)),
-            None,
-        )),
-        Err(BridgeError::ArgValidation(msg)) => Err(ErrorData::new(
-            rmcp::model::ErrorCode(-32002),
-            Cow::Owned(format!("MCP_ARG_VALIDATION_FAILED: {}", msg)),
-            None,
-        )),
-        Err(BridgeError::GateDenied(msg)) => Err(ErrorData::new(
-            rmcp::model::ErrorCode(-32005),
-            Cow::Owned(msg),
-            None,
-        )),
-        Err(BridgeError::GateFailed(msg)) => Err(ErrorData::new(
-            rmcp::model::ErrorCode(-32006),
-            Cow::Owned(msg),
-            None,
-        )),
-        Err(BridgeError::Execution(e)) => Err(ErrorData::new(
-            rmcp::model::ErrorCode(-32003),
-            Cow::Owned(format!("MCP_EXECUTION_FAILED: {}", e)),
-            None,
-        )),
-        Err(other) => Err(ErrorData::new(
-            rmcp::model::ErrorCode(-32006),
-            Cow::Owned(format!("MCP_INTERNAL_ERROR: {}", other)),
-            None,
-        )),
-    }
-}
-
 pub(crate) fn json_value_to_arg_value(v: &Value) -> Option<ArgValue> {
     match v {
         Value::Bool(b) => Some(ArgValue::Bool(*b)),
@@ -456,26 +379,73 @@ pub async fn dispatch_tool_call(
     arguments: Option<JsonObject>,
     transport: McpTransportKind,
 ) -> Result<CallToolResult, ErrorData> {
-    let cmd = match tool_registry.resolve_tool(tool_name) {
-        Some(cmd) => cmd,
-        None => {
-            let err = crate::command_surface::tool_bridge::BridgeError::ToolNotFound(
-                tool_name.to_string(),
-            );
-            return match err {
-                crate::command_surface::tool_bridge::BridgeError::ToolNotFound(name) => {
-                    Err(ErrorData::new(
-                        rmcp::model::ErrorCode(-32001),
-                        Cow::Owned(format!("MCP_CMD_NOT_FOUND: tool '{}' not registered", name)),
-                        None,
-                    ))
-                }
-                _ => unreachable!("tool-not-found mapping must be exhaustive"),
-            };
-        }
+    use crate::command_surface::tool_bridge::{
+        BridgeError, BridgeInput, BridgeInvocation, BridgeSemantics, CommandAsToolBridge,
+        ConfirmationMode,
     };
 
-    invoke_mcp_tool_call(tool_registry, cmd, tool_name, arguments, transport).await
+    let cmd = tool_registry.resolve_tool(tool_name).ok_or_else(|| {
+        ErrorData::new(
+            rmcp::model::ErrorCode(-32001),
+            Cow::Owned(format!(
+                "MCP_CMD_NOT_FOUND: tool '{}' not registered",
+                tool_name
+            )),
+            None,
+        )
+    })?;
+
+    let mut bridge = CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone());
+    if let Some(ref gate) = tool_registry.gate {
+        bridge = bridge.with_gate(Arc::new(McpToolGateBridgeAdapter {
+            gate: Arc::clone(gate),
+            transport,
+            tool_name: tool_name.to_string(),
+        }));
+    }
+
+    let arguments_value = arguments.map(Value::Object).unwrap_or(Value::Null);
+    let mut ctx = McpAppContext;
+
+    match bridge
+        .invoke_with_semantics(
+            &mut ctx,
+            BridgeInvocation {
+                command: cmd,
+                input: BridgeInput::Json(arguments_value),
+                confirmation: ConfirmationMode::NonInteractive,
+            },
+            BridgeSemantics::Mcp,
+        )
+        .await
+    {
+        Ok(()) => Ok(CallToolResult::success(vec![Content::text("OK")])),
+        Err(BridgeError::ArgValidation(msg)) => Err(ErrorData::new(
+            rmcp::model::ErrorCode(-32002),
+            Cow::Owned(format!("MCP_ARG_VALIDATION_FAILED: {}", msg)),
+            None,
+        )),
+        Err(BridgeError::GateDenied(msg)) => Err(ErrorData::new(
+            rmcp::model::ErrorCode(-32005),
+            Cow::Owned(msg),
+            None,
+        )),
+        Err(BridgeError::GateFailed(msg)) => Err(ErrorData::new(
+            rmcp::model::ErrorCode(-32006),
+            Cow::Owned(msg),
+            None,
+        )),
+        Err(BridgeError::Execution(e)) => Err(ErrorData::new(
+            rmcp::model::ErrorCode(-32003),
+            Cow::Owned(format!("MCP_EXECUTION_FAILED: {}", e)),
+            None,
+        )),
+        Err(other) => Err(ErrorData::new(
+            rmcp::model::ErrorCode(-32006),
+            Cow::Owned(format!("MCP_INTERNAL_ERROR: {}", other)),
+            None,
+        )),
+    }
 }
 
 /// Dispatches a tool call in a separate tokio task (§4.7).
