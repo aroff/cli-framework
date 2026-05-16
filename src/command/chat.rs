@@ -3,6 +3,7 @@ use crate::app::context::AppContext;
 use crate::command::{Command, CommandArgs, CommandRegistry, CommandResult};
 use crate::llm::CommandResolution;
 use crate::security::command_risk::{CommandRiskPolicy, CommandRiskTier};
+use crate::security::RiskEnforcer;
 use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use crate::spec::command_tree::{CommandSpec, EnvVarEntry, ExitCodeEntry};
 use anyhow::Context;
@@ -182,13 +183,10 @@ async fn enforce_chat_risk_gate(
         reasoning: None,
     };
     let ailoop_available = ailoop_client.is_some();
-    if let Err(e) = crate::command::ask::enforce_risk_gate(
-        policy,
-        &resolution,
-        cmd.category,
-        yolo,
-        ailoop_available,
-    ) {
+    let enforcer = RiskEnforcer::new(policy.clone());
+    if let Err(e) =
+        enforcer.enforce_preflight(&resolution.command_id, cmd.category, yolo, ailoop_available)
+    {
         let msg = e.to_string();
         if msg.contains("SENSITIVE_COMMAND_REQUIRES_CONFIRMATION") {
             return Err(anyhow::anyhow!(
@@ -207,7 +205,7 @@ async fn enforce_chat_risk_gate(
         return Err(e);
     }
 
-    let tier = policy.classify(cmd.id, cmd.category);
+    let tier = enforcer.classify(cmd.id, cmd.category);
     match tier {
         CommandRiskTier::Safe => Ok(()),
         CommandRiskTier::Sensitive => {

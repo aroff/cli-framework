@@ -10,6 +10,7 @@ use crate::command::registry::CommandRegistry;
 use crate::command::Command;
 #[cfg(any(feature = "mcp-server", feature = "chat"))]
 use crate::command::CommandArgs;
+use crate::security::RiskEnforcer;
 #[cfg(any(feature = "mcp-server", feature = "chat"))]
 use crate::spec::value::ArgValue;
 #[cfg(feature = "mcp-server")]
@@ -66,6 +67,7 @@ pub struct McpToolRegistry {
     tools: HashMap<String, Command>,
     app_name: String,
     risk_policy: crate::security::CommandRiskPolicy,
+    risk_enforcer: RiskEnforcer,
     #[cfg(feature = "mcp-server")]
     gate: Option<std::sync::Arc<dyn McpToolGate>>,
 }
@@ -110,13 +112,15 @@ impl McpToolRegistry {
             tools,
             app_name: app_name.to_string(),
             risk_policy: crate::security::CommandRiskPolicy::default(),
+            risk_enforcer: RiskEnforcer::new(crate::security::CommandRiskPolicy::default()),
             #[cfg(feature = "mcp-server")]
             gate: None,
         }
     }
 
     pub fn with_risk_policy(mut self, policy: crate::security::CommandRiskPolicy) -> Self {
-        self.risk_policy = policy;
+        self.risk_policy = policy.clone();
+        self.risk_enforcer = RiskEnforcer::new(policy);
         self
     }
 
@@ -404,7 +408,7 @@ pub async fn dispatch_tool_call(
     }
 
     // Apply CommandRiskPolicy check (§4.6, G4, G5 — risk tiers enforced for MCP callers).
-    let tier = tool_registry.risk_policy.classify(cmd.id, cmd.category);
+    let tier = tool_registry.risk_enforcer.classify(cmd.id, cmd.category);
     if tier == crate::security::CommandRiskTier::Destructive {
         log::warn!(
             "MCP: command '{}' has Destructive risk tier; executing under MCP authority",

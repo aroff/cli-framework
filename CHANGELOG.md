@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Breaking
+
+- Removed `cli_framework::auth` and `cli_framework::data_source::DataSource` (and the prelude
+  re-export). These modules were not integrated into command dispatch; consumers should implement
+  auth and data-refresh concerns in their application layer.
+
 ## [0.4.0] — 2026-05-04
 
 ### Breaking
