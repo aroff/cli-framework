@@ -228,22 +228,6 @@ impl crate::command_surface::tool_bridge::BridgeGate for McpToolGateBridgeAdapte
 }
 
 #[cfg(feature = "mcp-server")]
-struct NoopMcpBridgeGate;
-
-#[cfg(feature = "mcp-server")]
-#[async_trait::async_trait]
-impl crate::command_surface::tool_bridge::BridgeGate for NoopMcpBridgeGate {
-    async fn before_execute(
-        &self,
-        _cmd: &Command,
-        _args: &CommandArgs,
-        _tier: crate::security::command_risk::CommandRiskTier,
-    ) -> Result<(), crate::command_surface::tool_bridge::BridgeError> {
-        Ok(())
-    }
-}
-
-#[cfg(feature = "mcp-server")]
 impl McpToolRegistry {
     fn bridge_for_call(
         &self,
@@ -252,17 +236,14 @@ impl McpToolRegistry {
     ) -> crate::command_surface::tool_bridge::CommandAsToolBridge {
         use crate::command_surface::tool_bridge::CommandAsToolBridge;
 
-        let bridge = CommandAsToolBridge::new(self.risk_enforcer.policy().clone());
+        let bridge = CommandAsToolBridge::new(self.risk_enforcer.policy().clone()).for_mcp();
         match self.gate.as_ref() {
             Some(gate) => bridge.with_gate(Arc::new(McpToolGateBridgeAdapter {
                 gate: Arc::clone(gate),
                 transport,
                 tool_name: tool_name.to_string(),
             })),
-            // Always attach a gate for MCP calls so the bridge can reliably apply MCP-specific
-            // semantics (no risk preflight/confirmation; MCP-quirk typed validation rules) even
-            // when no user-provided `McpToolGate` is configured.
-            None => bridge.with_gate(Arc::new(NoopMcpBridgeGate)),
+            None => bridge,
         }
     }
 }

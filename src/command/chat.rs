@@ -153,54 +153,13 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
                 cmd_id
             )),
             Err(crate::command_surface::tool_bridge::BridgeError::DestructiveBlocked(cmd_id)) => {
-                let env_allowed = std::env::var("ALLOW_DESTRUCTIVE_COMMANDS")
-                    .map(|v| v == "1" || v == "true")
-                    .unwrap_or(false);
-                let ailoop_available = opts.ailoop_client.is_some();
-                let interactive = crate::cli_mode::is_interactive();
-
-                if !env_allowed {
-                    Err(anyhow::anyhow!(
-                        "{}: command '{}' is destructive; gated by ALLOW_DESTRUCTIVE_COMMANDS and interactive confirmation",
-                        CHAT_DESTRUCTIVE_BLOCKED,
-                        cmd_id
-                    ))
-                } else if matches!(
-                    confirmation,
-                    crate::command_surface::tool_bridge::ConfirmationMode::NonInteractive
-                ) || (!interactive && !ailoop_available)
-                {
-                    Err(anyhow::anyhow!(
-                        "{}: command '{}' is destructive; requires interactive confirmation",
-                        CHAT_DESTRUCTIVE_BLOCKED,
-                        cmd_id
-                    ))
-                } else {
-                    // This path should be unreachable: when confirmation is available the bridge
-                    // prompts and either executes or returns a decline marker.
-                    Err(anyhow::anyhow!(
-                        "{}: command '{}' is destructive; requires interactive confirmation",
-                        CHAT_DESTRUCTIVE_BLOCKED,
-                        cmd_id
-                    ))
-                }
+                Err(anyhow::anyhow!(
+                    "{}: command '{}' is destructive; requires confirmation",
+                    CHAT_DESTRUCTIVE_BLOCKED,
+                    cmd_id
+                ))
             }
             Err(crate::command_surface::tool_bridge::BridgeError::Execution(e)) => {
-                if let Some((kind, cmd_id)) =
-                    crate::command_surface::tool_bridge::is_user_declined_confirmation_error(&e)
-                {
-                    return Err(anyhow::anyhow!(
-                        "{}: user declined confirmation for '{}'",
-                        if kind
-                            == crate::command_surface::tool_bridge::DeclinedConfirmationKind::Destructive
-                        {
-                            CHAT_DESTRUCTIVE_BLOCKED
-                        } else {
-                            CHAT_RISK_REQUIRES_CONFIRMATION
-                        },
-                        cmd_id
-                    ));
-                }
                 Err(anyhow::anyhow!("{}: {}", CHAT_COMMAND_EXECUTION_FAILED, e))
             }
             Err(other) => Err(anyhow::anyhow!(

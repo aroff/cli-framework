@@ -9,7 +9,11 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-const USER_DECLINED_CONFIRMATION_PREFIX: &str = "USER_DECLINED_CONFIRMATION:";
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BridgeSurfaceMode {
+    ChatAsk,
+    Mcp,
+}
 
 pub enum BridgeInput {
     Json(serde_json::Value),
@@ -72,6 +76,7 @@ pub trait BridgeGate: Send + Sync {
 pub struct CommandAsToolBridge {
     risk_policy: CommandRiskPolicy,
     gate: Option<Arc<dyn BridgeGate>>,
+    surface: BridgeSurfaceMode,
 }
 
 impl CommandAsToolBridge {
@@ -79,11 +84,20 @@ impl CommandAsToolBridge {
         Self {
             risk_policy,
             gate: None,
+            surface: BridgeSurfaceMode::ChatAsk,
         }
     }
 
     pub fn with_gate(mut self, gate: Arc<dyn BridgeGate>) -> Self {
         self.gate = Some(gate);
+        self
+    }
+
+    /// Select MCP semantics for JSON tool calls:
+    /// - typed validation only when `spec.is_some()`
+    /// - no risk preflight and no confirmation prompts
+    pub fn for_mcp(mut self) -> Self {
+        self.surface = BridgeSurfaceMode::Mcp;
         self
     }
 
@@ -127,13 +141,11 @@ impl CommandAsToolBridge {
         invocation: BridgeInvocation<'_>,
     ) -> Result<(), BridgeError> {
         let cmd = invocation.command;
-        let is_mcp_surface = self.gate.is_some()
-            && matches!(invocation.confirmation, ConfirmationMode::NonInteractive);
 
         let parsed = self.parse_args(cmd, invocation.input)?;
 
         if let Some(ref typed) = parsed.typed {
-            let should_validate = if is_mcp_surface {
+            let should_validate = if self.surface == BridgeSurfaceMode::Mcp {
                 // Preserve MCP behavior: typed validation only runs when `spec.is_some()`.
                 cmd.spec.is_some()
             } else {
@@ -152,7 +164,7 @@ impl CommandAsToolBridge {
         let enforcer = RiskEnforcer::new(self.risk_policy.clone());
         let tier = enforcer.classify(cmd.id, cmd.category);
 
-        if !is_mcp_surface {
+        if self.surface == BridgeSurfaceMode::ChatAsk {
             let assume_yes = matches!(invocation.confirmation, ConfirmationMode::AssumeYes);
             let ailoop_available = matches!(invocation.confirmation, ConfirmationMode::Ailoop(_));
             if let Err(e) =
@@ -167,7 +179,8 @@ impl CommandAsToolBridge {
                 if msg.starts_with("DESTRUCTIVE_COMMAND_BLOCKED:") {
                     return Err(BridgeError::DestructiveBlocked(cmd.id.to_string()));
                 }
-                return Err(BridgeError::Execution(e));
+                log::warn!("RiskEnforcer::enforce_preflight failed unexpectedly: {msg}");
+                return Err(BridgeError::DestructiveBlocked(cmd.id.to_string()));
             }
 
             if !assume_yes {
@@ -226,16 +239,12 @@ async fn request_confirmation(
                 .map_err(BridgeError::Execution)?;
             if confirmed {
                 Ok(())
+            } else if destructive {
+                Err(BridgeError::DestructiveBlocked(cmd.id.to_string()))
             } else {
-                Err(BridgeError::Execution(anyhow::anyhow!(
-                    "{USER_DECLINED_CONFIRMATION_PREFIX}{}:{}",
-                    if destructive {
-                        "destructive"
-                    } else {
-                        "sensitive"
-                    },
-                    cmd.id
-                )))
+                Err(BridgeError::SensitiveRequiresConfirmation(
+                    cmd.id.to_string(),
+                ))
             }
         }
         ConfirmationMode::InteractiveStdin => {
@@ -244,16 +253,12 @@ async fn request_confirmation(
                 .map_err(BridgeError::Execution)?;
             if confirmed {
                 Ok(())
+            } else if destructive {
+                Err(BridgeError::DestructiveBlocked(cmd.id.to_string()))
             } else {
-                Err(BridgeError::Execution(anyhow::anyhow!(
-                    "{USER_DECLINED_CONFIRMATION_PREFIX}{}:{}",
-                    if destructive {
-                        "destructive"
-                    } else {
-                        "sensitive"
-                    },
-                    cmd.id
-                )))
+                Err(BridgeError::SensitiveRequiresConfirmation(
+                    cmd.id.to_string(),
+                ))
             }
         }
         ConfirmationMode::NonInteractive => {
@@ -266,28 +271,6 @@ async fn request_confirmation(
             }
         }
     }
-}
-
-pub(crate) fn is_user_declined_confirmation_error(
-    err: &anyhow::Error,
-) -> Option<(DeclinedConfirmationKind, String)> {
-    let msg = err.to_string();
-    let rest = msg.strip_prefix(USER_DECLINED_CONFIRMATION_PREFIX)?;
-    let (kind, cmd_id) = rest.split_once(':')?;
-    if cmd_id.is_empty() {
-        return None;
-    }
-    match kind {
-        "sensitive" => Some((DeclinedConfirmationKind::Sensitive, cmd_id.to_string())),
-        "destructive" => Some((DeclinedConfirmationKind::Destructive, cmd_id.to_string())),
-        _ => None,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DeclinedConfirmationKind {
-    Sensitive,
-    Destructive,
 }
 
 async fn prompt_confirm_blocking(prompt: String) -> anyhow::Result<bool> {
@@ -453,7 +436,9 @@ mod tests {
             }),
         };
 
-        let bridge = CommandAsToolBridge::new(policy).with_gate(Arc::new(NoopGate));
+        let bridge = CommandAsToolBridge::new(policy)
+            .for_mcp()
+            .with_gate(Arc::new(NoopGate));
         let mut ctx = NoopCtx;
         bridge
             .invoke(
@@ -468,13 +453,5 @@ mod tests {
             .unwrap();
 
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn user_declined_confirmation_marker_is_detected() {
-        let err = anyhow::anyhow!("{USER_DECLINED_CONFIRMATION_PREFIX}sensitive:mycmd");
-        let (kind, cmd_id) = is_user_declined_confirmation_error(&err).expect("marker detected");
-        assert_eq!(kind, DeclinedConfirmationKind::Sensitive);
-        assert_eq!(cmd_id, "mycmd");
     }
 }
