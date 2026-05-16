@@ -3,6 +3,7 @@ use crate::app::context::AppContext;
 use crate::command::{Command, CommandArgs, CommandRegistry, CommandResult};
 use crate::llm::{CommandMetadata, CommandResolution, LlmProvider};
 use crate::security::command_risk::CommandRiskPolicy;
+use crate::security::RiskEnforcer;
 use std::sync::Arc;
 
 pub const ASK_DEPRECATED: &str = "ASK_DEPRECATED";
@@ -81,13 +82,8 @@ async fn execute_ask(
         .find(|m| m.id == resolution.command_id)
         .and_then(|m| m.category.as_deref());
 
-    enforce_risk_gate(
-        &risk_policy,
-        &resolution,
-        command_category,
-        assume_yes,
-        true,
-    )?;
+    let enforcer = RiskEnforcer::new(risk_policy);
+    enforcer.enforce_preflight(&resolution.command_id, command_category, assume_yes, true)?;
 
     print_resolution(&resolution);
 
@@ -120,62 +116,6 @@ fn validate_resolution(resolution: &CommandResolution) -> anyhow::Result<()> {
         return Err(anyhow::anyhow!("Recursive ask invocation is not allowed"));
     }
     Ok(())
-}
-
-pub fn enforce_risk_gate(
-    policy: &CommandRiskPolicy,
-    resolution: &CommandResolution,
-    command_category: Option<&str>,
-    assume_yes: bool,
-    ailoop_available: bool,
-) -> anyhow::Result<()> {
-    use crate::security::command_risk::CommandRiskTier;
-    let tier = policy.classify(&resolution.command_id, command_category);
-    match tier {
-        CommandRiskTier::Safe => Ok(()),
-        CommandRiskTier::Sensitive => {
-            if !ailoop_available && !crate::cli_mode::is_interactive() && !assume_yes {
-                log::warn!(
-                    "Sensitive command '{}' blocked in non-interactive mode without --yes",
-                    resolution.command_id
-                );
-                return Err(anyhow::anyhow!(
-                    "SENSITIVE_COMMAND_REQUIRES_CONFIRMATION: command '{}' is sensitive \
-                     and requires interactive confirmation",
-                    resolution.command_id
-                ));
-            }
-            Ok(())
-        }
-        CommandRiskTier::Destructive => {
-            let env_allowed = std::env::var("ALLOW_DESTRUCTIVE_COMMANDS")
-                .map(|v| v == "1" || v == "true")
-                .unwrap_or(false);
-            if !env_allowed {
-                log::warn!(
-                    "Destructive command '{}' blocked: ALLOW_DESTRUCTIVE_COMMANDS not set",
-                    resolution.command_id
-                );
-                return Err(anyhow::anyhow!(
-                    "DESTRUCTIVE_COMMAND_BLOCKED: command '{}' is destructive; \
-                     set ALLOW_DESTRUCTIVE_COMMANDS=1 and confirm interactively",
-                    resolution.command_id
-                ));
-            }
-            if !ailoop_available && !crate::cli_mode::is_interactive() {
-                log::warn!(
-                    "Destructive command '{}' blocked: non-interactive terminal",
-                    resolution.command_id
-                );
-                return Err(anyhow::anyhow!(
-                    "DESTRUCTIVE_COMMAND_BLOCKED: command '{}' requires an interactive \
-                     terminal or ailoop when ALLOW_DESTRUCTIVE_COMMANDS=1",
-                    resolution.command_id
-                ));
-            }
-            Ok(())
-        }
-    }
 }
 
 fn print_resolution(resolution: &CommandResolution) {

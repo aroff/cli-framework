@@ -66,6 +66,11 @@ Also: `auth`, `data_source`; `observability`, `testkit` behind features.
 cargo test
 ```
 
+Tests run in parallel within a single binary and share the process environment.
+Any test that mutates env vars (`std::env::set_var` / `remove_var`) MUST use a
+unique, test-scoped name (e.g. `CFW_TEST_<TEST>_<PURPOSE>`) — generic names like
+`TEST_VAR` cause flaky races between tests that touch the same key.
+
 ## Local CI parity
 
 ```bash

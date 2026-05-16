@@ -60,20 +60,20 @@ fn test_safe_tty_detection_wrapper() {
 
 #[test]
 fn test_read_env_var() {
-    // Test reading an existing environment variable
-    env::set_var("TEST_VAR", "test_value");
-    let result = cli_mode::read_env_var("TEST_VAR");
+    // Use a name unique to this test so parallel tests can't race on it.
+    env::set_var("CFW_TEST_READ_ENV_VAR_VALUE", "test_value");
+    let result = cli_mode::read_env_var("CFW_TEST_READ_ENV_VAR_VALUE");
     assert_eq!(result, Some("test_value".to_string()));
-    env::remove_var("TEST_VAR");
+    env::remove_var("CFW_TEST_READ_ENV_VAR_VALUE");
 }
 
 #[test]
 fn test_read_env_var_case_insensitive() {
-    // Test that values are converted to lowercase
-    env::set_var("TEST_VAR", "UPPERCASE");
-    let result = cli_mode::read_env_var("TEST_VAR");
+    // Use a name unique to this test so parallel tests can't race on it.
+    env::set_var("CFW_TEST_READ_ENV_VAR_CASE", "UPPERCASE");
+    let result = cli_mode::read_env_var("CFW_TEST_READ_ENV_VAR_CASE");
     assert_eq!(result, Some("uppercase".to_string()));
-    env::remove_var("TEST_VAR");
+    env::remove_var("CFW_TEST_READ_ENV_VAR_CASE");
 }
 
 #[test]

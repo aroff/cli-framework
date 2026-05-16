@@ -5,7 +5,7 @@
 //! This framework provides command execution, LLM-powered natural language command resolution,
 //! plugin system, ailoop-core integration for human-in-the-loop interactions, and
 //! CLI output utilities (tables, JSON, messages, progress indicators)
-//! so application authors can focus on implementing commands and data sources
+//! so application authors can focus on implementing commands
 //! rather than CLI infrastructure.
 //!
 //! ## Features
@@ -57,7 +57,6 @@ pub mod app;
 pub mod cli_mode;
 pub mod cli_output;
 pub mod command;
-pub mod data_source;
 pub mod message;
 
 // New modules for CLI framework
@@ -69,7 +68,6 @@ pub mod plugin;
 #[cfg(feature = "observability")]
 pub mod observability;
 
-pub mod auth;
 pub mod retry;
 pub mod security;
 
@@ -106,7 +104,6 @@ pub mod project_config;
 pub mod prelude {
     pub use crate::app::{AppBuilder, AppContext, AppMeta};
     pub use crate::command::{Command, CommandArgs};
-    pub use crate::data_source::DataSource;
     pub use crate::llm::{CommandMetadata, CommandResolution, LlmProvider};
     pub use crate::message::{AppMessage, AppMessageKind};
     pub use crate::plugin::PluginRegistryManager;
