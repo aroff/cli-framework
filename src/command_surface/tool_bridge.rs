@@ -69,6 +69,7 @@ pub trait BridgeGate: Send + Sync {
 pub struct CommandAsToolBridge {
     risk_policy: CommandRiskPolicy,
     gate: Option<Arc<dyn BridgeGate>>,
+    surface: BridgeSurface,
 }
 
 impl CommandAsToolBridge {
@@ -76,7 +77,17 @@ impl CommandAsToolBridge {
         Self {
             risk_policy,
             gate: None,
+            surface: BridgeSurface::ChatOrAsk,
         }
+    }
+
+    /// Configure the bridge for MCP dispatch semantics (§4.1).
+    ///
+    /// - Never enforce risk preflight or prompt for confirmation.
+    /// - Typed validation from JSON runs only when `cmd.spec.is_some()`.
+    pub fn as_mcp(mut self) -> Self {
+        self.surface = BridgeSurface::Mcp;
+        self
     }
 
     pub fn with_gate(mut self, gate: Arc<dyn BridgeGate>) -> Self {
@@ -121,18 +132,16 @@ impl CommandAsToolBridge {
         let parsed = self.parse_args(cmd, invocation.input)?;
 
         // Typed validation rules vary per surface and MUST remain stable (§4.1).
-        //
-        // Bridge decision: MCP adapters always install a gate adapter (even when the
-        // underlying gate is `None`). This keeps the public bridge API fixed (§5.1)
-        // while preserving legacy per-surface validation + risk behavior.
-        let is_mcp_call = self.gate.is_some();
         if let Some(ref typed) = parsed.typed {
-            let should_validate = if is_mcp_call {
-                // MCP: validate only when spec is present.
-                cmd.spec.is_some()
-            } else {
-                // Chat: validate when spec OR custom validator exists.
-                cmd.spec.is_some() || cmd.validator.is_some()
+            let should_validate = match self.surface {
+                BridgeSurface::Mcp => {
+                    // MCP: validate only when spec is present.
+                    cmd.spec.is_some()
+                }
+                BridgeSurface::ChatOrAsk => {
+                    // Chat: validate when spec OR custom validator exists.
+                    cmd.spec.is_some() || cmd.validator.is_some()
+                }
             };
             if should_validate {
                 let diagnostics = crate::app::dispatch::validate_typed_args(cmd, typed)
@@ -147,11 +156,16 @@ impl CommandAsToolBridge {
         let tier = enforcer.classify(cmd.id, cmd.category);
 
         // Ask/chat: enforce preflight + confirmation; MCP: never enforce or prompt (§4.1).
-        if !is_mcp_call {
+        if self.surface == BridgeSurface::ChatOrAsk {
             let assume_yes = matches!(invocation.confirmation, ConfirmationMode::AssumeYes);
-            let ailoop_available = matches!(invocation.confirmation, ConfirmationMode::Ailoop(_));
+            let confirmation_available = matches!(
+                invocation.confirmation,
+                ConfirmationMode::AssumeYes
+                    | ConfirmationMode::Ailoop(_)
+                    | ConfirmationMode::InteractiveStdin
+            );
             if let Err(e) =
-                enforcer.enforce_preflight(cmd.id, cmd.category, assume_yes, ailoop_available)
+                enforcer.enforce_preflight(cmd.id, cmd.category, assume_yes, confirmation_available)
             {
                 let msg = e.to_string();
                 if msg.contains("SENSITIVE_COMMAND_REQUIRES_CONFIRMATION") {
@@ -210,6 +224,12 @@ impl CommandAsToolBridge {
             .map_err(BridgeError::Execution)?;
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BridgeSurface {
+    ChatOrAsk,
+    Mcp,
 }
 
 async fn request_confirmation(
@@ -412,6 +432,7 @@ mod tests {
             }
         }
         let bridge = CommandAsToolBridge::new(policy).with_gate(Arc::new(NoopGate));
+        let bridge = bridge.as_mcp();
         let mut ctx = NoopCtx;
         bridge
             .invoke(
