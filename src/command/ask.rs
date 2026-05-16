@@ -118,21 +118,6 @@ fn validate_resolution(resolution: &CommandResolution) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn enforce_risk_gate(
-    policy: &CommandRiskPolicy,
-    resolution: &CommandResolution,
-    command_category: Option<&str>,
-    assume_yes: bool,
-    ailoop_available: bool,
-) -> anyhow::Result<()> {
-    RiskEnforcer::new(policy.clone()).enforce_preflight(
-        &resolution.command_id,
-        command_category,
-        assume_yes,
-        ailoop_available,
-    )
-}
-
 fn print_resolution(resolution: &CommandResolution) {
     use crate::security::sanitize_untrusted_output;
     let safe_id = sanitize_untrusted_output(&resolution.command_id);

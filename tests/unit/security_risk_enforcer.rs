@@ -1,4 +1,4 @@
-use cli_framework::command::ask::enforce_risk_gate;
+use cli_framework::command::enforce_risk_gate;
 use cli_framework::llm::CommandResolution;
 use cli_framework::security::{CommandRiskPolicy, CommandRiskTier, RiskEnforcer};
 use std::sync::{Mutex, OnceLock};

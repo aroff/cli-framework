@@ -5,7 +5,6 @@ pub mod parser;
 pub mod registry;
 
 pub use ask::create_ask_command;
-pub use ask::enforce_risk_gate;
 #[cfg(feature = "chat")]
 pub use chat::create_chat_command;
 pub use registry::CommandRegistry;
@@ -19,6 +18,25 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+
+/// Shared risk-gate preflight used by `ask` and `chat`.
+///
+/// This function is retained as a stable entrypoint for callers/tests, but the
+/// canonical implementation lives in `crate::security::RiskEnforcer`.
+pub fn enforce_risk_gate(
+    policy: &crate::security::command_risk::CommandRiskPolicy,
+    resolution: &crate::llm::CommandResolution,
+    command_category: Option<&str>,
+    assume_yes: bool,
+    ailoop_available: bool,
+) -> anyhow::Result<()> {
+    crate::security::RiskEnforcer::new(policy.clone()).enforce_preflight(
+        &resolution.command_id,
+        command_category,
+        assume_yes,
+        ailoop_available,
+    )
+}
 
 /// Command identifier
 pub type CommandId = &'static str;

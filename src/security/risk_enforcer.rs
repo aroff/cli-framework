@@ -20,7 +20,7 @@ impl RiskEnforcer {
     /// Shared risk-gate preflight used by `ask` and `chat`.
     ///
     /// Contract: MUST preserve exact error messages and semantics currently provided by
-    /// `crate::command::ask::enforce_risk_gate`.
+    /// `crate::command::enforce_risk_gate`.
     pub fn enforce_preflight(
         &self,
         command_id: &str,
