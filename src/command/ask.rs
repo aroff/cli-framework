@@ -116,16 +116,15 @@ async fn execute_ask(
 
     match res {
         Ok(()) => Ok(()),
-        Err(crate::command_surface::tool_bridge::BridgeError::SensitiveRequiresConfirmation(
-            _cmd_id,
-        ))
-        | Err(crate::command_surface::tool_bridge::BridgeError::DestructiveBlocked(_cmd_id)) => {
-            // Preserve prior ask behavior: a denied/blocked run is treated as "cancelled by user"
-            // and returns Ok(()) (no panic, no execution).
-            println!("Command cancelled by user");
-            Ok(())
+        Err(crate::command_surface::tool_bridge::BridgeError::Execution(e)) => {
+            if crate::command_surface::tool_bridge::is_user_declined_confirmation_error(&e)
+                .is_some()
+            {
+                println!("Command cancelled by user");
+                return Ok(());
+            }
+            Err(e)
         }
-        Err(crate::command_surface::tool_bridge::BridgeError::Execution(e)) => Err(e),
         Err(other) => Err(anyhow::anyhow!("{}", other)),
     }
 }

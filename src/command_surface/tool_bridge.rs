@@ -9,6 +9,8 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+const USER_DECLINED_CONFIRMATION_PREFIX: &str = "USER_DECLINED_CONFIRMATION:";
+
 pub enum BridgeInput {
     Json(serde_json::Value),
     Args(CommandArgs),
@@ -224,12 +226,16 @@ async fn request_confirmation(
                 .map_err(BridgeError::Execution)?;
             if confirmed {
                 Ok(())
-            } else if destructive {
-                Err(BridgeError::DestructiveBlocked(cmd.id.to_string()))
             } else {
-                Err(BridgeError::SensitiveRequiresConfirmation(
-                    cmd.id.to_string(),
-                ))
+                Err(BridgeError::Execution(anyhow::anyhow!(
+                    "{USER_DECLINED_CONFIRMATION_PREFIX}{}:{}",
+                    if destructive {
+                        "destructive"
+                    } else {
+                        "sensitive"
+                    },
+                    cmd.id
+                )))
             }
         }
         ConfirmationMode::InteractiveStdin => {
@@ -238,12 +244,16 @@ async fn request_confirmation(
                 .map_err(BridgeError::Execution)?;
             if confirmed {
                 Ok(())
-            } else if destructive {
-                Err(BridgeError::DestructiveBlocked(cmd.id.to_string()))
             } else {
-                Err(BridgeError::SensitiveRequiresConfirmation(
-                    cmd.id.to_string(),
-                ))
+                Err(BridgeError::Execution(anyhow::anyhow!(
+                    "{USER_DECLINED_CONFIRMATION_PREFIX}{}:{}",
+                    if destructive {
+                        "destructive"
+                    } else {
+                        "sensitive"
+                    },
+                    cmd.id
+                )))
             }
         }
         ConfirmationMode::NonInteractive => {
@@ -256,6 +266,28 @@ async fn request_confirmation(
             }
         }
     }
+}
+
+pub(crate) fn is_user_declined_confirmation_error(
+    err: &anyhow::Error,
+) -> Option<(DeclinedConfirmationKind, String)> {
+    let msg = err.to_string();
+    let rest = msg.strip_prefix(USER_DECLINED_CONFIRMATION_PREFIX)?;
+    let (kind, cmd_id) = rest.split_once(':')?;
+    if cmd_id.is_empty() {
+        return None;
+    }
+    match kind {
+        "sensitive" => Some((DeclinedConfirmationKind::Sensitive, cmd_id.to_string())),
+        "destructive" => Some((DeclinedConfirmationKind::Destructive, cmd_id.to_string())),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeclinedConfirmationKind {
+    Sensitive,
+    Destructive,
 }
 
 async fn prompt_confirm_blocking(prompt: String) -> anyhow::Result<bool> {
@@ -436,5 +468,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn user_declined_confirmation_marker_is_detected() {
+        let err = anyhow::anyhow!("{USER_DECLINED_CONFIRMATION_PREFIX}sensitive:mycmd");
+        let (kind, cmd_id) = is_user_declined_confirmation_error(&err).expect("marker detected");
+        assert_eq!(kind, DeclinedConfirmationKind::Sensitive);
+        assert_eq!(cmd_id, "mycmd");
     }
 }
