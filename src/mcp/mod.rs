@@ -66,7 +66,6 @@ pub enum McpToolExportPolicy {
 pub struct McpToolRegistry {
     tools: HashMap<String, Command>,
     app_name: String,
-    risk_policy: crate::security::CommandRiskPolicy,
     risk_enforcer: RiskEnforcer,
     #[cfg(feature = "mcp-server")]
     gate: Option<std::sync::Arc<dyn McpToolGate>>,
@@ -111,7 +110,6 @@ impl McpToolRegistry {
         Self {
             tools,
             app_name: app_name.to_string(),
-            risk_policy: crate::security::CommandRiskPolicy::default(),
             risk_enforcer: RiskEnforcer::new(crate::security::CommandRiskPolicy::default()),
             #[cfg(feature = "mcp-server")]
             gate: None,
@@ -119,7 +117,6 @@ impl McpToolRegistry {
     }
 
     pub fn with_risk_policy(mut self, policy: crate::security::CommandRiskPolicy) -> Self {
-        self.risk_policy = policy.clone();
         self.risk_enforcer = RiskEnforcer::new(policy);
         self
     }

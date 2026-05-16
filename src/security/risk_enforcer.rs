@@ -38,8 +38,7 @@ impl RiskEnforcer {
                         command_id
                     );
                     return Err(anyhow::anyhow!(
-                        "SENSITIVE_COMMAND_REQUIRES_CONFIRMATION: command '{}' is sensitive \
-                     and requires interactive confirmation",
+                        "SENSITIVE_COMMAND_REQUIRES_CONFIRMATION: command '{}' is sensitive and requires interactive confirmation",
                         command_id
                     ));
                 }
@@ -55,8 +54,7 @@ impl RiskEnforcer {
                         command_id
                     );
                     return Err(anyhow::anyhow!(
-                        "DESTRUCTIVE_COMMAND_BLOCKED: command '{}' is destructive; \
-                     set ALLOW_DESTRUCTIVE_COMMANDS=1 and confirm interactively",
+                        "DESTRUCTIVE_COMMAND_BLOCKED: command '{}' is destructive; set ALLOW_DESTRUCTIVE_COMMANDS=1 and confirm interactively",
                         command_id
                     ));
                 }
@@ -66,8 +64,7 @@ impl RiskEnforcer {
                         command_id
                     );
                     return Err(anyhow::anyhow!(
-                        "DESTRUCTIVE_COMMAND_BLOCKED: command '{}' requires an interactive \
-                     terminal or ailoop when ALLOW_DESTRUCTIVE_COMMANDS=1",
+                        "DESTRUCTIVE_COMMAND_BLOCKED: command '{}' requires an interactive terminal or ailoop when ALLOW_DESTRUCTIVE_COMMANDS=1",
                         command_id
                     ));
                 }
