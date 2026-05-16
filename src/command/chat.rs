@@ -167,11 +167,22 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
                 }
             }
             Err(crate::command_surface::tool_bridge::BridgeError::DestructiveBlocked(cmd_id)) => {
-                Err(anyhow::anyhow!(
-                    "{}: command '{}' is destructive; gated by ALLOW_DESTRUCTIVE_COMMANDS and interactive confirmation",
-                    CHAT_DESTRUCTIVE_BLOCKED,
-                    cmd_id
-                ))
+                let env_allowed = std::env::var("ALLOW_DESTRUCTIVE_COMMANDS")
+                    .map(|v| v == "1" || v == "true")
+                    .unwrap_or(false);
+                if confirmation_is_noninteractive || !env_allowed {
+                    Err(anyhow::anyhow!(
+                        "{}: command '{}' is destructive; gated by ALLOW_DESTRUCTIVE_COMMANDS and interactive confirmation",
+                        CHAT_DESTRUCTIVE_BLOCKED,
+                        cmd_id
+                    ))
+                } else {
+                    Err(anyhow::anyhow!(
+                        "{}: user declined confirmation for '{}'",
+                        CHAT_DESTRUCTIVE_BLOCKED,
+                        cmd_id
+                    ))
+                }
             }
             Err(crate::command_surface::tool_bridge::BridgeError::Execution(e)) => {
                 Err(anyhow::anyhow!("{}: {}", CHAT_COMMAND_EXECUTION_FAILED, e))

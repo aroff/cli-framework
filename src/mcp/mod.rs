@@ -398,13 +398,13 @@ pub async fn dispatch_tool_call(
         )
     })?;
 
-    let bridge = CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone()).with_gate(
-        Arc::new(McpToolGateBridgeAdapter {
+    let bridge = CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone())
+        .for_mcp()
+        .with_gate(Arc::new(McpToolGateBridgeAdapter {
             gate: tool_registry.gate.as_ref().map(Arc::clone),
             transport,
             tool_name: tool_name.to_string(),
-        }),
-    );
+        }));
 
     let arguments_value = arguments.map(Value::Object).unwrap_or(Value::Null);
     let mut ctx = McpAppContext;
