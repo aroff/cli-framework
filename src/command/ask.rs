@@ -116,8 +116,21 @@ async fn execute_ask(
 
     match res {
         Ok(()) => Ok(()),
-        Err(crate::command_surface::tool_bridge::BridgeError::SensitiveRequiresConfirmation(_))
-        | Err(crate::command_surface::tool_bridge::BridgeError::DestructiveBlocked(_)) => {
+        Err(crate::command_surface::tool_bridge::BridgeError::SensitiveRequiresConfirmation(_)) => {
+            println!("Command cancelled by user");
+            Ok(())
+        }
+        Err(crate::command_surface::tool_bridge::BridgeError::DestructiveBlocked(cmd_id)) => {
+            // Preserve prior ask behavior: destructive preflight failures are errors, not "cancelled".
+            let env_allowed = std::env::var("ALLOW_DESTRUCTIVE_COMMANDS")
+                .map(|v| v == "1" || v == "true")
+                .unwrap_or(false);
+            if !env_allowed {
+                return Err(anyhow::anyhow!(
+                    "DESTRUCTIVE_COMMAND_BLOCKED: command '{}' is destructive; set ALLOW_DESTRUCTIVE_COMMANDS=1 and confirm interactively",
+                    cmd_id
+                ));
+            }
             println!("Command cancelled by user");
             Ok(())
         }

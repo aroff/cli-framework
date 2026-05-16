@@ -9,12 +9,6 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BridgeSurfaceMode {
-    ChatAsk,
-    Mcp,
-}
-
 pub enum BridgeInput {
     Json(serde_json::Value),
     Args(CommandArgs),
@@ -76,7 +70,6 @@ pub trait BridgeGate: Send + Sync {
 pub struct CommandAsToolBridge {
     risk_policy: CommandRiskPolicy,
     gate: Option<Arc<dyn BridgeGate>>,
-    surface: BridgeSurfaceMode,
 }
 
 impl CommandAsToolBridge {
@@ -84,20 +77,11 @@ impl CommandAsToolBridge {
         Self {
             risk_policy,
             gate: None,
-            surface: BridgeSurfaceMode::ChatAsk,
         }
     }
 
     pub fn with_gate(mut self, gate: Arc<dyn BridgeGate>) -> Self {
         self.gate = Some(gate);
-        self
-    }
-
-    /// Select MCP semantics for JSON tool calls:
-    /// - typed validation only when `spec.is_some()`
-    /// - no risk preflight and no confirmation prompts
-    pub fn for_mcp(mut self) -> Self {
-        self.surface = BridgeSurfaceMode::Mcp;
         self
     }
 
@@ -141,11 +125,15 @@ impl CommandAsToolBridge {
         invocation: BridgeInvocation<'_>,
     ) -> Result<(), BridgeError> {
         let cmd = invocation.command;
+        // MCP calls are identified by the presence of a bridge gate adapter.
+        // This keeps the bridge's public API surface identical to the spec
+        // while allowing MCP-specific semantics (§4.1).
+        let is_mcp = self.gate.is_some();
 
         let parsed = self.parse_args(cmd, invocation.input)?;
 
         if let Some(ref typed) = parsed.typed {
-            let should_validate = if self.surface == BridgeSurfaceMode::Mcp {
+            let should_validate = if is_mcp {
                 // Preserve MCP behavior: typed validation only runs when `spec.is_some()`.
                 cmd.spec.is_some()
             } else {
@@ -164,7 +152,8 @@ impl CommandAsToolBridge {
         let enforcer = RiskEnforcer::new(self.risk_policy.clone());
         let tier = enforcer.classify(cmd.id, cmd.category);
 
-        if self.surface == BridgeSurfaceMode::ChatAsk {
+        // Ask/chat semantics: enforce preflight + confirmation. MCP: no preflight, no prompt.
+        if !is_mcp {
             let assume_yes = matches!(invocation.confirmation, ConfirmationMode::AssumeYes);
             let ailoop_available = matches!(invocation.confirmation, ConfirmationMode::Ailoop(_));
             if let Err(e) =
@@ -179,8 +168,7 @@ impl CommandAsToolBridge {
                 if msg.starts_with("DESTRUCTIVE_COMMAND_BLOCKED:") {
                     return Err(BridgeError::DestructiveBlocked(cmd.id.to_string()));
                 }
-                log::warn!("RiskEnforcer::enforce_preflight failed unexpectedly: {msg}");
-                return Err(BridgeError::DestructiveBlocked(cmd.id.to_string()));
+                return Err(BridgeError::Execution(e));
             }
 
             if !assume_yes {
@@ -436,9 +424,8 @@ mod tests {
             }),
         };
 
-        let bridge = CommandAsToolBridge::new(policy)
-            .for_mcp()
-            .with_gate(Arc::new(NoopGate));
+        // Presence of a gate indicates MCP semantics in the bridge.
+        let bridge = CommandAsToolBridge::new(policy).with_gate(Arc::new(NoopGate));
         let mut ctx = NoopCtx;
         bridge
             .invoke(
