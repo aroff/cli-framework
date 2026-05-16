@@ -95,8 +95,7 @@ async fn execute_ask(
             .clone()
     };
 
-    let bridge = crate::command_surface::tool_bridge::CommandAsToolBridge::new(risk_policy)
-        .with_semantics(crate::command_surface::tool_bridge::BridgeSemantics::Ask);
+    let bridge = crate::command_surface::tool_bridge::CommandAsToolBridge::new(risk_policy);
     let confirmation = if assume_yes {
         crate::command_surface::tool_bridge::ConfirmationMode::AssumeYes
     } else {
@@ -116,21 +115,27 @@ async fn execute_ask(
 
     match res {
         Ok(()) => Ok(()),
-        Err(crate::command_surface::tool_bridge::BridgeError::ConfirmationDeclined { .. }) => {
-            println!("Command cancelled by user");
-            Ok(())
-        }
         Err(crate::command_surface::tool_bridge::BridgeError::SensitiveRequiresConfirmation(_)) => {
-            // Ask uses ailoop confirmations; this should be unreachable, but preserve behavior.
+            // Ask treats confirmation denial as a non-fatal cancellation.
             println!("Command cancelled by user");
             Ok(())
         }
         Err(crate::command_surface::tool_bridge::BridgeError::DestructiveBlocked(cmd_id)) => {
-            Err(anyhow::anyhow!(
-                "DESTRUCTIVE_COMMAND_BLOCKED: command '{}' is destructive; \
-                 set ALLOW_DESTRUCTIVE_COMMANDS=1 and confirm interactively",
-                cmd_id
-            ))
+            // If destructive commands are allowed, this error means the user declined
+            // confirmation (bridge doesn't have a distinct "declined" variant).
+            let env_allowed = std::env::var("ALLOW_DESTRUCTIVE_COMMANDS")
+                .map(|v| v == "1" || v == "true")
+                .unwrap_or(false);
+            if env_allowed {
+                println!("Command cancelled by user");
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!(
+                    "DESTRUCTIVE_COMMAND_BLOCKED: command '{}' is destructive; \
+                     set ALLOW_DESTRUCTIVE_COMMANDS=1 and confirm interactively",
+                    cmd_id
+                ))
+            }
         }
         Err(crate::command_surface::tool_bridge::BridgeError::Execution(e)) => Err(e),
         Err(other) => Err(anyhow::anyhow!("{}", other)),

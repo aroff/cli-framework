@@ -93,8 +93,7 @@ impl CommandsAsToolsExecutor {
 impl HostToolExecutor for CommandsAsToolsExecutor {
     fn list_tools(&self) -> Vec<crate::mcp::schema::McpToolDescriptor> {
         let bridge =
-            crate::command_surface::tool_bridge::CommandAsToolBridge::new(self.risk_policy.clone())
-                .with_semantics(crate::command_surface::tool_bridge::BridgeSemantics::Chat);
+            crate::command_surface::tool_bridge::CommandAsToolBridge::new(self.risk_policy.clone());
         self.tools
             .iter()
             .map(|(name, cmd)| bridge.describe(name, cmd))
@@ -131,8 +130,7 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
         );
 
         let bridge =
-            crate::command_surface::tool_bridge::CommandAsToolBridge::new(self.risk_policy.clone())
-                .with_semantics(crate::command_surface::tool_bridge::BridgeSemantics::Chat);
+            crate::command_surface::tool_bridge::CommandAsToolBridge::new(self.risk_policy.clone());
         let res = bridge
             .invoke(
                 ctx,
@@ -149,28 +147,6 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
             Err(crate::command_surface::tool_bridge::BridgeError::ArgValidation(msg)) => {
                 Err(anyhow::anyhow!("{}: {}", CHAT_ARG_VALIDATION_FAILED, msg))
             }
-            Err(crate::command_surface::tool_bridge::BridgeError::ConfirmationDeclined {
-                command_id,
-                tier,
-            }) => match tier {
-                crate::security::command_risk::CommandRiskTier::Sensitive => Err(anyhow::anyhow!(
-                    "{}: user declined confirmation for '{}'",
-                    CHAT_RISK_REQUIRES_CONFIRMATION,
-                    command_id
-                )),
-                crate::security::command_risk::CommandRiskTier::Destructive => {
-                    Err(anyhow::anyhow!(
-                        "{}: user declined confirmation for '{}'",
-                        CHAT_DESTRUCTIVE_BLOCKED,
-                        command_id
-                    ))
-                }
-                crate::security::command_risk::CommandRiskTier::Safe => Err(anyhow::anyhow!(
-                    "{}: user declined confirmation for '{}'",
-                    CHAT_COMMAND_EXECUTION_FAILED,
-                    command_id
-                )),
-            },
             Err(
                 crate::command_surface::tool_bridge::BridgeError::SensitiveRequiresConfirmation(
                     cmd_id,

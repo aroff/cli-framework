@@ -388,8 +388,7 @@ pub async fn dispatch_tool_call(
     transport: McpTransportKind,
 ) -> Result<CallToolResult, ErrorData> {
     use crate::command_surface::tool_bridge::{
-        BridgeError, BridgeInput, BridgeInvocation, BridgeSemantics, CommandAsToolBridge,
-        ConfirmationMode,
+        BridgeError, BridgeInput, BridgeInvocation, CommandAsToolBridge, ConfirmationMode,
     };
 
     let cmd = tool_registry.resolve_tool(tool_name).ok_or_else(|| {
@@ -399,13 +398,13 @@ pub async fn dispatch_tool_call(
         )
     })?;
 
-    let bridge = CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone())
-        .with_semantics(BridgeSemantics::Mcp)
-        .with_gate(Arc::new(McpToolGateBridgeAdapter {
+    let bridge = CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone()).with_gate(
+        Arc::new(McpToolGateBridgeAdapter {
             gate: tool_registry.gate.as_ref().map(Arc::clone),
             transport,
             tool_name: tool_name.to_string(),
-        }));
+        }),
+    );
 
     let arguments_value = arguments.map(Value::Object).unwrap_or(Value::Null);
     let mut ctx = McpAppContext;

@@ -9,25 +9,6 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BridgeSemantics {
-    /// Ask semantics:
-    /// - Enforce RiskEnforcer preflight
-    /// - Confirm sensitive/destructive (unless AssumeYes) using ask-style prompt text
-    /// - Never runs typed/spec/custom validation for `BridgeInput::Args`
-    Ask,
-    /// Ask/chat semantics:
-    /// - Enforce RiskEnforcer preflight
-    /// - Confirm sensitive/destructive (unless AssumeYes)
-    /// - Typed validation for JSON inputs when `spec.is_some() || validator.is_some()`
-    Chat,
-    /// MCP semantics:
-    /// - Do not enforce risk preflight
-    /// - Do not prompt / confirm
-    /// - Typed validation for JSON inputs only when `spec.is_some()`
-    Mcp,
-}
-
 pub enum BridgeInput {
     Json(serde_json::Value),
     Args(CommandArgs),
@@ -59,12 +40,6 @@ pub enum BridgeError {
     #[error("ARG_VALIDATION_FAILED: {0}")]
     ArgValidation(String),
 
-    #[error("CONFIRMATION_DECLINED: command '{command_id}' was cancelled by user")]
-    ConfirmationDeclined {
-        command_id: String,
-        tier: CommandRiskTier,
-    },
-
     #[error("RISK_REQUIRES_CONFIRMATION: command '{0}' is sensitive and requires confirmation")]
     SensitiveRequiresConfirmation(String),
 
@@ -94,7 +69,6 @@ pub trait BridgeGate: Send + Sync {
 pub struct CommandAsToolBridge {
     risk_policy: CommandRiskPolicy,
     gate: Option<Arc<dyn BridgeGate>>,
-    semantics: BridgeSemantics,
 }
 
 impl CommandAsToolBridge {
@@ -102,17 +76,11 @@ impl CommandAsToolBridge {
         Self {
             risk_policy,
             gate: None,
-            semantics: BridgeSemantics::Chat,
         }
     }
 
     pub fn with_gate(mut self, gate: Arc<dyn BridgeGate>) -> Self {
         self.gate = Some(gate);
-        self
-    }
-
-    pub fn with_semantics(mut self, semantics: BridgeSemantics) -> Self {
-        self.semantics = semantics;
         self
     }
 
@@ -153,12 +121,18 @@ impl CommandAsToolBridge {
         let parsed = self.parse_args(cmd, invocation.input)?;
 
         // Typed validation rules vary per surface and MUST remain stable (§4.1).
+        //
+        // Bridge decision: MCP adapters always install a gate adapter (even when the
+        // underlying gate is `None`). This keeps the public bridge API fixed (§5.1)
+        // while preserving legacy per-surface validation + risk behavior.
+        let is_mcp_call = self.gate.is_some();
         if let Some(ref typed) = parsed.typed {
-            let should_validate = match self.semantics {
-                BridgeSemantics::Mcp => cmd.spec.is_some(),
-                BridgeSemantics::Ask | BridgeSemantics::Chat => {
-                    cmd.spec.is_some() || cmd.validator.is_some()
-                }
+            let should_validate = if is_mcp_call {
+                // MCP: validate only when spec is present.
+                cmd.spec.is_some()
+            } else {
+                // Chat: validate when spec OR custom validator exists.
+                cmd.spec.is_some() || cmd.validator.is_some()
             };
             if should_validate {
                 let diagnostics = crate::app::dispatch::validate_typed_args(cmd, typed)
@@ -172,7 +146,8 @@ impl CommandAsToolBridge {
         let enforcer = RiskEnforcer::new(self.risk_policy.clone());
         let tier = enforcer.classify(cmd.id, cmd.category);
 
-        if matches!(self.semantics, BridgeSemantics::Ask | BridgeSemantics::Chat) {
+        // Ask/chat: enforce preflight + confirmation; MCP: never enforce or prompt (§4.1).
+        if !is_mcp_call {
             let assume_yes = matches!(invocation.confirmation, ConfirmationMode::AssumeYes);
             let ailoop_available = matches!(invocation.confirmation, ConfirmationMode::Ailoop(_));
             if let Err(e) =
@@ -190,39 +165,23 @@ impl CommandAsToolBridge {
                 return Err(BridgeError::ArgValidation(msg));
             }
 
-            match tier {
-                CommandRiskTier::Safe => {}
-                CommandRiskTier::Sensitive => {
-                    if !assume_yes {
-                        let confirmed = request_confirmation(
-                            self.semantics,
-                            &invocation.confirmation,
-                            cmd,
-                            false,
-                        )
-                        .await?;
+            if !assume_yes {
+                match tier {
+                    CommandRiskTier::Safe => {}
+                    CommandRiskTier::Sensitive => {
+                        let confirmed =
+                            request_confirmation(&invocation.confirmation, cmd, false).await?;
                         if !confirmed {
-                            return Err(BridgeError::ConfirmationDeclined {
-                                command_id: cmd.id.to_string(),
-                                tier,
-                            });
+                            return Err(BridgeError::SensitiveRequiresConfirmation(
+                                cmd.id.to_string(),
+                            ));
                         }
                     }
-                }
-                CommandRiskTier::Destructive => {
-                    if !assume_yes {
-                        let confirmed = request_confirmation(
-                            self.semantics,
-                            &invocation.confirmation,
-                            cmd,
-                            true,
-                        )
-                        .await?;
+                    CommandRiskTier::Destructive => {
+                        let confirmed =
+                            request_confirmation(&invocation.confirmation, cmd, true).await?;
                         if !confirmed {
-                            return Err(BridgeError::ConfirmationDeclined {
-                                command_id: cmd.id.to_string(),
-                                tier,
-                            });
+                            return Err(BridgeError::DestructiveBlocked(cmd.id.to_string()));
                         }
                     }
                 }
@@ -254,14 +213,11 @@ impl CommandAsToolBridge {
 }
 
 async fn request_confirmation(
-    semantics: BridgeSemantics,
     mode: &ConfirmationMode,
     cmd: &Command,
     destructive: bool,
 ) -> Result<bool, BridgeError> {
-    let is_chat_style = matches!(semantics, BridgeSemantics::Chat);
-    let destructive_wording = is_chat_style && destructive;
-    let (action, prompt) = if destructive_wording {
+    let (action, prompt) = if destructive {
         (
             format!("Execute DESTRUCTIVE command '{}'", cmd.id),
             format!("Execute DESTRUCTIVE command '{}'? [y/N] ", cmd.id),
@@ -418,7 +374,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_semantics_never_enforces_preflight_or_prompts() {
+    async fn mcp_calls_never_enforce_preflight_or_prompt() {
         let mut policy = CommandRiskPolicy::default();
         policy
             .tiers
@@ -443,7 +399,6 @@ mod tests {
             }),
         };
 
-        let bridge = CommandAsToolBridge::new(policy).with_semantics(BridgeSemantics::Mcp);
         struct NoopGate;
         #[async_trait]
         impl BridgeGate for NoopGate {
@@ -456,7 +411,7 @@ mod tests {
                 Ok(())
             }
         }
-        let bridge = bridge.with_gate(Arc::new(NoopGate));
+        let bridge = CommandAsToolBridge::new(policy).with_gate(Arc::new(NoopGate));
         let mut ctx = NoopCtx;
         bridge
             .invoke(
