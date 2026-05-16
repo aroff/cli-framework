@@ -1,8 +1,3 @@
-use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
-use crate::parser::error_codes::{
-    E_CONFLICT, E_INVALID_VALUE, E_MISSING_REQUIRED, E_UNSATISFIED_REQUIRES,
-};
-use crate::spec::arg_spec::{ArgValueType, Cardinality};
 use crate::spec::command_tree::CommandSpec;
 use crate::spec::value::ArgValue;
 use std::collections::HashMap;
@@ -12,105 +7,18 @@ pub struct SpecValidator;
 
 impl SpecValidator {
     /// Validate typed args against the spec. Returns all violations found.
-    pub fn validate(spec: &CommandSpec, args: &HashMap<String, ArgValue>) -> Vec<Diagnostic> {
-        let mut diagnostics = Vec::new();
-
-        // Required-arg check (E003)
-        for arg_spec in &spec.args {
-            if arg_spec.cardinality == Cardinality::Required && !args.contains_key(arg_spec.name) {
-                diagnostics.push(Diagnostic {
-                    code: E_MISSING_REQUIRED,
-                    category: DiagnosticCategory::Spec,
-                    message: format!("missing required argument '--{}'", arg_spec.name),
-                    suggestion: Some(format!("Provide --{} <value>", arg_spec.name)),
-                    span: None,
-                });
-            }
-        }
-
-        // Type-check (E004) — verifies ArgValue variant matches declared ArgValueType
-        for arg_spec in &spec.args {
-            if let Some(value) = args.get(arg_spec.name) {
-                if !value_matches_type(value, &arg_spec.value_type) {
-                    diagnostics.push(Diagnostic {
-                        code: E_INVALID_VALUE,
-                        category: DiagnosticCategory::Spec,
-                        message: format!(
-                            "invalid value type for '--{}': expected {:?}",
-                            arg_spec.name, arg_spec.value_type
-                        ),
-                        suggestion: Some(format!("Provide a valid value for --{}", arg_spec.name)),
-                        span: None,
-                    });
-                }
-            }
-        }
-
-        // Conflict check (E005)
-        for arg_spec in &spec.args {
-            if args.contains_key(arg_spec.name) {
-                for conflicting in &arg_spec.conflicts_with {
-                    if args.contains_key(*conflicting) {
-                        diagnostics.push(Diagnostic {
-                            code: E_CONFLICT,
-                            category: DiagnosticCategory::Spec,
-                            message: format!(
-                                "--{} conflicts with --{}",
-                                arg_spec.name, conflicting
-                            ),
-                            suggestion: Some(format!(
-                                "Remove --{} or --{}",
-                                arg_spec.name, conflicting
-                            )),
-                            span: None,
-                        });
-                    }
-                }
-            }
-        }
-
-        // Requires check (E006)
-        for arg_spec in &spec.args {
-            if args.contains_key(arg_spec.name) {
-                for required_dep in &arg_spec.requires {
-                    if !args.contains_key(*required_dep) {
-                        diagnostics.push(Diagnostic {
-                            code: E_UNSATISFIED_REQUIRES,
-                            category: DiagnosticCategory::Spec,
-                            message: format!("--{} requires --{}", arg_spec.name, required_dep),
-                            suggestion: Some(format!("Also provide --{}", required_dep)),
-                            span: None,
-                        });
-                    }
-                }
-            }
-        }
-
-        diagnostics
-    }
-}
-
-fn value_matches_type(value: &ArgValue, value_type: &ArgValueType) -> bool {
-    match value {
-        // Count values (repeated flags) skip type enforcement
-        ArgValue::Count(_) => true,
-        ArgValue::List(vs) => vs.iter().all(|v| value_matches_type(v, value_type)),
-        ArgValue::Bool(_) => matches!(value_type, ArgValueType::Bool),
-        ArgValue::Str(_) => matches!(value_type, ArgValueType::String),
-        ArgValue::Int(_) => matches!(value_type, ArgValueType::Int),
-        ArgValue::Float(_) => matches!(value_type, ArgValueType::Float),
-        ArgValue::Enum(_) => {
-            // Only verify the value variant matches the declared Enum type; per-command
-            // execute closures validate the specific allowed values with proper error codes.
-            matches!(value_type, ArgValueType::Enum(_))
-        }
+    pub fn validate(
+        spec: &CommandSpec,
+        args: &HashMap<String, ArgValue>,
+    ) -> Vec<crate::parser::diagnostic::Diagnostic> {
+        spec.validate_typed_args(args)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spec::arg_spec::{ArgKind, ArgSpec};
+    use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
     use crate::spec::command_tree::CommandSpec;
 
     fn make_spec_with_args(args: Vec<ArgSpec>) -> CommandSpec {

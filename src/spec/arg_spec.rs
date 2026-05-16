@@ -1,4 +1,5 @@
 use crate::spec::value::ArgValue;
+use serde_json::{json, Value};
 
 /// Declares a single argument for a command.
 #[derive(Debug, Clone)]
@@ -47,4 +48,32 @@ pub enum Cardinality {
     Optional,
     /// May appear one or more times; value becomes ArgValue::List.
     Repeated,
+}
+
+impl ArgSpec {
+    /// Returns (property_name, schema_value).
+    pub fn to_json_schema_property(&self) -> (String, Value) {
+        let prop_name = self.long.unwrap_or(self.name).to_string();
+
+        if self.cardinality == Cardinality::Repeated {
+            let schema_value = if self.kind == ArgKind::Flag {
+                json!({ "type": "integer" })
+            } else {
+                json!({ "type": "array", "items": { "type": "string" } })
+            };
+            return (prop_name, schema_value);
+        }
+
+        let schema_value = match &self.value_type {
+            ArgValueType::Bool => json!({ "type": "boolean" }),
+            ArgValueType::String => json!({ "type": "string" }),
+            ArgValueType::Int => json!({ "type": "integer" }),
+            ArgValueType::Float => json!({ "type": "number" }),
+            ArgValueType::Enum(variants) => json!({
+                "type": "string",
+                "enum": variants,
+            }),
+        };
+        (prop_name, schema_value)
+    }
 }

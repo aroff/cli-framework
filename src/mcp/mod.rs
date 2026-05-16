@@ -382,7 +382,7 @@ pub async fn dispatch_tool_call(
     })?;
 
     if let Some(ref spec) = cmd.spec {
-        let diagnostics = crate::parser::validator::SpecValidator::validate(spec, &typed_args);
+        let diagnostics = spec.validate_typed_args(&typed_args);
         if !diagnostics.is_empty() {
             let msg = format!("MCP_ARG_VALIDATION_FAILED: {}", diagnostics[0].message);
             return Err(ErrorData::new(
