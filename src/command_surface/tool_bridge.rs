@@ -183,22 +183,7 @@ impl CommandAsToolBridge {
             }
 
             match tier {
-                CommandRiskTier::Safe => {
-                    // Ask uses ailoop confirmation even for "Safe" commands, because the command
-                    // was resolved by an LLM and the authorization flow should be exercised.
-                    if self.surface == BridgeSurface::Ask
-                        && !assume_yes
-                        && matches!(invocation.confirmation, ConfirmationMode::Ailoop(_))
-                    {
-                        let confirmed =
-                            request_confirmation(&invocation.confirmation, cmd, false).await?;
-                        if !confirmed {
-                            return Err(BridgeError::SensitiveRequiresConfirmation(
-                                cmd.id.to_string(),
-                            ));
-                        }
-                    }
-                }
+                CommandRiskTier::Safe => {}
                 CommandRiskTier::Sensitive => {
                     if !assume_yes {
                         let confirmed =
