@@ -384,7 +384,10 @@ pub async fn dispatch_tool_call(
     arguments: Option<JsonObject>,
     transport: McpTransportKind,
 ) -> Result<CallToolResult, ErrorData> {
-    use crate::command_surface::tool_bridge::BridgeError;
+    use crate::command_surface::tool_bridge::{
+        BridgeError, BridgeInput, BridgeInvocation, BridgeSurface, CommandAsToolBridge,
+        ConfirmationMode,
+    };
 
     let cmd = tool_registry.resolve_tool(tool_name).ok_or_else(|| {
         mcp_error(
@@ -393,7 +396,31 @@ pub async fn dispatch_tool_call(
         )
     })?;
 
-    match invoke_mcp_bridge(tool_registry, cmd, tool_name, arguments, transport).await {
+    let mut bridge = CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone());
+    if let Some(ref configured) = tool_registry.gate {
+        let gate = Arc::new(McpToolGateBridgeAdapter {
+            gate: Arc::clone(configured),
+            transport,
+            tool_name: tool_name.to_string(),
+        });
+        bridge = bridge.with_gate(gate);
+    }
+
+    let arguments_value = arguments.map(Value::Object).unwrap_or(Value::Null);
+    let mut ctx = McpAppContext;
+    let res = bridge
+        .invoke(
+            &mut ctx,
+            BridgeInvocation {
+                command: cmd,
+                surface: BridgeSurface::Mcp,
+                input: BridgeInput::Json(arguments_value),
+                confirmation: ConfirmationMode::NonInteractive,
+            },
+        )
+        .await;
+
+    match res {
         Ok(()) => Ok(CallToolResult::success(vec![Content::text("OK")])),
         Err(BridgeError::ArgValidation(msg)) => Err(mcp_error(
             -32002,
@@ -404,64 +431,15 @@ pub async fn dispatch_tool_call(
         Err(BridgeError::Execution(e)) => {
             Err(mcp_error(-32003, format!("MCP_EXECUTION_FAILED: {}", e)))
         }
+        Err(BridgeError::ToolNotFound(_)) => Err(mcp_error(
+            -32001,
+            format!("MCP_CMD_NOT_FOUND: tool '{}' not registered", tool_name),
+        )),
         Err(other) => Err(mcp_error(
-            -32004,
-            format!("MCP_INTERNAL_ERROR: unexpected bridge error: {}", other),
+            -32003,
+            format!("MCP_EXECUTION_FAILED: {}", other),
         )),
     }
-}
-
-#[cfg(feature = "mcp-server")]
-async fn invoke_mcp_bridge(
-    tool_registry: &McpToolRegistry,
-    cmd: &Command,
-    tool_name: &str,
-    arguments: Option<JsonObject>,
-    transport: McpTransportKind,
-) -> Result<(), crate::command_surface::tool_bridge::BridgeError> {
-    use crate::command_surface::tool_bridge::{BridgeInput, BridgeInvocation, CommandAsToolBridge};
-
-    // MCP invariants (§4.1): no preflight enforcement and no confirmation prompts.
-    // The bridge detects MCP semantics via the presence of a gate; provide a no-op
-    // gate when the registry is not configured with one.
-    struct NoopGate;
-    #[async_trait::async_trait]
-    impl crate::command_surface::tool_bridge::BridgeGate for NoopGate {
-        async fn before_execute(
-            &self,
-            _cmd: &Command,
-            _args: &CommandArgs,
-            _tier: crate::security::command_risk::CommandRiskTier,
-        ) -> Result<(), crate::command_surface::tool_bridge::BridgeError> {
-            Ok(())
-        }
-    }
-
-    let gate: Arc<dyn crate::command_surface::tool_bridge::BridgeGate> =
-        if let Some(ref configured) = tool_registry.gate {
-            Arc::new(McpToolGateBridgeAdapter {
-                gate: Arc::clone(configured),
-                transport,
-                tool_name: tool_name.to_string(),
-            })
-        } else {
-            Arc::new(NoopGate)
-        };
-
-    let bridge =
-        CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone()).with_gate(gate);
-    let arguments_value = arguments.map(Value::Object).unwrap_or(Value::Null);
-    let mut ctx = McpAppContext;
-    bridge
-        .invoke(
-            &mut ctx,
-            BridgeInvocation {
-                command: cmd,
-                input: BridgeInput::Json(arguments_value),
-                confirmation: crate::command_surface::tool_bridge::ConfirmationMode::NonInteractive,
-            },
-        )
-        .await
 }
 
 /// Dispatches a tool call in a separate tokio task (§4.7).
