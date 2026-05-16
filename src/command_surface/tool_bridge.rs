@@ -11,6 +11,11 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeSemantics {
+    /// Ask semantics:
+    /// - Enforce RiskEnforcer preflight
+    /// - Confirm sensitive/destructive (unless AssumeYes) using ask-style prompt text
+    /// - Never runs typed/spec/custom validation for `BridgeInput::Args`
+    Ask,
     /// Ask/chat semantics:
     /// - Enforce RiskEnforcer preflight
     /// - Confirm sensitive/destructive (unless AssumeYes)
@@ -21,14 +26,6 @@ pub enum BridgeSemantics {
     /// - Do not prompt / confirm
     /// - Typed validation for JSON inputs only when `spec.is_some()`
     Mcp,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfirmationPromptStyle {
-    /// Matches historical `chat` behavior: destructive prompts include `DESTRUCTIVE`.
-    Chat,
-    /// Matches historical `ask` behavior: prompts never include `DESTRUCTIVE`.
-    Ask,
 }
 
 pub enum BridgeInput {
@@ -62,6 +59,12 @@ pub enum BridgeError {
     #[error("ARG_VALIDATION_FAILED: {0}")]
     ArgValidation(String),
 
+    #[error("CONFIRMATION_DECLINED: command '{command_id}' was cancelled by user")]
+    ConfirmationDeclined {
+        command_id: String,
+        tier: CommandRiskTier,
+    },
+
     #[error("RISK_REQUIRES_CONFIRMATION: command '{0}' is sensitive and requires confirmation")]
     SensitiveRequiresConfirmation(String),
 
@@ -92,7 +95,6 @@ pub struct CommandAsToolBridge {
     risk_policy: CommandRiskPolicy,
     gate: Option<Arc<dyn BridgeGate>>,
     semantics: BridgeSemantics,
-    prompt_style: ConfirmationPromptStyle,
 }
 
 impl CommandAsToolBridge {
@@ -101,7 +103,6 @@ impl CommandAsToolBridge {
             risk_policy,
             gate: None,
             semantics: BridgeSemantics::Chat,
-            prompt_style: ConfirmationPromptStyle::Chat,
         }
     }
 
@@ -112,11 +113,6 @@ impl CommandAsToolBridge {
 
     pub fn with_semantics(mut self, semantics: BridgeSemantics) -> Self {
         self.semantics = semantics;
-        self
-    }
-
-    pub fn with_prompt_style(mut self, prompt_style: ConfirmationPromptStyle) -> Self {
-        self.prompt_style = prompt_style;
         self
     }
 
@@ -160,7 +156,9 @@ impl CommandAsToolBridge {
         if let Some(ref typed) = parsed.typed {
             let should_validate = match self.semantics {
                 BridgeSemantics::Mcp => cmd.spec.is_some(),
-                BridgeSemantics::Chat => cmd.spec.is_some() || cmd.validator.is_some(),
+                BridgeSemantics::Ask | BridgeSemantics::Chat => {
+                    cmd.spec.is_some() || cmd.validator.is_some()
+                }
             };
             if should_validate {
                 let diagnostics = crate::app::dispatch::validate_typed_args(cmd, typed)
@@ -174,7 +172,7 @@ impl CommandAsToolBridge {
         let enforcer = RiskEnforcer::new(self.risk_policy.clone());
         let tier = enforcer.classify(cmd.id, cmd.category);
 
-        if self.semantics == BridgeSemantics::Chat {
+        if matches!(self.semantics, BridgeSemantics::Ask | BridgeSemantics::Chat) {
             let assume_yes = matches!(invocation.confirmation, ConfirmationMode::AssumeYes);
             let ailoop_available = matches!(invocation.confirmation, ConfirmationMode::Ailoop(_));
             if let Err(e) =
@@ -189,7 +187,7 @@ impl CommandAsToolBridge {
                 if msg.contains("DESTRUCTIVE_COMMAND_BLOCKED") {
                     return Err(BridgeError::DestructiveBlocked(cmd.id.to_string()));
                 }
-                return Err(BridgeError::Execution(e));
+                return Err(BridgeError::ArgValidation(msg));
             }
 
             match tier {
@@ -197,30 +195,34 @@ impl CommandAsToolBridge {
                 CommandRiskTier::Sensitive => {
                     if !assume_yes {
                         let confirmed = request_confirmation(
-                            self.prompt_style,
+                            self.semantics,
                             &invocation.confirmation,
                             cmd,
                             false,
                         )
                         .await?;
                         if !confirmed {
-                            return Err(BridgeError::SensitiveRequiresConfirmation(
-                                cmd.id.to_string(),
-                            ));
+                            return Err(BridgeError::ConfirmationDeclined {
+                                command_id: cmd.id.to_string(),
+                                tier,
+                            });
                         }
                     }
                 }
                 CommandRiskTier::Destructive => {
                     if !assume_yes {
                         let confirmed = request_confirmation(
-                            self.prompt_style,
+                            self.semantics,
                             &invocation.confirmation,
                             cmd,
                             true,
                         )
                         .await?;
                         if !confirmed {
-                            return Err(BridgeError::DestructiveBlocked(cmd.id.to_string()));
+                            return Err(BridgeError::ConfirmationDeclined {
+                                command_id: cmd.id.to_string(),
+                                tier,
+                            });
                         }
                     }
                 }
@@ -252,24 +254,23 @@ impl CommandAsToolBridge {
 }
 
 async fn request_confirmation(
-    prompt_style: ConfirmationPromptStyle,
+    semantics: BridgeSemantics,
     mode: &ConfirmationMode,
     cmd: &Command,
     destructive: bool,
 ) -> Result<bool, BridgeError> {
-    let (action, prompt) = match (prompt_style, destructive) {
-        (ConfirmationPromptStyle::Ask, _) => (
-            format!("Execute command '{}'", cmd.id),
-            format!("Execute command '{}'? [y/N] ", cmd.id),
-        ),
-        (ConfirmationPromptStyle::Chat, false) => (
-            format!("Execute command '{}'", cmd.id),
-            format!("Execute command '{}'? [y/N] ", cmd.id),
-        ),
-        (ConfirmationPromptStyle::Chat, true) => (
+    let is_chat_style = matches!(semantics, BridgeSemantics::Chat);
+    let destructive_wording = is_chat_style && destructive;
+    let (action, prompt) = if destructive_wording {
+        (
             format!("Execute DESTRUCTIVE command '{}'", cmd.id),
             format!("Execute DESTRUCTIVE command '{}'? [y/N] ", cmd.id),
-        ),
+        )
+    } else {
+        (
+            format!("Execute command '{}'", cmd.id),
+            format!("Execute command '{}'? [y/N] ", cmd.id),
+        )
     };
     match mode {
         ConfirmationMode::AssumeYes => Ok(true),

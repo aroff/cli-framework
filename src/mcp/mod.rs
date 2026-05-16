@@ -187,8 +187,13 @@ struct McpAppContext;
 impl crate::app::AppContext for McpAppContext {}
 
 #[cfg(feature = "mcp-server")]
+fn mcp_error(code: i32, message: String) -> ErrorData {
+    ErrorData::new(rmcp::model::ErrorCode(code), Cow::Owned(message), None)
+}
+
+#[cfg(feature = "mcp-server")]
 struct McpToolGateBridgeAdapter {
-    gate: Arc<dyn McpToolGate>,
+    gate: Option<Arc<dyn McpToolGate>>,
     transport: McpTransportKind,
     tool_name: String,
 }
@@ -202,6 +207,9 @@ impl crate::command_surface::tool_bridge::BridgeGate for McpToolGateBridgeAdapte
         args: &CommandArgs,
         tier: crate::security::command_risk::CommandRiskTier,
     ) -> Result<(), crate::command_surface::tool_bridge::BridgeError> {
+        let Some(ref gate) = self.gate else {
+            return Ok(());
+        };
         let ctx = McpToolCallContext {
             transport: self.transport,
             tool_name: self.tool_name.clone(),
@@ -210,7 +218,7 @@ impl crate::command_surface::tool_bridge::BridgeGate for McpToolGateBridgeAdapte
             risk_tier: tier,
         };
 
-        match self.gate.before_execute(&ctx, args).await {
+        match gate.before_execute(&ctx, args).await {
             Ok(()) => Ok(()),
             Err(e @ McpToolGateError::Denied { .. }) => {
                 Err(crate::command_surface::tool_bridge::BridgeError::GateDenied(e.to_string()))
@@ -219,22 +227,6 @@ impl crate::command_surface::tool_bridge::BridgeGate for McpToolGateBridgeAdapte
                 Err(crate::command_surface::tool_bridge::BridgeError::GateFailed(e.to_string()))
             }
         }
-    }
-}
-
-#[cfg(feature = "mcp-server")]
-struct McpNoopGate;
-
-#[cfg(feature = "mcp-server")]
-#[async_trait::async_trait]
-impl crate::command_surface::tool_bridge::BridgeGate for McpNoopGate {
-    async fn before_execute(
-        &self,
-        _cmd: &Command,
-        _args: &CommandArgs,
-        _tier: crate::security::command_risk::CommandRiskTier,
-    ) -> Result<(), crate::command_surface::tool_bridge::BridgeError> {
-        Ok(())
     }
 }
 
@@ -401,29 +393,19 @@ pub async fn dispatch_tool_call(
     };
 
     let cmd = tool_registry.resolve_tool(tool_name).ok_or_else(|| {
-        ErrorData::new(
-            rmcp::model::ErrorCode(-32001),
-            Cow::Owned(format!(
-                "MCP_CMD_NOT_FOUND: tool '{}' not registered",
-                tool_name
-            )),
-            None,
+        mcp_error(
+            -32001,
+            format!("MCP_CMD_NOT_FOUND: tool '{}' not registered", tool_name),
         )
     })?;
 
-    let gate: Arc<dyn crate::command_surface::tool_bridge::BridgeGate> =
-        match tool_registry.gate.as_ref() {
-            Some(gate) => Arc::new(McpToolGateBridgeAdapter {
-                gate: Arc::clone(gate),
-                transport,
-                tool_name: tool_name.to_string(),
-            }),
-            None => Arc::new(McpNoopGate),
-        };
-
     let bridge = CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone())
         .with_semantics(BridgeSemantics::Mcp)
-        .with_gate(gate);
+        .with_gate(Arc::new(McpToolGateBridgeAdapter {
+            gate: tool_registry.gate.as_ref().map(Arc::clone),
+            transport,
+            tool_name: tool_name.to_string(),
+        }));
 
     let arguments_value = arguments.map(Value::Object).unwrap_or(Value::Null);
     let mut ctx = McpAppContext;
@@ -440,30 +422,21 @@ pub async fn dispatch_tool_call(
         .await
     {
         Ok(()) => Ok(CallToolResult::success(vec![Content::text("OK")])),
-        Err(BridgeError::ArgValidation(msg)) => Err(ErrorData::new(
-            rmcp::model::ErrorCode(-32002),
-            Cow::Owned(format!("MCP_ARG_VALIDATION_FAILED: {}", msg)),
-            None,
+        Err(BridgeError::ToolNotFound(msg)) => {
+            Err(mcp_error(-32001, format!("MCP_CMD_NOT_FOUND: {}", msg)))
+        }
+        Err(BridgeError::ArgValidation(msg)) => Err(mcp_error(
+            -32002,
+            format!("MCP_ARG_VALIDATION_FAILED: {}", msg),
         )),
-        Err(BridgeError::GateDenied(msg)) => Err(ErrorData::new(
-            rmcp::model::ErrorCode(-32005),
-            Cow::Owned(msg),
-            None,
-        )),
-        Err(BridgeError::GateFailed(msg)) => Err(ErrorData::new(
-            rmcp::model::ErrorCode(-32006),
-            Cow::Owned(msg),
-            None,
-        )),
-        Err(BridgeError::Execution(e)) => Err(ErrorData::new(
-            rmcp::model::ErrorCode(-32003),
-            Cow::Owned(format!("MCP_EXECUTION_FAILED: {}", e)),
-            None,
-        )),
-        Err(other) => Err(ErrorData::new(
-            rmcp::model::ErrorCode(-32003),
-            Cow::Owned(format!("MCP_EXECUTION_FAILED: {}", other)),
-            None,
+        Err(BridgeError::GateDenied(msg)) => Err(mcp_error(-32005, msg)),
+        Err(BridgeError::GateFailed(msg)) => Err(mcp_error(-32006, msg)),
+        Err(BridgeError::Execution(e)) => {
+            Err(mcp_error(-32003, format!("MCP_EXECUTION_FAILED: {}", e)))
+        }
+        Err(other) => Err(mcp_error(
+            -32003,
+            format!("MCP_EXECUTION_FAILED: {}", other),
         )),
     }
 }
