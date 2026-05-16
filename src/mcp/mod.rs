@@ -222,6 +222,22 @@ impl crate::command_surface::tool_bridge::BridgeGate for McpToolGateBridgeAdapte
     }
 }
 
+#[cfg(feature = "mcp-server")]
+struct McpNoopGate;
+
+#[cfg(feature = "mcp-server")]
+#[async_trait::async_trait]
+impl crate::command_surface::tool_bridge::BridgeGate for McpNoopGate {
+    async fn before_execute(
+        &self,
+        _cmd: &Command,
+        _args: &CommandArgs,
+        _tier: crate::security::CommandRiskTier,
+    ) -> Result<(), crate::command_surface::tool_bridge::BridgeError> {
+        Ok(())
+    }
+}
+
 pub(crate) fn json_value_to_arg_value(v: &Value) -> Option<ArgValue> {
     match v {
         Value::Bool(b) => Some(ArgValue::Bool(*b)),
@@ -380,8 +396,7 @@ pub async fn dispatch_tool_call(
     transport: McpTransportKind,
 ) -> Result<CallToolResult, ErrorData> {
     use crate::command_surface::tool_bridge::{
-        BridgeError, BridgeInput, BridgeInvocation, BridgeSemantics, CommandAsToolBridge,
-        ConfirmationMode,
+        BridgeError, BridgeInput, BridgeInvocation, CommandAsToolBridge, ConfirmationMode,
     };
 
     let cmd = tool_registry.resolve_tool(tool_name).ok_or_else(|| {
@@ -396,26 +411,26 @@ pub async fn dispatch_tool_call(
     })?;
 
     let mut bridge = CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone());
-    if let Some(ref gate) = tool_registry.gate {
-        bridge = bridge.with_gate(Arc::new(McpToolGateBridgeAdapter {
+    bridge = bridge.with_gate(match tool_registry.gate.as_ref() {
+        Some(gate) => Arc::new(McpToolGateBridgeAdapter {
             gate: Arc::clone(gate),
             transport,
             tool_name: tool_name.to_string(),
-        }));
-    }
+        }),
+        None => Arc::new(McpNoopGate),
+    });
 
     let arguments_value = arguments.map(Value::Object).unwrap_or(Value::Null);
     let mut ctx = McpAppContext;
 
     match bridge
-        .invoke_with_semantics(
+        .invoke(
             &mut ctx,
             BridgeInvocation {
                 command: cmd,
                 input: BridgeInput::Json(arguments_value),
                 confirmation: ConfirmationMode::NonInteractive,
             },
-            BridgeSemantics::Mcp,
         )
         .await
     {
@@ -441,8 +456,8 @@ pub async fn dispatch_tool_call(
             None,
         )),
         Err(other) => Err(ErrorData::new(
-            rmcp::model::ErrorCode(-32006),
-            Cow::Owned(format!("MCP_INTERNAL_ERROR: {}", other)),
+            rmcp::model::ErrorCode(-32003),
+            Cow::Owned(format!("MCP_EXECUTION_FAILED: {}", other)),
             None,
         )),
     }

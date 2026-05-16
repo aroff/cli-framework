@@ -9,16 +9,6 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BridgeSemantics {
-    /// Chat tool calls (JSON input, risk gate + confirmation).
-    Chat,
-    /// Ask resolved invocations (stringly `CommandArgs`, risk gate + confirmation).
-    Ask,
-    /// MCP tool calls (JSON input, no risk preflight and no confirmation).
-    Mcp,
-}
-
 pub enum BridgeInput {
     Json(serde_json::Value),
     Args(CommandArgs),
@@ -126,27 +116,24 @@ impl CommandAsToolBridge {
         ctx: &mut dyn AppContext,
         invocation: BridgeInvocation<'_>,
     ) -> Result<(), BridgeError> {
-        self.invoke_with_semantics(ctx, invocation, BridgeSemantics::Chat)
-            .await
-    }
-
-    pub async fn invoke_with_semantics(
-        &self,
-        ctx: &mut dyn AppContext,
-        invocation: BridgeInvocation<'_>,
-        semantics: BridgeSemantics,
-    ) -> Result<(), BridgeError> {
         let cmd = invocation.command;
 
         let parsed = self.parse_args(cmd, invocation.input)?;
 
+        // Semantics inference (internal):
+        // - Ask uses BridgeInput::Args (stringly args, risk gate + confirmation, no typed validation).
+        // - Chat uses BridgeInput::Json with no gate (risk gate + confirmation, typed validation when
+        //   `spec` or `validator` is present).
+        // - MCP uses BridgeInput::Json with a gate (no risk preflight, no confirmation; typed validation
+        //   only when `spec.is_some()`). MCP adapters MUST set a gate, using a no-op gate when needed.
+        let is_mcp = parsed.typed.is_some() && self.gate.is_some();
+
         // Typed validation rules vary per surface and MUST remain stable (§4.1).
         if let Some(ref typed) = parsed.typed {
-            let should_validate = match semantics {
-                BridgeSemantics::Mcp => cmd.spec.is_some(),
-                BridgeSemantics::Chat => cmd.spec.is_some() || cmd.validator.is_some(),
-                // Ask does not run typed validation today.
-                BridgeSemantics::Ask => false,
+            let should_validate = if is_mcp {
+                cmd.spec.is_some()
+            } else {
+                cmd.spec.is_some() || cmd.validator.is_some()
             };
             if should_validate {
                 let diagnostics = crate::app::dispatch::validate_typed_args(cmd, typed)
@@ -160,7 +147,7 @@ impl CommandAsToolBridge {
         let enforcer = RiskEnforcer::new(self.risk_policy.clone());
         let tier = enforcer.classify(cmd.id, cmd.category);
 
-        if semantics != BridgeSemantics::Mcp {
+        if !is_mcp {
             let assume_yes = matches!(invocation.confirmation, ConfirmationMode::AssumeYes);
             let ailoop_available = matches!(invocation.confirmation, ConfirmationMode::Ailoop(_));
             if let Err(e) =
@@ -185,10 +172,9 @@ impl CommandAsToolBridge {
                         let confirmed =
                             request_confirmation(&invocation.confirmation, cmd, false).await?;
                         if !confirmed {
-                            return Err(BridgeError::Execution(anyhow::anyhow!(
-                                "USER_DECLINED_CONFIRMATION: sensitive command '{}'",
-                                cmd.id
-                            )));
+                            return Err(BridgeError::SensitiveRequiresConfirmation(
+                                cmd.id.to_string(),
+                            ));
                         }
                     }
                 }
@@ -197,10 +183,7 @@ impl CommandAsToolBridge {
                         let confirmed =
                             request_confirmation(&invocation.confirmation, cmd, true).await?;
                         if !confirmed {
-                            return Err(BridgeError::Execution(anyhow::anyhow!(
-                                "USER_DECLINED_CONFIRMATION: destructive command '{}'",
-                                cmd.id
-                            )));
+                            return Err(BridgeError::DestructiveBlocked(cmd.id.to_string()));
                         }
                     }
                 }
@@ -420,16 +403,28 @@ mod tests {
         };
 
         let bridge = CommandAsToolBridge::new(policy);
+        struct NoopGate;
+        #[async_trait]
+        impl BridgeGate for NoopGate {
+            async fn before_execute(
+                &self,
+                _cmd: &Command,
+                _args: &CommandArgs,
+                _tier: CommandRiskTier,
+            ) -> Result<(), BridgeError> {
+                Ok(())
+            }
+        }
+        let bridge = bridge.with_gate(Arc::new(NoopGate));
         let mut ctx = NoopCtx;
         bridge
-            .invoke_with_semantics(
+            .invoke(
                 &mut ctx,
                 BridgeInvocation {
                     command: &cmd,
                     input: BridgeInput::Json(serde_json::json!({})),
                     confirmation: ConfirmationMode::NonInteractive,
                 },
-                BridgeSemantics::Mcp,
             )
             .await
             .unwrap();

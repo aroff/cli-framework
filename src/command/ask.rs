@@ -103,40 +103,38 @@ async fn execute_ask(
     };
 
     let res = bridge
-        .invoke_with_semantics(
+        .invoke(
             ctx,
             crate::command_surface::tool_bridge::BridgeInvocation {
                 command: &command,
                 input: crate::command_surface::tool_bridge::BridgeInput::Args(resolution.args),
                 confirmation,
             },
-            crate::command_surface::tool_bridge::BridgeSemantics::Ask,
         )
         .await;
 
     match res {
         Ok(()) => Ok(()),
         Err(crate::command_surface::tool_bridge::BridgeError::SensitiveRequiresConfirmation(_)) => {
-            Err(anyhow::anyhow!(
-                "SENSITIVE_COMMAND_REQUIRES_CONFIRMATION: command '{}' is sensitive and requires interactive confirmation",
-                command.id
-            ))
+            println!("Command cancelled by user");
+            Ok(())
         }
-        Err(crate::command_surface::tool_bridge::BridgeError::DestructiveBlocked(cmd_id)) => Err(
-            anyhow::anyhow!(
-                "DESTRUCTIVE_COMMAND_BLOCKED: command '{}' is destructive; \
-                 set ALLOW_DESTRUCTIVE_COMMANDS=1 and confirm interactively",
-                cmd_id
-            ),
-        ),
-        Err(crate::command_surface::tool_bridge::BridgeError::Execution(e)) => {
-            if e.to_string().starts_with("USER_DECLINED_CONFIRMATION:") {
+        Err(crate::command_surface::tool_bridge::BridgeError::DestructiveBlocked(cmd_id)) => {
+            let env_allowed = std::env::var("ALLOW_DESTRUCTIVE_COMMANDS")
+                .map(|v| v == "1" || v == "true")
+                .unwrap_or(false);
+            if env_allowed {
                 println!("Command cancelled by user");
                 Ok(())
             } else {
-                Err(e)
+                Err(anyhow::anyhow!(
+                    "DESTRUCTIVE_COMMAND_BLOCKED: command '{}' is destructive; \
+                     set ALLOW_DESTRUCTIVE_COMMANDS=1 and confirm interactively",
+                    cmd_id
+                ))
             }
         }
+        Err(crate::command_surface::tool_bridge::BridgeError::Execution(e)) => Err(e),
         Err(other) => Err(anyhow::anyhow!("{}", other)),
     }
 }
