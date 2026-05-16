@@ -9,6 +9,18 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JsonValidationMode {
+    Chat,
+    Mcp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RiskMode {
+    AskChat,
+    Mcp,
+}
+
 pub enum BridgeInput {
     Json(serde_json::Value),
     Args(CommandArgs),
@@ -69,6 +81,8 @@ pub trait BridgeGate: Send + Sync {
 pub struct CommandAsToolBridge {
     risk_policy: CommandRiskPolicy,
     gate: Option<Arc<dyn BridgeGate>>,
+    json_validation_mode: JsonValidationMode,
+    risk_mode: RiskMode,
 }
 
 impl CommandAsToolBridge {
@@ -76,7 +90,20 @@ impl CommandAsToolBridge {
         Self {
             risk_policy,
             gate: None,
+            json_validation_mode: JsonValidationMode::Chat,
+            risk_mode: RiskMode::AskChat,
         }
+    }
+
+    /// Configure the bridge for MCP tool-call behavior.
+    ///
+    /// Invariants:
+    /// - MCP MUST NOT enforce preflight or prompt for confirmation.
+    /// - MCP typed validation runs only when `cmd.spec.is_some()`.
+    pub fn for_mcp(mut self) -> Self {
+        self.json_validation_mode = JsonValidationMode::Mcp;
+        self.risk_mode = RiskMode::Mcp;
+        self
     }
 
     pub fn with_gate(mut self, gate: Arc<dyn BridgeGate>) -> Self {
@@ -119,18 +146,14 @@ impl CommandAsToolBridge {
         let cmd = invocation.command;
 
         let parsed = self.parse_args(cmd, invocation.input)?;
-        let is_mcp_surface = self.gate.is_some()
-            && matches!(invocation.confirmation, ConfirmationMode::NonInteractive)
-            && parsed.typed.is_some();
 
         // Typed validation rules vary per surface and MUST remain stable (§4.1).
         if let Some(ref typed) = parsed.typed {
-            let should_validate = if is_mcp_surface {
+            let should_validate = match self.json_validation_mode {
                 // MCP: validate only when spec is present.
-                cmd.spec.is_some()
-            } else {
+                JsonValidationMode::Mcp => cmd.spec.is_some(),
                 // Chat: validate when spec OR custom validator exists.
-                cmd.spec.is_some() || cmd.validator.is_some()
+                JsonValidationMode::Chat => cmd.spec.is_some() || cmd.validator.is_some(),
             };
             if should_validate {
                 let diagnostics = crate::app::dispatch::validate_typed_args(cmd, typed)
@@ -145,7 +168,7 @@ impl CommandAsToolBridge {
         let tier = enforcer.classify(cmd.id, cmd.category);
 
         // Ask/chat: enforce preflight + confirmation; MCP: never enforce or prompt (§4.1).
-        if !is_mcp_surface {
+        if self.risk_mode == RiskMode::AskChat {
             let assume_yes = matches!(invocation.confirmation, ConfirmationMode::AssumeYes);
             let confirmation_available = matches!(
                 invocation.confirmation,
@@ -156,18 +179,14 @@ impl CommandAsToolBridge {
             if let Err(e) =
                 enforcer.enforce_preflight(cmd.id, cmd.category, assume_yes, confirmation_available)
             {
+                // Preflight currently only emits these two error families.
                 let msg = e.to_string();
-                if msg.contains("SENSITIVE_COMMAND_REQUIRES_CONFIRMATION") {
+                if msg.starts_with("SENSITIVE_COMMAND_REQUIRES_CONFIRMATION:") {
                     return Err(BridgeError::SensitiveRequiresConfirmation(
                         cmd.id.to_string(),
                     ));
                 }
-                if msg.contains("DESTRUCTIVE_COMMAND_BLOCKED") {
-                    return Err(BridgeError::DestructiveBlocked(cmd.id.to_string()));
-                }
-                // Preflight only emits the above errors today; preserve category by treating
-                // unexpected failures as execution/internal.
-                return Err(BridgeError::Execution(anyhow::anyhow!(msg)));
+                return Err(BridgeError::DestructiveBlocked(cmd.id.to_string()));
             }
 
             if !assume_yes {
@@ -229,13 +248,34 @@ async fn request_confirmation(
     };
     match mode {
         ConfirmationMode::AssumeYes => Ok(true),
-        ConfirmationMode::Ailoop(client) => client
-            .request_confirmation(&action, None)
-            .await
-            .map_err(BridgeError::Execution),
-        ConfirmationMode::InteractiveStdin => prompt_confirm_blocking(prompt)
-            .await
-            .map_err(BridgeError::Execution),
+        ConfirmationMode::Ailoop(client) => {
+            match client.request_confirmation(&action, None).await {
+                Ok(v) => Ok(v),
+                Err(e) => {
+                    log::warn!("Confirmation request failed for '{}': {}", cmd.id, e);
+                    if destructive {
+                        Err(BridgeError::DestructiveBlocked(cmd.id.to_string()))
+                    } else {
+                        Err(BridgeError::SensitiveRequiresConfirmation(
+                            cmd.id.to_string(),
+                        ))
+                    }
+                }
+            }
+        }
+        ConfirmationMode::InteractiveStdin => match prompt_confirm_blocking(prompt).await {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                log::warn!("Stdin confirmation prompt failed for '{}': {}", cmd.id, e);
+                if destructive {
+                    Err(BridgeError::DestructiveBlocked(cmd.id.to_string()))
+                } else {
+                    Err(BridgeError::SensitiveRequiresConfirmation(
+                        cmd.id.to_string(),
+                    ))
+                }
+            }
+        },
         ConfirmationMode::NonInteractive => {
             if destructive {
                 Err(BridgeError::DestructiveBlocked(cmd.id.to_string()))
@@ -410,7 +450,9 @@ mod tests {
                 Ok(())
             }
         }
-        let bridge = CommandAsToolBridge::new(policy).with_gate(Arc::new(NoopGate));
+        let bridge = CommandAsToolBridge::new(policy)
+            .for_mcp()
+            .with_gate(Arc::new(NoopGate));
         let mut ctx = NoopCtx;
         bridge
             .invoke(

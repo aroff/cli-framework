@@ -98,8 +98,12 @@ async fn execute_ask(
     let bridge = crate::command_surface::tool_bridge::CommandAsToolBridge::new(risk_policy);
     let confirmation = if assume_yes {
         crate::command_surface::tool_bridge::ConfirmationMode::AssumeYes
-    } else {
+    } else if std::env::var("AILOOP_SERVER").is_ok() {
         crate::command_surface::tool_bridge::ConfirmationMode::Ailoop(ailoop_client)
+    } else if crate::cli_mode::is_interactive() {
+        crate::command_surface::tool_bridge::ConfirmationMode::InteractiveStdin
+    } else {
+        crate::command_surface::tool_bridge::ConfirmationMode::NonInteractive
     };
     let confirmation_is_noninteractive = matches!(
         confirmation,

@@ -193,7 +193,7 @@ fn mcp_error(code: i32, message: String) -> ErrorData {
 
 #[cfg(feature = "mcp-server")]
 struct McpToolGateBridgeAdapter {
-    gate: Option<Arc<dyn McpToolGate>>,
+    gate: Arc<dyn McpToolGate>,
     transport: McpTransportKind,
     tool_name: String,
 }
@@ -207,9 +207,6 @@ impl crate::command_surface::tool_bridge::BridgeGate for McpToolGateBridgeAdapte
         args: &CommandArgs,
         tier: crate::security::command_risk::CommandRiskTier,
     ) -> Result<(), crate::command_surface::tool_bridge::BridgeError> {
-        let Some(ref gate) = self.gate else {
-            return Ok(());
-        };
         let ctx = McpToolCallContext {
             transport: self.transport,
             tool_name: self.tool_name.clone(),
@@ -218,7 +215,7 @@ impl crate::command_surface::tool_bridge::BridgeGate for McpToolGateBridgeAdapte
             risk_tier: tier,
         };
 
-        match gate.before_execute(&ctx, args).await {
+        match self.gate.before_execute(&ctx, args).await {
             Ok(()) => Ok(()),
             Err(e @ McpToolGateError::Denied { .. }) => {
                 Err(crate::command_surface::tool_bridge::BridgeError::GateDenied(e.to_string()))
@@ -398,13 +395,15 @@ pub async fn dispatch_tool_call(
         )
     })?;
 
-    let bridge = CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone()).with_gate(
-        Arc::new(McpToolGateBridgeAdapter {
-            gate: tool_registry.gate.as_ref().map(Arc::clone),
+    let mut bridge =
+        CommandAsToolBridge::new(tool_registry.risk_enforcer.policy().clone()).for_mcp();
+    if let Some(ref gate) = tool_registry.gate {
+        bridge = bridge.with_gate(Arc::new(McpToolGateBridgeAdapter {
+            gate: Arc::clone(gate),
             transport,
             tool_name: tool_name.to_string(),
-        }),
-    );
+        }));
+    }
 
     let arguments_value = arguments.map(Value::Object).unwrap_or(Value::Null);
     let mut ctx = McpAppContext;
