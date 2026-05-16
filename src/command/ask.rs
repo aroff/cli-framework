@@ -107,7 +107,6 @@ async fn execute_ask(
         .invoke(
             ctx,
             crate::command_surface::tool_bridge::BridgeInvocation {
-                surface: crate::command_surface::tool_bridge::BridgeSurface::Ask,
                 command: &command,
                 input: crate::command_surface::tool_bridge::BridgeInput::Args(resolution.args),
                 confirmation,

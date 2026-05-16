@@ -228,6 +228,22 @@ impl crate::command_surface::tool_bridge::BridgeGate for McpToolGateBridgeAdapte
 }
 
 #[cfg(feature = "mcp-server")]
+struct NoopMcpBridgeGate;
+
+#[cfg(feature = "mcp-server")]
+#[async_trait::async_trait]
+impl crate::command_surface::tool_bridge::BridgeGate for NoopMcpBridgeGate {
+    async fn before_execute(
+        &self,
+        _cmd: &Command,
+        _args: &CommandArgs,
+        _tier: crate::security::command_risk::CommandRiskTier,
+    ) -> Result<(), crate::command_surface::tool_bridge::BridgeError> {
+        Ok(())
+    }
+}
+
+#[cfg(feature = "mcp-server")]
 impl McpToolRegistry {
     fn bridge_for_call(
         &self,
@@ -243,7 +259,10 @@ impl McpToolRegistry {
                 transport,
                 tool_name: tool_name.to_string(),
             })),
-            None => bridge,
+            // Always attach a gate for MCP calls so the bridge can reliably apply MCP-specific
+            // semantics (no risk preflight/confirmation; MCP-quirk typed validation rules) even
+            // when no user-provided `McpToolGate` is configured.
+            None => bridge.with_gate(Arc::new(NoopMcpBridgeGate)),
         }
     }
 }
@@ -406,7 +425,7 @@ pub async fn dispatch_tool_call(
     transport: McpTransportKind,
 ) -> Result<CallToolResult, ErrorData> {
     use crate::command_surface::tool_bridge::{
-        BridgeError, BridgeInput, BridgeInvocation, BridgeSurface, ConfirmationMode,
+        BridgeError, BridgeInput, BridgeInvocation, ConfirmationMode,
     };
 
     let cmd = tool_registry.resolve_tool(tool_name).ok_or_else(|| {
@@ -424,7 +443,6 @@ pub async fn dispatch_tool_call(
         .invoke(
             &mut ctx,
             BridgeInvocation {
-                surface: BridgeSurface::Mcp,
                 command: cmd,
                 input: BridgeInput::Json(arguments_value),
                 confirmation: ConfirmationMode::NonInteractive,
