@@ -13,7 +13,7 @@ use cli_framework::testkit::CliTestHarness;
 
 #[path = "../stdio_capture.rs"]
 mod stdio_capture;
-use stdio_capture::{StderrCapture, StdoutCapture};
+use stdio_capture::StdoutCapture;
 
 struct DummyCtx;
 impl AppContext for DummyCtx {}
@@ -425,25 +425,18 @@ mod clap_dispatch_tests {
     }
 
     // AC-G5.3: `prog unknown_cmd` produces stderr containing "unrecognized subcommand".
+    #[cfg(feature = "testkit")]
     #[tokio::test]
     async fn clap_unknown_command_stderr_contains_unrecognized() {
-        let mut app = AppBuilder::new()
+        let app = AppBuilder::new()
             .with_version("myapp", "1.0.0")
             .build(DummyCtx)
             .unwrap();
+        let mut harness = CliTestHarness::new(app);
 
-        let cap = StderrCapture::new();
-        let result = app
-            .run_with_args(vec!["myapp".to_string(), "bogus".to_string()])
-            .await;
-        let stderr = cap.finish();
-
-        assert!(result.is_ok());
-        assert!(
-            stderr.contains("unrecognized"),
-            "expected stderr to contain 'unrecognized', got: {:?}",
-            stderr
-        );
+        let out = harness.run(&["myapp", "bogus"]).await;
+        out.assert_exit_code(0);
+        out.assert_stderr_contains("unrecognized");
     }
 
     // AC-G5.4: `prog hello --nonexistent-flag` behavior.

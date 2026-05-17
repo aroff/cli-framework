@@ -42,6 +42,7 @@ impl StdoutCapture {
     }
 }
 
+#[allow(dead_code)]
 pub struct StderrCapture {
     _guard: MutexGuard<'static, ()>,
     saved_fd: i32,
@@ -49,6 +50,7 @@ pub struct StderrCapture {
 }
 
 impl StderrCapture {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         let guard = stdio_lock().lock().unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -64,6 +66,7 @@ impl StderrCapture {
         }
     }
 
+    #[allow(dead_code)]
     pub fn finish(self) -> String {
         let _ = std::io::stderr().flush();
         let stderr_fd = std::io::stderr().as_raw_fd();

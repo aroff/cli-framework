@@ -42,6 +42,7 @@ chmod +x .git/hooks/pre-commit
 |-----------|------|
 | `app` | `AppBuilder`, `App::run`, dispatch |
 | `command`, `command::ask` | `Command`, registry, `ask` |
+| `command_surface`, `command_surface::tool_bridge` | Command→tool schemas + shared tool invocation bridge (chat / ask / MCP) |
 | `parser`, `spec` | argv → args; `CommandPath`, `CommandSpec` |
 | `llm` | providers, resolution |
 | `plugin` | registry TOML / manifests |
@@ -52,7 +53,7 @@ chmod +x .git/hooks/pre-commit
 
 Also: `auth`, `data_source`; `observability`, `testkit` behind features.
 
-**Flow:** `AppBuilder` registers commands → `run` resolves id + `CommandArgs` → `await` `execute` on `AppContext`. `ask`: query → `resolve_command` → risk gate → optional confirm → same dispatch.
+**Flow:** `AppBuilder` registers commands → `run` resolves id + `CommandArgs` → `await` `execute` on `AppContext`. Tool surfaces (chat / ask / MCP) adapt inputs into `command_surface::tool_bridge` for shared parsing/validation/gating/dispatch.
 
 **Externals (summary):** `Cargo.toml` — e.g. `tokio`, `reqwest`, `clap`, `serde`, `ailoop-core`, `async-openai`, `anthropic-sdk`; optional `comfy-table`, `indicatif`.
 

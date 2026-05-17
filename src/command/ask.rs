@@ -3,7 +3,6 @@ use crate::app::context::AppContext;
 use crate::command::{Command, CommandArgs, CommandRegistry, CommandResult};
 use crate::llm::{CommandMetadata, CommandResolution, LlmProvider};
 use crate::security::command_risk::CommandRiskPolicy;
-use crate::security::RiskEnforcer;
 use std::sync::Arc;
 
 pub const ASK_DEPRECATED: &str = "ASK_DEPRECATED";
@@ -77,28 +76,67 @@ async fn execute_ask(
             .map(|v| v == "1" || v == "true")
             .unwrap_or(false);
 
-    let command_category = available_commands
-        .iter()
-        .find(|m| m.id == resolution.command_id)
-        .and_then(|m| m.category.as_deref());
-
-    let enforcer = RiskEnforcer::new(risk_policy);
-    enforcer.enforce_preflight(&resolution.command_id, command_category, assume_yes, true)?;
-
     print_resolution(&resolution);
 
     if assume_yes {
         println!("\u{26a0}\u{fe0f}  Running without confirmation");
-    } else {
-        let action = format!("Execute command '{}'", resolution.command_id);
-        let confirmed = ailoop_client.request_confirmation(&action, None).await?;
-        if !confirmed {
-            println!("Command cancelled by user");
-            return Ok(());
-        }
     }
 
-    dispatch_resolved_command(registry_fallback.as_ref(), &resolution, ctx).await
+    let command = {
+        let registry = ctx.opt_registry().unwrap_or(registry_fallback.as_ref());
+        registry
+            .get(&resolution.command_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Resolved command '{}' not found in registry",
+                    resolution.command_id
+                )
+            })?
+            .clone()
+    };
+
+    let bridge = crate::command_surface::tool_bridge::CommandAsToolBridge::new(risk_policy);
+    let confirmation = if assume_yes {
+        crate::command_surface::tool_bridge::ConfirmationMode::AssumeYes
+    } else {
+        // Preserve prior ask behavior: confirmations run through ailoop (HITL).
+        crate::command_surface::tool_bridge::ConfirmationMode::Ailoop(ailoop_client)
+    };
+
+    let res = bridge
+        .invoke(
+            ctx,
+            crate::command_surface::tool_bridge::BridgeInvocation {
+                command: &command,
+                input: crate::command_surface::tool_bridge::BridgeInput::Args(resolution.args),
+                confirmation,
+            },
+        )
+        .await;
+
+    match res {
+        Ok(()) => Ok(()),
+        Err(crate::command_surface::tool_bridge::BridgeError::SensitiveRequiresConfirmation(_)) => {
+            println!("Command cancelled by user");
+            Ok(())
+        }
+        Err(crate::command_surface::tool_bridge::BridgeError::DestructiveBlocked(cmd_id)) => {
+            // Preserve prior ask behavior: destructive preflight failures are errors, not "cancelled".
+            let env_allowed = std::env::var("ALLOW_DESTRUCTIVE_COMMANDS")
+                .map(|v| v == "1" || v == "true")
+                .unwrap_or(false);
+            if !env_allowed {
+                return Err(anyhow::anyhow!(
+                    "DESTRUCTIVE_COMMAND_BLOCKED: command '{}' is destructive; set ALLOW_DESTRUCTIVE_COMMANDS=1 and confirm interactively",
+                    cmd_id
+                ));
+            }
+            println!("Command cancelled by user");
+            Ok(())
+        }
+        Err(crate::command_surface::tool_bridge::BridgeError::Execution(e)) => Err(e),
+        Err(other) => Err(anyhow::anyhow!("{}", other)),
+    }
 }
 
 fn extract_query(args: &CommandArgs) -> anyhow::Result<String> {
@@ -131,23 +169,4 @@ fn print_resolution(resolution: &CommandResolution) {
     println!();
 }
 
-async fn dispatch_resolved_command(
-    registry_fallback: &CommandRegistry,
-    resolution: &CommandResolution,
-    ctx: &mut dyn AppContext,
-) -> CommandResult {
-    let command = {
-        let registry = ctx.opt_registry().unwrap_or(registry_fallback);
-        registry
-            .get(&resolution.command_id)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Resolved command '{}' not found in registry",
-                    resolution.command_id
-                )
-            })?
-            .clone()
-    };
-
-    (command.execute)(ctx, resolution.args.clone()).await
-}
+// `dispatch_resolved_command` removed in favor of `CommandAsToolBridge`.

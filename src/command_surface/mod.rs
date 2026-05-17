@@ -3,6 +3,7 @@ pub mod command;
 pub mod document;
 pub mod json_schema;
 pub mod render;
+pub mod tool_bridge;
 
 pub use collect::collect;
 pub use document::{

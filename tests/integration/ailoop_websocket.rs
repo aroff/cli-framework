@@ -282,8 +282,9 @@ fn test_ask_command_registered_with_llm_and_ailoop() {
 //
 // The MockLlmProvider resolves the query to "hello", risk gate passes (Safe tier),
 // then request_confirmation attempts a WebSocket connection that fails because no
-// ailoop server is running. The error MUST contain "Ailoop authorization failed",
-// proving authorize was called and stdin was never used.
+// ailoop server is running. The command is marked Sensitive so confirmation is required.
+// The error MUST contain "Ailoop authorization failed", proving authorize was called
+// and stdin was never used.
 #[tokio::test]
 #[cfg(not(feature = "strict-types"))]
 async fn test_ask_command_calls_authorize_not_stdin() {
@@ -295,9 +296,16 @@ async fn test_ask_command_calls_authorize_not_stdin() {
         default_timeout_seconds: 2,
     };
 
+    let mut risk_policy = cli_framework::security::CommandRiskPolicy::default();
+    risk_policy.tiers.insert(
+        "hello".to_string(),
+        cli_framework::security::CommandRiskTier::Sensitive,
+    );
+
     let mut app = AppBuilder::new()
         .with_llm_provider(Arc::new(MockLlmProvider))
         .with_ailoop_config(config)
+        .with_risk_policy(risk_policy)
         .register_command(Command {
             id: "hello",
             summary: "Hello",
