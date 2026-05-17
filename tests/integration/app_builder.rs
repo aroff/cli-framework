@@ -425,6 +425,7 @@ mod clap_dispatch_tests {
     }
 
     // AC-G5.3: `prog unknown_cmd` produces stderr containing "unrecognized subcommand".
+    #[cfg(feature = "testkit")]
     #[tokio::test]
     async fn clap_unknown_command_stderr_contains_unrecognized() {
         let app = AppBuilder::new()
