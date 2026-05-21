@@ -1,8 +1,6 @@
 use crate::command::Command;
 use crate::command_surface::collect::collect;
 use crate::command_surface::render::{render_json, render_markdown, render_yaml};
-use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
-use crate::parser::error_codes::E_UNSUPPORTED_SHELL;
 use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use crate::spec::command_tree::CommandSpec;
 use crate::spec::value::ArgValue;
@@ -89,37 +87,13 @@ pub fn create_completion_command(_app_name: &'static str) -> Command {
         validator: None,
         expose_mcp: false,
         execute: Arc::new(move |ctx, args| {
-            let shell_token = args.named.get("shell").cloned().unwrap_or_default();
-
-            let shell = match shell_token.as_str() {
-                "bash" => Some(crate::app::Shell::Bash),
-                "zsh" => Some(crate::app::Shell::Zsh),
-                "fish" => Some(crate::app::Shell::Fish),
-                "powershell" | "pwsh" => Some(crate::app::Shell::PowerShell),
-                _ => None,
-            };
-
-            ctx.opt_registry()
-                .expect("completion requires registry exposure");
-
             Box::pin(async move {
-                let Some(shell) = shell else {
-                    crate::app::diagnostic_reporter::DiagnosticReporter::report(&Diagnostic {
-                        code: E_UNSUPPORTED_SHELL,
-                        category: DiagnosticCategory::Parse,
-                        message: format!(
-                            "unsupported shell '{}'; expected bash, zsh, fish, powershell, or pwsh",
-                            shell_token
-                        ),
-                        suggestion: None,
-                        span: None,
-                    });
-                    return Err(anyhow::anyhow!("completion: unsupported shell"));
-                };
-
-                let mut stdout = std::io::stdout();
-                ctx.emit_completion(shell, &mut stdout)?;
-                Ok(())
+                // NOTE: The built-in completion command is dispatched by `App::run_with_args`
+                // so it can call `App::emit_completion(...)` as the single framework entrypoint.
+                let _ = (ctx, args);
+                Err(anyhow::anyhow!(
+                    "completion is a framework-built-in command and must be dispatched by App"
+                ))
             })
         }),
     }

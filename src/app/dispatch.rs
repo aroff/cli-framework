@@ -5,40 +5,14 @@ use crate::llm::LlmProvider;
 use crate::parser::validator::SpecValidator;
 use crate::spec::value::ArgValue;
 use std::collections::HashMap;
-use std::io::Write;
 use std::sync::Arc;
 #[cfg(feature = "testkit")]
 use std::sync::Mutex;
-
-pub(crate) trait CompletionEmitter {
-    fn emit_completion(&self, shell: crate::app::Shell, out: &mut dyn Write) -> anyhow::Result<()>;
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct CompletionEmitterPtr {
-    data: *const (),
-    vtable: *const (),
-}
-
-unsafe impl Send for CompletionEmitterPtr {}
-unsafe impl Sync for CompletionEmitterPtr {}
-
-impl CompletionEmitterPtr {
-    pub(crate) fn new(ptr: *const dyn CompletionEmitter) -> Self {
-        let (data, vtable): (*const (), *const ()) = unsafe { std::mem::transmute(ptr) };
-        Self { data, vtable }
-    }
-
-    pub(crate) unsafe fn as_ptr(self) -> *const dyn CompletionEmitter {
-        std::mem::transmute((self.data, self.vtable))
-    }
-}
 
 pub(crate) struct DispatchEnv<'a> {
     pub(crate) command_registry: &'a crate::command::CommandRegistry,
     pub(crate) llm_provider: &'a Option<Arc<dyn LlmProvider>>,
     pub(crate) ailoop_client: &'a Option<AiloopClient>,
-    pub(crate) completion_emitter: Option<CompletionEmitterPtr>,
     #[cfg(feature = "testkit")]
     pub(crate) stdout_capture: Option<Arc<Mutex<Vec<u8>>>>,
 }
@@ -57,15 +31,6 @@ impl<'a> CliAppContextWrapper<'a> {
 impl<'a> AppContext for CliAppContextWrapper<'a> {
     fn opt_registry(&self) -> Option<&crate::command::CommandRegistry> {
         Some(self.env.command_registry)
-    }
-
-    fn emit_completion(&self, shell: crate::app::Shell, out: &mut dyn Write) -> anyhow::Result<()> {
-        let Some(raw) = self.env.completion_emitter else {
-            return Err(anyhow::anyhow!("completion emitter not configured"));
-        };
-
-        let ptr = unsafe { raw.as_ptr() };
-        unsafe { (&*ptr).emit_completion(shell, out) }
     }
 
     fn framework_println(&self, s: &str) {

@@ -17,4 +17,5 @@ pub enum DiagnosticCategory {
     Parse,
     Spec,
     Validation,
+    Completion,
 }

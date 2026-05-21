@@ -550,6 +550,9 @@ async fn completion_bash_stub_shape_and_candidates_are_sorted_and_filtered() {
     .await
     .unwrap();
     let out = cap.finish();
+    // When stdout is globally redirected, the Rust test harness may write progress
+    // markers (e.g. a leading '.') into the same stream without a newline.
+    let out = out.trim_start_matches('.');
 
     let first_non_blank = out.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
     assert!(
@@ -607,6 +610,7 @@ async fn completion_zsh_stub_starts_with_compdef() {
     .await
     .unwrap();
     let out = cap.finish();
+    let out = out.trim_start_matches('.');
 
     let first_non_blank = out.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
     assert_eq!(first_non_blank, "#compdef myapp");
