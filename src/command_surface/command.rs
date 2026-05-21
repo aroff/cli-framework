@@ -78,6 +78,7 @@ pub fn create_spec_command(app_name: &'static str, app_version: &'static str) ->
 
 /// Returns the built-in `completion` Command for auto-registration in AppBuilder::build.
 pub fn create_completion_command(app_name: &'static str) -> Command {
+    let _ = app_name;
     Command {
         id: "completion",
         summary: "Emit a shell completion stub for top-level subcommands",
@@ -86,51 +87,9 @@ pub fn create_completion_command(app_name: &'static str) -> Command {
         spec: Some(Arc::new(completion_spec())),
         validator: None,
         expose_mcp: false,
-        execute: Arc::new(move |ctx, args| {
-            Box::pin(async move {
-                use crate::app::diagnostic_reporter::DiagnosticReporter;
-                use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
-                use std::io::Write;
-
-                let shell_token = args
-                    .named
-                    .get("shell")
-                    .cloned()
-                    .or_else(|| args.positional.first().cloned())
-                    .unwrap_or_default();
-
-                let shell = match shell_token.as_str() {
-                    "bash" => Some(crate::app::Shell::Bash),
-                    "zsh" => Some(crate::app::Shell::Zsh),
-                    "fish" => Some(crate::app::Shell::Fish),
-                    "powershell" | "pwsh" => Some(crate::app::Shell::PowerShell),
-                    _ => None,
-                };
-
-                let Some(shell) = shell else {
-                    DiagnosticReporter::report(&Diagnostic {
-                        code: crate::parser::error_codes::E_UNSUPPORTED_SHELL,
-                        category: DiagnosticCategory::Completion,
-                        message: format!(
-                            "unsupported shell '{}'; expected bash, zsh, fish, powershell, or pwsh",
-                            shell_token
-                        ),
-                        suggestion: None,
-                        span: None,
-                    });
-                    return Err(anyhow::anyhow!("completion: unsupported shell"));
-                };
-
-                let empty_registry = crate::command::CommandRegistry::new();
-                let registry = ctx.opt_registry().unwrap_or(&empty_registry);
-                let cmds = crate::app::builder::visible_top_level_commands(registry);
-
-                let mut stdout = std::io::stdout();
-                crate::app::builder::emit_completion_script(app_name, shell, &cmds, &mut stdout)?;
-                stdout.flush().ok();
-                Ok(())
-            })
-        }),
+        // Actual completion emission is handled by `App::execute_command_direct` so the
+        // built-in implementation is guaranteed to flow through `App::emit_completion(...)`.
+        execute: Arc::new(move |_ctx, _args| Box::pin(async move { Ok(()) })),
     }
 }
 

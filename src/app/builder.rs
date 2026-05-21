@@ -279,6 +279,7 @@ impl AppBuilder {
         }
 
         // Auto-register built-in `completion` command (always-on, opt-out via without_completion()).
+        let mut builtin_completion_registered = false;
         if self.auto_register_completion {
             let app_name_for_completion = self.meta.map(|m| m.name).unwrap_or(self.app_name);
             let completion_cmd =
@@ -287,6 +288,7 @@ impl AppBuilder {
             self.command_registry
                 .register_at(&path, completion_cmd)
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
+            builtin_completion_registered = true;
         }
 
         // Auto-register `mcp` group + `mcp serve` when mcp-server feature is enabled.
@@ -387,6 +389,7 @@ impl AppBuilder {
             app_version: self.app_version,
             app_git_sha_short: self.app_git_sha_short,
             clap_root,
+            builtin_completion_registered,
             #[cfg(feature = "testkit")]
             stdout_capture: None,
         })
@@ -410,6 +413,7 @@ pub struct App<C: AppContext> {
     app_version: &'static str,
     app_git_sha_short: Option<&'static str>,
     clap_root: clap::Command,
+    builtin_completion_registered: bool,
     /// Captures framework-level stdout output (version strings etc.) when testkit is active.
     #[cfg(feature = "testkit")]
     pub stdout_capture: Option<Arc<Mutex<Vec<u8>>>>,
@@ -610,6 +614,48 @@ impl<C: AppContext> App<C> {
 
         let effective_args =
             crate::app::dispatch::effective_args_for_execution(args, typed_args.as_ref());
+
+        // Built-in `completion` dispatch: route through `App::emit_completion(...)` so
+        // framework consumers can delegate to the same implementation.
+        if self.builtin_completion_registered && command.id == "completion" {
+            use crate::app::diagnostic_reporter::DiagnosticReporter;
+            use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
+            use std::io::Write;
+
+            let shell_token = effective_args
+                .named
+                .get("shell")
+                .cloned()
+                .or_else(|| effective_args.positional.first().cloned())
+                .unwrap_or_default();
+
+            let shell = match shell_token.as_str() {
+                "bash" => Some(Shell::Bash),
+                "zsh" => Some(Shell::Zsh),
+                "fish" => Some(Shell::Fish),
+                "powershell" | "pwsh" => Some(Shell::PowerShell),
+                _ => None,
+            };
+
+            let Some(shell) = shell else {
+                DiagnosticReporter::report(&Diagnostic {
+                    code: crate::parser::error_codes::E_UNSUPPORTED_SHELL,
+                    category: DiagnosticCategory::Completion,
+                    message: format!(
+                        "unsupported shell '{}'; expected bash, zsh, fish, powershell, or pwsh",
+                        shell_token
+                    ),
+                    suggestion: None,
+                    span: None,
+                });
+                return Err(anyhow::anyhow!("completion: unsupported shell"));
+            };
+
+            let mut stdout = std::io::stdout();
+            self.emit_completion(shell, &mut stdout)?;
+            stdout.flush().ok();
+            return Ok(());
+        }
 
         let env = crate::app::dispatch::DispatchEnv {
             command_registry: self.command_registry.as_ref(),

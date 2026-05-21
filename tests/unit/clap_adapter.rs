@@ -1,6 +1,8 @@
 use cli_framework::app::AppMeta;
+use cli_framework::app::{AppBuilder, Shell};
 use cli_framework::command::{Command, CommandArgs, CommandRegistry};
 use cli_framework::parser::ParseOutcome;
+use cli_framework::spec::command_tree::CommandSpec;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -22,6 +24,30 @@ fn make_registry_with(commands: Vec<Command>) -> CommandRegistry {
         reg.register(cmd);
     }
     reg
+}
+
+struct DummyCtx;
+impl cli_framework::app::AppContext for DummyCtx {}
+
+fn make_cmd_with_hidden(id: &'static str, hidden: bool) -> Command {
+    Command {
+        id,
+        summary: id,
+        syntax: None,
+        category: None,
+        spec: Some(Arc::new(CommandSpec {
+            hidden,
+            args: vec![],
+            ..Default::default()
+        })),
+        validator: None,
+        expose_mcp: false,
+        execute: noop_execute(),
+    }
+}
+
+fn first_non_blank_line(s: &str) -> &str {
+    s.lines().find(|l| !l.trim().is_empty()).unwrap_or("")
 }
 
 #[test]
@@ -490,6 +516,84 @@ fn parse_with_clap_version_subcommand_returns_parsed() {
         }
         other => panic!("expected Parsed, got {:?}", other),
     }
+}
+
+#[test]
+fn emit_completion_bash_stub_shape_and_hidden_filtering() {
+    let app = AppBuilder::new()
+        .with_version("myapp", "1.0.0")
+        .register_command(make_cmd_with_hidden("alpha", false))
+        .unwrap()
+        .register_command(make_cmd_with_hidden("hidden_cmd", true))
+        .unwrap()
+        .build(DummyCtx)
+        .unwrap();
+
+    let mut out = Vec::<u8>::new();
+    app.emit_completion(Shell::Bash, &mut out).unwrap();
+    let out = String::from_utf8(out).unwrap();
+
+    let first = first_non_blank_line(&out);
+    assert!(
+        first.starts_with("_myapp()") || first.starts_with("complete "),
+        "unexpected first non-blank line: {:?}",
+        first
+    );
+    assert!(!out.contains("hidden_cmd"));
+    assert!(out.contains("compgen -W \""));
+}
+
+#[test]
+fn emit_completion_zsh_stub_starts_with_compdef() {
+    let app = AppBuilder::new()
+        .with_version("myapp", "1.0.0")
+        .build(DummyCtx)
+        .unwrap();
+
+    let mut out = Vec::<u8>::new();
+    app.emit_completion(Shell::Zsh, &mut out).unwrap();
+    let out = String::from_utf8(out).unwrap();
+    assert_eq!(first_non_blank_line(&out), "#compdef myapp");
+}
+
+#[test]
+fn emit_completion_fish_includes_one_line_per_candidate() {
+    let app = AppBuilder::new()
+        .with_version("myapp", "1.0.0")
+        .register_command(make_cmd_with_hidden("extra", false))
+        .unwrap()
+        .build(DummyCtx)
+        .unwrap();
+
+    let mut out = Vec::<u8>::new();
+    app.emit_completion(Shell::Fish, &mut out).unwrap();
+    let out = String::from_utf8(out).unwrap();
+
+    assert!(out.contains("complete -c myapp -f"));
+    for cmd in ["completion", "extra", "spec"] {
+        assert!(
+            out.contains(&format!(
+                "complete -c myapp -n '__fish_use_subcommand' -a '{}'",
+                cmd
+            )),
+            "missing fish completion line for {}:\n{}",
+            cmd,
+            out
+        );
+    }
+}
+
+#[test]
+fn emit_completion_powershell_contains_register_argument_completer() {
+    let app = AppBuilder::new()
+        .with_version("myapp", "1.0.0")
+        .build(DummyCtx)
+        .unwrap();
+
+    let mut out = Vec::<u8>::new();
+    app.emit_completion(Shell::PowerShell, &mut out).unwrap();
+    let out = String::from_utf8(out).unwrap();
+    assert!(out.contains("Register-ArgumentCompleter -Native -CommandName myapp"));
 }
 
 #[test]
