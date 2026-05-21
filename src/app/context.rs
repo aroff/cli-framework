@@ -2,6 +2,8 @@
 //!
 //! AppContext represents application-owned state and service clients.
 
+use std::io::Write;
+
 /// Application context trait
 ///
 /// Applications implement this trait to provide their own state and service clients.
@@ -42,6 +44,19 @@ pub trait AppContext: Send + Sync {
         use std::io::Write;
         let mut stdout = std::io::stdout();
         let _ = writeln!(stdout, "{}", s);
+    }
+
+    /// Emit a shell completion stub for top-level subcommands.
+    ///
+    /// Framework-owned contexts override this to delegate to `App::emit_completion`.
+    fn emit_completion(
+        &self,
+        _shell: crate::app::Shell,
+        _out: &mut dyn Write,
+    ) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!(
+            "completion emission is not available for this context"
+        ))
     }
 }
 

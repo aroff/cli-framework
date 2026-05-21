@@ -612,6 +612,9 @@ impl<C: AppContext> App<C> {
             command_registry: self.command_registry.as_ref(),
             llm_provider: &self.llm_provider,
             ailoop_client: &self.ailoop_client,
+            completion_emitter: Some(crate::app::dispatch::CompletionEmitterPtr::new(
+                (self as *const App<C>) as *const dyn crate::app::dispatch::CompletionEmitter,
+            )),
             #[cfg(feature = "testkit")]
             stdout_capture: self.stdout_capture.clone(),
         };
@@ -645,6 +648,12 @@ impl<C: AppContext> App<C> {
 
     pub fn has_plugins(&self) -> bool {
         self.plugin_registry_manager.is_some()
+    }
+}
+
+impl<C: AppContext> crate::app::dispatch::CompletionEmitter for App<C> {
+    fn emit_completion(&self, shell: Shell, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        App::<C>::emit_completion(self, shell, out)
     }
 }
 

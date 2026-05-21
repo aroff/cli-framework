@@ -17,6 +17,7 @@ impl StdoutCapture {
     pub fn new() -> Self {
         let guard = stdio_lock().lock().unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
+        let _ = std::io::stdout().flush();
         let stdout_fd = std::io::stdout().as_raw_fd();
         let saved_fd = unsafe { libc::dup(stdout_fd) };
         unsafe {
@@ -54,6 +55,7 @@ impl StderrCapture {
     pub fn new() -> Self {
         let guard = stdio_lock().lock().unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
+        let _ = std::io::stderr().flush();
         let stderr_fd = std::io::stderr().as_raw_fd();
         let saved_fd = unsafe { libc::dup(stderr_fd) };
         unsafe {

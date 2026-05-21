@@ -79,7 +79,7 @@ pub fn create_spec_command(app_name: &'static str, app_version: &'static str) ->
 }
 
 /// Returns the built-in `completion` Command for auto-registration in AppBuilder::build.
-pub fn create_completion_command(app_name: &'static str) -> Command {
+pub fn create_completion_command(_app_name: &'static str) -> Command {
     Command {
         id: "completion",
         summary: "Emit a shell completion stub for top-level subcommands",
@@ -99,8 +99,7 @@ pub fn create_completion_command(app_name: &'static str) -> Command {
                 _ => None,
             };
 
-            let registry = ctx
-                .opt_registry()
+            ctx.opt_registry()
                 .expect("completion requires registry exposure");
 
             Box::pin(async move {
@@ -118,9 +117,8 @@ pub fn create_completion_command(app_name: &'static str) -> Command {
                     return Err(anyhow::anyhow!("completion: unsupported shell"));
                 };
 
-                let cmds = crate::app::builder::visible_top_level_commands(registry);
                 let mut stdout = std::io::stdout();
-                crate::app::builder::emit_completion_script(app_name, shell, &cmds, &mut stdout)?;
+                ctx.emit_completion(shell, &mut stdout)?;
                 Ok(())
             })
         }),
