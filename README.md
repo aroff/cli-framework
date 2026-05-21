@@ -95,6 +95,15 @@ All MCP tool calls are routed through the same validation pipeline as CLI calls:
 
 Choose this crate when you want one stack for classical subcommands plus optional LLM resolution and scripted workflows, without assembling parsing, sanitization, and policy from scratch.
 
+## Built-in commands
+
+`cli-framework` auto-registers a small set of built-ins during `AppBuilder::build()`:
+
+- `spec`: exports the command surface as JSON/YAML/Markdown.
+- `completion <shell>`: emits a simple top-level subcommand completion stub for `bash`, `zsh`, `fish`, or `powershell` (alias: `pwsh`).
+
+If your app already defines a root-level `completion` command, call `AppBuilder::without_completion()` to opt out of auto-registration and avoid a registration collision.
+
 ## Documentation
 
 | Document | What it covers |

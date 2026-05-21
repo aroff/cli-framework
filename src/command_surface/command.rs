@@ -1,6 +1,8 @@
 use crate::command::Command;
 use crate::command_surface::collect::collect;
 use crate::command_surface::render::{render_json, render_markdown, render_yaml};
+use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
+use crate::parser::error_codes::E_UNSUPPORTED_SHELL;
 use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use crate::spec::command_tree::CommandSpec;
 use crate::spec::value::ArgValue;
@@ -76,6 +78,55 @@ pub fn create_spec_command(app_name: &'static str, app_version: &'static str) ->
     }
 }
 
+/// Returns the built-in `completion` Command for auto-registration in AppBuilder::build.
+pub fn create_completion_command(app_name: &'static str) -> Command {
+    Command {
+        id: "completion",
+        summary: "Emit a shell completion stub for top-level subcommands",
+        syntax: Some("completion <bash|zsh|fish|powershell|pwsh>"),
+        category: None,
+        spec: Some(Arc::new(completion_spec())),
+        validator: None,
+        expose_mcp: false,
+        execute: Arc::new(move |ctx, args| {
+            let shell_token = args.named.get("shell").cloned().unwrap_or_default();
+
+            let shell = match shell_token.as_str() {
+                "bash" => Some(crate::app::Shell::Bash),
+                "zsh" => Some(crate::app::Shell::Zsh),
+                "fish" => Some(crate::app::Shell::Fish),
+                "powershell" | "pwsh" => Some(crate::app::Shell::PowerShell),
+                _ => None,
+            };
+
+            let registry = ctx
+                .opt_registry()
+                .expect("completion requires registry exposure");
+
+            Box::pin(async move {
+                let Some(shell) = shell else {
+                    crate::app::diagnostic_reporter::DiagnosticReporter::report(&Diagnostic {
+                        code: E_UNSUPPORTED_SHELL,
+                        category: DiagnosticCategory::Parse,
+                        message: format!(
+                            "unsupported shell '{}'; expected bash, zsh, fish, powershell, or pwsh",
+                            shell_token
+                        ),
+                        suggestion: None,
+                        span: None,
+                    });
+                    return Err(anyhow::anyhow!("completion: unsupported shell"));
+                };
+
+                let cmds = crate::app::builder::visible_top_level_commands(registry);
+                let mut stdout = std::io::stdout();
+                crate::app::builder::emit_completion_script(app_name, shell, &cmds, &mut stdout)?;
+                Ok(())
+            })
+        }),
+    }
+}
+
 fn spec_spec() -> CommandSpec {
     CommandSpec {
         summary: "Export the CLI command surface as JSON, YAML, or Markdown",
@@ -117,6 +168,26 @@ fn spec_spec() -> CommandSpec {
                 help: "Include commands with hidden: true",
             },
         ],
+        ..Default::default()
+    }
+}
+
+fn completion_spec() -> CommandSpec {
+    CommandSpec {
+        summary: "Emit a shell completion stub for top-level subcommands",
+        args: vec![ArgSpec {
+            name: "shell",
+            kind: ArgKind::Positional,
+            short: None,
+            long: None,
+            value_type: ArgValueType::Enum(vec!["bash", "zsh", "fish", "powershell", "pwsh"]),
+            cardinality: Cardinality::Required,
+            default: None,
+            conflicts_with: vec![],
+            requires: vec![],
+            help: "Target shell: bash, zsh, fish, powershell, or pwsh",
+        }],
+        hidden_aliases: vec!["completions"],
         ..Default::default()
     }
 }

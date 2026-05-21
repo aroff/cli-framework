@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Built-in `completion <shell>` command (bash/zsh/fish/powershell) auto-registered by `AppBuilder::build()`. Apps that already define `completion` can opt out via `AppBuilder::without_completion()`.
+
 ### Breaking
 
 - Removed `cli_framework::auth` and `cli_framework::data_source::DataSource` (and the prelude

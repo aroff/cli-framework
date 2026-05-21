@@ -5,6 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use cli_framework::app::{AppBuilder, AppContext};
 use cli_framework::command::CommandArgs;
+use cli_framework::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
+use cli_framework::spec::command_tree::{CommandPath, CommandSpec, GroupMetadata};
 
 #[cfg(feature = "testkit")]
 use cli_framework::app::AppMeta;
@@ -13,6 +15,7 @@ use cli_framework::testkit::CliTestHarness;
 
 #[path = "../stdio_capture.rs"]
 mod stdio_capture;
+use stdio_capture::StderrCapture;
 use stdio_capture::StdoutCapture;
 
 struct DummyCtx;
@@ -504,6 +507,307 @@ mod clap_dispatch_tests {
             "bare --flag without value should not appear in named or positional (DD#8)"
         );
     }
+}
+
+fn make_hidden_cmd(id: &'static str, hidden: bool) -> cli_framework::command::Command {
+    cli_framework::command::Command {
+        id,
+        summary: "test",
+        syntax: None,
+        category: None,
+        spec: Some(Arc::new(CommandSpec {
+            summary: "test",
+            hidden,
+            args: vec![],
+            ..Default::default()
+        })),
+        validator: None,
+        expose_mcp: false,
+        execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
+    }
+}
+
+#[tokio::test]
+async fn completion_bash_stub_shape_and_candidates_are_sorted_and_filtered() {
+    let hidden = make_hidden_cmd("hidden_cmd", true);
+    let visible = make_hidden_cmd("alpha", false);
+
+    let mut app = AppBuilder::new()
+        .with_version("myapp", "1.0.0")
+        .register_command(visible)
+        .unwrap()
+        .register_command(hidden)
+        .unwrap()
+        .build(DummyCtx)
+        .unwrap();
+
+    let cap = StdoutCapture::new();
+    app.run_with_args(vec![
+        "myapp".to_string(),
+        "completion".to_string(),
+        "bash".to_string(),
+    ])
+    .await
+    .unwrap();
+    let out = cap.finish();
+
+    let first_non_blank = out.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    assert!(
+        first_non_blank.starts_with("_myapp()") || first_non_blank.starts_with("complete "),
+        "unexpected first non-blank line: {:?}",
+        first_non_blank
+    );
+
+    assert!(
+        out.contains("compgen -W \""),
+        "expected bash stub to contain compgen candidate list; got:\n{}",
+        out
+    );
+    let candidates = out
+        .lines()
+        .find_map(|l| {
+            let start = l.find("compgen -W \"")?;
+            let rest = &l[start + "compgen -W \"".len()..];
+            let end = rest.find("\" -- ")?;
+            Some(rest[..end].to_string())
+        })
+        .unwrap_or_default();
+    let parsed: Vec<&str> = candidates.split_whitespace().collect();
+    let mut sorted = parsed.clone();
+    sorted.sort();
+    assert_eq!(
+        parsed, sorted,
+        "expected deterministic sorted output, got: {:?}",
+        parsed
+    );
+    for expected in ["alpha", "completion", "spec"] {
+        assert!(
+            parsed.contains(&expected),
+            "expected candidate {:?} in {:?}",
+            expected,
+            parsed
+        );
+    }
+    assert!(!out.contains("hidden_cmd"));
+}
+
+#[tokio::test]
+async fn completion_zsh_stub_starts_with_compdef() {
+    let mut app = AppBuilder::new()
+        .with_version("myapp", "1.0.0")
+        .build(DummyCtx)
+        .unwrap();
+
+    let cap = StdoutCapture::new();
+    app.run_with_args(vec![
+        "myapp".to_string(),
+        "completion".to_string(),
+        "zsh".to_string(),
+    ])
+    .await
+    .unwrap();
+    let out = cap.finish();
+
+    let first_non_blank = out.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    assert_eq!(first_non_blank, "#compdef myapp");
+}
+
+#[tokio::test]
+async fn completion_fish_stub_contains_one_line_per_candidate() {
+    let extra = make_hidden_cmd("extra", false);
+    let mut app = AppBuilder::new()
+        .with_version("myapp", "1.0.0")
+        .register_command(extra)
+        .unwrap()
+        .build(DummyCtx)
+        .unwrap();
+
+    let cap = StdoutCapture::new();
+    app.run_with_args(vec![
+        "myapp".to_string(),
+        "completion".to_string(),
+        "fish".to_string(),
+    ])
+    .await
+    .unwrap();
+    let out = cap.finish();
+
+    assert!(out.contains("complete -c myapp -f"));
+    for cmd in ["completion", "extra", "spec"] {
+        assert!(
+            out.contains(&format!(
+                "complete -c myapp -n '__fish_use_subcommand' -a '{}'",
+                cmd
+            )),
+            "missing fish completion line for {}:\n{}",
+            cmd,
+            out
+        );
+    }
+}
+
+#[tokio::test]
+async fn completion_powershell_stub_contains_register_argument_completer() {
+    let mut app = AppBuilder::new()
+        .with_version("myapp", "1.0.0")
+        .build(DummyCtx)
+        .unwrap();
+
+    let cap = StdoutCapture::new();
+    app.run_with_args(vec![
+        "myapp".to_string(),
+        "completion".to_string(),
+        "powershell".to_string(),
+    ])
+    .await
+    .unwrap();
+    let out = cap.finish();
+
+    assert!(out.contains("Register-ArgumentCompleter -Native -CommandName myapp"));
+}
+
+#[tokio::test]
+async fn completions_hidden_alias_routes_but_does_not_appear_in_help() {
+    let mut app = AppBuilder::new()
+        .with_version("myapp", "1.0.0")
+        .build(DummyCtx)
+        .unwrap();
+
+    // Alias routes
+    let cap = StdoutCapture::new();
+    app.run_with_args(vec![
+        "myapp".to_string(),
+        "completions".to_string(),
+        "bash".to_string(),
+    ])
+    .await
+    .unwrap();
+    let out = cap.finish();
+    assert!(out.contains("complete -F _myapp myapp"));
+
+    // Alias hidden from help
+    let cap = StdoutCapture::new();
+    app.run_with_args(vec!["myapp".to_string(), "--help".to_string()])
+        .await
+        .unwrap();
+    let help = cap.finish();
+    assert!(help.contains("completion"));
+    assert!(!help.contains("completions"));
+}
+
+#[tokio::test]
+async fn completion_invalid_shell_emits_e013_and_returns_error() {
+    let mut app = AppBuilder::new()
+        .with_version("myapp", "1.0.0")
+        .build(DummyCtx)
+        .unwrap();
+
+    let stderr_cap = StderrCapture::new();
+    let result = app
+        .run_with_args(vec![
+            "myapp".to_string(),
+            "completion".to_string(),
+            "invalidshell".to_string(),
+        ])
+        .await;
+    let stderr = stderr_cap.finish();
+
+    assert!(result.is_err());
+    assert!(
+        stderr.lines().count() == 1 && stderr.contains("error[E013]:"),
+        "expected exactly one diagnostic line containing error[E013]:, got:\n{}",
+        stderr
+    );
+}
+
+#[tokio::test]
+async fn without_completion_disables_builtin_and_allows_user_completion() {
+    let user_completion = cli_framework::command::Command {
+        id: "completion",
+        summary: "user completion",
+        syntax: None,
+        category: None,
+        spec: Some(Arc::new(CommandSpec {
+            summary: "user completion",
+            args: vec![ArgSpec {
+                name: "shell",
+                kind: ArgKind::Positional,
+                short: None,
+                long: None,
+                value_type: ArgValueType::String,
+                cardinality: Cardinality::Optional,
+                default: None,
+                conflicts_with: vec![],
+                requires: vec![],
+                help: "shell",
+            }],
+            ..Default::default()
+        })),
+        validator: None,
+        expose_mcp: false,
+        execute: Arc::new(|ctx, _args| {
+            Box::pin(async move {
+                ctx.framework_println("user");
+                Ok(())
+            })
+        }),
+    };
+
+    let mut app = AppBuilder::new()
+        .with_version("myapp", "1.0.0")
+        .without_completion()
+        .register_command(user_completion)
+        .unwrap()
+        .build(DummyCtx)
+        .unwrap();
+
+    let cap = StdoutCapture::new();
+    app.run_with_args(vec!["myapp".to_string(), "completion".to_string()])
+        .await
+        .unwrap();
+    let out = cap.finish();
+    assert!(out.contains("user"));
+}
+
+#[tokio::test]
+async fn completion_includes_root_segment_from_visible_leaf_even_when_group_hidden() {
+    let mut builder = AppBuilder::new().with_version("myapp", "1.0.0");
+    builder = builder
+        .register_group(
+            &CommandPath::root_for("grp"),
+            GroupMetadata {
+                summary: "grp",
+                hidden: true,
+            },
+        )
+        .unwrap();
+
+    let grp_leaf_path = CommandPath::new(&["grp", "show"]).unwrap();
+    builder = builder
+        .register_command_at(&grp_leaf_path, make_hidden_cmd("show", false))
+        .unwrap();
+
+    let mut app = builder.build(DummyCtx).unwrap();
+    let cap = StdoutCapture::new();
+    app.run_with_args(vec![
+        "myapp".to_string(),
+        "completion".to_string(),
+        "bash".to_string(),
+    ])
+    .await
+    .unwrap();
+    let out = cap.finish();
+    let candidates = out
+        .lines()
+        .find_map(|l| {
+            let start = l.find("compgen -W \"")?;
+            let rest = &l[start + "compgen -W \"".len()..];
+            let end = rest.find("\" -- ")?;
+            Some(rest[..end].to_string())
+        })
+        .unwrap_or_default();
+    let parsed: Vec<&str> = candidates.split_whitespace().collect();
+    assert!(parsed.contains(&"grp"), "expected 'grp' in {:?}", parsed);
 }
 
 // ============================================================================
