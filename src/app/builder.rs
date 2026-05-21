@@ -279,15 +279,14 @@ impl AppBuilder {
         }
 
         // Auto-register built-in `completion` command (always-on, opt-out via without_completion()).
-        let mut has_builtin_completion = false;
         if self.auto_register_completion {
+            let app_name_for_completion = self.meta.map(|m| m.name).unwrap_or(self.app_name);
             let completion_cmd =
-                crate::command_surface::command::create_completion_command(self.app_name);
+                crate::command_surface::command::create_completion_command(app_name_for_completion);
             let path = CommandPath::root_for("completion");
             self.command_registry
                 .register_at(&path, completion_cmd)
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
-            has_builtin_completion = true;
         }
 
         // Auto-register `mcp` group + `mcp serve` when mcp-server feature is enabled.
@@ -387,7 +386,6 @@ impl AppBuilder {
             app_name: self.app_name,
             app_version: self.app_version,
             app_git_sha_short: self.app_git_sha_short,
-            has_builtin_completion,
             clap_root,
             #[cfg(feature = "testkit")]
             stdout_capture: None,
@@ -411,7 +409,6 @@ pub struct App<C: AppContext> {
     app_name: &'static str,
     app_version: &'static str,
     app_git_sha_short: Option<&'static str>,
-    has_builtin_completion: bool,
     clap_root: clap::Command,
     /// Captures framework-level stdout output (version strings etc.) when testkit is active.
     #[cfg(feature = "testkit")]
@@ -601,55 +598,18 @@ impl<C: AppContext> App<C> {
         args: crate::command::CommandArgs,
         typed_args: Option<HashMap<String, ArgValue>>,
     ) -> Result<()> {
-        use crate::app::diagnostic_reporter::DiagnosticReporter;
-        use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
-
         // Stage 6: Validation Pipeline
         if let Some(ref typed_args_map) = typed_args {
             let diags = crate::app::dispatch::validate_typed_args(&command, typed_args_map)?;
             if !diags.is_empty() {
+                use crate::app::diagnostic_reporter::DiagnosticReporter;
                 DiagnosticReporter::report_all(&diags);
                 return Err(anyhow::anyhow!("validation failed"));
             }
         }
 
-        // Built-in `completion` dispatch: bypass the generic command execute closure so the
-        // framework's single entrypoint is `App::emit_completion`.
         let effective_args =
             crate::app::dispatch::effective_args_for_execution(args, typed_args.as_ref());
-        if self.has_builtin_completion && command.id == "completion" {
-            let shell_token = effective_args
-                .named
-                .get("shell")
-                .cloned()
-                .unwrap_or_default();
-
-            let shell = match shell_token.as_str() {
-                "bash" => Some(Shell::Bash),
-                "zsh" => Some(Shell::Zsh),
-                "fish" => Some(Shell::Fish),
-                "powershell" | "pwsh" => Some(Shell::PowerShell),
-                _ => None,
-            };
-
-            let Some(shell) = shell else {
-                DiagnosticReporter::report(&Diagnostic {
-                    code: crate::parser::error_codes::E_UNSUPPORTED_SHELL,
-                    category: DiagnosticCategory::Completion,
-                    message: format!(
-                        "unsupported shell '{}'; expected bash, zsh, fish, powershell, or pwsh",
-                        shell_token
-                    ),
-                    suggestion: None,
-                    span: None,
-                });
-                return Err(anyhow::anyhow!("completion: unsupported shell"));
-            };
-
-            let mut stdout = std::io::stdout();
-            self.emit_completion(shell, &mut stdout)?;
-            return Ok(());
-        }
 
         let env = crate::app::dispatch::DispatchEnv {
             command_registry: self.command_registry.as_ref(),
