@@ -57,6 +57,30 @@ fn test_tool_list_includes_all_commands() {
 }
 
 #[test]
+fn test_completion_is_excluded_even_under_all_commands_policy() {
+    let mut registry = CommandRegistry::new();
+    registry.register(make_cmd("deploy", "Deploy app"));
+    let completion = cli_framework::command_surface::command::create_completion_command("myapp");
+    registry
+        .register_at(&CommandPath::root_for("completion"), completion)
+        .unwrap();
+
+    let tool_registry = McpToolRegistry::from_command_registry_with_policy(
+        &registry,
+        "myapp",
+        McpToolExportPolicy::AllCommands,
+    );
+    let tools = tool_registry.list_tools();
+    let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+    assert!(tool_names.contains(&"myapp.deploy".to_string()));
+    assert!(
+        !tool_names.iter().any(|n| n.ends_with(".completion")),
+        "expected no tool name ending in .completion, got: {:?}",
+        tool_names
+    );
+}
+
+#[test]
 fn test_tool_name_format() {
     let mut registry = CommandRegistry::new();
     registry.register(make_cmd("deploy", "Deploy app"));

@@ -76,6 +76,23 @@ pub fn create_spec_command(app_name: &'static str, app_version: &'static str) ->
     }
 }
 
+/// Returns the built-in `completion` Command for auto-registration in AppBuilder::build.
+pub fn create_completion_command(app_name: &'static str) -> Command {
+    let _ = app_name;
+    Command {
+        id: "completion",
+        summary: "Emit a shell completion stub for top-level subcommands",
+        syntax: Some("completion <bash|zsh|fish|powershell|pwsh>"),
+        category: None,
+        spec: Some(Arc::new(completion_spec())),
+        validator: None,
+        expose_mcp: false,
+        // Actual completion emission is handled by `App::execute_command_direct` so the
+        // built-in implementation is guaranteed to flow through `App::emit_completion(...)`.
+        execute: Arc::new(move |_ctx, _args| Box::pin(async move { Ok(()) })),
+    }
+}
+
 fn spec_spec() -> CommandSpec {
     CommandSpec {
         summary: "Export the CLI command surface as JSON, YAML, or Markdown",
@@ -117,6 +134,26 @@ fn spec_spec() -> CommandSpec {
                 help: "Include commands with hidden: true",
             },
         ],
+        ..Default::default()
+    }
+}
+
+fn completion_spec() -> CommandSpec {
+    CommandSpec {
+        summary: "Emit a shell completion stub for top-level subcommands",
+        args: vec![ArgSpec {
+            name: "shell",
+            kind: ArgKind::Positional,
+            short: None,
+            long: None,
+            value_type: ArgValueType::Enum(vec!["bash", "zsh", "fish", "powershell", "pwsh"]),
+            cardinality: Cardinality::Required,
+            default: None,
+            conflicts_with: vec![],
+            requires: vec![],
+            help: "Target shell: bash, zsh, fish, powershell, or pwsh",
+        }],
+        hidden_aliases: vec!["completions"],
         ..Default::default()
     }
 }

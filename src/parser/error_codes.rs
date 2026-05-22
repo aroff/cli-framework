@@ -22,3 +22,5 @@ pub const E_MCP_INSTALL_EXE_NOT_FOUND: &str = "E010";
 pub const E_MCP_INSTALL_WRITE_FAILED: &str = "E011";
 /// Returned when a nested command path is requested but no command is registered at that path.
 pub const E_NESTED_COMMAND_NOT_FOUND: &str = "E012";
+/// Returned when `completion <shell>` is invoked with an unsupported shell token.
+pub const E_UNSUPPORTED_SHELL: &str = "E013";

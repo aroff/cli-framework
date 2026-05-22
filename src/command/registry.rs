@@ -173,7 +173,7 @@ impl CommandRegistry {
 
         // Alias conflict check
         if let Some(ref spec) = command.spec {
-            for alias in &spec.aliases {
+            for alias in spec.aliases.iter().chain(spec.hidden_aliases.iter()) {
                 if self.commands.contains_key(*alias) || self.tree_commands.contains_key(*alias) {
                     return Err(RegistrationError::AliasConflict {
                         alias: alias.to_string(),
@@ -283,6 +283,28 @@ mod tests {
         let mut cmd = make_cmd("greet");
         cmd.spec = Some(Arc::new(CommandSpec {
             aliases: vec!["hello"],
+            ..Default::default()
+        }));
+
+        let err = registry
+            .register_at(&CommandPath::root_for("greet"), cmd)
+            .unwrap_err();
+        match err {
+            RegistrationError::AliasConflict { alias, .. } => {
+                assert_eq!(alias, "hello");
+            }
+            _ => panic!("expected AliasConflict"),
+        }
+    }
+
+    #[test]
+    fn e008_alias_conflict_includes_hidden_aliases() {
+        let mut registry = CommandRegistry::new();
+        registry.register(make_cmd("hello"));
+
+        let mut cmd = make_cmd("greet");
+        cmd.spec = Some(Arc::new(CommandSpec {
+            hidden_aliases: vec!["hello"],
             ..Default::default()
         }));
 

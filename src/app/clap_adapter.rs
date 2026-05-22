@@ -168,6 +168,9 @@ fn build_leaf_clap_command(segment: &str, cmd: &crate::command::Command) -> clap
         for alias in &spec.aliases {
             sub = sub.visible_alias(alias);
         }
+        for alias in &spec.hidden_aliases {
+            sub = sub.alias(alias);
+        }
     }
 
     sub

@@ -8,7 +8,7 @@ pub mod module;
 pub mod clap_adapter;
 pub(crate) mod version;
 
-pub use builder::{App, AppBuilder};
+pub use builder::{App, AppBuilder, Shell};
 pub use context::AppContext;
 pub use meta::AppMeta;
 pub use module::Module;

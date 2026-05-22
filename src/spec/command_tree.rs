@@ -11,6 +11,7 @@ pub struct CommandSpec {
     pub long_about: Option<&'static str>,
     pub examples: Vec<&'static str>,
     pub aliases: Vec<&'static str>,
+    pub hidden_aliases: Vec<&'static str>,
     pub hidden: bool,
     /// Deprecation message, if this command is deprecated.
     pub deprecated: Option<&'static str>,

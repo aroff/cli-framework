@@ -9,6 +9,7 @@ use crate::plugin::PluginRegistryManager;
 use crate::spec::command_tree::{CommandPath, GroupMetadata};
 use crate::spec::value::ArgValue;
 use anyhow::Result;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,6 +28,7 @@ pub struct AppBuilder {
     app_version: &'static str,
     app_git_sha_short: Option<&'static str>,
     risk_policy: crate::security::command_risk::CommandRiskPolicy,
+    auto_register_completion: bool,
     #[cfg(feature = "doctor")]
     doctor_checks: Vec<Arc<dyn crate::doctor::check::DoctorCheck>>,
     #[cfg(feature = "mcp-server")]
@@ -48,6 +50,7 @@ impl AppBuilder {
             app_version: "unknown",
             app_git_sha_short: None,
             risk_policy: crate::security::command_risk::CommandRiskPolicy::default(),
+            auto_register_completion: true,
             #[cfg(feature = "doctor")]
             doctor_checks: Vec::new(),
             #[cfg(feature = "mcp-server")]
@@ -55,6 +58,12 @@ impl AppBuilder {
             #[cfg(feature = "mcp-server")]
             mcp_tool_gate: None,
         }
+    }
+
+    /// Disable auto-registration of the built-in `completion` command.
+    pub fn without_completion(mut self) -> Self {
+        self.auto_register_completion = false;
+        self
     }
 
     /// Set the MCP export policy used when `--mcp-serve` starts the embedded server.
@@ -269,6 +278,19 @@ impl AppBuilder {
             log::warn!("'spec' command already registered; skipping built-in spec command");
         }
 
+        // Auto-register built-in `completion` command (always-on, opt-out via without_completion()).
+        let mut builtin_completion_registered = false;
+        if self.auto_register_completion {
+            let app_name_for_completion = self.meta.map(|m| m.name).unwrap_or(self.app_name);
+            let completion_cmd =
+                crate::command_surface::command::create_completion_command(app_name_for_completion);
+            let path = CommandPath::root_for("completion");
+            self.command_registry
+                .register_at(&path, completion_cmd)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            builtin_completion_registered = true;
+        }
+
         // Auto-register `mcp` group + `mcp serve` when mcp-server feature is enabled.
         // Guard: skip if the user already registered a root-level "mcp" command or
         // explicitly registered mcp/serve.
@@ -367,6 +389,7 @@ impl AppBuilder {
             app_version: self.app_version,
             app_git_sha_short: self.app_git_sha_short,
             clap_root,
+            builtin_completion_registered,
             #[cfg(feature = "testkit")]
             stdout_capture: None,
         })
@@ -390,6 +413,7 @@ pub struct App<C: AppContext> {
     app_version: &'static str,
     app_git_sha_short: Option<&'static str>,
     clap_root: clap::Command,
+    builtin_completion_registered: bool,
     /// Captures framework-level stdout output (version strings etc.) when testkit is active.
     #[cfg(feature = "testkit")]
     pub stdout_capture: Option<Arc<Mutex<Vec<u8>>>>,
@@ -536,6 +560,16 @@ impl<C: AppContext> App<C> {
         crate::app::version::format_display_version(app_name, app_version, self.app_git_sha_short)
     }
 
+    pub fn emit_completion(
+        &self,
+        shell: Shell,
+        out: &mut dyn std::io::Write,
+    ) -> anyhow::Result<()> {
+        let app_name = self.meta.as_ref().map(|m| m.name).unwrap_or(self.app_name);
+        let cmds = visible_top_level_commands(self.command_registry.as_ref());
+        emit_completion_script(app_name, shell, &cmds, out)
+    }
+
     pub async fn execute_command(
         &mut self,
         command_id: &str,
@@ -568,15 +602,59 @@ impl<C: AppContext> App<C> {
         args: crate::command::CommandArgs,
         typed_args: Option<HashMap<String, ArgValue>>,
     ) -> Result<()> {
-        use crate::app::diagnostic_reporter::DiagnosticReporter;
-
         // Stage 6: Validation Pipeline
         if let Some(ref typed_args_map) = typed_args {
             let diags = crate::app::dispatch::validate_typed_args(&command, typed_args_map)?;
             if !diags.is_empty() {
+                use crate::app::diagnostic_reporter::DiagnosticReporter;
                 DiagnosticReporter::report_all(&diags);
                 return Err(anyhow::anyhow!("validation failed"));
             }
+        }
+
+        let effective_args =
+            crate::app::dispatch::effective_args_for_execution(args, typed_args.as_ref());
+
+        // Built-in `completion` dispatch: route through `App::emit_completion(...)` so
+        // framework consumers can delegate to the same implementation.
+        if self.builtin_completion_registered && command.id == "completion" {
+            use crate::app::diagnostic_reporter::DiagnosticReporter;
+            use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
+            use std::io::Write;
+
+            let shell_token = effective_args
+                .named
+                .get("shell")
+                .cloned()
+                .or_else(|| effective_args.positional.first().cloned())
+                .unwrap_or_default();
+
+            let shell = match shell_token.as_str() {
+                "bash" => Some(Shell::Bash),
+                "zsh" => Some(Shell::Zsh),
+                "fish" => Some(Shell::Fish),
+                "powershell" | "pwsh" => Some(Shell::PowerShell),
+                _ => None,
+            };
+
+            let Some(shell) = shell else {
+                DiagnosticReporter::report(&Diagnostic {
+                    code: crate::parser::error_codes::E_UNSUPPORTED_SHELL,
+                    category: DiagnosticCategory::Completion,
+                    message: format!(
+                        "unsupported shell '{}'; expected bash, zsh, fish, powershell, or pwsh",
+                        shell_token
+                    ),
+                    suggestion: None,
+                    span: None,
+                });
+                return Err(anyhow::anyhow!("completion: unsupported shell"));
+            };
+
+            let mut stdout = std::io::stdout();
+            self.emit_completion(shell, &mut stdout)?;
+            stdout.flush().ok();
+            return Ok(());
         }
 
         let env = crate::app::dispatch::DispatchEnv {
@@ -590,9 +668,6 @@ impl<C: AppContext> App<C> {
 
         // For spec-based commands, build CommandArgs from typed_args so execute closures
         // can access parsed flag values via args.named
-        let effective_args =
-            crate::app::dispatch::effective_args_for_execution(args, typed_args.as_ref());
-
         (command.execute)(&mut ctx_wrapper, effective_args).await?;
         Ok(())
     }
@@ -617,4 +692,117 @@ impl<C: AppContext> App<C> {
     pub fn has_plugins(&self) -> bool {
         self.plugin_registry_manager.is_some()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shell {
+    Bash,
+    Zsh,
+    Fish,
+    PowerShell,
+}
+
+pub(crate) fn visible_top_level_commands(registry: &CommandRegistry) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+
+    for (path_str, meta) in registry.groups() {
+        if meta.hidden {
+            continue;
+        }
+        if let Some(root) = path_str.split('/').next().filter(|s| !s.is_empty()) {
+            out.insert(root.to_string());
+        }
+    }
+
+    for (path_str, cmd) in registry.all_tree_commands() {
+        let hidden = cmd.spec.as_ref().is_some_and(|s| s.hidden);
+        if hidden {
+            continue;
+        }
+        if let Some(root) = path_str.split('/').next().filter(|s| !s.is_empty()) {
+            out.insert(root.to_string());
+        }
+    }
+
+    out
+}
+
+pub(crate) fn emit_completion_script(
+    app_name: &str,
+    shell: Shell,
+    cmds: &BTreeSet<String>,
+    out: &mut dyn std::io::Write,
+) -> anyhow::Result<()> {
+    match shell {
+        Shell::Bash => {
+            let fn_name = format!("_{}", app_name);
+            writeln!(out, "{}() {{", fn_name)?;
+            writeln!(out, "  local cur=\"${{COMP_WORDS[1]}}\"")?;
+            writeln!(
+                out,
+                "  COMPREPLY=( $(compgen -W \"{}\" -- \"$cur\") )",
+                join_space(cmds)
+            )?;
+            writeln!(out, "}}")?;
+            writeln!(out, "complete -F {} {}", fn_name, app_name)?;
+        }
+        Shell::Zsh => {
+            let fn_name = format!("_{}", app_name);
+            writeln!(out, "#compdef {}", app_name)?;
+            writeln!(out)?;
+            writeln!(out, "{}() {{", fn_name)?;
+            writeln!(out, "  local -a commands")?;
+            writeln!(out, "  commands=(")?;
+            for cmd in cmds {
+                writeln!(out, "    '{}'", cmd)?;
+            }
+            writeln!(out, "  )")?;
+            writeln!(out, "  _describe 'command' commands")?;
+            writeln!(out, "}}")?;
+            writeln!(out)?;
+            writeln!(out, "compdef {} {}", fn_name, app_name)?;
+        }
+        Shell::Fish => {
+            writeln!(out, "complete -c {} -f", app_name)?;
+            for cmd in cmds {
+                writeln!(
+                    out,
+                    "complete -c {} -n '__fish_use_subcommand' -a '{}'",
+                    app_name, cmd
+                )?;
+            }
+        }
+        Shell::PowerShell => {
+            writeln!(
+                out,
+                "Register-ArgumentCompleter -Native -CommandName {} -ScriptBlock {{",
+                app_name
+            )?;
+            writeln!(
+                out,
+                "  param($commandName, $wordToComplete, $cursorPosition)"
+            )?;
+            writeln!(out, "  $candidates = @(")?;
+            for cmd in cmds {
+                writeln!(out, "    '{}'", cmd)?;
+            }
+            writeln!(out, "  )")?;
+            writeln!(
+                out,
+                "  $candidates | Where-Object {{ $_ -like \"$wordToComplete*\" }} | ForEach-Object {{"
+            )?;
+            writeln!(
+                out,
+                "    [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)"
+            )?;
+            writeln!(out, "  }}")?;
+            writeln!(out, "}}")?;
+        }
+    }
+
+    Ok(())
+}
+
+fn join_space(cmds: &BTreeSet<String>) -> String {
+    cmds.iter().cloned().collect::<Vec<_>>().join(" ")
 }
