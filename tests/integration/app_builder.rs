@@ -15,6 +15,7 @@ use cli_framework::testkit::CliTestHarness;
 
 #[path = "../stdio_capture.rs"]
 mod stdio_capture;
+use stdio_capture::strip_test_harness_noise;
 use stdio_capture::StderrCapture;
 use stdio_capture::StdoutCapture;
 
@@ -550,9 +551,11 @@ async fn completion_bash_stub_shape_and_candidates_are_sorted_and_filtered() {
     .await
     .unwrap();
     let out = cap.finish();
-    // When stdout is globally redirected, the Rust test harness may write progress
-    // markers (e.g. a leading '.') into the same stream without a newline.
-    let out = out.trim_start_matches('.');
+    // When stdout is globally redirected via dup2, the Rust test harness may write
+    // progress markers and per-test status lines (from other parallel tests) into
+    // the same stream. Filter that noise out before asserting.
+    let out = strip_test_harness_noise(&out);
+    let out = out.as_str();
 
     let first_non_blank = out.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
     assert!(
@@ -610,7 +613,7 @@ async fn completion_zsh_stub_starts_with_compdef() {
     .await
     .unwrap();
     let out = cap.finish();
-    let out = out.trim_start_matches('.');
+    let out = strip_test_harness_noise(&out);
 
     let first_non_blank = out.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
     assert_eq!(first_non_blank, "#compdef myapp");
