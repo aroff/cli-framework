@@ -25,6 +25,7 @@ async fn mcp_can_be_mounted_under_fixed_mcp_prefix() {
 
     let registry = CommandRegistry::new();
     let tool_registry = Arc::new(McpToolRegistry::from_command_registry(&registry, "test"));
+    let mcp_router = cli_framework::mcp::transport_http::mcp_axum_router(tool_registry, "/mcp");
 
     let api = ApiServerBuilder::new()
         .version(ApiVersion {
@@ -33,7 +34,7 @@ async fn mcp_can_be_mounted_under_fixed_mcp_prefix() {
             stability: Stability::Stable,
             deprecation: None,
         })
-        .mcp_tool_registry(tool_registry)
+        .mcp_router(mcp_router)
         .build();
 
     let shutdown = api.shutdown_token();

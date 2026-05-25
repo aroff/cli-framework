@@ -15,7 +15,6 @@ use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tower::Layer;
@@ -133,19 +132,12 @@ pub struct ApiServerBuilder {
     default_version: DefaultVersion,
     cors: Option<tower_http::cors::CorsLayer>,
     // Type-erased layer: MUST be clonable and applicable to the router.
-    auth: Option<
-        tower::util::BoxCloneSyncServiceLayer<
-            axum::Router,
-            axum::http::Request<axum::body::Body>,
-            axum::response::Response,
-            std::convert::Infallible,
-        >,
-    >,
+    auth: Option<tower::util::BoxCloneLayer<axum::Router>>,
     readiness_check: ReadinessCheck,
     protect_health: bool,
     reserved_prefixes: BTreeSet<String>,
     #[cfg(feature = "mcp-server")]
-    mcp_tool_registry: Option<std::sync::Arc<crate::mcp::McpToolRegistry>>,
+    mcp_router: Option<axum::Router>,
 }
 
 impl std::fmt::Debug for ApiServerBuilder {
@@ -191,7 +183,7 @@ impl Default for ApiServerBuilder {
             protect_health: false,
             reserved_prefixes: BTreeSet::new(),
             #[cfg(feature = "mcp-server")]
-            mcp_tool_registry: None,
+            mcp_router: None,
         }
     }
 }
@@ -227,30 +219,14 @@ impl ApiServerBuilder {
         self
     }
 
-    pub fn auth(
-        mut self,
-        layer: tower::util::BoxCloneSyncServiceLayer<
-            axum::Router,
-            axum::http::Request<axum::body::Body>,
-            axum::response::Response,
-            std::convert::Infallible,
-        >,
-    ) -> Self {
+    pub fn auth(mut self, layer: tower::util::BoxCloneLayer<axum::Router>) -> Self {
         self.auth = Some(layer);
         self
     }
 
-    /// Enable MCP coexistence at the fixed `/mcp` path.
-    ///
-    /// Typical usage:
-    /// - `cli_framework::mcp::transport_http::mcp_axum_router(tool_registry, "/mcp")`
-    /// - `cli_framework::mcp::build_mcp_axum_router(..., "/mcp")`
     #[cfg(feature = "mcp-server")]
-    pub fn mcp_tool_registry(
-        mut self,
-        tool_registry: std::sync::Arc<crate::mcp::McpToolRegistry>,
-    ) -> Self {
-        self.mcp_tool_registry = Some(tool_registry);
+    pub fn mcp_router(mut self, router: axum::Router) -> Self {
+        self.mcp_router = Some(router);
         self
     }
 
@@ -410,7 +386,6 @@ impl ApiServerBuilder {
         }
 
         let shutdown = CancellationToken::new();
-        let ready_flag = Arc::new(AtomicBool::new(true));
 
         let available_versions: Vec<String> = validated_versions
             .keys()
@@ -419,7 +394,6 @@ impl ApiServerBuilder {
 
         let health_state = health::HealthState {
             shutdown: shutdown.clone(),
-            ready_flag: Arc::clone(&ready_flag),
             readiness_check: Arc::clone(&self.readiness_check),
             crate_version: env!("CARGO_PKG_VERSION"),
         };
@@ -559,8 +533,8 @@ impl ApiServerBuilder {
 
         // Optional MCP coexistence at the fixed `/mcp` path.
         #[cfg(feature = "mcp-server")]
-        if let Some(tool_registry) = self.mcp_tool_registry {
-            let mut mcp_router = crate::mcp::transport_http::mcp_axum_router(tool_registry, "/mcp");
+        if let Some(mut mcp_router) = self.mcp_router {
+            // Streaming-safe tracing for MCP routes.
             mcp_router = mcp_router.layer(axum::middleware::from_fn(
                 |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {
                     let start = std::time::Instant::now();
@@ -581,8 +555,8 @@ impl ApiServerBuilder {
                 mcp_router = mcp_router.layer(cors);
             }
             if let Some(auth) = self.auth.as_ref() {
-                // Mount under the fixed `/mcp` prefix without stripping (since the MCP router
-                // already owns `/mcp` internally).
+                // The MCP router already owns `/mcp` internally; protect it by routing the `/mcp`
+                // prefix through the auth-wrapped service.
                 let svc = auth.clone().layer(mcp_router);
                 router = router
                     .route_service("/mcp", svc.clone())
@@ -622,11 +596,7 @@ impl ApiServerBuilder {
                 router.nest_service("/readyz", readyz_router.into_service::<axum::body::Body>());
         }
 
-        ApiServer {
-            router,
-            shutdown,
-            ready_flag,
-        }
+        ApiServer { router, shutdown }
     }
 }
 
@@ -661,7 +631,6 @@ fn paths_collide(a: &str, b: &str) -> bool {
 pub struct ApiServer {
     router: axum::Router,
     shutdown: CancellationToken,
-    ready_flag: Arc<AtomicBool>,
 }
 
 impl ApiServer {
@@ -677,14 +646,12 @@ impl ApiServer {
         let listener = tokio::net::TcpListener::bind(addr).await?;
 
         let shutdown_token = self.shutdown.clone();
-        let ready_flag = Arc::clone(&self.ready_flag);
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
         // Flip readiness before initiating listener shutdown. This gives callers a window where
         // `/readyz` returns 503 while the server is still accepting connections.
         tokio::spawn(async move {
             wait_for_shutdown_signal().await;
-            ready_flag.store(false, std::sync::atomic::Ordering::SeqCst);
             shutdown_token.cancel();
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             let _ = shutdown_tx.send(());
