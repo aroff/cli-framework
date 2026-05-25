@@ -20,14 +20,16 @@ pub fn apply_versioned_headers(router: Router, cfg: HeaderConfig) -> Router {
                 let headers = resp.headers_mut();
 
                 headers.insert(
-                    axum::http::HeaderName::from_static("x-api-version"),
+                    axum::http::HeaderName::from_bytes(b"X-API-Version")
+                        .expect("X-API-Version header name must be valid"),
                     axum::http::HeaderValue::from_str(&cfg.api_version)
                         .unwrap_or(axum::http::HeaderValue::from_static("")),
                 );
 
                 if let Some(sunset) = cfg.sunset {
                     headers.insert(
-                        axum::http::HeaderName::from_static("deprecation"),
+                        axum::http::HeaderName::from_bytes(b"Deprecation")
+                            .expect("Deprecation header name must be valid"),
                         axum::http::HeaderValue::from_static("true"),
                     );
 
@@ -39,7 +41,11 @@ pub fn apply_versioned_headers(router: Router, cfg: HeaderConfig) -> Router {
                             + Duration::from_nanos(nanos);
                         let val = httpdate::fmt_http_date(st);
                         if let Ok(hv) = axum::http::HeaderValue::from_str(&val) {
-                            headers.insert(axum::http::HeaderName::from_static("sunset"), hv);
+                            headers.insert(
+                                axum::http::HeaderName::from_bytes(b"Sunset")
+                                    .expect("Sunset header name must be valid"),
+                                hv,
+                            );
                         }
                     }
 

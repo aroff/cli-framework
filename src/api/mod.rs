@@ -15,9 +15,9 @@ use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
+use tower::Layer;
 
 pub use headers::{apply_versioned_headers, HeaderConfig};
 
@@ -95,12 +95,11 @@ pub struct ReadinessReport {
 pub type ReadinessCheckFuture = Pin<Box<dyn Future<Output = ReadinessReport> + Send + 'static>>;
 pub type ReadinessCheck = Arc<dyn Fn() -> ReadinessCheckFuture + Send + Sync + 'static>;
 
-pub type AuthLayer = tower::util::BoxCloneSyncServiceLayer<
-    axum::routing::Route,
-    axum::http::Request<axum::body::Body>,
-    axum::response::Response,
-    std::convert::Infallible,
->;
+#[derive(Debug, Clone)]
+pub struct ApiMount {
+    pub path: String,
+    pub router: axum::Router,
+}
 
 #[derive(Debug, Clone)]
 pub struct ApiServerError {
@@ -135,14 +134,14 @@ fn panic_config(code: &'static str, msg: impl AsRef<str>) -> ! {
 
 pub struct ApiServerBuilder {
     versions: BTreeMap<ApiVersionName, ApiVersion>,
-    mounts: Vec<(String, axum::Router)>,
+    mounts: Vec<ApiMount>,
     default_version: DefaultVersion,
     cors: Option<tower_http::cors::CorsLayer>,
-    auth: Option<AuthLayer>,
+    // Type-erased layer: MUST be clonable and applicable to the router.
+    auth: Option<tower::util::BoxCloneLayer<axum::Router>>,
     readiness_check: ReadinessCheck,
     protect_health: bool,
     reserved_prefixes: BTreeSet<String>,
-    saw_duplicate_version: Option<ApiVersionName>,
 }
 
 impl std::fmt::Debug for ApiServerBuilder {
@@ -154,7 +153,11 @@ impl std::fmt::Debug for ApiServerBuilder {
             )
             .field(
                 "mounts",
-                &self.mounts.iter().map(|(p, _)| p).collect::<Vec<_>>(),
+                &self
+                    .mounts
+                    .iter()
+                    .map(|m| m.path.as_str())
+                    .collect::<Vec<_>>(),
             )
             .field("default_version", &self.default_version)
             .field("cors", &self.cors.is_some())
@@ -183,7 +186,6 @@ impl Default for ApiServerBuilder {
             }),
             protect_health: false,
             reserved_prefixes: BTreeSet::new(),
-            saw_duplicate_version: None,
         }
     }
 }
@@ -194,15 +196,21 @@ impl ApiServerBuilder {
     }
 
     pub fn version(mut self, v: ApiVersion) -> Self {
-        let name = v.name.clone();
-        if self.versions.insert(name.clone(), v).is_some() {
-            self.saw_duplicate_version = Some(name);
+        if self.versions.contains_key(&v.name) {
+            panic_config(
+                error_codes::E_API_DUP_VERSION,
+                format!("duplicate api version '{}'", v.name.as_str()),
+            );
         }
+        self.versions.insert(v.name.clone(), v);
         self
     }
 
     pub fn mount(mut self, path: &str, router: axum::Router) -> Self {
-        self.mounts.push((path.to_string(), router));
+        self.mounts.push(ApiMount {
+            path: path.to_string(),
+            router,
+        });
         self
     }
 
@@ -216,7 +224,7 @@ impl ApiServerBuilder {
         self
     }
 
-    pub fn auth(mut self, layer: AuthLayer) -> Self {
+    pub fn auth(mut self, layer: tower::util::BoxCloneLayer<axum::Router>) -> Self {
         self.auth = Some(layer);
         self
     }
@@ -239,12 +247,6 @@ impl ApiServerBuilder {
     }
 
     pub fn build(self) -> ApiServer {
-        if let Some(v) = &self.saw_duplicate_version {
-            panic_config(
-                error_codes::E_API_DUP_VERSION,
-                format!("duplicate api version '{}'", v.as_str()),
-            );
-        }
         // Validate versions: non-empty, unique by ApiVersionName, and name shape.
         if self.versions.is_empty() {
             panic_config(error_codes::E_API_NO_VERSIONS, "no api versions registered");
@@ -275,22 +277,25 @@ impl ApiServerBuilder {
         }
 
         // Normalize mount paths, then check collisions.
-        let mut mounts: Vec<(String, axum::Router)> = Vec::with_capacity(self.mounts.len());
-        for (raw, r) in self.mounts.into_iter() {
-            let p = normalize_mount_path(&raw)
+        let mut mounts: Vec<ApiMount> = Vec::with_capacity(self.mounts.len());
+        for m in self.mounts.into_iter() {
+            let p = normalize_mount_path(&m.path)
                 .unwrap_or_else(|e| panic_config(error_codes::E_API_MOUNT_COLLISION, e));
-            mounts.push((p, r));
+            mounts.push(ApiMount {
+                path: p,
+                router: m.router,
+            });
         }
 
         // The primary API must only be served via versioned routes, so never allow mounting at `/` or `/api`.
-        for (p, _) in mounts.iter() {
-            if p == "/" {
+        for m in mounts.iter() {
+            if m.path == "/" {
                 panic_config(
                     error_codes::E_API_MOUNT_COLLISION,
                     "mount('/') is not allowed; use /api/{version}/... for primary APIs",
                 );
             }
-            if p == "/api" {
+            if m.path == "/api" {
                 panic_config(
                     error_codes::E_API_MOUNT_COLLISION,
                     "mount('/api', ...) is not allowed; use version registration instead",
@@ -313,38 +318,46 @@ impl ApiServerBuilder {
             "/api".to_string(),
             "/healthz".to_string(),
             "/readyz".to_string(),
+            "/mcp".to_string(),
         ];
         let fixed_prefixes = ["/api".to_string(), "/mcp".to_string()];
 
         // Check mount collisions with fixed paths and reserved prefixes.
-        for (p, _) in mounts.iter() {
+        for m in mounts.iter() {
             for fixed in fixed_paths.iter().chain(reserved_api_prefixes.iter()) {
-                if paths_collide(p, fixed) {
+                if m.path == "/mcp" && fixed == "/mcp" {
+                    // Explicitly allow MCP coexistence at the fixed mount path.
+                    continue;
+                }
+                if paths_collide(&m.path, fixed) {
                     panic_config(
                         error_codes::E_API_MOUNT_COLLISION,
-                        format!("mount path '{}' collides with reserved path '{}'", p, fixed),
+                        format!(
+                            "mount path '{}' collides with reserved path '{}'",
+                            m.path, fixed
+                        ),
                     );
                 }
             }
             for vp in version_prefixes.iter() {
-                if paths_collide(p, vp) {
+                if paths_collide(&m.path, vp) {
                     panic_config(
                         error_codes::E_API_MOUNT_COLLISION,
                         format!(
                             "mount path '{}' collides with api version prefix '{}'",
-                            p, vp
+                            m.path, vp
                         ),
                     );
                 }
             }
             for fp in fixed_prefixes.iter() {
-                if p != "/mcp" && paths_collide(p, fp) {
+                if m.path != "/mcp" && paths_collide(&m.path, fp) {
                     // `/mcp` is allowed for MCP coexistence; other collisions are not.
                     panic_config(
                         error_codes::E_API_MOUNT_COLLISION,
                         format!(
                             "mount path '{}' collides with reserved host prefix '{}'",
-                            p, fp
+                            m.path, fp
                         ),
                     );
                 }
@@ -380,7 +393,6 @@ impl ApiServerBuilder {
         }
 
         let shutdown = CancellationToken::new();
-        let shutting_down = Arc::new(AtomicBool::new(false));
 
         let available_versions: Vec<String> = validated_versions
             .keys()
@@ -388,7 +400,7 @@ impl ApiServerBuilder {
             .collect();
 
         let health_state = health::HealthState {
-            shutting_down: Arc::clone(&shutting_down),
+            shutdown: shutdown.clone(),
             readiness_check: Arc::clone(&self.readiness_check),
             crate_version: env!("CARGO_PKG_VERSION"),
         };
@@ -437,7 +449,7 @@ impl ApiServerBuilder {
                 vr = vr.layer(cors);
             }
             if let Some(auth) = self.auth.clone() {
-                vr = vr.layer(auth);
+                vr = auth.layer(vr);
             }
 
             api_root = api_root.nest(&format!("/{}", v.name.as_str()), vr);
@@ -491,7 +503,9 @@ impl ApiServerBuilder {
         );
 
         // Mounts (non-primary).
-        for (p, mut r) in mounts.into_iter() {
+        for m in mounts.into_iter() {
+            let p = m.path;
+            let mut r = m.router;
             // Streaming-safe tracing for mount routes.
             r = r.layer(axum::middleware::from_fn(
                 |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {
@@ -513,7 +527,7 @@ impl ApiServerBuilder {
                 r = r.layer(cors);
             }
             if let Some(auth) = self.auth.clone() {
-                r = r.layer(auth);
+                r = auth.layer(r);
             }
             router = router.nest(&p, r);
         }
@@ -524,16 +538,12 @@ impl ApiServerBuilder {
                 health_router = health_router.layer(cors);
             }
             if let Some(auth) = self.auth.clone() {
-                health_router = health_router.layer(auth);
+                health_router = auth.layer(health_router);
             }
         }
         router = router.merge(health_router);
 
-        ApiServer {
-            router,
-            shutdown,
-            shutting_down,
-        }
+        ApiServer { router, shutdown }
     }
 }
 
@@ -568,7 +578,6 @@ fn paths_collide(a: &str, b: &str) -> bool {
 pub struct ApiServer {
     router: axum::Router,
     shutdown: CancellationToken,
-    shutting_down: Arc<AtomicBool>,
 }
 
 impl ApiServer {
@@ -582,7 +591,6 @@ impl ApiServer {
 
     pub async fn serve(self, addr: &str) -> anyhow::Result<()> {
         let listener = tokio::net::TcpListener::bind(addr).await?;
-        let runtime_state = Arc::clone(&self.shutting_down);
 
         let shutdown_token = self.shutdown.clone();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -591,7 +599,6 @@ impl ApiServer {
         // `/readyz` returns 503 while the server is still accepting connections.
         tokio::spawn(async move {
             wait_for_shutdown_signal().await;
-            runtime_state.store(true, Ordering::SeqCst);
             shutdown_token.cancel();
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             let _ = shutdown_tx.send(());

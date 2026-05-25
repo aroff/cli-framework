@@ -278,3 +278,8 @@ required-features = ["mcp-install"]
 name = "integration_mcp_install"
 path = "tests/integration/mcp_install.rs"
 required-features = ["mcp-install"]
+
+[patch.crates-io]
+# Adds `tower::util::BoxCloneLayer<T>` (a boxed, cloneable `Layer<T, Service = T>`) used by the
+# `api-server` public API without changing Tower behavior elsewhere.
+tower = { path = "vendor/tower" }

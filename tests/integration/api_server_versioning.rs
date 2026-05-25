@@ -105,7 +105,7 @@ async fn serves_versioned_routes_and_attaches_x_api_version() {
         .await
         .unwrap();
     assert_eq!(r1.status(), 200);
-    assert_eq!(r1.headers()["x-api-version"], "v1");
+    assert_eq!(r1.headers()["X-API-Version"], "v1");
     let body1: Value = r1.json().await.unwrap();
     assert_eq!(body1["version"], "v1");
 
@@ -115,7 +115,7 @@ async fn serves_versioned_routes_and_attaches_x_api_version() {
         .await
         .unwrap();
     assert_eq!(r2.status(), 200);
-    assert_eq!(r2.headers()["x-api-version"], "v2");
+    assert_eq!(r2.headers()["X-API-Version"], "v2");
     let body2: Value = r2.json().await.unwrap();
     assert_eq!(body2["version"], "v2");
 
@@ -225,7 +225,7 @@ async fn deprecated_versions_emit_deprecation_sunset_and_link_headers() {
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
-    assert_eq!(r.headers()["x-api-version"], "v1");
+    assert_eq!(r.headers()["X-API-Version"], "v1");
     assert!(r.headers().get("deprecation").is_some());
     assert!(r.headers().get("sunset").is_some());
     assert!(r.headers().get("link").is_some());
@@ -377,7 +377,7 @@ async fn sse_is_streaming_and_not_buffered_by_default_middleware() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
-    assert_eq!(resp.headers()["x-api-version"], "v1");
+    assert_eq!(resp.headers()["X-API-Version"], "v1");
 
     let mut stream = resp.bytes_stream();
     let first = tokio::time::timeout(Duration::from_secs(1), stream.next())
@@ -426,7 +426,7 @@ async fn websocket_upgrade_succeeds_and_includes_x_api_version() {
         .await
         .unwrap();
     assert_eq!(handshake.status(), 101);
-    assert_eq!(handshake.headers()["x-api-version"], "v1");
+    assert_eq!(handshake.headers()["X-API-Version"], "v1");
 
     // Then: make a real websocket connection.
     let url = reqwest::Url::parse(&format!("ws://{addr}/api/v1/ws")).unwrap();
