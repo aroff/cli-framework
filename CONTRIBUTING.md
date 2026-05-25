@@ -50,6 +50,7 @@ chmod +x .git/hooks/pre-commit
 | `security` | output sanitize, `ask` risk policy |
 | `http_retry`, `retry` | HTTP retry, `secure_reqwest_client` |
 | `cli_output`, `cli_mode`, `message` | help, tables, JSON, modes |
+| `api` (feature `api-server`) | Built-in Axum host for versioned APIs (`/api/{version}/...`) plus `/healthz` + `/readyz` |
 
 Also: `auth`, `data_source`; `observability`, `testkit` behind features.
 

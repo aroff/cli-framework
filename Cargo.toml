@@ -16,7 +16,7 @@ serde_json = "1.0"
 serde_yaml = "0.9"
 tokio = { version = "1.0", features = ["full"] }
 async-trait = "0.1"
-tokio-util = { version = "0.7", features = ["time"] }
+tokio-util = { version = "0.7", features = ["time"], optional = true }
 reqwest = { version = "0.12", features = ["json"] }
 httpdate = "1.0"
 log = "0.4"
@@ -40,6 +40,10 @@ indicatif = { version = "0.17", optional = true }
 # - client: enabled so integration tests can exercise stdio-style transports without TCP
 rmcp = { version = "1.6", features = ["server", "client", "transport-streamable-http-server", "transport-io"], optional = true }
 axum = { version = "0.8", optional = true }
+# Optional API server dependencies
+tower = { version = "0.5", features = ["util"], optional = true }
+tower-http = { version = "0.6", features = ["cors"], optional = true }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"], optional = true }
 # Optional MCP install dependency (aikit-sdk provides add_mcp_server and mcp_supported_agents)
 aikit-sdk = { git = "https://github.com/goaikit/aikit.git", package = "aikit-sdk", rev = "a22a619fa61d2fce7f7364c18199b75b72d74e4b", optional = true }
 ## Optional embedded agent dependency (used by `chat` feature)
@@ -59,6 +63,11 @@ tempfile = "3.0"
 libc = "0.2"
 insta = { version = "1", features = ["json"] }
 axum = { version = "0.8" }
+futures-util = "0.3"
+tokio-tungstenite = "0.21"
+# Consumers configuring `ApiServerBuilder::cors(...)` supply their own `tower_http::cors::CorsLayer`;
+# tests exercise that path the same way a downstream crate would.
+tower-http = { version = "0.6", features = ["cors"] }
 
 [features]
 default = ["clap-dispatch"]
@@ -80,13 +89,15 @@ legacy-arg-coercion = []
 testkit = []
 # MCP server — expose registered commands as MCP tools via Streamable HTTP
 mcp-server = ["dep:rmcp", "dep:axum"]
+# API server — versioned Axum hosting with health/readiness and graceful shutdown
+api-server = ["dep:axum", "axum/ws", "dep:tower", "dep:tower-http", "dep:chrono", "dep:tokio-util"]
 # MCP install — register this app as an MCP server in agent config files
 mcp-install = ["mcp-server", "dep:aikit-sdk"]
 # Doctor diagnostics framework — structured health checks with terminal/JSON output
 doctor = []
 # Project config — project root discovery and TOML loading (off by default)
 project-config = []
-chat = ["dep:aikit-agent"]
+chat = ["dep:aikit-agent", "dep:tokio-util"]
 
 [lib]
 name = "cli_framework"
@@ -108,6 +119,11 @@ path = "skill/examples/basic_cli/src/main.rs"
 [[example]]
 name = "with_ask"
 path = "skill/examples/with_ask/src/main.rs"
+
+[[example]]
+name = "with_api"
+path = "skill/examples/with_api/src/main.rs"
+required-features = ["api-server"]
 
 [[example]]
 name = "with_chat"
@@ -190,6 +206,16 @@ required-features = ["mcp-server"]
 name = "integration_mcp_axum_mount"
 path = "tests/integration/mcp_axum_mount.rs"
 required-features = ["mcp-server"]
+
+[[test]]
+name = "integration_api_server_versioning"
+path = "tests/integration/api_server_versioning.rs"
+required-features = ["api-server"]
+
+[[test]]
+name = "integration_api_server_mcp_coexist"
+path = "tests/integration/api_server_mcp_coexist.rs"
+required-features = ["api-server", "mcp-server"]
 
 [[example]]
 name = "with_mcp"
