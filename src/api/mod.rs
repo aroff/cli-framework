@@ -167,6 +167,7 @@ pub struct ApiServerBuilder {
     #[cfg(feature = "mcp-server")]
     mcp_router: Option<axum::Router>,
     root_fallback: Option<axum::Router>,
+    health_version: Option<String>,
 }
 
 impl Default for ApiServerBuilder {
@@ -190,6 +191,7 @@ impl Default for ApiServerBuilder {
             #[cfg(feature = "mcp-server")]
             mcp_router: None,
             root_fallback: None,
+            health_version: None,
         }
     }
 }
@@ -253,6 +255,19 @@ impl ApiServerBuilder {
     /// This does NOT relax the rule that the primary API is served only via `version(...)`.
     pub fn root_fallback(mut self, router: axum::Router) -> Self {
         self.root_fallback = Some(router);
+        self
+    }
+
+    /// Override the version string reported by `GET /healthz`.
+    ///
+    /// By default `/healthz` reports the framework's own crate version
+    /// (`env!("CARGO_PKG_VERSION")`), which is fixed at cli-framework's compile
+    /// time. Consumers that want `/healthz` to report THEIR version should call
+    /// this with their own version (e.g. their `env!("CARGO_PKG_VERSION")`).
+    ///
+    /// Calling this method more than once overwrites the previous value (take-last).
+    pub fn health_version(mut self, v: impl Into<String>) -> Self {
+        self.health_version = Some(v.into());
         self
     }
 
@@ -415,7 +430,10 @@ impl ApiServerBuilder {
             shutdown: shutdown.clone(),
             shutdown_readiness: Arc::clone(&shutdown_readiness),
             readiness_check: Arc::clone(&self.readiness_check.0),
-            crate_version: env!("CARGO_PKG_VERSION"),
+            crate_version: self
+                .health_version
+                .clone()
+                .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
         };
 
         let mut router = Router::new();

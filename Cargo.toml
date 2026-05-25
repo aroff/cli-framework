@@ -1,6 +1,6 @@
 [package]
 name = "cli-framework"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 authors = ["CLI Framework Team"]
 description = "A pure CLI framework with AI-powered command resolution and plugin system"

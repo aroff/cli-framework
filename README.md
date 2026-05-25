@@ -103,7 +103,7 @@ Choose this crate when you want one stack for classical subcommands plus optiona
 `api-server` provides a framework-owned Axum host for serving your application's HTTP API with a fixed URL shape:
 
 - Versioned APIs live under `/api/{version}/...` (at least one version is required)
-- Health endpoints are always present at `/healthz` and `/readyz`
+- Health endpoints are always present at `/healthz` and `/readyz`; `/healthz` reports a `version` (override it for your app via `health_version(...)`, defaults to the framework's crate version)
 - Versioned responses include `X-API-Version: {version}`
 - Serve a SPA or static assets at the root via `root_fallback(router)` — framework routes always take priority
 

@@ -8,6 +8,7 @@
 - `api-server` feature: versioned Axum API hosting under `/api/{version}/...` with fixed `/healthz` + `/readyz` endpoints and graceful shutdown coordination.
 - `api-swagger` feature: runtime OpenAPI spec endpoint and embedded Swagger UI — serves each version's app-supplied document at `GET /api/{version}/openapi.json` (with `servers:` patch) and renders a version-switchable Swagger UI at `GET /api/docs` with no CDN dependency.
 - `ApiServerBuilder::root_fallback(axum::Router)`: attach a catch-all router to handle requests not matched by any framework or application route. Intended for serving a SPA or static assets at the root on the same listener as the versioned API. Receives the configured `CorsLayer` (if any); auth is intentionally not applied by default. Framework routes always take priority over the fallback.
+- `ApiServerBuilder::health_version(impl Into<String>)`: override the version string reported by `GET /healthz`. By default `/healthz` reports the framework's own crate version (`env!("CARGO_PKG_VERSION")`), fixed at cli-framework's compile time; consumers can call this to make `/healthz` report THEIR version instead. Back-compatible: when unset, `/healthz` reports the framework version exactly as before.
 
 ### Breaking
 

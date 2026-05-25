@@ -362,6 +362,65 @@ async fn healthz_and_readyz_are_present_and_readyz_uses_readiness_check() {
 }
 
 #[tokio::test]
+async fn healthz_reports_framework_crate_version_by_default() {
+    let (addr, shutdown, handle) =
+        spawn_inline_server(ApiServerBuilder::new().version(ApiVersion {
+            name: ApiVersionName::parse("v1").unwrap(),
+            router: version_router("v1"),
+            stability: Stability::Stable,
+            deprecation: None,
+            #[cfg(feature = "api-swagger")]
+            openapi: None,
+        }))
+        .await;
+
+    let client = reqwest::Client::new();
+    let health = client
+        .get(format!("http://{addr}/healthz"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(health.status(), 200);
+    let body: Value = health.json().await.unwrap();
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+
+    shutdown.cancel();
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn healthz_reports_overridden_version_when_set() {
+    let (addr, shutdown, handle) = spawn_inline_server(
+        ApiServerBuilder::new()
+            .version(ApiVersion {
+                name: ApiVersionName::parse("v1").unwrap(),
+                router: version_router("v1"),
+                stability: Stability::Stable,
+                deprecation: None,
+                #[cfg(feature = "api-swagger")]
+                openapi: None,
+            })
+            .health_version("9.9.9"),
+    )
+    .await;
+
+    let client = reqwest::Client::new();
+    let health = client
+        .get(format!("http://{addr}/healthz"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(health.status(), 200);
+    let body: Value = health.json().await.unwrap();
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["version"], "9.9.9");
+
+    shutdown.cancel();
+    handle.await.unwrap();
+}
+
+#[tokio::test]
 async fn readyz_flips_to_503_on_sigterm_before_shutdown_completes() {
     if std::env::var("NEXTEST").as_deref() != Ok("1") {
         // This test uses SIGTERM and relies on nextest's process-per-test model.

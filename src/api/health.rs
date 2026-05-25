@@ -11,13 +11,13 @@ pub struct HealthState {
     pub shutdown: tokio_util::sync::CancellationToken,
     pub shutdown_readiness: Arc<std::sync::atomic::AtomicBool>,
     pub readiness_check: super::ReadinessCheck,
-    pub crate_version: &'static str,
+    pub crate_version: String,
 }
 
 pub async fn healthz(State(state): State<HealthState>) -> impl IntoResponse {
     (
         StatusCode::OK,
-        axum::Json(json!({"status":"ok","version": state.crate_version})),
+        axum::Json(json!({"status":"ok","version": state.crate_version.clone()})),
     )
 }
 
