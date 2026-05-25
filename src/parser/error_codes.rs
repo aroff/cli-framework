@@ -24,3 +24,20 @@ pub const E_MCP_INSTALL_WRITE_FAILED: &str = "E011";
 pub const E_NESTED_COMMAND_NOT_FOUND: &str = "E012";
 /// Returned when `completion <shell>` is invoked with an unsupported shell token.
 pub const E_UNSUPPORTED_SHELL: &str = "E013";
+
+/// API config: A version name fails validation against `^v\\d+(?:beta\\d+|alpha\\d+)?$`.
+pub const E_API_VERSION_INVALID: &str = "E014";
+/// API config: Duplicate `ApiVersionName` registered via `ApiServerBuilder::version(v)`.
+pub const E_API_DUP_VERSION: &str = "E015";
+/// API config: `DefaultVersion::Pinned(v)` references an unregistered version.
+pub const E_API_DEFAULT_UNKNOWN: &str = "E016";
+/// API config: `ApiServerBuilder::build()` is called with zero registered versions.
+pub const E_API_NO_VERSIONS: &str = "E017";
+/// API config: A mount path collides with reserved host paths/prefixes.
+pub const E_API_MOUNT_COLLISION: &str = "E018";
+/// API config: A version name collides with reserved host segments under `/api`.
+pub const E_API_VERSION_RESERVED: &str = "E019";
+/// API response: `/api/{path}` without a version and `DefaultVersion::None` is configured.
+pub const E_API_VERSION_REQUIRED: &str = "E020";
+/// API response: Readiness check fails or shutdown is in progress.
+pub const E_API_NOT_READY: &str = "E021";

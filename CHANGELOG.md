@@ -5,6 +5,7 @@
 ### Added
 
 - Built-in `completion <shell>` command (bash/zsh/fish/powershell) auto-registered by `AppBuilder::build()`. Apps that already define `completion` can opt out via `AppBuilder::without_completion()`.
+- `api-server` feature: versioned Axum API hosting under `/api/{version}/...` with fixed `/healthz` + `/readyz` endpoints and graceful shutdown coordination.
 
 ### Breaking
 

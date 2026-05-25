@@ -13,6 +13,7 @@ A Rust library for building CLIs with optional AI-assisted command resolution (*
 - **CLI output helpers**: Tables, JSON, progress (behind Cargo features where applicable)
 - **Security defaults**: Output sanitization, risk tiers for ask, hardened HTTP helpers
 - **MCP Server Mode**: Expose registered commands as MCP tools over Streamable HTTP or stdio (opt-in via `mcp-server` feature)
+- **API Server**: Built-in Axum host for serving versioned HTTP APIs with `/healthz` + `/readyz` (opt-in via `api-server` feature)
 - **Project Config**: Project root discovery and TOML loading (opt-in via `project-config` feature)
 
 ## Cargo Features
@@ -24,6 +25,7 @@ A Rust library for building CLIs with optional AI-assisted command resolution (*
 | `progress` | no | Progress bars via `indicatif` |
 | `testkit` | no | `CliTestHarness` for in-process testing |
 | `mcp-server` | no | Expose commands as MCP tools over HTTP or stdio |
+| `api-server` | no | Serve versioned Axum APIs with health/readiness and graceful shutdown |
 | `doctor` | no | Structured health-check framework with terminal/JSON output |
 | `project-config` | no | Project root discovery and TOML loading (`PC001`–`PC005` error codes) |
 
@@ -94,6 +96,16 @@ All MCP tool calls are routed through the same validation pipeline as CLI calls:
 - **Destructive commands**: `ALLOW_DESTRUCTIVE_COMMANDS` and interactive confirmations apply to `ask`/`chat`; MCP tool calls do not prompt. If you need allowlisting/confirmation for MCP, configure an MCP tool gate via `AppBuilder::with_mcp_tool_gate(...)`.
 
 Choose this crate when you want one stack for classical subcommands plus optional LLM resolution and scripted workflows, without assembling parsing, sanitization, and policy from scratch.
+
+## API Server (`api-server`)
+
+`api-server` provides a framework-owned Axum host for serving your application's HTTP API with a fixed URL shape:
+
+- Versioned APIs live under `/api/{version}/...` (at least one version is required)
+- Health endpoints are always present at `/healthz` and `/readyz`
+- Versioned responses include `X-API-Version: {version}`
+
+When `api-server` is enabled, `cli-framework` re-exports Axum as `cli_framework::axum` so consumers can depend on the exact `axum` version linked by the framework.
 
 ## Built-in commands
 
