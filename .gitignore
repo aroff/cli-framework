@@ -49,3 +49,5 @@ target
 # Newton planner scratch (planner.sh ./tmp)
 tmp/
 .newton
+# Stray build artifact accidentally committed; ignore at repo root
+/resolution
