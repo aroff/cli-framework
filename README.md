@@ -105,6 +105,7 @@ Choose this crate when you want one stack for classical subcommands plus optiona
 - Versioned APIs live under `/api/{version}/...` (at least one version is required)
 - Health endpoints are always present at `/healthz` and `/readyz`
 - Versioned responses include `X-API-Version: {version}`
+- Serve a SPA or static assets at the root via `root_fallback(router)` — framework routes always take priority
 
 When `api-server` is enabled, `cli-framework` re-exports Axum as `cli_framework::axum` so consumers can depend on the exact `axum` version linked by the framework.
 
