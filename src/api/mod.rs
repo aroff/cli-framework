@@ -2,7 +2,6 @@
 //!
 //! This module is behind the `api-server` feature flag.
 
-mod box_clone_layer;
 mod headers;
 mod health;
 mod versioning;
@@ -18,9 +17,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use tower::Layer;
 
-pub use box_clone_layer::BoxCloneLayer;
 pub use headers::{apply_versioned_headers, HeaderConfig};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -98,12 +95,6 @@ pub type ReadinessCheckFuture = Pin<Box<dyn Future<Output = ReadinessReport> + S
 pub type ReadinessCheck = Arc<dyn Fn() -> ReadinessCheckFuture + Send + Sync + 'static>;
 
 #[derive(Debug, Clone)]
-pub struct ApiMount {
-    pub path: String,
-    pub router: axum::Router,
-}
-
-#[derive(Debug, Clone)]
 pub struct ApiServerError {
     code: &'static str,
     message: String,
@@ -136,14 +127,22 @@ fn panic_config(code: &'static str, msg: impl AsRef<str>) -> ! {
 
 pub struct ApiServerBuilder {
     versions: BTreeMap<ApiVersionName, ApiVersion>,
-    mounts: Vec<ApiMount>,
+    mounts: Vec<(String, axum::Router)>,
     default_version: DefaultVersion,
     cors: Option<tower_http::cors::CorsLayer>,
     // Type-erased layer: MUST be clonable and applicable to the router.
-    auth: Option<BoxCloneLayer<axum::Router>>,
+    auth: Option<
+        tower::util::BoxCloneSyncServiceLayer<
+            axum::routing::Route,
+            axum::http::Request<axum::body::Body>,
+            axum::response::Response,
+            std::convert::Infallible,
+        >,
+    >,
     readiness_check: ReadinessCheck,
     protect_health: bool,
     reserved_prefixes: BTreeSet<String>,
+    #[cfg(feature = "mcp-server")]
     mcp_router: Option<axum::Router>,
 }
 
@@ -159,7 +158,7 @@ impl std::fmt::Debug for ApiServerBuilder {
                 &self
                     .mounts
                     .iter()
-                    .map(|m| m.path.as_str())
+                    .map(|(path, _)| path.as_str())
                     .collect::<Vec<_>>(),
             )
             .field("default_version", &self.default_version)
@@ -189,6 +188,7 @@ impl Default for ApiServerBuilder {
             }),
             protect_health: false,
             reserved_prefixes: BTreeSet::new(),
+            #[cfg(feature = "mcp-server")]
             mcp_router: None,
         }
     }
@@ -211,10 +211,7 @@ impl ApiServerBuilder {
     }
 
     pub fn mount(mut self, path: &str, router: axum::Router) -> Self {
-        self.mounts.push(ApiMount {
-            path: path.to_string(),
-            router,
-        });
+        self.mounts.push((path.to_string(), router));
         self
     }
 
@@ -228,7 +225,15 @@ impl ApiServerBuilder {
         self
     }
 
-    pub fn auth(mut self, layer: BoxCloneLayer<axum::Router>) -> Self {
+    pub fn auth(
+        mut self,
+        layer: tower::util::BoxCloneSyncServiceLayer<
+            axum::routing::Route,
+            axum::http::Request<axum::body::Body>,
+            axum::response::Response,
+            std::convert::Infallible,
+        >,
+    ) -> Self {
         self.auth = Some(layer);
         self
     }
@@ -238,6 +243,7 @@ impl ApiServerBuilder {
     /// Typical usage:
     /// - `cli_framework::mcp::transport_http::mcp_axum_router(tool_registry, "/mcp")`
     /// - `cli_framework::mcp::build_mcp_axum_router(..., "/mcp")`
+    #[cfg(feature = "mcp-server")]
     pub fn mcp_router(mut self, router: axum::Router) -> Self {
         self.mcp_router = Some(router);
         self
@@ -291,25 +297,22 @@ impl ApiServerBuilder {
         }
 
         // Normalize mount paths, then check collisions.
-        let mut mounts: Vec<ApiMount> = Vec::with_capacity(self.mounts.len());
-        for m in self.mounts.into_iter() {
-            let p = normalize_mount_path(&m.path)
+        let mut mounts: Vec<(String, axum::Router)> = Vec::with_capacity(self.mounts.len());
+        for (path, router) in self.mounts.into_iter() {
+            let p = normalize_mount_path(&path)
                 .unwrap_or_else(|e| panic_config(error_codes::E_API_MOUNT_COLLISION, e));
-            mounts.push(ApiMount {
-                path: p,
-                router: m.router,
-            });
+            mounts.push((p, router));
         }
 
         // The primary API must only be served via versioned routes, so never allow mounting at `/` or `/api`.
-        for m in mounts.iter() {
-            if m.path == "/" {
+        for (path, _) in mounts.iter() {
+            if path == "/" {
                 panic_config(
                     error_codes::E_API_MOUNT_COLLISION,
                     "mount('/') is not allowed; use /api/{version}/... for primary APIs",
                 );
             }
-            if m.path == "/api" {
+            if path == "/api" {
                 panic_config(
                     error_codes::E_API_MOUNT_COLLISION,
                     "mount('/api', ...) is not allowed; use version registration instead",
@@ -337,36 +340,36 @@ impl ApiServerBuilder {
         let fixed_prefixes = ["/api".to_string(), "/mcp".to_string()];
 
         // Check mount collisions with fixed paths and reserved prefixes.
-        for m in mounts.iter() {
+        for (path, _) in mounts.iter() {
             for fixed in fixed_paths.iter().chain(reserved_api_prefixes.iter()) {
-                if paths_collide(&m.path, fixed) {
+                if paths_collide(path, fixed) {
                     panic_config(
                         error_codes::E_API_MOUNT_COLLISION,
                         format!(
                             "mount path '{}' collides with reserved path '{}'",
-                            m.path, fixed
+                            path, fixed
                         ),
                     );
                 }
             }
             for vp in version_prefixes.iter() {
-                if paths_collide(&m.path, vp) {
+                if paths_collide(path, vp) {
                     panic_config(
                         error_codes::E_API_MOUNT_COLLISION,
                         format!(
                             "mount path '{}' collides with api version prefix '{}'",
-                            m.path, vp
+                            path, vp
                         ),
                     );
                 }
             }
             for fp in fixed_prefixes.iter() {
-                if paths_collide(&m.path, fp) {
+                if paths_collide(path, fp) {
                     panic_config(
                         error_codes::E_API_MOUNT_COLLISION,
                         format!(
                             "mount path '{}' collides with reserved host prefix '{}'",
-                            m.path, fp
+                            path, fp
                         ),
                     );
                 }
@@ -458,7 +461,7 @@ impl ApiServerBuilder {
                 vr = vr.layer(cors);
             }
             if let Some(auth) = self.auth.clone() {
-                vr = auth.layer(vr);
+                vr = vr.layer(auth);
             }
 
             api_root = api_root.nest(&format!("/{}", v.name.as_str()), vr);
@@ -512,9 +515,7 @@ impl ApiServerBuilder {
         );
 
         // Mounts (non-primary).
-        for m in mounts.into_iter() {
-            let p = m.path;
-            let mut r = m.router;
+        for (p, mut r) in mounts.into_iter() {
             // Streaming-safe tracing for mount routes.
             r = r.layer(axum::middleware::from_fn(
                 |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {
@@ -536,12 +537,13 @@ impl ApiServerBuilder {
                 r = r.layer(cors);
             }
             if let Some(auth) = self.auth.clone() {
-                r = auth.layer(r);
+                r = r.layer(auth);
             }
             router = router.nest(&p, r);
         }
 
         // Optional MCP coexistence at the fixed `/mcp` path.
+        #[cfg(feature = "mcp-server")]
         if let Some(mut mcp_router) = self.mcp_router {
             mcp_router = mcp_router.layer(axum::middleware::from_fn(
                 |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {
@@ -563,7 +565,7 @@ impl ApiServerBuilder {
                 mcp_router = mcp_router.layer(cors);
             }
             if let Some(auth) = self.auth.clone() {
-                mcp_router = auth.layer(mcp_router);
+                mcp_router = mcp_router.layer(auth);
             }
             router = router.merge(mcp_router);
         }
@@ -574,7 +576,7 @@ impl ApiServerBuilder {
                 health_router = health_router.layer(cors);
             }
             if let Some(auth) = self.auth.clone() {
-                health_router = auth.layer(health_router);
+                health_router = health_router.layer(auth);
             }
         }
         router = router.merge(health_router);
