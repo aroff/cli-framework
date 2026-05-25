@@ -3,10 +3,13 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct HealthState {
     pub shutdown: tokio_util::sync::CancellationToken,
+    pub shutdown_readiness: Arc<std::sync::atomic::AtomicBool>,
     pub readiness_check: super::ReadinessCheck,
     pub crate_version: &'static str,
 }
@@ -20,7 +23,7 @@ pub async fn healthz(State(state): State<HealthState>) -> impl IntoResponse {
 
 pub async fn readyz(State(state): State<HealthState>) -> Response {
     // Fast path: during shutdown, return 503 immediately (no awaits).
-    if state.shutdown.is_cancelled() {
+    if state.shutdown_readiness.load(Ordering::Relaxed) || state.shutdown.is_cancelled() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             axum::Json(json!({"status":"not_ready","checks":{"shutdown":true},"error_code": error_codes::E_API_NOT_READY})),

@@ -41,7 +41,7 @@ indicatif = { version = "0.17", optional = true }
 rmcp = { version = "1.6", features = ["server", "client", "transport-streamable-http-server", "transport-io"], optional = true }
 axum = { version = "0.8", optional = true }
 # Optional API server dependencies
-tower = { package = "tower_compat", path = "crates/tower_compat", optional = true }
+tower = { version = "0.5", features = ["util"], optional = true }
 tower-http = { version = "0.6", features = ["cors"], optional = true }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"], optional = true }
 # Optional MCP install dependency (aikit-sdk provides add_mcp_server and mcp_supported_agents)

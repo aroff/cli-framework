@@ -13,13 +13,22 @@ use axum::Router;
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet};
+use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tower::Layer;
 
 pub use headers::{apply_versioned_headers, HeaderConfig};
+
+pub type AuthLayer = tower::util::BoxCloneSyncServiceLayer<
+    axum::Router,
+    axum::http::Request<axum::body::Body>,
+    axum::response::Response,
+    Infallible,
+>;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ApiVersionName(String);
@@ -132,7 +141,7 @@ pub struct ApiServerBuilder {
     default_version: DefaultVersion,
     cors: Option<tower_http::cors::CorsLayer>,
     // Type-erased layer: MUST be clonable and applicable to the router.
-    auth: Option<tower::util::BoxCloneLayer<axum::Router>>,
+    auth: Option<AuthLayer>,
     readiness_check: ReadinessCheck,
     protect_health: bool,
     reserved_prefixes: BTreeSet<String>,
@@ -219,7 +228,7 @@ impl ApiServerBuilder {
         self
     }
 
-    pub fn auth(mut self, layer: tower::util::BoxCloneLayer<axum::Router>) -> Self {
+    pub fn auth(mut self, layer: AuthLayer) -> Self {
         self.auth = Some(layer);
         self
     }
@@ -242,7 +251,9 @@ impl ApiServerBuilder {
 
     pub fn reserved_prefixes(mut self, prefixes: &[&str]) -> Self {
         for p in prefixes {
-            self.reserved_prefixes.insert(p.to_string());
+            let normalized = normalize_mount_path(p)
+                .unwrap_or_else(|e| panic_config(error_codes::E_API_MOUNT_COLLISION, e));
+            self.reserved_prefixes.insert(normalized);
         }
         self
     }
@@ -386,6 +397,7 @@ impl ApiServerBuilder {
         }
 
         let shutdown = CancellationToken::new();
+        let shutdown_readiness = Arc::new(AtomicBool::new(false));
 
         let available_versions: Vec<String> = validated_versions
             .keys()
@@ -394,6 +406,7 @@ impl ApiServerBuilder {
 
         let health_state = health::HealthState {
             shutdown: shutdown.clone(),
+            shutdown_readiness: Arc::clone(&shutdown_readiness),
             readiness_check: Arc::clone(&self.readiness_check),
             crate_version: env!("CARGO_PKG_VERSION"),
         };
@@ -596,7 +609,11 @@ impl ApiServerBuilder {
                 router.nest_service("/readyz", readyz_router.into_service::<axum::body::Body>());
         }
 
-        ApiServer { router, shutdown }
+        ApiServer {
+            router,
+            shutdown,
+            shutdown_readiness,
+        }
     }
 }
 
@@ -631,6 +648,7 @@ fn paths_collide(a: &str, b: &str) -> bool {
 pub struct ApiServer {
     router: axum::Router,
     shutdown: CancellationToken,
+    shutdown_readiness: Arc<AtomicBool>,
 }
 
 impl ApiServer {
@@ -646,12 +664,14 @@ impl ApiServer {
         let listener = tokio::net::TcpListener::bind(addr).await?;
 
         let shutdown_token = self.shutdown.clone();
+        let shutdown_readiness = Arc::clone(&self.shutdown_readiness);
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
         // Flip readiness before initiating listener shutdown. This gives callers a window where
         // `/readyz` returns 503 while the server is still accepting connections.
         tokio::spawn(async move {
             wait_for_shutdown_signal().await;
+            shutdown_readiness.store(true, Ordering::SeqCst);
             shutdown_token.cancel();
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             let _ = shutdown_tx.send(());
