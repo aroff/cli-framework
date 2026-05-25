@@ -41,3 +41,5 @@ pub const E_API_VERSION_RESERVED: &str = "E019";
 pub const E_API_VERSION_REQUIRED: &str = "E020";
 /// API response: Readiness check fails or shutdown is in progress.
 pub const E_API_NOT_READY: &str = "E021";
+/// Swagger: failed to serialize an app-supplied OpenAPI document at build time.
+pub const E_API_SWAGGER_SERIALIZE: &str = "E022";

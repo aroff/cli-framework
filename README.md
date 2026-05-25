@@ -26,6 +26,7 @@ A Rust library for building CLIs with optional AI-assisted command resolution (*
 | `testkit` | no | `CliTestHarness` for in-process testing |
 | `mcp-server` | no | Expose commands as MCP tools over HTTP or stdio |
 | `api-server` | no | Serve versioned Axum APIs with health/readiness and graceful shutdown |
+| `api-swagger` | no | Runtime OpenAPI spec endpoint + embedded Swagger UI (requires `api-server`) |
 | `doctor` | no | Structured health-check framework with terminal/JSON output |
 | `project-config` | no | Project root discovery and TOML loading (`PC001`–`PC005` error codes) |
 
@@ -106,6 +107,37 @@ Choose this crate when you want one stack for classical subcommands plus optiona
 - Versioned responses include `X-API-Version: {version}`
 
 When `api-server` is enabled, `cli-framework` re-exports Axum as `cli_framework::axum` so consumers can depend on the exact `axum` version linked by the framework.
+
+### Swagger UI / OpenAPI docs (`api-swagger`)
+
+Enable the `api-swagger` feature to get a runtime OpenAPI spec endpoint and an embedded Swagger UI at no CDN cost:
+
+```toml
+[dependencies]
+cli-framework = { git = "...", features = ["api-server", "api-swagger"] }
+```
+
+Attach your OpenAPI document to each version via the `openapi` field:
+
+```rust
+ApiVersion {
+    name: ApiVersionName::parse("v1")?,
+    router: my_v1_router,
+    stability: Stability::Stable,
+    deprecation: None,
+    #[cfg(feature = "api-swagger")]
+    openapi: Some(serde_json::json!({ "openapi": "3.0.3", ... })),
+}
+```
+
+The framework then serves:
+
+| Path | What it does |
+|------|-------------|
+| `GET /api/{version}/openapi.json` | App-supplied document with `servers:` patched to `[{"url":"/api/{version}"}]` |
+| `GET /api/docs` | Fully embedded Swagger UI (no CDN) with a version switcher |
+
+Versions that set `openapi: None` get no spec endpoint and do not appear in the switcher. Auth gating follows the same `ApiServerBuilder::auth(...)` layer applied to all `/api/**` routes.
 
 ## Built-in commands
 

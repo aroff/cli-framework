@@ -1,12 +1,14 @@
 # Features and Cargo flags
 
-All 9 optional features for `cli-framework`. Default feature set includes `clap-dispatch`.
+All optional features for `cli-framework`. Default feature set includes `clap-dispatch`.
 
 ## Feature table
 
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `mcp-server` | off | Expose registered commands as MCP tools via Streamable HTTP; pulls in `rmcp` and `axum` |
+| `api-server` | off | Versioned Axum API hosting under `/api/{version}/...` with health/readiness endpoints and graceful shutdown |
+| `api-swagger` | off | Runtime OpenAPI spec endpoint at `/api/{version}/openapi.json` + embedded Swagger UI at `/api/docs`; requires `api-server`; adds ~1–3 MB for embedded Swagger UI assets |
 | `clap-dispatch` | **on** | No-op since v0.4.0 (Clap dispatch is now always active); retained for compatibility, will be removed in v0.5.0 |
 | `testkit` | off | Enable `CliTestHarness` for in-process CLI testing (dev/test use only) |
 | `strict-types` | off | Reject registration of commands without a `CommandSpec` |

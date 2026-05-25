@@ -48,6 +48,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 aikit-sdk = { git = "https://github.com/goaikit/aikit.git", package = "aikit-sdk", rev = "a22a619fa61d2fce7f7364c18199b75b72d74e4b", optional = true }
 ## Optional embedded agent dependency (used by `chat` feature)
 aikit-agent = { git = "https://github.com/goaikit/aikit.git", package = "aikit-agent", rev = "a22a619fa61d2fce7f7364c18199b75b72d74e4b", optional = true }
+# Optional Swagger UI dependency for api-swagger feature
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum"], optional = true }
 
 # Optional OpenTelemetry dependencies (applications can enable)
 # Note: Applications should add these dependencies themselves when using observability feature
@@ -98,6 +100,8 @@ doctor = []
 # Project config — project root discovery and TOML loading (off by default)
 project-config = []
 chat = ["dep:aikit-agent", "dep:tokio-util"]
+# Swagger UI / OpenAPI docs — served OpenAPI spec at /api/{version}/openapi.json + embedded Swagger UI at /api/docs
+api-swagger = ["api-server", "dep:utoipa-swagger-ui"]
 
 [lib]
 name = "cli_framework"
@@ -123,7 +127,7 @@ path = "skill/examples/with_ask/src/main.rs"
 [[example]]
 name = "with_api"
 path = "skill/examples/with_api/src/main.rs"
-required-features = ["api-server"]
+required-features = ["api-server", "api-swagger"]
 
 [[example]]
 name = "with_chat"
@@ -216,6 +220,11 @@ required-features = ["api-server"]
 name = "integration_api_server_mcp_coexist"
 path = "tests/integration/api_server_mcp_coexist.rs"
 required-features = ["api-server", "mcp-server"]
+
+[[test]]
+name = "integration_api_swagger"
+path = "tests/integration/api_swagger.rs"
+required-features = ["api-swagger"]
 
 [[example]]
 name = "with_mcp"
