@@ -33,6 +33,8 @@ async fn mcp_can_be_mounted_under_fixed_mcp_prefix() {
             router: v1,
             stability: Stability::Stable,
             deprecation: None,
+            #[cfg(feature = "api-swagger")]
+            openapi: None,
         })
         .mcp_router(mcp_router)
         .build();

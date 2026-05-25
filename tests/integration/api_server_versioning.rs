@@ -148,12 +148,16 @@ async fn serves_versioned_routes_and_attaches_x_api_version() {
                 router: version_router("v1"),
                 stability: Stability::Stable,
                 deprecation: None,
+                #[cfg(feature = "api-swagger")]
+                openapi: None,
             })
             .version(ApiVersion {
                 name: ApiVersionName::parse("v2").unwrap(),
                 router: version_router("v2"),
                 stability: Stability::Stable,
                 deprecation: None,
+                #[cfg(feature = "api-swagger")]
+                openapi: None,
             })
             .default_version(DefaultVersion::Pinned(ApiVersionName::parse("v2").unwrap())),
     )
@@ -193,12 +197,16 @@ async fn pinned_default_redirects_unversioned_paths_and_preserves_query() {
                 router: version_router("v1"),
                 stability: Stability::Stable,
                 deprecation: None,
+                #[cfg(feature = "api-swagger")]
+                openapi: None,
             })
             .version(ApiVersion {
                 name: ApiVersionName::parse("v2").unwrap(),
                 router: version_router("v2"),
                 stability: Stability::Stable,
                 deprecation: None,
+                #[cfg(feature = "api-swagger")]
+                openapi: None,
             })
             .default_version(DefaultVersion::Pinned(ApiVersionName::parse("v2").unwrap())),
     )
@@ -229,12 +237,16 @@ async fn default_none_returns_host_404_with_available_versions_and_e020() {
                 router: version_router("v1"),
                 stability: Stability::Stable,
                 deprecation: None,
+                #[cfg(feature = "api-swagger")]
+                openapi: None,
             })
             .version(ApiVersion {
                 name: ApiVersionName::parse("v2").unwrap(),
                 router: version_router("v2"),
                 stability: Stability::Stable,
                 deprecation: None,
+                #[cfg(feature = "api-swagger")]
+                openapi: None,
             }),
     )
     .await;
@@ -274,6 +286,8 @@ async fn deprecated_versions_emit_deprecation_sunset_and_link_headers() {
                     sunset,
                     docs_url: Some("https://example.com/docs".to_string()),
                 }),
+                #[cfg(feature = "api-swagger")]
+                openapi: None,
             })
             .default_version(DefaultVersion::Pinned(ApiVersionName::parse("v1").unwrap())),
     )
@@ -313,6 +327,8 @@ async fn healthz_and_readyz_are_present_and_readyz_uses_readiness_check() {
                 router: version_router("v1"),
                 stability: Stability::Stable,
                 deprecation: None,
+                #[cfg(feature = "api-swagger")]
+                openapi: None,
             })
             .readiness_check(readiness_check),
     )
@@ -356,6 +372,8 @@ async fn readyz_flips_to_503_on_sigterm_before_shutdown_completes() {
         router: version_router("v1"),
         stability: Stability::Stable,
         deprecation: None,
+        #[cfg(feature = "api-swagger")]
+        openapi: None,
     }))
     .await;
 
@@ -426,6 +444,8 @@ async fn sse_is_streaming_and_not_buffered_by_default_middleware() {
                 router: sse_router,
                 stability: Stability::Stable,
                 deprecation: None,
+                #[cfg(feature = "api-swagger")]
+                openapi: None,
             })
             .default_version(DefaultVersion::Pinned(ApiVersionName::parse("v1").unwrap())),
     )
@@ -470,6 +490,8 @@ async fn websocket_upgrade_succeeds_and_includes_x_api_version() {
                 router: ws_router,
                 stability: Stability::Stable,
                 deprecation: None,
+                #[cfg(feature = "api-swagger")]
+                openapi: None,
             })
             .default_version(DefaultVersion::Pinned(ApiVersionName::parse("v1").unwrap())),
     )
@@ -508,6 +530,8 @@ async fn protect_health_gates_health_endpoints_with_auth_layer() {
                 router: version_router("v1"),
                 stability: Stability::Stable,
                 deprecation: None,
+                #[cfg(feature = "api-swagger")]
+                openapi: None,
             })
             .auth(bearer_auth_layer())
             .protect_health(true),
@@ -578,6 +602,8 @@ async fn health_endpoints_stay_unauthenticated_by_default_even_with_auth_layer()
                 router: version_router("v1"),
                 stability: Stability::Stable,
                 deprecation: None,
+                #[cfg(feature = "api-swagger")]
+                openapi: None,
             })
             .auth(bearer_auth_layer()),
     )
@@ -639,6 +665,8 @@ async fn cors_layer_emits_cors_headers_on_api_responses() {
                 router: version_router("v1"),
                 stability: Stability::Stable,
                 deprecation: None,
+                #[cfg(feature = "api-swagger")]
+                openapi: None,
             })
             .default_version(DefaultVersion::Pinned(ApiVersionName::parse("v1").unwrap()))
             .cors(tower_http::cors::CorsLayer::permissive()),
@@ -710,6 +738,8 @@ fn build_validation_panics_with_stable_error_codes() {
                 router: ok_router.clone(),
                 stability: Stability::Stable,
                 deprecation: None,
+                #[cfg(feature = "api-swagger")]
+                openapi: None,
             })
             .default_version(DefaultVersion::Pinned(ApiVersionName::parse("v2").unwrap()))
             .build()
@@ -724,12 +754,16 @@ fn build_validation_panics_with_stable_error_codes() {
                 router: ok_router.clone(),
                 stability: Stability::Stable,
                 deprecation: None,
+                #[cfg(feature = "api-swagger")]
+                openapi: None,
             })
             .version(ApiVersion {
                 name: ApiVersionName::parse("v1").unwrap(),
                 router: ok_router.clone(),
                 stability: Stability::Stable,
                 deprecation: None,
+                #[cfg(feature = "api-swagger")]
+                openapi: None,
             })
             .build()
     }));
@@ -743,6 +777,8 @@ fn build_validation_panics_with_stable_error_codes() {
                 router: ok_router.clone(),
                 stability: Stability::Stable,
                 deprecation: None,
+                #[cfg(feature = "api-swagger")]
+                openapi: None,
             })
             .build()
     }));
@@ -756,6 +792,8 @@ fn build_validation_panics_with_stable_error_codes() {
                 router: ok_router.clone(),
                 stability: Stability::Stable,
                 deprecation: None,
+                #[cfg(feature = "api-swagger")]
+                openapi: None,
             })
             .build()
     }));
@@ -769,6 +807,8 @@ fn build_validation_panics_with_stable_error_codes() {
                 router: ok_router.clone(),
                 stability: Stability::Stable,
                 deprecation: None,
+                #[cfg(feature = "api-swagger")]
+                openapi: None,
             })
             .mount("/healthz", Router::new())
             .build()
@@ -783,6 +823,8 @@ fn build_validation_panics_with_stable_error_codes() {
                 router: ok_router.clone(),
                 stability: Stability::Stable,
                 deprecation: None,
+                #[cfg(feature = "api-swagger")]
+                openapi: None,
             })
             .mount("/mcp", Router::new())
             .build()

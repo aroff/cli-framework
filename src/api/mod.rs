@@ -4,6 +4,8 @@
 
 mod headers;
 mod health;
+#[cfg(feature = "api-swagger")]
+mod swagger;
 mod versioning;
 
 use crate::parser::error_codes;
@@ -80,6 +82,11 @@ pub struct ApiVersion {
     pub router: axum::Router,
     pub stability: Stability,
     pub deprecation: Option<DeprecationInfo>,
+    /// App-supplied OpenAPI document (`api-swagger` feature only).
+    /// `Some(value)` → serves `/api/{version}/openapi.json` and adds a Swagger UI entry.
+    /// `None` → no spec endpoint, no switcher entry.
+    #[cfg(feature = "api-swagger")]
+    pub openapi: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -582,6 +589,62 @@ impl ApiServerBuilder {
             );
             router =
                 router.nest_service("/readyz", readyz_router.into_service::<axum::body::Body>());
+        }
+
+        // Swagger UI and per-version OpenAPI spec routes (api-swagger feature).
+        #[cfg(feature = "api-swagger")]
+        {
+            let swagger_versions: Vec<(String, String)> = validated_versions
+                .iter()
+                .filter_map(|(name, v)| {
+                    v.openapi.as_ref().map(|doc| {
+                        // INVARIANT: serde_json::to_string never fails for a valid Value;
+                        // E022 is unreachable in practice — it guards against future
+                        // Value variants or custom Serialize impls that could theoretically fail.
+                        let json = swagger::patch_and_serialize(doc.clone(), name.as_str())
+                            .unwrap_or_else(|e| {
+                                panic_config(
+                                    error_codes::E_API_SWAGGER_SERIALIZE,
+                                    format!(
+                                        "failed to serialize openapi doc for '{}': {}",
+                                        name.as_str(),
+                                        e
+                                    ),
+                                )
+                            });
+                        (name.as_str().to_string(), json)
+                    })
+                })
+                .collect();
+
+            if !swagger_versions.is_empty() {
+                let primary = match &self.default_version {
+                    DefaultVersion::Pinned(v)
+                        if swagger_versions.iter().any(|(n, _)| n == v.as_str()) =>
+                    {
+                        v.as_str().to_string()
+                    }
+                    _ => swagger_versions[0].0.clone(),
+                };
+                let swagger_router =
+                    swagger::build_swagger_router(swagger_versions.clone(), &primary);
+
+                if let Some(auth) = self.auth.as_ref() {
+                    // Apply the same auth layer to swagger routes.
+                    let svc = auth.0.clone().layer(swagger_router);
+                    // Mount the auth-wrapped service at each swagger path.
+                    router = router
+                        .route_service("/api/docs", svc.clone())
+                        .route_service("/api/docs/", svc.clone())
+                        .route_service("/api/docs/{*rest}", svc.clone());
+                    for (name, _) in &swagger_versions {
+                        let spec_path = format!("/api/{}/openapi.json", name);
+                        router = router.route_service(&spec_path, svc.clone());
+                    }
+                } else {
+                    router = router.merge(swagger_router);
+                }
+            }
         }
 
         ApiServer {
