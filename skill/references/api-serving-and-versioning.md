@@ -11,7 +11,7 @@ The `api-server` feature provides a framework-owned Axum host for versioned HTTP
 | `/api/{version}/...` | Versioned API routes (app-supplied) |
 | `/api/docs` | Swagger UI (requires `api-swagger`) |
 | `/api/{version}/openapi.json` | Runtime OpenAPI spec (requires `api-swagger` and `openapi: Some(...)`) |
-| `/healthz` | Health check (always present) |
+| `/healthz` | Health check (always present); reports a `version` (see `health_version` below) |
 | `/readyz` | Readiness check (always present) |
 
 ## Registering versions
@@ -88,6 +88,23 @@ server.serve("0.0.0.0:8080").await?;
 ```
 
 The framework does not add `tower-http`'s `fs` feature as a dependency; consumers add it to their own `Cargo.toml`. Any `axum::Router` is accepted — `ServeDir` is one option, not a requirement.
+
+## Health version override
+
+`ApiServerBuilder::health_version(v: impl Into<String>) -> Self`
+
+`GET /healthz` returns `{"status":"ok","version": "<version>"}`. By default `<version>` is the framework's own crate version (`env!("CARGO_PKG_VERSION")`), which is fixed at cli-framework's compile time — so without an override it reports cli-framework's version, not the consumer's.
+
+Call `health_version(...)` to make `/healthz` report your application's version instead:
+
+```rust
+let server = ApiServerBuilder::new()
+    .version(/* ... */)
+    .health_version(env!("CARGO_PKG_VERSION")) // your crate's version
+    .build();
+```
+
+**Back-compat:** when `health_version` is not called, `/healthz` reports the framework's `CARGO_PKG_VERSION` exactly as before. **Take-last semantics:** calling it more than once overwrites the previous value.
 
 ## Error codes
 
