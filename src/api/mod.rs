@@ -15,8 +15,10 @@ use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
+use tower::Layer;
 
 pub use headers::{apply_versioned_headers, HeaderConfig};
 
@@ -133,7 +135,7 @@ pub struct ApiServerBuilder {
     // Type-erased layer: MUST be clonable and applicable to the router.
     auth: Option<
         tower::util::BoxCloneSyncServiceLayer<
-            axum::routing::Route,
+            axum::Router,
             axum::http::Request<axum::body::Body>,
             axum::response::Response,
             std::convert::Infallible,
@@ -143,7 +145,7 @@ pub struct ApiServerBuilder {
     protect_health: bool,
     reserved_prefixes: BTreeSet<String>,
     #[cfg(feature = "mcp-server")]
-    mcp_router: Option<axum::Router>,
+    mcp_tool_registry: Option<std::sync::Arc<crate::mcp::McpToolRegistry>>,
 }
 
 impl std::fmt::Debug for ApiServerBuilder {
@@ -189,7 +191,7 @@ impl Default for ApiServerBuilder {
             protect_health: false,
             reserved_prefixes: BTreeSet::new(),
             #[cfg(feature = "mcp-server")]
-            mcp_router: None,
+            mcp_tool_registry: None,
         }
     }
 }
@@ -228,7 +230,7 @@ impl ApiServerBuilder {
     pub fn auth(
         mut self,
         layer: tower::util::BoxCloneSyncServiceLayer<
-            axum::routing::Route,
+            axum::Router,
             axum::http::Request<axum::body::Body>,
             axum::response::Response,
             std::convert::Infallible,
@@ -244,8 +246,11 @@ impl ApiServerBuilder {
     /// - `cli_framework::mcp::transport_http::mcp_axum_router(tool_registry, "/mcp")`
     /// - `cli_framework::mcp::build_mcp_axum_router(..., "/mcp")`
     #[cfg(feature = "mcp-server")]
-    pub fn mcp_router(mut self, router: axum::Router) -> Self {
-        self.mcp_router = Some(router);
+    pub fn mcp_tool_registry(
+        mut self,
+        tool_registry: std::sync::Arc<crate::mcp::McpToolRegistry>,
+    ) -> Self {
+        self.mcp_tool_registry = Some(tool_registry);
         self
     }
 
@@ -405,6 +410,7 @@ impl ApiServerBuilder {
         }
 
         let shutdown = CancellationToken::new();
+        let ready_flag = Arc::new(AtomicBool::new(true));
 
         let available_versions: Vec<String> = validated_versions
             .keys()
@@ -413,16 +419,21 @@ impl ApiServerBuilder {
 
         let health_state = health::HealthState {
             shutdown: shutdown.clone(),
+            ready_flag: Arc::clone(&ready_flag),
             readiness_check: Arc::clone(&self.readiness_check),
             crate_version: env!("CARGO_PKG_VERSION"),
         };
 
         let mut router = Router::new();
-
-        // Health and readiness are always present at root.
-        let mut health_router = Router::new()
-            .route("/healthz", get(health::healthz))
-            .route("/readyz", get(health::readyz))
+        // Health and readiness are always present at fixed root paths.
+        //
+        // Implemented via `nest_service` so we can optionally protect them with the same
+        // auth layer even though the auth layer is type-erased for `axum::Router`.
+        let healthz_router = Router::new()
+            .route("/", get(health::healthz))
+            .with_state(health_state.clone());
+        let readyz_router = Router::new()
+            .route("/", get(health::readyz))
             .with_state(health_state);
 
         // API root: /api/{version}/...
@@ -460,11 +471,13 @@ impl ApiServerBuilder {
             if let Some(cors) = self.cors.clone() {
                 vr = vr.layer(cors);
             }
-            if let Some(auth) = self.auth.clone() {
-                vr = vr.layer(auth);
+            let prefix = format!("/{}", v.name.as_str());
+            if let Some(auth) = self.auth.as_ref() {
+                let svc = auth.clone().layer(vr);
+                api_root = api_root.nest_service(&prefix, svc);
+            } else {
+                api_root = api_root.nest_service(&prefix, vr.into_service::<axum::body::Body>());
             }
-
-            api_root = api_root.nest(&format!("/{}", v.name.as_str()), vr);
         }
 
         // Requests to `/api/...` without a version segment are handled by a host endpoint.
@@ -536,15 +549,18 @@ impl ApiServerBuilder {
             if let Some(cors) = self.cors.clone() {
                 r = r.layer(cors);
             }
-            if let Some(auth) = self.auth.clone() {
-                r = r.layer(auth);
+            if let Some(auth) = self.auth.as_ref() {
+                let svc = auth.clone().layer(r);
+                router = router.nest_service(&p, svc);
+            } else {
+                router = router.nest_service(&p, r.into_service::<axum::body::Body>());
             }
-            router = router.nest(&p, r);
         }
 
         // Optional MCP coexistence at the fixed `/mcp` path.
         #[cfg(feature = "mcp-server")]
-        if let Some(mut mcp_router) = self.mcp_router {
+        if let Some(tool_registry) = self.mcp_tool_registry {
+            let mut mcp_router = crate::mcp::transport_http::mcp_axum_router(tool_registry, "/mcp");
             mcp_router = mcp_router.layer(axum::middleware::from_fn(
                 |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {
                     let start = std::time::Instant::now();
@@ -564,24 +580,53 @@ impl ApiServerBuilder {
             if let Some(cors) = self.cors.clone() {
                 mcp_router = mcp_router.layer(cors);
             }
-            if let Some(auth) = self.auth.clone() {
-                mcp_router = mcp_router.layer(auth);
+            if let Some(auth) = self.auth.as_ref() {
+                // Mount under the fixed `/mcp` prefix without stripping (since the MCP router
+                // already owns `/mcp` internally).
+                let svc = auth.clone().layer(mcp_router);
+                router = router
+                    .route_service("/mcp", svc.clone())
+                    .route_service("/mcp/*rest", svc);
+            } else {
+                router = router.merge(mcp_router);
             }
-            router = router.merge(mcp_router);
         }
 
-        // If health should be protected, apply auth/cors the same way as APIs.
+        // If health should be protected, cover them with the same auth layer.
         if self.protect_health {
+            let mut healthz_router = healthz_router;
+            let mut readyz_router = readyz_router;
             if let Some(cors) = self.cors.clone() {
-                health_router = health_router.layer(cors);
+                healthz_router = healthz_router.layer(cors.clone());
+                readyz_router = readyz_router.layer(cors);
             }
-            if let Some(auth) = self.auth.clone() {
-                health_router = health_router.layer(auth);
+            if let Some(auth) = self.auth.as_ref() {
+                let svc = auth.clone().layer(healthz_router);
+                router = router.nest_service("/healthz", svc);
+                let svc = auth.clone().layer(readyz_router);
+                router = router.nest_service("/readyz", svc);
+            } else {
+                router = router.nest_service(
+                    "/healthz",
+                    healthz_router.into_service::<axum::body::Body>(),
+                );
+                router = router
+                    .nest_service("/readyz", readyz_router.into_service::<axum::body::Body>());
             }
+        } else {
+            router = router.nest_service(
+                "/healthz",
+                healthz_router.into_service::<axum::body::Body>(),
+            );
+            router =
+                router.nest_service("/readyz", readyz_router.into_service::<axum::body::Body>());
         }
-        router = router.merge(health_router);
 
-        ApiServer { router, shutdown }
+        ApiServer {
+            router,
+            shutdown,
+            ready_flag,
+        }
     }
 }
 
@@ -616,6 +661,7 @@ fn paths_collide(a: &str, b: &str) -> bool {
 pub struct ApiServer {
     router: axum::Router,
     shutdown: CancellationToken,
+    ready_flag: Arc<AtomicBool>,
 }
 
 impl ApiServer {
@@ -631,12 +677,14 @@ impl ApiServer {
         let listener = tokio::net::TcpListener::bind(addr).await?;
 
         let shutdown_token = self.shutdown.clone();
+        let ready_flag = Arc::clone(&self.ready_flag);
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
         // Flip readiness before initiating listener shutdown. This gives callers a window where
         // `/readyz` returns 503 while the server is still accepting connections.
         tokio::spawn(async move {
             wait_for_shutdown_signal().await;
+            ready_flag.store(false, std::sync::atomic::Ordering::SeqCst);
             shutdown_token.cancel();
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             let _ = shutdown_tx.send(());
