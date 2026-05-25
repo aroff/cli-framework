@@ -11,13 +11,6 @@ use std::time::Duration;
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-async fn find_free_port() -> u16 {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-    port
-}
-
 async fn wait_http_ok(url: &str) {
     let client = reqwest::Client::new();
     for _ in 0..50 {
@@ -509,7 +502,8 @@ async fn versioned_api_routes_unaffected_by_api_swagger() {
 
 #[tokio::test]
 async fn swagger_ui_lists_versioned_doc_urls() {
-    // Verify that swagger-initializer.js references both versioned spec URLs.
+    // Verify that swagger-initializer.js references both versioned spec URLs
+    // and that the pinned default (v2) is marked as primary (AC6).
     let (addr, shutdown, handle) = spawn_server(
         ApiServerBuilder::new()
             .version(make_v1())
@@ -536,6 +530,54 @@ async fn swagger_ui_lists_versioned_doc_urls() {
     assert!(
         js.contains("/api/v2/openapi.json"),
         "v2 spec URL missing from swagger-initializer.js"
+    );
+
+    // AC6: pinned default version v2 must be marked as primary.
+    // utoipa-swagger-ui serializes Url::with_primary as `"urls.primaryName": "<name>"` in the
+    // swagger-initializer.js SwaggerUIBundle config.
+    assert!(
+        js.contains(r#""urls.primaryName":"v2""#) || js.contains(r#""urls.primaryName": "v2""#),
+        "pinned default v2 should be the primaryName in swagger-initializer.js; js={js}"
+    );
+
+    shutdown.cancel();
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn swagger_ui_primary_defaults_to_alphabetical_first_when_no_pinned_default() {
+    // AC6: without a pinned default, the first version alphabetically (v1) must be primary.
+    let (addr, shutdown, handle) = spawn_server(
+        ApiServerBuilder::new()
+            .version(make_v1())
+            .version(make_v2())
+            .default_version(DefaultVersion::None),
+    )
+    .await;
+
+    let client = reqwest::Client::new();
+    let js = client
+        .get(format!("http://{addr}/api/docs/swagger-initializer.js"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    assert!(
+        js.contains("/api/v1/openapi.json"),
+        "v1 spec URL missing from swagger-initializer.js"
+    );
+    assert!(
+        js.contains("/api/v2/openapi.json"),
+        "v2 spec URL missing from swagger-initializer.js"
+    );
+
+    // With no pinned default, v1 (alphabetically first) should be the primary.
+    assert!(
+        js.contains(r#""urls.primaryName":"v1""#) || js.contains(r#""urls.primaryName": "v1""#),
+        "alphabetical-first version v1 should be primaryName when no default is pinned; js={js}"
     );
 
     shutdown.cancel();

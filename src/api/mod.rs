@@ -598,6 +598,9 @@ impl ApiServerBuilder {
                 .iter()
                 .filter_map(|(name, v)| {
                     v.openapi.as_ref().map(|doc| {
+                        // INVARIANT: serde_json::to_string never fails for a valid Value;
+                        // E022 is unreachable in practice — it guards against future
+                        // Value variants or custom Serialize impls that could theoretically fail.
                         let json = swagger::patch_and_serialize(doc.clone(), name.as_str())
                             .unwrap_or_else(|e| {
                                 panic_config(
