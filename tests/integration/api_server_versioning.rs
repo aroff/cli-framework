@@ -6,6 +6,7 @@ use cli_framework::api::{
     ApiServerBuilder, ApiVersion, ApiVersionName, DefaultVersion, DeprecationInfo, ReadinessReport,
     Stability,
 };
+use cli_framework::tower::util::BoxCloneLayer;
 use futures_util::StreamExt;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -76,6 +77,66 @@ fn version_router(tag: &'static str) -> Router {
         "/echo",
         get(move || async move { axum::Json(serde_json::json!({"version": tag})) }),
     )
+}
+
+/// Like `spawn_inline_server`, but only waits until the listener responds to *any* request
+/// rather than a `200`. Required when health endpoints are auth-gated via `protect_health(true)`.
+async fn spawn_inline_server_until_responding(
+    builder: ApiServerBuilder,
+) -> (
+    String,
+    tokio_util::sync::CancellationToken,
+    tokio::task::JoinHandle<()>,
+) {
+    let api = builder.build();
+    let shutdown = api.shutdown_token();
+    let router = api.into_router();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let addr_str = format!("{}", addr);
+
+    let shutdown_for_task = shutdown.clone();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(shutdown_for_task.cancelled_owned())
+            .await
+            .unwrap();
+    });
+
+    let client = reqwest::Client::new();
+    for _ in 0..50 {
+        if client
+            .get(format!("http://{addr_str}/healthz"))
+            .send()
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    (addr_str, shutdown, handle)
+}
+
+/// A cloneable, type-erased auth layer that admits only `Authorization: Bearer secret`.
+///
+/// Mirrors how a downstream crate would supply auth to `ApiServerBuilder::auth(...)`.
+fn bearer_auth_layer() -> BoxCloneLayer<Router> {
+    BoxCloneLayer::new(axum::middleware::from_fn(
+        |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {
+            let authorized = req
+                .headers()
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                == Some("Bearer secret");
+            if authorized {
+                next.run(req).await
+            } else {
+                axum::http::StatusCode::UNAUTHORIZED.into_response()
+            }
+        },
+    ))
 }
 
 #[tokio::test]
@@ -433,6 +494,186 @@ async fn websocket_upgrade_succeeds_and_includes_x_api_version() {
     let (mut ws, _resp) = tokio_tungstenite::connect_async(url).await.unwrap();
     let msg = ws.next().await.unwrap().unwrap();
     assert_eq!(msg.into_text().unwrap(), "hello");
+
+    shutdown.cancel();
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn protect_health_gates_health_endpoints_with_auth_layer() {
+    let (addr, shutdown, handle) = spawn_inline_server_until_responding(
+        ApiServerBuilder::new()
+            .version(ApiVersion {
+                name: ApiVersionName::parse("v1").unwrap(),
+                router: version_router("v1"),
+                stability: Stability::Stable,
+                deprecation: None,
+            })
+            .auth(bearer_auth_layer())
+            .protect_health(true),
+    )
+    .await;
+
+    let client = reqwest::Client::new();
+
+    // Without credentials, health endpoints and the API are all gated by the auth layer.
+    assert_eq!(
+        client
+            .get(format!("http://{addr}/healthz"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    assert_eq!(
+        client
+            .get(format!("http://{addr}/readyz"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    assert_eq!(
+        client
+            .get(format!("http://{addr}/api/v1/echo"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+
+    // With credentials, health and the API are reachable.
+    let health = client
+        .get(format!("http://{addr}/healthz"))
+        .header(axum::http::header::AUTHORIZATION, "Bearer secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(health.status(), 200);
+    assert_eq!(health.json::<Value>().await.unwrap()["status"], "ok");
+
+    let api = client
+        .get(format!("http://{addr}/api/v1/echo"))
+        .header(axum::http::header::AUTHORIZATION, "Bearer secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(api.status(), 200);
+    assert_eq!(api.headers()["X-API-Version"], "v1");
+
+    shutdown.cancel();
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn health_endpoints_stay_unauthenticated_by_default_even_with_auth_layer() {
+    // `protect_health` defaults to false: the auth layer must guard the API but leave health open.
+    let (addr, shutdown, handle) = spawn_inline_server(
+        ApiServerBuilder::new()
+            .version(ApiVersion {
+                name: ApiVersionName::parse("v1").unwrap(),
+                router: version_router("v1"),
+                stability: Stability::Stable,
+                deprecation: None,
+            })
+            .auth(bearer_auth_layer()),
+    )
+    .await;
+
+    let client = reqwest::Client::new();
+
+    // Health is reachable without credentials.
+    assert_eq!(
+        client
+            .get(format!("http://{addr}/healthz"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(
+        client
+            .get(format!("http://{addr}/readyz"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+
+    // The API is still gated.
+    assert_eq!(
+        client
+            .get(format!("http://{addr}/api/v1/echo"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    assert_eq!(
+        client
+            .get(format!("http://{addr}/api/v1/echo"))
+            .header(axum::http::header::AUTHORIZATION, "Bearer secret")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+
+    shutdown.cancel();
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn cors_layer_emits_cors_headers_on_api_responses() {
+    let (addr, shutdown, handle) = spawn_inline_server(
+        ApiServerBuilder::new()
+            .version(ApiVersion {
+                name: ApiVersionName::parse("v1").unwrap(),
+                router: version_router("v1"),
+                stability: Stability::Stable,
+                deprecation: None,
+            })
+            .default_version(DefaultVersion::Pinned(ApiVersionName::parse("v1").unwrap()))
+            .cors(tower_http::cors::CorsLayer::permissive()),
+    )
+    .await;
+
+    let client = reqwest::Client::new();
+
+    // Simple request carries the CORS allow-origin header.
+    let resp = client
+        .get(format!("http://{addr}/api/v1/echo"))
+        .header("origin", "https://example.com")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.headers()["access-control-allow-origin"], "*");
+    // Version identity is preserved alongside CORS headers.
+    assert_eq!(resp.headers()["X-API-Version"], "v1");
+
+    // Preflight is answered by the CORS layer with the negotiated methods.
+    let preflight = client
+        .request(
+            reqwest::Method::OPTIONS,
+            format!("http://{addr}/api/v1/echo"),
+        )
+        .header("origin", "https://example.com")
+        .header("access-control-request-method", "GET")
+        .send()
+        .await
+        .unwrap();
+    assert!(preflight.status().is_success());
+    assert!(preflight
+        .headers()
+        .contains_key("access-control-allow-methods"));
 
     shutdown.cancel();
     handle.await.unwrap();

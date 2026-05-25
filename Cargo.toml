@@ -65,6 +65,9 @@ insta = { version = "1", features = ["json"] }
 axum = { version = "0.8" }
 futures-util = "0.3"
 tokio-tungstenite = "0.21"
+# Consumers configuring `ApiServerBuilder::cors(...)` supply their own `tower_http::cors::CorsLayer`;
+# tests exercise that path the same way a downstream crate would.
+tower-http = { version = "0.6", features = ["cors"] }
 
 [features]
 default = ["clap-dispatch"]
