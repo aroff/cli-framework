@@ -53,6 +53,42 @@ Set `openapi: Some(your_doc)` on each `ApiVersion` to expose that version's spec
 | `stability` | `Stable`, `Beta`, or `Alpha` — informational |
 | `deprecation` | Optional `DeprecationInfo { sunset, docs_url }` — adds `Deprecation`, `Sunset`, and `Link` response headers |
 
+## Root fallback (SPA / static assets)
+
+`ApiServerBuilder::root_fallback(router: axum::Router) -> Self`
+
+Attach a catch-all router that handles any request not matched by a framework-owned route, a registered version route, a `mount()` route, MCP routes, or Swagger routes. Designed for serving a single-page app or static assets on the same listener as the versioned API.
+
+**Route priority guarantee:** All framework routes (health, versioned API, unversioned `/api`, mounts, MCP, Swagger) are registered before the fallback. Axum's `fallback_service` only activates when no other route matches, so framework routes always win.
+
+**Auth policy:** The host does NOT apply the `auth()` layer to the fallback. Static UI assets are typically public. If you need to gate your SPA, add auth inside the router you pass to `root_fallback()`.
+
+**CORS:** When `cors()` is configured on the builder, the same `CorsLayer` is applied to the fallback router.
+
+**Take-last semantics:** Calling `root_fallback()` more than once silently overwrites the previous value (consistent with `cors()` and `auth()`).
+
+**Usage example (SPA with `tower-http`):**
+
+```rust
+// Add to Cargo.toml: tower-http = { version = "0.6", features = ["fs"] }
+use tower_http::services::{ServeDir, ServeFile};
+use cli_framework::axum::Router;
+
+// Serve files from ./dist; fall back to index.html for SPA deep links.
+let spa = Router::new().fallback_service(
+    ServeDir::new("dist").fallback(ServeFile::new("dist/index.html")),
+);
+
+let server = ApiServerBuilder::new()
+    .version(/* ... */)
+    .root_fallback(spa)
+    .build();
+
+server.serve("0.0.0.0:8080").await?;
+```
+
+The framework does not add `tower-http`'s `fs` feature as a dependency; consumers add it to their own `Cargo.toml`. Any `axum::Router` is accepted — `ServeDir` is one option, not a requirement.
+
 ## Error codes
 
 | Code | Trigger |

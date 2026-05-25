@@ -10,6 +10,10 @@
 //! - `GET /api/v2/openapi.json`  (requires `api-swagger`)
 //! - `GET /api/docs`             (Swagger UI, requires `api-swagger`)
 //!
+//! Optional capability: serve a SPA or static assets at `/` alongside the API
+//! using `ApiServerBuilder::root_fallback(spa_router)`. See the commented-out
+//! example at the bottom of main() for details.
+//!
 //! ```bash
 //! cargo run --example with_api --features "api-server,api-swagger"
 //! curl -sS http://127.0.0.1:8082/healthz
@@ -68,6 +72,15 @@ async fn main() -> anyhow::Result<()> {
             })),
         })
         .default_version(DefaultVersion::Pinned(ApiVersionName::parse("v2")?))
+        // Optional: serve a SPA at the root on the same listener.
+        // Requires `tower-http = { version = "0.6", features = ["fs"] }` in Cargo.toml.
+        //
+        // use tower_http::services::{ServeDir, ServeFile};
+        // .root_fallback(
+        //     cli_framework::axum::Router::new().fallback_service(
+        //         ServeDir::new("dist").fallback(ServeFile::new("dist/index.html")),
+        //     ),
+        // )
         .build();
 
     server.serve("127.0.0.1:8082").await

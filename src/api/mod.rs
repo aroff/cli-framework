@@ -166,6 +166,7 @@ pub struct ApiServerBuilder {
     reserved_prefixes: BTreeSet<String>,
     #[cfg(feature = "mcp-server")]
     mcp_router: Option<axum::Router>,
+    root_fallback: Option<axum::Router>,
 }
 
 impl Default for ApiServerBuilder {
@@ -188,6 +189,7 @@ impl Default for ApiServerBuilder {
             reserved_prefixes: BTreeSet::new(),
             #[cfg(feature = "mcp-server")]
             mcp_router: None,
+            root_fallback: None,
         }
     }
 }
@@ -241,6 +243,16 @@ impl ApiServerBuilder {
 
     pub fn protect_health(mut self, yes: bool) -> Self {
         self.protect_health = yes;
+        self
+    }
+
+    /// Attach a router to handle requests not matched by any host, version, mount,
+    /// MCP, or Swagger route. Intended for serving a SPA or static assets at the root.
+    ///
+    /// Calling this method more than once overwrites the previous value (take-last).
+    /// This does NOT relax the rule that the primary API is served only via `version(...)`.
+    pub fn root_fallback(mut self, router: axum::Router) -> Self {
+        self.root_fallback = Some(router);
         self
     }
 
@@ -645,6 +657,31 @@ impl ApiServerBuilder {
                     router = router.merge(swagger_router);
                 }
             }
+        }
+
+        // Root fallback for SPA / static assets — MUST be wired last so all host routes win.
+        if let Some(mut fb) = self.root_fallback {
+            fb = fb.layer(axum::middleware::from_fn(
+                |req: axum::http::Request<axum::body::Body>,
+                 next: axum::middleware::Next| async move {
+                    let start = std::time::Instant::now();
+                    let method = req.method().clone();
+                    let path = req.uri().path().to_string();
+                    let resp: axum::response::Response = next.run(req).await;
+                    log::info!(
+                        "api-fallback {} {} -> {} ({:?})",
+                        method,
+                        path,
+                        resp.status(),
+                        start.elapsed()
+                    );
+                    resp
+                },
+            ));
+            if let Some(cors) = self.cors.clone() {
+                fb = fb.layer(cors);
+            }
+            router = router.fallback_service(fb.into_service::<axum::body::Body>());
         }
 
         ApiServer {

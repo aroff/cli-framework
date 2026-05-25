@@ -1,6 +1,6 @@
 [package]
 name = "cli-framework"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 authors = ["CLI Framework Team"]
 description = "A pure CLI framework with AI-powered command resolution and plugin system"
@@ -225,6 +225,11 @@ required-features = ["api-server", "mcp-server"]
 name = "integration_api_swagger"
 path = "tests/integration/api_swagger.rs"
 required-features = ["api-swagger"]
+
+[[test]]
+name = "integration_api_server_spa"
+path = "tests/integration/api_server_spa.rs"
+required-features = ["api-server"]
 
 [[example]]
 name = "with_mcp"
