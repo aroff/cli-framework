@@ -104,6 +104,10 @@ pub mod api;
 #[cfg(feature = "api-server")]
 pub use axum;
 
+// Shim module to provide `tower::util::BoxCloneLayer` as required by the `api-server` API surface.
+#[cfg(feature = "api-server")]
+pub mod tower;
+
 // Project config — optional project-root discovery and TOML loading
 #[cfg(feature = "project-config")]
 pub mod project_config;

@@ -7,13 +7,13 @@ mod health;
 mod versioning;
 
 use crate::parser::error_codes;
+use crate::tower;
 use axum::http::Uri;
 use axum::routing::{any, get};
 use axum::Router;
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet};
-use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,13 +22,6 @@ use tokio_util::sync::CancellationToken;
 use tower::Layer;
 
 pub use headers::{apply_versioned_headers, HeaderConfig};
-
-pub type AuthLayer = tower::util::BoxCloneSyncServiceLayer<
-    axum::Router,
-    axum::http::Request<axum::body::Body>,
-    axum::response::Response,
-    Infallible,
->;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ApiVersionName(String);
@@ -104,6 +97,24 @@ pub struct ReadinessReport {
 pub type ReadinessCheckFuture = Pin<Box<dyn Future<Output = ReadinessReport> + Send + 'static>>;
 pub type ReadinessCheck = Arc<dyn Fn() -> ReadinessCheckFuture + Send + Sync + 'static>;
 
+#[derive(Clone)]
+struct ReadinessCheckHolder(ReadinessCheck);
+
+impl std::fmt::Debug for ReadinessCheckHolder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ReadinessCheck(..)")
+    }
+}
+
+#[derive(Clone)]
+struct AuthLayerHolder(tower::util::BoxCloneLayer<axum::Router>);
+
+impl std::fmt::Debug for AuthLayerHolder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AuthLayer(..)")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ApiServerError {
     code: &'static str,
@@ -135,42 +146,19 @@ fn panic_config(code: &'static str, msg: impl AsRef<str>) -> ! {
     panic!("{}: {}", code, msg.as_ref())
 }
 
+#[derive(Debug)]
 pub struct ApiServerBuilder {
     versions: BTreeMap<ApiVersionName, ApiVersion>,
     mounts: Vec<(String, axum::Router)>,
     default_version: DefaultVersion,
     cors: Option<tower_http::cors::CorsLayer>,
     // Type-erased layer: MUST be clonable and applicable to the router.
-    auth: Option<AuthLayer>,
-    readiness_check: ReadinessCheck,
+    auth: Option<AuthLayerHolder>,
+    readiness_check: ReadinessCheckHolder,
     protect_health: bool,
     reserved_prefixes: BTreeSet<String>,
     #[cfg(feature = "mcp-server")]
     mcp_router: Option<axum::Router>,
-}
-
-impl std::fmt::Debug for ApiServerBuilder {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ApiServerBuilder")
-            .field(
-                "versions",
-                &self.versions.keys().map(|v| v.as_str()).collect::<Vec<_>>(),
-            )
-            .field(
-                "mounts",
-                &self
-                    .mounts
-                    .iter()
-                    .map(|(path, _)| path.as_str())
-                    .collect::<Vec<_>>(),
-            )
-            .field("default_version", &self.default_version)
-            .field("cors", &self.cors.is_some())
-            .field("auth", &self.auth.is_some())
-            .field("protect_health", &self.protect_health)
-            .field("reserved_prefixes", &self.reserved_prefixes)
-            .finish()
-    }
 }
 
 impl Default for ApiServerBuilder {
@@ -181,14 +169,14 @@ impl Default for ApiServerBuilder {
             default_version: DefaultVersion::None,
             cors: None,
             auth: None,
-            readiness_check: Arc::new(|| {
+            readiness_check: ReadinessCheckHolder(Arc::new(|| {
                 Box::pin(async {
                     ReadinessReport {
                         ready: true,
                         checks: BTreeMap::new(),
                     }
                 })
-            }),
+            })),
             protect_health: false,
             reserved_prefixes: BTreeSet::new(),
             #[cfg(feature = "mcp-server")]
@@ -228,8 +216,8 @@ impl ApiServerBuilder {
         self
     }
 
-    pub fn auth(mut self, layer: AuthLayer) -> Self {
-        self.auth = Some(layer);
+    pub fn auth(mut self, layer: tower::util::BoxCloneLayer<axum::Router>) -> Self {
+        self.auth = Some(AuthLayerHolder(layer));
         self
     }
 
@@ -240,7 +228,7 @@ impl ApiServerBuilder {
     }
 
     pub fn readiness_check(mut self, check: ReadinessCheck) -> Self {
-        self.readiness_check = check;
+        self.readiness_check = ReadinessCheckHolder(check);
         self
     }
 
@@ -407,7 +395,7 @@ impl ApiServerBuilder {
         let health_state = health::HealthState {
             shutdown: shutdown.clone(),
             shutdown_readiness: Arc::clone(&shutdown_readiness),
-            readiness_check: Arc::clone(&self.readiness_check),
+            readiness_check: Arc::clone(&self.readiness_check.0),
             crate_version: env!("CARGO_PKG_VERSION"),
         };
 
@@ -460,7 +448,7 @@ impl ApiServerBuilder {
             }
             let prefix = format!("/{}", v.name.as_str());
             if let Some(auth) = self.auth.as_ref() {
-                let svc = auth.clone().layer(vr);
+                let svc = auth.0.clone().layer(vr);
                 api_root = api_root.nest_service(&prefix, svc);
             } else {
                 api_root = api_root.nest_service(&prefix, vr.into_service::<axum::body::Body>());
@@ -474,27 +462,20 @@ impl ApiServerBuilder {
         api_root = api_root.route(
             "/",
             any(move |uri: Uri| async move {
-                versioning::handle_unversioned(
-                    default_version.clone(),
-                    av.clone(),
-                    uri,
-                    axum::extract::Path("".to_string()),
-                )
-                .await
+                versioning::handle_unversioned(default_version.clone(), av.clone(), uri, "").await
             }),
         );
         let default_version = self.default_version.clone();
         let av = available_versions.clone();
-        api_root = api_root.fallback(any(move |uri: Uri| async move {
-            let rest = uri.path().trim_start_matches('/').to_string();
-            versioning::handle_unversioned(
-                default_version.clone(),
-                av.clone(),
-                uri,
-                axum::extract::Path(rest),
-            )
-            .await
-        }));
+        api_root = api_root.route(
+            "/{*rest}",
+            any(
+                move |uri: Uri, axum::extract::Path(rest): axum::extract::Path<String>| async move {
+                    versioning::handle_unversioned(default_version.clone(), av.clone(), uri, &rest)
+                        .await
+                },
+            ),
+        );
 
         router = router.nest("/api", api_root);
 
@@ -504,13 +485,7 @@ impl ApiServerBuilder {
         router = router.route(
             "/api/",
             any(move |uri: Uri| async move {
-                versioning::handle_unversioned(
-                    default_version.clone(),
-                    av.clone(),
-                    uri,
-                    axum::extract::Path("".to_string()),
-                )
-                .await
+                versioning::handle_unversioned(default_version.clone(), av.clone(), uri, "").await
             }),
         );
 
@@ -537,7 +512,7 @@ impl ApiServerBuilder {
                 r = r.layer(cors);
             }
             if let Some(auth) = self.auth.as_ref() {
-                let svc = auth.clone().layer(r);
+                let svc = auth.0.clone().layer(r);
                 router = router.nest_service(&p, svc);
             } else {
                 router = router.nest_service(&p, r.into_service::<axum::body::Body>());
@@ -570,7 +545,7 @@ impl ApiServerBuilder {
             if let Some(auth) = self.auth.as_ref() {
                 // The MCP router already owns `/mcp` internally; protect it by routing the `/mcp`
                 // prefix through the auth-wrapped service.
-                let svc = auth.clone().layer(mcp_router);
+                let svc = auth.0.clone().layer(mcp_router);
                 router = router
                     .route_service("/mcp", svc.clone())
                     .route_service("/mcp/*rest", svc);
@@ -588,9 +563,9 @@ impl ApiServerBuilder {
                 readyz_router = readyz_router.layer(cors);
             }
             if let Some(auth) = self.auth.as_ref() {
-                let svc = auth.clone().layer(healthz_router);
+                let svc = auth.0.clone().layer(healthz_router);
                 router = router.nest_service("/healthz", svc);
-                let svc = auth.clone().layer(readyz_router);
+                let svc = auth.0.clone().layer(readyz_router);
                 router = router.nest_service("/readyz", svc);
             } else {
                 router = router.nest_service(

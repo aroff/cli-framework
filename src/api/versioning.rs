@@ -1,5 +1,4 @@
 use crate::parser::error_codes;
-use axum::extract::Path;
 use axum::http::{HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
@@ -26,11 +25,11 @@ pub async fn handle_unversioned(
     default: DefaultVersion,
     available_versions: Vec<String>,
     uri: Uri,
-    Path(rest): Path<String>,
+    rest: &str,
 ) -> Response {
     match default {
         DefaultVersion::Pinned(v) => {
-            let loc = redirect_location(&v, &rest, &uri);
+            let loc = redirect_location(&v, rest, &uri);
             let mut resp = StatusCode::PERMANENT_REDIRECT.into_response();
             resp.headers_mut().insert(
                 axum::http::header::LOCATION,

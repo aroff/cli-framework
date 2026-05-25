@@ -277,7 +277,7 @@ async fn healthz_and_readyz_are_present_and_readyz_uses_readiness_check() {
     assert_eq!(ready.status(), 503);
     let ready_json: Value = ready.json().await.unwrap();
     assert_eq!(ready_json["status"], "not_ready");
-    assert_eq!(ready_json["error_code"], "E021");
+    assert_eq!(ready_json["checks"]["error_code"], "E021");
     assert_eq!(ready_json["checks"]["db"], false);
 
     shutdown.cancel();
@@ -319,7 +319,7 @@ async fn readyz_flips_to_503_on_sigterm_before_shutdown_completes() {
             .unwrap();
         if r.status() == 503 {
             let body: Value = r.json().await.unwrap();
-            assert_eq!(body["error_code"], "E021");
+            assert_eq!(body["checks"]["error_code"], "E021");
             handle.await.unwrap().unwrap();
             return;
         }
