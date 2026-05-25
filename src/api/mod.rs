@@ -2,6 +2,7 @@
 //!
 //! This module is behind the `api-server` feature flag.
 
+mod box_clone_layer;
 mod headers;
 mod health;
 mod versioning;
@@ -19,6 +20,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tower::Layer;
 
+pub use box_clone_layer::BoxCloneLayer;
 pub use headers::{apply_versioned_headers, HeaderConfig};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -138,10 +140,11 @@ pub struct ApiServerBuilder {
     default_version: DefaultVersion,
     cors: Option<tower_http::cors::CorsLayer>,
     // Type-erased layer: MUST be clonable and applicable to the router.
-    auth: Option<tower::util::BoxCloneLayer<axum::Router>>,
+    auth: Option<BoxCloneLayer<axum::Router>>,
     readiness_check: ReadinessCheck,
     protect_health: bool,
     reserved_prefixes: BTreeSet<String>,
+    mcp_router: Option<axum::Router>,
 }
 
 impl std::fmt::Debug for ApiServerBuilder {
@@ -186,6 +189,7 @@ impl Default for ApiServerBuilder {
             }),
             protect_health: false,
             reserved_prefixes: BTreeSet::new(),
+            mcp_router: None,
         }
     }
 }
@@ -224,8 +228,18 @@ impl ApiServerBuilder {
         self
     }
 
-    pub fn auth(mut self, layer: tower::util::BoxCloneLayer<axum::Router>) -> Self {
+    pub fn auth(mut self, layer: BoxCloneLayer<axum::Router>) -> Self {
         self.auth = Some(layer);
+        self
+    }
+
+    /// Enable MCP coexistence at the fixed `/mcp` path.
+    ///
+    /// Typical usage:
+    /// - `cli_framework::mcp::transport_http::mcp_axum_router(tool_registry, "/mcp")`
+    /// - `cli_framework::mcp::build_mcp_axum_router(..., "/mcp")`
+    pub fn mcp_router(mut self, router: axum::Router) -> Self {
+        self.mcp_router = Some(router);
         self
     }
 
@@ -325,10 +339,6 @@ impl ApiServerBuilder {
         // Check mount collisions with fixed paths and reserved prefixes.
         for m in mounts.iter() {
             for fixed in fixed_paths.iter().chain(reserved_api_prefixes.iter()) {
-                if m.path == "/mcp" && fixed == "/mcp" {
-                    // Explicitly allow MCP coexistence at the fixed mount path.
-                    continue;
-                }
                 if paths_collide(&m.path, fixed) {
                     panic_config(
                         error_codes::E_API_MOUNT_COLLISION,
@@ -351,8 +361,7 @@ impl ApiServerBuilder {
                 }
             }
             for fp in fixed_prefixes.iter() {
-                if m.path != "/mcp" && paths_collide(&m.path, fp) {
-                    // `/mcp` is allowed for MCP coexistence; other collisions are not.
+                if paths_collide(&m.path, fp) {
                     panic_config(
                         error_codes::E_API_MOUNT_COLLISION,
                         format!(
@@ -530,6 +539,33 @@ impl ApiServerBuilder {
                 r = auth.layer(r);
             }
             router = router.nest(&p, r);
+        }
+
+        // Optional MCP coexistence at the fixed `/mcp` path.
+        if let Some(mut mcp_router) = self.mcp_router {
+            mcp_router = mcp_router.layer(axum::middleware::from_fn(
+                |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {
+                    let start = std::time::Instant::now();
+                    let method = req.method().clone();
+                    let path = req.uri().path().to_string();
+                    let resp: axum::response::Response = next.run(req).await;
+                    log::info!(
+                        "mcp {} {} -> {} ({:?})",
+                        method,
+                        path,
+                        resp.status(),
+                        start.elapsed()
+                    );
+                    resp
+                },
+            ));
+            if let Some(cors) = self.cors.clone() {
+                mcp_router = mcp_router.layer(cors);
+            }
+            if let Some(auth) = self.auth.clone() {
+                mcp_router = auth.layer(mcp_router);
+            }
+            router = router.merge(mcp_router);
         }
 
         // If health should be protected, apply auth/cors the same way as APIs.

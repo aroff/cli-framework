@@ -533,4 +533,18 @@ fn build_validation_panics_with_stable_error_codes() {
             .build()
     }));
     assert!(panic_message(p).contains("E018"));
+
+    // E018: /mcp is reserved (use ApiServerBuilder::mcp_router instead)
+    let p = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        ApiServerBuilder::new()
+            .version(ApiVersion {
+                name: ApiVersionName::parse("v1").unwrap(),
+                router: ok_router.clone(),
+                stability: Stability::Stable,
+                deprecation: None,
+            })
+            .mount("/mcp", Router::new())
+            .build()
+    }));
+    assert!(panic_message(p).contains("E018"));
 }

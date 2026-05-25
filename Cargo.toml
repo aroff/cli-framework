@@ -209,6 +209,11 @@ name = "integration_api_server_versioning"
 path = "tests/integration/api_server_versioning.rs"
 required-features = ["api-server"]
 
+[[test]]
+name = "integration_api_server_mcp_coexist"
+path = "tests/integration/api_server_mcp_coexist.rs"
+required-features = ["api-server", "mcp-server"]
+
 [[example]]
 name = "with_mcp"
 path = "skill/examples/with_mcp/src/main.rs"
@@ -278,8 +283,3 @@ required-features = ["mcp-install"]
 name = "integration_mcp_install"
 path = "tests/integration/mcp_install.rs"
 required-features = ["mcp-install"]
-
-[patch.crates-io]
-# Adds `tower::util::BoxCloneLayer<T>` (a boxed, cloneable `Layer<T, Service = T>`) used by the
-# `api-server` public API without changing Tower behavior elsewhere.
-tower = { path = "vendor/tower" }
