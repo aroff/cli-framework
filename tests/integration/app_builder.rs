@@ -63,14 +63,16 @@ async fn version_dispatch_with_version_configured() {
         .build(DummyCtx)
         .unwrap();
 
-    // Verify run_with_args handles "version" without error
+    // Acquire stdio_lock via StdoutCapture to prevent the version string written
+    // to fd 1 from racing with concurrent StdoutCapture-based tests (e.g. completion
+    // stub tests that dup2-redirect fd 1 to a temp file).  The capture itself is
+    // discarded; the assertion below uses app.version_string() instead.
+    let cap = StdoutCapture::new();
     app.run_with_args(vec!["myapp".to_string(), "version".to_string()])
         .await
         .unwrap();
+    let _ = cap.finish();
 
-    // Verify the version string content (StdoutCapture via dup2 does not work
-    // with cargo test's Rust-level output capture; testkit tests cover full
-    // stdout verification).
     assert_eq!(app.version_string(), "myapp 1.2.3");
 }
 
@@ -81,10 +83,11 @@ async fn version_dispatch_double_dash_version() {
         .build(DummyCtx)
         .unwrap();
 
-    // Verify run_with_args handles "--version" without error
+    let cap = StdoutCapture::new();
     app.run_with_args(vec!["myapp".to_string(), "--version".to_string()])
         .await
         .unwrap();
+    let _ = cap.finish();
 
     assert_eq!(app.version_string(), "myapp 1.2.3");
 }
@@ -93,10 +96,11 @@ async fn version_dispatch_double_dash_version() {
 async fn version_dispatch_without_with_version_prints_unknown() {
     let mut app = AppBuilder::new().build(DummyCtx).unwrap();
 
-    // Verify run_with_args handles "version" without error
+    let cap = StdoutCapture::new();
     app.run_with_args(vec!["myapp".to_string(), "version".to_string()])
         .await
         .unwrap();
+    let _ = cap.finish();
 
     assert_eq!(app.version_string(), "unknown unknown");
 }
@@ -369,7 +373,9 @@ mod clap_dispatch_tests {
             .unwrap();
 
         let mut app = app;
+        let cap = StdoutCapture::new();
         let result = app.run_with_args(vec!["myapp".to_string()]).await;
+        let _ = cap.finish();
         assert!(result.is_ok());
     }
 
