@@ -2,18 +2,17 @@
 //!
 //! A pure CLI framework with AI-powered command resolution and plugin system.
 //!
-//! This framework provides command execution, LLM-powered natural language command resolution,
-//! plugin system, ailoop-core integration for human-in-the-loop interactions, and
-//! CLI output utilities (tables, JSON, messages, progress indicators)
-//! so application authors can focus on implementing commands
+//! This framework provides command execution, plugin system, ailoop-core integration
+//! for human-in-the-loop interactions, and CLI output utilities (tables, JSON, messages,
+//! progress indicators) so application authors can focus on implementing commands
 //! rather than CLI infrastructure.
 //!
 //! ## Features
 //!
-//! - **AI Ask Command**: Natural language command resolution using LLM providers (OpenAI, Anthropic)
+//! - **Chat Command**: Multi-turn agentic command resolution via aikit-agent (default feature)
 //! - **Plugin System**: Registry-based plugin loading with manifest files
 //! - **ailoop-core Integration**: Human-in-the-loop confirmations and interactions
-//! - **Command Registry**: Centralized command management with metadata collection
+//! - **Command Registry**: Centralized command management
 //! - **CLI Output**: Rich formatting for tables, JSON, progress, and interactive prompts
 //!
 //! ## Example
@@ -61,7 +60,6 @@ pub mod message;
 
 // New modules for CLI framework
 pub mod ailoop;
-pub mod llm;
 pub mod plugin;
 
 // Optional modules
@@ -116,7 +114,6 @@ pub mod project_config;
 pub mod prelude {
     pub use crate::app::{AppBuilder, AppContext, AppMeta};
     pub use crate::command::{Command, CommandArgs};
-    pub use crate::llm::{CommandMetadata, CommandResolution, LlmProvider};
     pub use crate::message::{AppMessage, AppMessageKind};
     pub use crate::plugin::PluginRegistryManager;
     pub use crate::spec::{ArgSpec, ArgValue, CommandPath, CommandSpec};

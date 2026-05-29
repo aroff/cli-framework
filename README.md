@@ -2,16 +2,16 @@
 
 [![Repository](https://img.shields.io/badge/GitHub-aroff%2Fcli--framework-informational)](https://github.com/aroff/cli-framework)
 
-A Rust library for building CLIs with optional AI-assisted command resolution (**ask**), a plugin registry, ailoop-backed human-in-the-loop prompts, structured command metadata, and async-first dispatch on Tokio.
+A Rust library for building CLIs with optional AI-assisted command resolution (**chat**), a plugin registry, ailoop-backed human-in-the-loop prompts, structured command metadata, and async-first dispatch on Tokio.
 
 ## Features
 
-- **AI Ask**: Natural language routing to registered commands via OpenAI or Anthropic
+- **Chat**: Multi-turn agentic command resolution via `aikit-agent` (default feature)
 - **Plugins**: Manifest-driven third-party commands with path validation
-- **Human-in-the-loop**: ailoop-core for confirmations beyond the ask flow
+- **Human-in-the-loop**: ailoop-core for confirmations
 - **Command registry**: Central registration, optional typed `CommandSpec`, and grouping metadata
 - **CLI output helpers**: Tables, JSON, progress (behind Cargo features where applicable)
-- **Security defaults**: Output sanitization, risk tiers for ask, hardened HTTP helpers
+- **Security defaults**: Output sanitization, risk tiers, hardened HTTP helpers
 - **MCP Server Mode**: Expose registered commands as MCP tools over Streamable HTTP or stdio (opt-in via `mcp-server` feature)
 - **API Server**: Built-in Axum host for serving versioned HTTP APIs with `/healthz` + `/readyz` (opt-in via `api-server` feature)
 - **Project Config**: Project root discovery and TOML loading (opt-in via `project-config` feature)
@@ -21,6 +21,7 @@ A Rust library for building CLIs with optional AI-assisted command resolution (*
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `clap-dispatch` | yes | Clap-based CLI dispatch (no-op since v0.4.0; remove in v0.5.0) |
+| `chat` | yes | Multi-turn agentic command resolution via `aikit-agent` |
 | `table-advanced` | no | Rich table output via `comfy-table` |
 | `progress` | no | Progress bars via `indicatif` |
 | `testkit` | no | `CliTestHarness` for in-process testing |
@@ -94,7 +95,7 @@ All MCP tool calls are routed through the same validation pipeline as CLI calls:
 - **HTTP MCP**: transport-level authentication/authorization is the operator's responsibility (the MCP endpoint has no built-in auth).
 - **stdio MCP**: assumes **local trust** (a local process can spawn and fully control the server). There is no transport auth.
 - **stdio stdout constraint**: in stdio mode, **stdout is reserved for JSON-RPC**. Commands and hosts MUST NOT write to stdout (use stderr or structured logging). Writing to stdout will corrupt the MCP transport.
-- **Destructive commands**: `ALLOW_DESTRUCTIVE_COMMANDS` and interactive confirmations apply to `ask`/`chat`; MCP tool calls do not prompt. If you need allowlisting/confirmation for MCP, configure an MCP tool gate via `AppBuilder::with_mcp_tool_gate(...)`.
+- **Destructive commands**: `ALLOW_DESTRUCTIVE_COMMANDS` and interactive confirmations apply to `chat`; MCP tool calls do not prompt. If you need allowlisting/confirmation for MCP, configure an MCP tool gate via `AppBuilder::with_mcp_tool_gate(...)`.
 
 Choose this crate when you want one stack for classical subcommands plus optional LLM resolution and scripted workflows, without assembling parsing, sanitization, and policy from scratch.
 
@@ -275,67 +276,14 @@ fn main() {
 }
 ```
 
-## AI Ask Command
+## Chat Command (default feature)
 
-Natural-language **`ask`** is registered when an LLM is configured (**`with_llm_from_env()`** or **`with_llm_provider`**). **A paired `ailoop serve` process is also required** — `.build()` returns an error if `with_ailoop_channel()` or `with_ailoop_config()` has not been called when an LLM provider is set.
+`chat` is a default feature providing multi-turn agentic command resolution via `aikit-agent`:
 
-When the `chat` feature is enabled, `ask` prints an `ASK_DEPRECATED` warning and is maintained for backward compatibility.
+- `cargo build` (default) includes the `chat` command
+- Opt out with `default-features = false`
 
-Example with one registered command plus **`ask`**:
-
-```rust
-use cli_framework::prelude::*;
-use std::sync::Arc;
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    std::env::set_var("OPENAI_API_KEY", "your-api-key"); // Or set in the shell / use Anthropic vars
-    std::env::set_var("LLM_PROVIDER", "openai");
-    // AILOOP_SERVER defaults to ws://localhost:8080; run `ailoop serve --port 8080` first.
-
-    let hello = Command {
-        id: "hello",
-        summary: "Say hello",
-        syntax: Some("hello [name]"),
-        category: Some("utilities"),
-        spec: None,
-        validator: None,
-        execute: Arc::new(|_ctx, args| {
-            Box::pin(async move {
-                let name = args
-                    .positional
-                    .first()
-                    .map(String::as_str)
-                    .unwrap_or("World");
-                println!("Hello, {}!", name);
-                Ok(())
-            })
-        }),
-    };
-
-    let mut builder = AppBuilder::new()
-        .with_llm_from_env()?
-        .with_ailoop_channel("my-app");  // required when LLM provider is set
-    builder = builder.register_command(hello)?;
-
-    let mut app = builder.build(MyContext)?;
-    app.run().await?;
-
-    Ok(())
-}
-
-struct MyContext;
-impl AppContext for MyContext {}
-```
-
-## Chat Command (feature `chat`)
-
-`chat` is an opt-in, in-process command gated behind the Cargo feature `chat`:
-
-- `cargo build` (default) does not compile the embedded chat stack
-- `cargo build --features chat` registers a root-level `chat` command
-
-In this rollout phase, `chat` runs an embedded agent that can call *only* the process's registered commands as tools (tool names and JSON schemas match the MCP export path). Tool-invoked commands execute against the **real AppContext** (no noop dispatch).
+`chat` runs an embedded agent that can call the process's registered commands as tools (tool names and JSON schemas match the MCP export path). Tool-invoked commands execute against the **real AppContext** (no noop dispatch).
 
 `chat` selects mode at runtime:
 - One-shot: prompt provided via `--prompt/-p` or stdin is piped
@@ -351,42 +299,7 @@ Notes:
 Try it with the built-in example:
 
 ```bash
-cargo run --example with_chat --features chat -- chat --help
-```
-
-### Ask query syntax
-
-- `ask <query>` — positional words are joined into a single query
-- `ask --query "<query>"` — explicit named query
-
-### Ask confirmation
-
-After the LLM resolves your query, the command displays the resolved command,
-confidence score, and reasoning, then prompts:
-
-```
-Resolved to command:
-   Command: hello
-   Confidence: 95%
-   ...
-
-Execute this command? (y/N):
-```
-
-Exact formatting may vary slightly by version; only **`y`** or **`yes`** (case-insensitive) proceeds when confirmation is shown.
-
-### Ask non-interactive mode
-
-Use `--yes` to skip the confirmation prompt:
-
-```
-$ myapp ask "deploy to production" --yes
-```
-
-Or set the `ASK_ASSUME_YES` environment variable to `1` or `true` for CI/scripting:
-
-```
-ASK_ASSUME_YES=1 myapp ask "deploy to production"
+cargo run --example with_chat -- chat --help
 ```
 
 ## Core Concepts
@@ -432,7 +345,7 @@ impl AppContext for MyAppContext {}
 
 > **`[PLANNED]`** — Today the plugin system loads **metadata only**: plugin
 > registry + manifest files are parsed and their command descriptions are
-> surfaced for discovery (e.g. by the `ask` resolver). There is no dispatch
+> surfaced for discovery. There is no dispatch
 > path that actually executes a plugin command (`CommandExecution::Subprocess`
 > is declarative only). See [docs/adr/0002-plugins-metadata-only.md](docs/adr/0002-plugins-metadata-only.md).
 
@@ -448,21 +361,20 @@ enabled = true
 
 ### ailoop Integration
 
-The `ask` command (AI natural-language routing) requires a paired `ailoop serve` process for all human-in-the-loop (HITL) interactions: authorization, questions, and notifications are routed over WebSocket to that server. There is no fallback to stdin.
+ailoop-core provides human-in-the-loop (HITL) interactions for commands that need confirmation, authorization, or notification: all interactions are routed over WebSocket to an `ailoop serve` process. There is no fallback to stdin.
 
-**Pairing requirement:** Start `ailoop serve` before using `ask` or any HITL method:
+**Pairing requirement:** Start `ailoop serve` before using HITL methods:
 
 ```bash
 export AILOOP_SERVER=ws://localhost:8080
 ailoop serve --port 8080
 ```
 
-**Mandatory configuration:** If you call `.with_llm_from_env()` or `.with_llm_provider()` on `AppBuilder`, you MUST also call `.with_ailoop_channel()` or `.with_ailoop_config()` before `.build()`. Building without ailoop config when an LLM provider is set returns `Err(AILOOP_REQUIRED_FOR_ASK)`.
+Configure via `AppBuilder::with_ailoop_channel()` or `AppBuilder::with_ailoop_config()`:
 
 ```rust
 let mut builder = AppBuilder::new()
-    .with_llm_from_env()?
-    .with_ailoop_channel("my-app-channel");  // required when LLM is set
+    .with_ailoop_channel("my-app-channel");
 ```
 
 Use `cli_framework::ailoop::AiloopClient` inside a command closure for ad-hoc HITL calls:
@@ -486,7 +398,7 @@ See `skill/examples/with_ailoop` for a full program.
 Run the included examples to see the framework in action:
 
 - `cargo run --example basic_cli` — Minimal CLI application with commands
-- `cargo run --example with_ask` — CLI with AI-backed natural language (`ask`)
+- `cargo run --example with_chat` — CLI with AI-backed natural language (`chat`)
 - `cargo run --example with_plugins` — CLI with registry-based plugins
 - `cargo run --example with_ailoop` — ailoop confirmations and prompts
 - `cargo run --example http_retry_demo` — `http_retry` and secure client defaults
@@ -501,11 +413,11 @@ All strings originating from LLM responses, plugin data, or external APIs are sa
 
 ### Command Risk Tiers
 
-The `ask` command classifies every AI-resolved command into one of three risk tiers:
+The `chat` command classifies every AI-resolved command into one of three risk tiers:
 
 | Tier | Default categories | Behavior |
 |---|---|---|
-| `Safe` | All others | Proceeds normally; `ASK_ASSUME_YES`/`--yes` honored |
+| `Safe` | All others | Proceeds normally |
 | `Sensitive` | `data`, `config` | Requires interactive confirmation; ailoop acts as the interactive channel (no TTY needed when ailoop configured) |
 | `Destructive` | `deployment`, `admin`, `destructive` | Blocked unless `ALLOW_DESTRUCTIVE_COMMANDS=1`; when set, requires TTY or ailoop for confirmation |
 
@@ -524,7 +436,7 @@ let app = AppBuilder::new()
 
 ### `ALLOW_DESTRUCTIVE_COMMANDS` Environment Variable
 
-Setting `ALLOW_DESTRUCTIVE_COMMANDS=1` permits destructive-tier commands to proceed when combined with interactive confirmation. When ailoop is configured, the ailoop channel acts as the interactive channel (no TTY required). Without ailoop, an interactive terminal is always required. `--yes` and `ASK_ASSUME_YES` are silently ignored for destructive commands.
+Setting `ALLOW_DESTRUCTIVE_COMMANDS=1` permits destructive-tier commands to proceed when combined with interactive confirmation. When ailoop is configured, the ailoop channel acts as the interactive channel (no TTY required). Without ailoop, an interactive terminal is always required.
 
 ### Plugin path confinement
 
@@ -545,15 +457,13 @@ Defaults: 5s connect timeout, 30s total timeout, built-in TLS roots, TLS certifi
 
 ## Environment Variables
 
-### LLM Configuration
+### Chat / LLM Configuration
 
 | Variable | Role |
 |---------|------|
-| `OPENAI_API_KEY` | OpenAI API key |
-| `ANTHROPIC_API_KEY` | Anthropic API key |
-| `LLM_PROVIDER` | **`openai`** or **`anthropic`** |
-| `LLM_MODEL` | Override model id (providers pick defaults otherwise) |
-| `ASK_ASSUME_YES` | Set **`1`** or **`true`** to skip confirmation for **Safe** / **Sensitive** ask resolutions (destructive tier still gated per policy) |
+| `OPENAI_API_KEY` | API key for the LLM endpoint |
+| `AIKIT_LLM_URL` | OpenAI-compatible endpoint URL |
+| `AIKIT_MODEL` | Model name override |
 
 ### ailoop Configuration
 

@@ -3,7 +3,6 @@
 //! Defines the structure for plugin manifests that describe available commands
 //! and their metadata.
 
-use crate::llm::CommandMetadata;
 use serde::{Deserialize, Serialize};
 
 /// Plugin manifest describing available commands
@@ -87,19 +86,6 @@ impl PluginManifest {
         Ok(())
     }
 
-    /// Get command metadata for LLM context
-    pub fn get_command_metadata(&self, plugin_id: &str) -> Vec<CommandMetadata> {
-        self.commands
-            .iter()
-            .map(|cmd| CommandMetadata {
-                id: format!("{}.{}", plugin_id, cmd.id),
-                summary: cmd.description.clone(),
-                syntax: cmd.syntax.clone(),
-                category: cmd.category.clone(),
-            })
-            .collect()
-    }
-
     /// Find a command by ID
     pub fn find_command(&self, command_id: &str) -> Option<&PluginCommand> {
         self.commands.iter().find(|cmd| cmd.id == command_id)
@@ -137,34 +123,5 @@ mod tests {
         assert_eq!(manifest.name, deserialized.name);
         assert_eq!(manifest.version, deserialized.version);
         assert_eq!(manifest.commands.len(), deserialized.commands.len());
-    }
-
-    #[test]
-    fn test_command_metadata_generation() {
-        let manifest = PluginManifest {
-            name: "test".to_string(),
-            version: "1.0.0".to_string(),
-            description: None,
-            author: None,
-            commands: vec![PluginCommand {
-                id: "cmd1".to_string(),
-                name: "Command 1".to_string(),
-                description: "Description 1".to_string(),
-                syntax: Some("cmd1 <arg>".to_string()),
-                category: Some("cat1".to_string()),
-                execution: CommandExecution::Subprocess {
-                    command: "echo".to_string(),
-                    args: vec![],
-                    cwd: None,
-                },
-            }],
-        };
-
-        let metadata = manifest.get_command_metadata("test-plugin");
-        assert_eq!(metadata.len(), 1);
-        assert_eq!(metadata[0].id, "test-plugin.cmd1");
-        assert_eq!(metadata[0].summary, "Description 1");
-        assert_eq!(metadata[0].syntax, Some("cmd1 <arg>".to_string()));
-        assert_eq!(metadata[0].category, Some("cat1".to_string()));
     }
 }

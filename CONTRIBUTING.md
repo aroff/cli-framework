@@ -41,26 +41,25 @@ chmod +x .git/hooks/pre-commit
 | Module(s) | Role |
 |-----------|------|
 | `app` | `AppBuilder`, `App::run`, dispatch |
-| `command`, `command::ask` | `Command`, registry, `ask` |
-| `command_surface`, `command_surface::tool_bridge` | Command→tool schemas + shared tool invocation bridge (chat / ask / MCP) |
+| `command`, `command::chat` | `Command`, registry, `chat` |
+| `command_surface`, `command_surface::tool_bridge` | Command→tool schemas + shared tool invocation bridge (chat / MCP) |
 | `parser`, `spec` | argv → args; `CommandPath`, `CommandSpec` |
-| `llm` | providers, resolution |
 | `plugin` | registry TOML / manifests |
 | `ailoop` | ailoop-core client |
-| `security` | output sanitize, `ask` risk policy |
+| `security` | output sanitize, command risk policy |
 | `http_retry`, `retry` | HTTP retry, `secure_reqwest_client` |
 | `cli_output`, `cli_mode`, `message` | help, tables, JSON, modes |
 | `api` (feature `api-server`) | Built-in Axum host for versioned APIs (`/api/{version}/...`) plus `/healthz` + `/readyz`; `build()` may apply a root `fallback_service` (via `root_fallback()`) as its final composition step |
 
 Also: `auth`, `data_source`; `observability`, `testkit` behind features.
 
-**Flow:** `AppBuilder` registers commands → `run` resolves id + `CommandArgs` → `await` `execute` on `AppContext`. Tool surfaces (chat / ask / MCP) adapt inputs into `command_surface::tool_bridge` for shared parsing/validation/gating/dispatch.
+**Flow:** `AppBuilder` registers commands → `run` resolves id + `CommandArgs` → `await` `execute` on `AppContext`. Tool surfaces (chat / MCP) adapt inputs into `command_surface::tool_bridge` for shared parsing/validation/gating/dispatch.
 
-**Externals (summary):** `Cargo.toml` — e.g. `tokio`, `reqwest`, `clap`, `serde`, `ailoop-core`, `async-openai`, `anthropic-sdk`; optional `comfy-table`, `indicatif`.
+**Externals (summary):** `Cargo.toml` — e.g. `tokio`, `reqwest`, `clap`, `serde`, `ailoop-core`, `aikit-agent`; optional `comfy-table`, `indicatif`.
 
-**Security (summary):** sanitize untrusted terminal output; `ask` tier policy; plugin paths rooted (no traversal).
+**Security (summary):** sanitize untrusted terminal output; command risk tier policy; plugin paths rooted (no traversal).
 
-**Features:** default `["clap-dispatch"]`; see `[features]` in `Cargo.toml`. The `clap-dispatch` flag is now a no-op default — all dispatch goes through the Clap path. User-visible behavior → update README in the same PR.
+**Features:** default `["clap-dispatch", "chat"]`; see `[features]` in `Cargo.toml`. The `clap-dispatch` flag is now a no-op default — all dispatch goes through the Clap path. User-visible behavior → update README in the same PR.
 
 ## Tests
 

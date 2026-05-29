@@ -1,11 +1,12 @@
 # Features and Cargo flags
 
-All optional features for `cli-framework`. Default feature set includes `clap-dispatch`.
+All optional features for `cli-framework`. Default feature set includes `clap-dispatch` and `chat`.
 
 ## Feature table
 
 | Feature | Default | Description |
 |---------|---------|-------------|
+| `chat` | **on** | Multi-turn agentic command resolution via `aikit-agent`; provides the `chat` command |
 | `mcp-server` | off | Expose registered commands as MCP tools via Streamable HTTP; pulls in `rmcp` and `axum` |
 | `api-server` | off | Versioned Axum API hosting under `/api/{version}/...` with health/readiness endpoints and graceful shutdown |
 | `api-swagger` | off | Runtime OpenAPI spec endpoint at `/api/{version}/openapi.json` + embedded Swagger UI at `/api/docs`; requires `api-server`; adds ~1–3 MB for embedded Swagger UI assets |

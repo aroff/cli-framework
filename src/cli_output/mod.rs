@@ -88,7 +88,6 @@ pub fn should_use_color() -> bool {
     crate::cli_mode::should_color_output()
 }
 
-pub mod ask;
 pub mod help;
 pub mod json;
 pub mod message;
@@ -97,7 +96,6 @@ pub mod progress;
 pub mod table;
 
 // Re-export commonly used types
-pub use ask::*;
 pub use help::HelpRenderer;
 pub use json::{format_json, format_json_compact, print_json};
 pub use message::{format_message, format_message_with_details, print_message};
