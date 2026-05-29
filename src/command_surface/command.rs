@@ -104,7 +104,7 @@ fn spec_spec() -> CommandSpec {
                 long: None,
                 value_type: ArgValueType::Enum(vec!["json", "yaml", "markdown"]),
                 cardinality: Cardinality::Optional,
-                default: Some(ArgValue::Str("json".to_string())),
+                default: Some(ArgValue::Enum("json".to_string())),
                 conflicts_with: vec![],
                 requires: vec![],
                 help: "Output format: json, yaml, or markdown (default: json)",

@@ -10,8 +10,3 @@ pub fn build_input_schema(spec: Option<&CommandSpec>) -> Value {
 
     spec.to_json_schema()
 }
-
-/// Maps one `ArgSpec` to a `(property_name, schema_value)` pair.
-pub fn arg_spec_to_json_schema_property(arg: &crate::spec::arg_spec::ArgSpec) -> (String, Value) {
-    arg.to_json_schema_property()
-}

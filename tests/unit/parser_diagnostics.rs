@@ -132,15 +132,13 @@ fn e002_unknown_arg_on_typed_command_produces_e002_diagnostic() {
 
 #[test]
 fn e003_missing_required_arg_produces_diagnostic() {
-    use cli_framework::parser::validator::SpecValidator;
-
     let spec = CommandSpec {
         args: vec![str_arg("output", Cardinality::Required)],
         ..Default::default()
     };
 
     let args: HashMap<String, ArgValue> = HashMap::new();
-    let diags = SpecValidator::validate(&spec, &args);
+    let diags = spec.validate_typed_args(&args);
 
     let e003: Vec<_> = diags.iter().filter(|d| d.code == "E003").collect();
     assert_eq!(e003.len(), 1, "expected exactly one E003 diagnostic");
@@ -156,8 +154,6 @@ fn e003_missing_required_arg_produces_diagnostic() {
 
 #[test]
 fn e003_not_emitted_when_required_arg_is_present() {
-    use cli_framework::parser::validator::SpecValidator;
-
     let spec = CommandSpec {
         args: vec![str_arg("output", Cardinality::Required)],
         ..Default::default()
@@ -166,7 +162,7 @@ fn e003_not_emitted_when_required_arg_is_present() {
     let mut args = HashMap::new();
     args.insert("output".to_string(), ArgValue::Str("json".to_string()));
 
-    let diags = SpecValidator::validate(&spec, &args);
+    let diags = spec.validate_typed_args(&args);
     assert!(
         diags.iter().all(|d| d.code != "E003"),
         "E003 should not appear"
@@ -177,8 +173,6 @@ fn e003_not_emitted_when_required_arg_is_present() {
 
 #[test]
 fn e004_wrong_type_produces_diagnostic() {
-    use cli_framework::parser::validator::SpecValidator;
-
     let spec = CommandSpec {
         args: vec![ArgSpec {
             name: "count",
@@ -198,7 +192,7 @@ fn e004_wrong_type_produces_diagnostic() {
     let mut args = HashMap::new();
     args.insert("count".to_string(), ArgValue::Str("notanint".to_string()));
 
-    let diags = SpecValidator::validate(&spec, &args);
+    let diags = spec.validate_typed_args(&args);
     assert!(
         diags.iter().any(|d| d.code == "E004"),
         "expected E004 diagnostic for type mismatch"
@@ -207,8 +201,6 @@ fn e004_wrong_type_produces_diagnostic() {
 
 #[test]
 fn e004_not_emitted_when_type_matches() {
-    use cli_framework::parser::validator::SpecValidator;
-
     let spec = CommandSpec {
         args: vec![ArgSpec {
             name: "count",
@@ -228,7 +220,7 @@ fn e004_not_emitted_when_type_matches() {
     let mut args = HashMap::new();
     args.insert("count".to_string(), ArgValue::Int(42));
 
-    let diags = SpecValidator::validate(&spec, &args);
+    let diags = spec.validate_typed_args(&args);
     assert!(
         diags.iter().all(|d| d.code != "E004"),
         "E004 should not appear"
@@ -239,8 +231,6 @@ fn e004_not_emitted_when_type_matches() {
 
 #[test]
 fn e005_conflicting_args_produce_diagnostic() {
-    use cli_framework::parser::validator::SpecValidator;
-
     let spec = CommandSpec {
         args: vec![
             ArgSpec {
@@ -264,7 +254,7 @@ fn e005_conflicting_args_produce_diagnostic() {
     args.insert("json".to_string(), ArgValue::Bool(true));
     args.insert("text".to_string(), ArgValue::Str("x".to_string()));
 
-    let diags = SpecValidator::validate(&spec, &args);
+    let diags = spec.validate_typed_args(&args);
     let e005: Vec<_> = diags.iter().filter(|d| d.code == "E005").collect();
     assert_eq!(e005.len(), 1, "expected exactly one E005 diagnostic");
     assert!(e005[0].suggestion.is_some(), "E005 must have a suggestion");
@@ -272,8 +262,6 @@ fn e005_conflicting_args_produce_diagnostic() {
 
 #[test]
 fn e005_not_emitted_when_only_one_present() {
-    use cli_framework::parser::validator::SpecValidator;
-
     let spec = CommandSpec {
         args: vec![
             ArgSpec {
@@ -296,7 +284,7 @@ fn e005_not_emitted_when_only_one_present() {
     let mut args = HashMap::new();
     args.insert("json".to_string(), ArgValue::Bool(true));
 
-    let diags = SpecValidator::validate(&spec, &args);
+    let diags = spec.validate_typed_args(&args);
     assert!(
         diags.iter().all(|d| d.code != "E005"),
         "E005 should not appear"
@@ -307,8 +295,6 @@ fn e005_not_emitted_when_only_one_present() {
 
 #[test]
 fn e006_requires_missing_produces_diagnostic() {
-    use cli_framework::parser::validator::SpecValidator;
-
     let spec = CommandSpec {
         args: vec![
             ArgSpec {
@@ -331,7 +317,7 @@ fn e006_requires_missing_produces_diagnostic() {
     let mut args = HashMap::new();
     args.insert("output".to_string(), ArgValue::Bool(true));
 
-    let diags = SpecValidator::validate(&spec, &args);
+    let diags = spec.validate_typed_args(&args);
     let e006: Vec<_> = diags.iter().filter(|d| d.code == "E006").collect();
     assert_eq!(e006.len(), 1, "expected exactly one E006 diagnostic");
     assert!(e006[0].suggestion.is_some(), "E006 must have a suggestion");
@@ -339,8 +325,6 @@ fn e006_requires_missing_produces_diagnostic() {
 
 #[test]
 fn e006_not_emitted_when_requires_satisfied() {
-    use cli_framework::parser::validator::SpecValidator;
-
     let spec = CommandSpec {
         args: vec![
             ArgSpec {
@@ -364,7 +348,7 @@ fn e006_not_emitted_when_requires_satisfied() {
     args.insert("output".to_string(), ArgValue::Bool(true));
     args.insert("format".to_string(), ArgValue::Str("json".to_string()));
 
-    let diags = SpecValidator::validate(&spec, &args);
+    let diags = spec.validate_typed_args(&args);
     assert!(
         diags.iter().all(|d| d.code != "E006"),
         "E006 should not appear"

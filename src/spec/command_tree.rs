@@ -50,8 +50,6 @@ impl CommandSpec {
     }
 
     /// Validates typed args against spec constraints.
-    ///
-    /// MUST preserve the same diagnostic semantics as SpecValidator::validate today.
     pub fn validate_typed_args(
         &self,
         args: &HashMap<String, ArgValue>,
@@ -311,5 +309,222 @@ mod tests {
     fn path_empty_leaf_is_none() {
         let path = CommandPath(vec![]);
         assert!(path.leaf().is_none());
+    }
+
+    // ── validate_typed_args ───────────────────────────────────────────────────
+
+    use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
+    use crate::spec::value::ArgValue;
+    use std::collections::HashMap;
+
+    fn make_spec_with_args(args: Vec<ArgSpec>) -> CommandSpec {
+        CommandSpec {
+            args,
+            ..Default::default()
+        }
+    }
+
+    fn required_str_arg(name: &'static str) -> ArgSpec {
+        ArgSpec {
+            name,
+            kind: ArgKind::Option,
+            short: None,
+            long: None,
+            value_type: ArgValueType::String,
+            cardinality: Cardinality::Required,
+            default: None,
+            conflicts_with: vec![],
+            requires: vec![],
+            help: "",
+        }
+    }
+
+    fn optional_str_arg(name: &'static str) -> ArgSpec {
+        ArgSpec {
+            name,
+            kind: ArgKind::Option,
+            short: None,
+            long: None,
+            value_type: ArgValueType::String,
+            cardinality: Cardinality::Optional,
+            default: None,
+            conflicts_with: vec![],
+            requires: vec![],
+            help: "",
+        }
+    }
+
+    #[test]
+    fn e003_missing_required_arg() {
+        let spec = make_spec_with_args(vec![required_str_arg("output")]);
+        let args = HashMap::new();
+        let diags = spec.validate_typed_args(&args);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, "E003");
+        assert!(diags[0].suggestion.as_deref().unwrap().contains("output"));
+    }
+
+    #[test]
+    fn e003_required_arg_present_no_error() {
+        let spec = make_spec_with_args(vec![required_str_arg("output")]);
+        let mut args = HashMap::new();
+        args.insert("output".to_string(), ArgValue::Str("json".to_string()));
+        let diags = spec.validate_typed_args(&args);
+        assert!(diags.iter().all(|d| d.code != "E003"));
+    }
+
+    #[test]
+    fn e004_wrong_type() {
+        let spec = make_spec_with_args(vec![ArgSpec {
+            name: "count",
+            kind: ArgKind::Option,
+            short: None,
+            long: None,
+            value_type: ArgValueType::Int,
+            cardinality: Cardinality::Optional,
+            default: None,
+            conflicts_with: vec![],
+            requires: vec![],
+            help: "",
+        }]);
+        let mut args = HashMap::new();
+        args.insert("count".to_string(), ArgValue::Str("notanumber".to_string()));
+        let diags = spec.validate_typed_args(&args);
+        assert!(diags.iter().any(|d| d.code == "E004"));
+    }
+
+    #[test]
+    fn e004_correct_type_no_error() {
+        let spec = make_spec_with_args(vec![ArgSpec {
+            name: "count",
+            kind: ArgKind::Option,
+            short: None,
+            long: None,
+            value_type: ArgValueType::Int,
+            cardinality: Cardinality::Optional,
+            default: None,
+            conflicts_with: vec![],
+            requires: vec![],
+            help: "",
+        }]);
+        let mut args = HashMap::new();
+        args.insert("count".to_string(), ArgValue::Int(42));
+        let diags = spec.validate_typed_args(&args);
+        assert!(diags.iter().all(|d| d.code != "E004"));
+    }
+
+    #[test]
+    fn e005_conflict_both_present() {
+        let spec = make_spec_with_args(vec![
+            ArgSpec {
+                name: "arg_a",
+                kind: ArgKind::Flag,
+                short: None,
+                long: None,
+                value_type: ArgValueType::Bool,
+                cardinality: Cardinality::Optional,
+                default: None,
+                conflicts_with: vec!["arg_b"],
+                requires: vec![],
+                help: "",
+            },
+            optional_str_arg("arg_b"),
+        ]);
+        let mut args = HashMap::new();
+        args.insert("arg_a".to_string(), ArgValue::Bool(true));
+        args.insert("arg_b".to_string(), ArgValue::Str("x".to_string()));
+        let diags = spec.validate_typed_args(&args);
+        let conflict_diags: Vec<_> = diags.iter().filter(|d| d.code == "E005").collect();
+        assert_eq!(conflict_diags.len(), 1);
+        assert!(conflict_diags[0].suggestion.is_some());
+    }
+
+    #[test]
+    fn e005_no_conflict_when_only_one_present() {
+        let spec = make_spec_with_args(vec![
+            ArgSpec {
+                name: "arg_a",
+                kind: ArgKind::Flag,
+                short: None,
+                long: None,
+                value_type: ArgValueType::Bool,
+                cardinality: Cardinality::Optional,
+                default: None,
+                conflicts_with: vec!["arg_b"],
+                requires: vec![],
+                help: "",
+            },
+            optional_str_arg("arg_b"),
+        ]);
+        let mut args = HashMap::new();
+        args.insert("arg_a".to_string(), ArgValue::Bool(true));
+        let diags = spec.validate_typed_args(&args);
+        assert!(diags.iter().all(|d| d.code != "E005"));
+    }
+
+    #[test]
+    fn e006_requires_missing() {
+        let spec = make_spec_with_args(vec![
+            ArgSpec {
+                name: "arg_a",
+                kind: ArgKind::Flag,
+                short: None,
+                long: None,
+                value_type: ArgValueType::Bool,
+                cardinality: Cardinality::Optional,
+                default: None,
+                conflicts_with: vec![],
+                requires: vec!["arg_b"],
+                help: "",
+            },
+            optional_str_arg("arg_b"),
+        ]);
+        let mut args = HashMap::new();
+        args.insert("arg_a".to_string(), ArgValue::Bool(true));
+        let diags = spec.validate_typed_args(&args);
+        let req_diags: Vec<_> = diags.iter().filter(|d| d.code == "E006").collect();
+        assert_eq!(req_diags.len(), 1);
+        assert!(req_diags[0].suggestion.is_some());
+    }
+
+    #[test]
+    fn e006_requires_satisfied() {
+        let spec = make_spec_with_args(vec![
+            ArgSpec {
+                name: "arg_a",
+                kind: ArgKind::Flag,
+                short: None,
+                long: None,
+                value_type: ArgValueType::Bool,
+                cardinality: Cardinality::Optional,
+                default: None,
+                conflicts_with: vec![],
+                requires: vec!["arg_b"],
+                help: "",
+            },
+            optional_str_arg("arg_b"),
+        ]);
+        let mut args = HashMap::new();
+        args.insert("arg_a".to_string(), ArgValue::Bool(true));
+        args.insert("arg_b".to_string(), ArgValue::Str("val".to_string()));
+        let diags = spec.validate_typed_args(&args);
+        assert!(diags.iter().all(|d| d.code != "E006"));
+    }
+
+    #[test]
+    fn all_suggestions_non_empty_in_validate_errors() {
+        let spec = make_spec_with_args(vec![required_str_arg("out")]);
+        let args = HashMap::new();
+        let diags = spec.validate_typed_args(&args);
+        for d in &diags {
+            assert!(
+                d.suggestion
+                    .as_deref()
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false),
+                "suggestion must be non-empty for code {}",
+                d.code
+            );
+        }
     }
 }

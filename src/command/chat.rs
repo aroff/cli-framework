@@ -125,76 +125,57 @@ impl HostToolExecutor for CommandsAsToolsExecutor {
             crate::command_surface::tool_bridge::ConfirmationMode::NonInteractive
         };
 
-        let bridge =
-            crate::command_surface::tool_bridge::CommandAsToolBridge::new(self.risk_policy.clone());
+        use crate::command_surface::tool_bridge::{
+            BlockReason, BridgeError, BridgeInput, BridgeInvocation, BridgeMode,
+            CommandAsToolBridge,
+        };
+
+        let bridge = CommandAsToolBridge::new(self.risk_policy.clone());
         let res = bridge
             .invoke(
                 ctx,
-                crate::command_surface::tool_bridge::BridgeInvocation {
+                BridgeInvocation {
                     command: cmd,
-                    input: crate::command_surface::tool_bridge::BridgeInput::Json(arguments),
+                    input: BridgeInput::Json(arguments),
                     confirmation: confirmation.clone(),
+                    mode: BridgeMode::Interactive,
                 },
             )
             .await;
 
         match res {
             Ok(()) => Ok(()),
-            Err(crate::command_surface::tool_bridge::BridgeError::ArgValidation(msg)) => {
+            Err(BridgeError::ArgValidation(msg)) => {
                 Err(anyhow::anyhow!("{}: {}", CHAT_ARG_VALIDATION_FAILED, msg))
             }
-            Err(
-                crate::command_surface::tool_bridge::BridgeError::SensitiveRequiresConfirmation(
-                    cmd_id,
-                ),
-            ) => {
-                // Preserve prior chat error strings:
-                // - non-interactive w/ no ailoop => "command ... requires confirmation"
-                // - interactive/ailoop available => "user declined confirmation ..."
-                if opts.interactive || opts.ailoop_client.is_some() {
-                    Err(anyhow::anyhow!(
+            Err(BridgeError::SensitiveRequiresConfirmation(cmd_id, reason)) => {
+                match reason {
+                    BlockReason::UserDeclined => Err(anyhow::anyhow!(
                         "{}: user declined confirmation for '{}'",
-                        CHAT_RISK_REQUIRES_CONFIRMATION,
-                        cmd_id
-                    ))
-                } else {
-                    Err(anyhow::anyhow!(
+                        CHAT_RISK_REQUIRES_CONFIRMATION, cmd_id
+                    )),
+                    _ => Err(anyhow::anyhow!(
                         "{}: command '{}' is sensitive and requires confirmation",
-                        CHAT_RISK_REQUIRES_CONFIRMATION,
-                        cmd_id
-                    ))
+                        CHAT_RISK_REQUIRES_CONFIRMATION, cmd_id
+                    )),
                 }
             }
-            Err(crate::command_surface::tool_bridge::BridgeError::DestructiveBlocked(cmd_id)) => {
-                let env_allowed = std::env::var("ALLOW_DESTRUCTIVE_COMMANDS")
-                    .map(|v| v == "1" || v == "true")
-                    .unwrap_or(false);
-
-                // Preserve prior chat error strings:
-                // - env/terminal preflight failures => "... gated by ALLOW_DESTRUCTIVE_COMMANDS ..."
-                // - user decline when confirmation was available => "user declined confirmation ..."
-                if !env_allowed || (!opts.interactive && opts.ailoop_client.is_none()) {
-                    Err(anyhow::anyhow!(
-                        "{}: command '{}' is destructive; gated by ALLOW_DESTRUCTIVE_COMMANDS and interactive confirmation",
-                        CHAT_DESTRUCTIVE_BLOCKED,
-                        cmd_id
-                    ))
-                } else {
-                    Err(anyhow::anyhow!(
+            Err(BridgeError::DestructiveBlocked(cmd_id, reason)) => {
+                match reason {
+                    BlockReason::UserDeclined => Err(anyhow::anyhow!(
                         "{}: user declined confirmation for '{}'",
-                        CHAT_DESTRUCTIVE_BLOCKED,
-                        cmd_id
-                    ))
+                        CHAT_DESTRUCTIVE_BLOCKED, cmd_id
+                    )),
+                    _ => Err(anyhow::anyhow!(
+                        "{}: command '{}' is destructive; gated by ALLOW_DESTRUCTIVE_COMMANDS and interactive confirmation",
+                        CHAT_DESTRUCTIVE_BLOCKED, cmd_id
+                    )),
                 }
             }
-            Err(crate::command_surface::tool_bridge::BridgeError::Execution(e)) => {
+            Err(BridgeError::Execution(e)) => {
                 Err(anyhow::anyhow!("{}: {}", CHAT_COMMAND_EXECUTION_FAILED, e))
             }
-            Err(other) => Err(anyhow::anyhow!(
-                "{}: {}",
-                CHAT_COMMAND_EXECUTION_FAILED,
-                other
-            )),
+            Err(other) => Err(anyhow::anyhow!("{}: {}", CHAT_COMMAND_EXECUTION_FAILED, other)),
         }
     }
 }

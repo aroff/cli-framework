@@ -1,4 +1,4 @@
-//! CommandRegistry — flat + tree-backed command storage.
+//! CommandRegistry — tree-backed command storage with O(1) path lookup.
 
 use crate::command::Command;
 use crate::parser::error_codes::{E_ALIAS_CONFLICT, E_REGISTRATION_COLLISION};
@@ -45,78 +45,55 @@ impl fmt::Display for RegistrationError {
 
 impl std::error::Error for RegistrationError {}
 
-// ── Internal tree node ────────────────────────────────────────────────────────
-
-#[allow(dead_code)]
-pub(crate) struct TreeNode {
-    pub command: Option<Command>,
-    pub group_meta: Option<GroupMetadata>,
-    pub children: HashMap<String, TreeNode>,
-}
-
-impl TreeNode {
-    #[allow(dead_code)]
-    fn empty() -> Self {
-        TreeNode {
-            command: None,
-            group_meta: None,
-            children: HashMap::new(),
-        }
-    }
-}
-
 // ── CommandRegistry ───────────────────────────────────────────────────────────
 
-/// Registry for managing commands. Maintains both a flat index (for O(1) id lookup)
-/// and a tree structure (for hierarchical `CommandPath`-based access).
+/// Registry for managing commands. Stores all commands keyed by their full
+/// path string (e.g. `"mcp/serve"`). Root-level commands have a single-segment
+/// key identical to their id, so flat `get(id)` is just a path lookup.
 #[derive(Clone)]
 pub struct CommandRegistry {
-    /// Flat id → Command index (root-level commands only, for backward compat).
-    commands: HashMap<String, Command>,
-    /// All registered commands by full path string (leaf nodes only).
-    #[allow(dead_code)]
+    /// All registered commands by full path string (e.g. "cluster/get", "deploy").
     tree_commands: HashMap<String, Command>,
     /// Group metadata by path string (non-leaf group nodes).
     groups: HashMap<String, GroupMetadata>,
 }
 
 impl CommandRegistry {
-    /// Create a new command registry
     pub fn new() -> Self {
         Self {
-            commands: HashMap::new(),
             tree_commands: HashMap::new(),
             groups: HashMap::new(),
         }
     }
 
-    // ── Legacy flat API (unchanged signatures) ────────────────────────────────
+    // ── Flat API ──────────────────────────────────────────────────────────────
 
-    /// Register a command at the root level (backward-compatible).
+    /// Register a command at the root level (flat, backward-compatible).
     ///
-    /// Panics on collision (previously silently overwrote; callers should use
-    /// `AppBuilder::register_command()` which surfaces the error via `Result`).
+    /// Panics on collision; prefer `AppBuilder::register_command()` which
+    /// surfaces the error as `Result`.
     pub fn register(&mut self, command: Command) {
         let path = CommandPath::root_for(command.id);
         self.register_at(&path, command)
             .expect("command registration collision");
     }
 
-    /// Get a command by flat ID.
+    /// Get a command by its root-level id (single-segment path).
     pub fn get(&self, id: &str) -> Option<&Command> {
-        self.commands.get(id)
+        self.tree_commands.get(id)
     }
 
-    /// Iterate over all registered commands.
+    /// Iterate over all root-level (single-segment path) commands.
     pub fn commands(&self) -> impl Iterator<Item = &Command> {
-        self.commands.values()
+        self.tree_commands
+            .iter()
+            .filter(|(k, _)| !k.contains('/'))
+            .map(|(_, v)| v)
     }
 
     // ── Tree API ──────────────────────────────────────────────────────────────
 
     /// Register a group node (no command, just metadata).
-    ///
-    /// Returns `Err(RegistrationError::Collision)` if the path already has a command or group.
     pub fn register_group(
         &mut self,
         path: &CommandPath,
@@ -130,7 +107,7 @@ impl CommandRegistry {
         Ok(())
     }
 
-    /// Look up group metadata by path string (e.g., "mcp" for the mcp group).
+    /// Look up group metadata by path string (e.g., `"mcp"`).
     pub fn group_metadata_for(&self, path_str: &str) -> Option<&GroupMetadata> {
         self.groups.get(path_str)
     }
@@ -152,15 +129,13 @@ impl CommandRegistry {
     ) -> Result<(), RegistrationError> {
         let path_str = path.to_path_string();
 
-        // Collision check — also prevent registering a leaf at a path already used as a group
         if self.tree_commands.contains_key(&path_str) || self.groups.contains_key(&path_str) {
             return Err(RegistrationError::Collision { path: path_str });
         }
 
-        // Alias conflict check
         if let Some(ref spec) = command.spec {
             for alias in spec.aliases.iter().chain(spec.hidden_aliases.iter()) {
-                if self.commands.contains_key(*alias) || self.tree_commands.contains_key(*alias) {
+                if self.tree_commands.contains_key(*alias) {
                     return Err(RegistrationError::AliasConflict {
                         alias: alias.to_string(),
                         existing_path: alias.to_string(),
@@ -169,21 +144,13 @@ impl CommandRegistry {
             }
         }
 
-        // Insert into tree_commands under full path
-        self.tree_commands.insert(path_str, command.clone());
-
-        // For root-level (single-segment) paths, also insert into flat map
-        if path.0.len() == 1 {
-            self.commands.insert(command.id.to_string(), command);
-        }
-
+        self.tree_commands.insert(path_str, command);
         Ok(())
     }
 
     /// Resolve a command by `CommandPath`.
     pub fn resolve(&self, path: &CommandPath) -> Option<&Command> {
-        let path_str = path.to_path_string();
-        self.tree_commands.get(&path_str)
+        self.tree_commands.get(&path.to_path_string())
     }
 
     /// Iterate over all commands in the tree (including hierarchical), with their path strings.
@@ -204,7 +171,6 @@ impl CommandRegistry {
             .filter_map(|key| {
                 if key.starts_with(&prefix) {
                     let rest = &key[prefix.len()..];
-                    // Only direct children (no further '/')
                     if !rest.contains('/') && !rest.is_empty() {
                         let mut segments = path.0.clone();
                         segments.push(rest.to_string());
@@ -245,7 +211,6 @@ mod tests {
         }
     }
 
-    // E007: collision on re-register
     #[test]
     fn e007_collision_on_re_register() {
         let mut registry = CommandRegistry::new();
@@ -253,14 +218,11 @@ mod tests {
         registry.register_at(&path, make_cmd("get")).unwrap();
         let err = registry.register_at(&path, make_cmd("get")).unwrap_err();
         match err {
-            RegistrationError::Collision { path } => {
-                assert_eq!(path, "cluster/get");
-            }
+            RegistrationError::Collision { path } => assert_eq!(path, "cluster/get"),
             _ => panic!("expected Collision"),
         }
     }
 
-    // E008: alias conflict
     #[test]
     fn e008_alias_conflict() {
         let mut registry = CommandRegistry::new();
@@ -276,9 +238,7 @@ mod tests {
             .register_at(&CommandPath::root_for("greet"), cmd)
             .unwrap_err();
         match err {
-            RegistrationError::AliasConflict { alias, .. } => {
-                assert_eq!(alias, "hello");
-            }
+            RegistrationError::AliasConflict { alias, .. } => assert_eq!(alias, "hello"),
             _ => panic!("expected AliasConflict"),
         }
     }
@@ -298,9 +258,7 @@ mod tests {
             .register_at(&CommandPath::root_for("greet"), cmd)
             .unwrap_err();
         match err {
-            RegistrationError::AliasConflict { alias, .. } => {
-                assert_eq!(alias, "hello");
-            }
+            RegistrationError::AliasConflict { alias, .. } => assert_eq!(alias, "hello"),
             _ => panic!("expected AliasConflict"),
         }
     }
@@ -329,6 +287,40 @@ mod tests {
             .register_at(&CommandPath::root_for("hello"), make_cmd("hello"))
             .unwrap();
         assert!(registry.get("hello").is_some());
+    }
+
+    #[test]
+    fn get_does_not_match_nested_by_leaf_id() {
+        let mut registry = CommandRegistry::new();
+        registry
+            .register_at(
+                &CommandPath::new(&["mcp", "serve"]).unwrap(),
+                make_cmd("serve"),
+            )
+            .unwrap();
+        // flat get("serve") must NOT match a nested path
+        assert!(registry.get("serve").is_none());
+        assert!(registry
+            .resolve(&CommandPath::new(&["mcp", "serve"]).unwrap())
+            .is_some());
+    }
+
+    #[test]
+    fn commands_iterator_only_returns_root_level() {
+        let mut registry = CommandRegistry::new();
+        registry.register(make_cmd("deploy"));
+        registry
+            .register_at(
+                &CommandPath::new(&["mcp", "serve"]).unwrap(),
+                make_cmd("serve"),
+            )
+            .unwrap();
+        let root_ids: Vec<_> = registry.commands().map(|c| c.id).collect();
+        assert!(root_ids.contains(&"deploy"));
+        assert!(
+            !root_ids.contains(&"serve"),
+            "nested command must not appear in root iterator"
+        );
     }
 
     #[test]

@@ -1,7 +1,6 @@
 use crate::ailoop::AiloopClient;
 use crate::app::context::AppContext;
 use crate::command::{Command, CommandArgs};
-use crate::parser::validator::SpecValidator;
 use crate::spec::value::ArgValue;
 use std::collections::HashMap;
 #[cfg(feature = "testkit")]
@@ -100,7 +99,7 @@ pub(crate) fn validate_typed_args(
     let mut diags = Vec::new();
 
     if let Some(ref spec) = command.spec {
-        diags.extend(SpecValidator::validate(spec, typed_args));
+        diags.extend(spec.validate_typed_args(typed_args));
     }
 
     if let Some(ref validator) = command.validator {
