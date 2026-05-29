@@ -34,7 +34,7 @@ Steps:
 2. `.register_command(cmd)?` — adds `Command` to root; returns `Err` if `id` conflicts
 3. `.register_command_at(&path, cmd)?` — adds `Command` at a hierarchical path
 4. `.with_version(name, ver)` — sets app name and version (used for MCP tool prefix and `--version` flag)
-5. `.with_llm_from_env()?` — wires LLM provider from `LLM_PROVIDER` or `OPENAI_API_KEY`
+5. `.with_version(name, ver)` — sets app name and version (used for MCP tool prefix and `--version` flag)
 6. `.build(ctx)?` — freezes registry, wraps context in `Arc`
 7. `app.run().await` — parses `std::env::args()`, resolves command, calls `execute`
 

@@ -4,7 +4,6 @@ use crate::app::module::Module;
 use crate::app::AppMeta;
 use crate::cli_output::HelpRenderer;
 use crate::command::{Command, CommandRegistry};
-use crate::llm::LlmProvider;
 use crate::plugin::PluginRegistryManager;
 use crate::spec::command_tree::{CommandPath, GroupMetadata};
 use crate::spec::value::ArgValue;
@@ -20,7 +19,6 @@ use std::sync::Mutex;
 pub struct AppBuilder {
     command_registry: CommandRegistry,
     plugin_registry_manager: Option<PluginRegistryManager>,
-    llm_provider: Option<Arc<dyn LlmProvider>>,
     ailoop_config: Option<AiloopConfig>,
     plugin_registry_path: Option<PathBuf>,
     meta: Option<AppMeta>,
@@ -42,7 +40,6 @@ impl AppBuilder {
         Self {
             command_registry: CommandRegistry::new(),
             plugin_registry_manager: None,
-            llm_provider: None,
             ailoop_config: None,
             plugin_registry_path: None,
             meta: None,
@@ -139,17 +136,6 @@ impl AppBuilder {
         Ok(self)
     }
 
-    pub fn with_llm_provider(mut self, provider: Arc<dyn LlmProvider>) -> Self {
-        self.llm_provider = Some(provider);
-        self
-    }
-
-    pub fn with_llm_from_env(mut self) -> Result<Self> {
-        let provider = crate::llm::LlmProviderFactory::from_env()?;
-        self.llm_provider = Some(provider);
-        Ok(self)
-    }
-
     pub fn with_ailoop_config(mut self, config: AiloopConfig) -> Self {
         self.ailoop_config = Some(config);
         self
@@ -209,13 +195,6 @@ impl AppBuilder {
     }
 
     pub fn build<C: AppContext + 'static>(mut self, ctx: C) -> Result<App<C>> {
-        if self.llm_provider.is_some() && self.ailoop_config.is_none() {
-            return Err(anyhow::anyhow!(
-                "AILOOP_REQUIRED_FOR_ASK: ask command requires ailoop configuration; \
-                 call .with_ailoop_config() or .with_ailoop_channel() before .build()"
-            ));
-        }
-
         let ailoop_client = if let Some(config) = self.ailoop_config {
             Some(AiloopClient::with_config(config)?)
         } else {
@@ -223,17 +202,6 @@ impl AppBuilder {
         };
 
         let plugin_registry_manager = self.plugin_registry_manager;
-
-        if let Some(ref provider) = self.llm_provider {
-            let registry_snapshot = Arc::new(self.command_registry.clone());
-            let ask_command = crate::command::create_ask_command(
-                provider.clone(),
-                registry_snapshot,
-                self.risk_policy.clone(),
-                Arc::new(ailoop_client.clone().unwrap()),
-            );
-            self.command_registry.register(ask_command);
-        }
 
         #[cfg(feature = "chat")]
         {
@@ -380,7 +348,6 @@ impl AppBuilder {
 
         Ok(App {
             command_registry: registry_arc,
-            llm_provider: self.llm_provider,
             ailoop_client,
             plugin_registry_manager,
             ctx,
@@ -404,7 +371,6 @@ impl Default for AppBuilder {
 
 pub struct App<C: AppContext> {
     command_registry: Arc<CommandRegistry>,
-    llm_provider: Option<Arc<dyn LlmProvider>>,
     ailoop_client: Option<AiloopClient>,
     plugin_registry_manager: Option<PluginRegistryManager>,
     ctx: C,
@@ -659,7 +625,6 @@ impl<C: AppContext> App<C> {
 
         let env = crate::app::dispatch::DispatchEnv {
             command_registry: self.command_registry.as_ref(),
-            llm_provider: &self.llm_provider,
             ailoop_client: &self.ailoop_client,
             #[cfg(feature = "testkit")]
             stdout_capture: self.stdout_capture.clone(),
@@ -675,14 +640,6 @@ impl<C: AppContext> App<C> {
     /// Return a reference to the command registry.
     pub fn command_registry(&self) -> &CommandRegistry {
         self.command_registry.as_ref()
-    }
-
-    pub fn get_command_metadata(&self) -> Vec<crate::llm::CommandMetadata> {
-        self.command_registry.collect_metadata()
-    }
-
-    pub fn llm_provider(&self) -> Option<&dyn LlmProvider> {
-        self.llm_provider.as_ref().map(|p| p.as_ref())
     }
 
     pub fn ailoop_client(&self) -> Option<&AiloopClient> {

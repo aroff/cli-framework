@@ -1,17 +1,16 @@
 use crate::ailoop::AiloopClient;
 use crate::app::context::AppContext;
 use crate::command::{Command, CommandArgs};
-use crate::llm::LlmProvider;
 use crate::parser::validator::SpecValidator;
 use crate::spec::value::ArgValue;
 use std::collections::HashMap;
+#[cfg(feature = "testkit")]
 use std::sync::Arc;
 #[cfg(feature = "testkit")]
 use std::sync::Mutex;
 
 pub(crate) struct DispatchEnv<'a> {
     pub(crate) command_registry: &'a crate::command::CommandRegistry,
-    pub(crate) llm_provider: &'a Option<Arc<dyn LlmProvider>>,
     pub(crate) ailoop_client: &'a Option<AiloopClient>,
     #[cfg(feature = "testkit")]
     pub(crate) stdout_capture: Option<Arc<Mutex<Vec<u8>>>>,
@@ -54,16 +53,6 @@ impl<'a> AppContext for CliAppContextWrapper<'a> {
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         self.inner.as_any_mut()
-    }
-}
-
-impl<'a> crate::app::context::LlmContext for CliAppContextWrapper<'a> {
-    fn llm_provider(&self) -> &dyn crate::llm::LlmProvider {
-        self.env
-            .llm_provider
-            .as_ref()
-            .expect("LLM provider not configured")
-            .as_ref()
     }
 }
 

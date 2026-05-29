@@ -8,7 +8,7 @@ From the repo root:
 
 `cargo run --example with_chat --features chat -- chat --help`
 
-To actually use `chat`, configure an LLM provider via the same environment variables as `ask`
+To actually use `chat`, configure an LLM provider via environment variables
 (`OPENAI_API_KEY` plus optional `AIKIT_LLM_URL` / `AIKIT_MODEL`).
 
 Examples:

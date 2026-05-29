@@ -5,10 +5,9 @@ Status: accepted
 The plugin module loads `plugin-registry.toml` and per-plugin manifests
 (`PluginManifest`, `PluginCommand`, `CommandExecution::Subprocess`), but no
 code in `src/` actually executes a `PluginCommand`. Plugin support is, in
-practice, **purely declarative**: it exposes command metadata so that the
-`ask` resolver can route natural-language queries to plugin-described
-commands, but it cannot dispatch them. A `PluginCommand` is a different
-type from a `Command` and is not added to the in-process Command registry.
+practice, **purely declarative**: it exposes command metadata for discovery,
+but it cannot dispatch them. A `PluginCommand` is a different type from a
+`Command` and is not added to the in-process Command registry.
 
 We accepted this gap rather than ship a half-implemented subprocess
 dispatcher. Spawning third-party binaries from inside the framework drags

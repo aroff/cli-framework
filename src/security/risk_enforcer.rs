@@ -17,10 +17,9 @@ impl RiskEnforcer {
         self.policy.classify(command_id, command_category)
     }
 
-    /// Shared risk-gate preflight used by `ask` and `chat`.
+    /// Shared risk-gate preflight used by `chat`.
     ///
-    /// Contract: MUST preserve exact error messages and semantics currently provided by
-    /// `crate::command::enforce_risk_gate`.
+    /// Contract: MUST preserve exact error messages and semantics.
     pub fn enforce_preflight(
         &self,
         command_id: &str,

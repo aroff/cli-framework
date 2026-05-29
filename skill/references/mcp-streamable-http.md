@@ -125,7 +125,7 @@ When `ExposeMcpOnly` is active and no commands have `expose_mcp: true`, the serv
 
 ### Framework built-in commands
 
-The built-in `spec`, `doctor`, and `ask` commands are constructed with `expose_mcp: false`. They are excluded from MCP tool listings under `ExposeMcpOnly` without any consumer action.
+The built-in `spec` and `doctor` commands are constructed with `expose_mcp: false`. They are excluded from MCP tool listings under `ExposeMcpOnly` without any consumer action.
 
 ### Migration note for struct literals
 

@@ -1,7 +1,6 @@
 //! CommandRegistry — flat + tree-backed command storage.
 
 use crate::command::Command;
-use crate::llm::CommandMetadata;
 use crate::parser::error_codes::{E_ALIAS_CONFLICT, E_REGISTRATION_COLLISION};
 use crate::spec::command_tree::{CommandPath, GroupMetadata};
 use std::collections::HashMap;
@@ -111,19 +110,6 @@ impl CommandRegistry {
     /// Iterate over all registered commands.
     pub fn commands(&self) -> impl Iterator<Item = &Command> {
         self.commands.values()
-    }
-
-    /// Collect metadata for all commands for LLM context.
-    pub fn collect_metadata(&self) -> Vec<CommandMetadata> {
-        self.commands
-            .values()
-            .map(|cmd| CommandMetadata {
-                id: cmd.id.to_string(),
-                summary: cmd.summary.to_string(),
-                syntax: cmd.syntax.map(|s| s.to_string()),
-                category: cmd.category.map(|c| c.to_string()),
-            })
-            .collect()
     }
 
     // ── Tree API ──────────────────────────────────────────────────────────────

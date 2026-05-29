@@ -2,24 +2,24 @@
 name: tools-cli-framework
 description: >-
   Guides building and refactoring Rust CLIs with the cli-framework crate (tokio/async
-  dispatch, Arc command handlers, CommandSpec, plugins, ailoop, LLM ask). Use when the
+  dispatch, Arc command handlers, CommandSpec, plugins, ailoop, chat). Use when the
   user or codebase mentions cli-framework, AppBuilder, Command registration, natural
-  language ask, plugin registry, or operational command layout for Rust binaries.
+  language chat, plugin registry, or operational command layout for Rust binaries.
 license: Apache-2.0
 metadata:
-  version: "0.3.0"
+  version: "0.4.0"
 ---
 
 # cli-framework integration
 
-Implement CLIs using [`cli-framework`](https://github.com/aroff/cli-framework): `AppBuilder`, `Command` (with `Arc` async executors), optional `ask`, plugins, and ailoop. Prefer repository docs over duplicating them here.
+Implement CLIs using [`cli-framework`](https://github.com/aroff/cli-framework): `AppBuilder`, `Command` (with `Arc` async executors), optional `chat`, plugins, and ailoop. Prefer repository docs over duplicating them here.
 
 ## 1. When to use
 
 Load this skill when:
 - Building a new or refactored Rust CLI on the cli-framework stack
-- Registering command trees, filling `CommandSpec` metadata for LLM resolution
-- Implementing risk-aware `ask` flows, plugin manifests, ailoop confirmations, or HTTP retry usage
+- Registering command trees, filling `CommandSpec` metadata
+- Implementing risk-aware `chat` flows, plugin manifests, ailoop confirmations, or HTTP retry usage
 - The codebase imports `cli_framework`, references `AppBuilder`, or uses `register_command`
 
 ## 2. Dependency baseline
@@ -54,7 +54,7 @@ impl AppContext for AppCtx {}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let mut builder = AppBuilder::new()
+    let mut app = AppBuilder::new()
         .register_command(Command {
             id: "health",
             summary: "Quick readiness check",
@@ -62,17 +62,13 @@ async fn main() -> anyhow::Result<()> {
             category: Some("ops"),
             spec: None,
             validator: None,
+            expose_mcp: false,
             execute: Arc::new(|_ctx, _args| Box::pin(async move {
                 println!("ok");
                 Ok(())
             })),
-        })?;
-
-    if std::env::var("LLM_PROVIDER").is_ok() || std::env::var("OPENAI_API_KEY").is_ok() {
-        builder = builder.with_llm_from_env()?;
-    }
-
-    let mut app = builder.build(AppCtx)?;
+        })?
+        .build(AppCtx)?;
     app.run().await
 }
 ```
@@ -197,19 +193,15 @@ For any non-trivial tool, plan these commands:
 | `doctor` / `ops/doctor` | Deep diagnostics for support |
 | `config show` | Print effective config when non-trivial |
 | `auth login` / `auth logout` | When remote APIs are involved |
-| `ask` | Only when `LLM_PROVIDER` or `OPENAI_API_KEY` is configured |
+| `chat` | Natural language command resolution (default feature) |
 
-## 10. Ask quality rules and security tiers
+## 10. Chat command and security tiers
 
-LLM configuration is auto-detected from environment:
+The `chat` command is a default feature providing multi-turn agentic command resolution via `aikit-agent`. Configure via environment:
 
-```rust
-if std::env::var("LLM_PROVIDER").is_ok() || std::env::var("OPENAI_API_KEY").is_ok() {
-    builder = builder.with_llm_from_env()?;
-}
-```
-
-`resolve_command` maps natural language to a registered `Command` by consulting `summary`, `syntax`, and `category`.
+- `AIKIT_LLM_URL` — OpenAI-compatible endpoint URL
+- `AIKIT_MODEL` — model name
+- `OPENAI_API_KEY` — API key
 
 Risk tiers applied before `execute`:
 
@@ -219,9 +211,9 @@ Risk tiers applied before `execute`:
 | Sensitive | Config mutations, auth | Prompt for confirmation |
 | Destructive | Data deletion, irreversible ops | Blocked unless `ALLOW_DESTRUCTIVE_COMMANDS=1` |
 
-Set `ALLOW_DESTRUCTIVE_COMMANDS=1` in controlled environments to permit destructive ask flows. All LLM output is sanitized before display via `src/security/output_sanitize.rs`.
+Set `ALLOW_DESTRUCTIVE_COMMANDS=1` in controlled environments to permit destructive flows. All external output is sanitized before display via `src/security/output_sanitize.rs`.
 
-See `skill/references/ask-llm-and-security.md` for full detail.
+See `skill/references/cli-creation-scenarios.md` for domain-specific layouts.
 
 ## 11. Plugins and ailoop
 
@@ -374,7 +366,6 @@ cargo run --example with_doctor --features doctor
 | `skill/references/command-spec-and-validation.md` | `CommandSpec`, `ArgSpec`, `SpecValidator` |
 | `skill/references/features-and-cargo-flags.md` | All 9 features, defaults, TOML snippets |
 | `skill/references/mcp-streamable-http.md` | Full MCP reference: flags, error codes, concurrency |
-| `skill/references/ask-llm-and-security.md` | LLM setup, risk tiers, output sanitization |
 | `skill/references/plugins-and-ailoop.md` | Plugin manifests, ailoop confirmations |
 | `skill/references/http-retry.md` | `RetryableHttpClient`, circuit breaker |
 | `skill/references/testing-with-testkit.md` | `CliTestHarness`, in-process test pattern |
@@ -385,7 +376,6 @@ cargo run --example with_doctor --features doctor
 | Example | How to run | Feature flags |
 |---------|-----------|---------------|
 | `skill/examples/basic_cli` | `cargo run --example basic_cli` | none |
-| `skill/examples/with_ask` | `cargo run --example with_ask` | none |
 | `skill/examples/with_plugins` | `cargo run --example with_plugins` | none |
 | `skill/examples/with_ailoop` | `cargo run --example with_ailoop` | none |
 | `skill/examples/with_mcp` | `cargo run --example with_mcp --features mcp-server` | `mcp-server` |

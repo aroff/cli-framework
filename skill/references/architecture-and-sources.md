@@ -7,12 +7,11 @@ Module map for `cli-framework`. Read alongside [`CONTRIBUTING.md`](../../CONTRIB
 | Module(s) | Role |
 |-----------|------|
 | `app` | `AppBuilder`, `App::run`, dispatch entry |
-| `command`, `command::ask` | `Command` struct, registry, `ask` resolution |
+| `command`, `command::chat` | `Command` struct, registry, `chat` agentic resolution |
 | `parser`, `spec` | argv → `CommandArgs`; `CommandPath`, `CommandSpec`, `ArgSpec` |
-| `llm` | LLM provider trait, Anthropic + OpenAI backends, env detection |
 | `plugin` | Plugin registry TOML / manifests, `PluginRegistryManager` |
 | `ailoop` | `ailoop-core` client, confirmation flow |
-| `security` | Output sanitization, `ask` risk policy (`CommandRiskPolicy`) |
+| `security` | Output sanitization, command risk policy (`CommandRiskPolicy`) |
 | `http_retry`, `retry` | `RetryableHttpClient`, circuit breaker, `secure_reqwest_client` |
 | `cli_output`, `cli_mode`, `message` | Help rendering, tables, JSON output modes |
 | `auth` | Auth state persistence |
@@ -30,15 +29,15 @@ AppBuilder::new()
   .run().await                 // parses argv → resolves id → dispatch execute
 ```
 
-For `ask`:
+For `chat`:
 ```
-user input → resolve_command (LLM) → risk gate → optional confirm → same dispatch
+user input → aikit-agent tool-calling loop → risk gate → optional confirm → same dispatch
 ```
 
 ## Key source paths
 
 ```
-src/app/builder.rs           AppBuilder, register_command, with_llm_from_env
+src/app/builder.rs           AppBuilder, register_command
 src/command/mod.rs           Command struct
 src/spec/command_tree.rs     CommandSpec, CommandPath
 src/spec/arg_spec.rs         ArgSpec, ArgValueType, Cardinality

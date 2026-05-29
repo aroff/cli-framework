@@ -81,7 +81,7 @@ config/show
 version   (root or ops)
 ```
 
-Structure modules under `src/commands/` by domain; keep destructive **`project/clean`** behind confirmation and accurate risk/category metadata if using **`ask`**.
+Structure modules under `src/commands/` by domain; keep destructive **`project/clean`** behind confirmation and accurate risk/category metadata.
 
 ## Scenario 2: API client CLI
 
@@ -124,7 +124,7 @@ Recommended for shipping tools users operate in production:
 - **`doctor`** / deep diagnostics where complexity warrants
 - **`config show`** when configuration is non-trivial
 
-Add when relevant: **`auth login`/`logout`**, shell **completion**, **`ask`** (only with LLM configuration and README security expectations).
+Add when relevant: **`auth login`/`logout`**, shell **completion**, **`chat`** (default feature for natural language command resolution).
 
 ## Command quality checklist
 
