@@ -32,7 +32,7 @@ pub struct AppBuilder {
     #[cfg(feature = "mcp-server")]
     mcp_export_policy: crate::mcp::McpToolExportPolicy,
     #[cfg(feature = "mcp-server")]
-    mcp_tool_gate: Option<std::sync::Arc<dyn crate::mcp::McpToolGate>>,
+    mcp_tool_gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
 }
 
 impl AppBuilder {
@@ -75,7 +75,10 @@ impl AppBuilder {
     ///
     /// When unset, MCP behavior remains backward compatible (no gate).
     #[cfg(feature = "mcp-server")]
-    pub fn with_mcp_tool_gate(mut self, gate: std::sync::Arc<dyn crate::mcp::McpToolGate>) -> Self {
+    pub fn with_mcp_tool_gate(
+        mut self,
+        gate: std::sync::Arc<dyn crate::security::ExecutionGate>,
+    ) -> Self {
         self.mcp_tool_gate = Some(gate);
         self
     }
@@ -247,16 +250,25 @@ impl AppBuilder {
         }
 
         // Auto-register built-in `completion` command (always-on, opt-out via without_completion()).
-        let mut builtin_completion_registered = false;
+        // Build a temporary clap root to capture in the completion command's execute closure.
         if self.auto_register_completion {
             let app_name_for_completion = self.meta.map(|m| m.name).unwrap_or(self.app_name);
-            let completion_cmd =
-                crate::command_surface::command::create_completion_command(app_name_for_completion);
+            let temp_clap_root = crate::app::clap_adapter::build_clap_root(
+                self.meta.as_ref(),
+                &self.command_registry,
+                self.app_name,
+                self.app_version,
+                self.app_git_sha_short,
+            );
+            let clap_root_arc = Arc::new(temp_clap_root);
+            let completion_cmd = crate::command_surface::command::create_completion_command(
+                app_name_for_completion,
+                clap_root_arc,
+            );
             let path = CommandPath::root_for("completion");
             self.command_registry
                 .register_at(&path, completion_cmd)
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
-            builtin_completion_registered = true;
         }
 
         // Auto-register `mcp` group + `mcp serve` when mcp-server feature is enabled.
@@ -353,7 +365,6 @@ impl AppBuilder {
             app_version: self.app_version,
             app_git_sha_short: self.app_git_sha_short,
             clap_root,
-            builtin_completion_registered,
             #[cfg(feature = "testkit")]
             stdout_capture: None,
         })
@@ -376,7 +387,6 @@ pub struct App<C: AppContext> {
     app_version: &'static str,
     app_git_sha_short: Option<&'static str>,
     clap_root: clap::Command,
-    builtin_completion_registered: bool,
     /// Captures framework-level stdout output (version strings etc.) when testkit is active.
     #[cfg(feature = "testkit")]
     pub stdout_capture: Option<Arc<Mutex<Vec<u8>>>>,
@@ -567,7 +577,7 @@ impl<C: AppContext> App<C> {
     ) -> Result<()> {
         // Stage 6: Validation Pipeline
         if let Some(ref typed_args_map) = typed_args {
-            let diags = crate::app::dispatch::validate_typed_args(&command, typed_args_map)?;
+            let diags = crate::app::dispatch::validate_typed_args(&command, typed_args_map);
             if !diags.is_empty() {
                 use crate::app::diagnostic_reporter::DiagnosticReporter;
                 DiagnosticReporter::report_all(&diags);
@@ -575,50 +585,11 @@ impl<C: AppContext> App<C> {
             }
         }
 
-        let effective_args =
-            crate::app::dispatch::effective_args_for_execution(args, typed_args.as_ref());
-
-        // Built-in `completion` dispatch: route through `App::emit_completion(...)` so
-        // framework consumers can delegate to the same implementation.
-        if self.builtin_completion_registered && command.id == "completion" {
-            use crate::app::diagnostic_reporter::DiagnosticReporter;
-            use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
-            use std::io::Write;
-
-            let shell_token = effective_args
-                .named
-                .get("shell")
-                .cloned()
-                .or_else(|| effective_args.positional.first().cloned())
-                .unwrap_or_default();
-
-            let shell = match shell_token.as_str() {
-                "bash" => Some(Shell::Bash),
-                "zsh" => Some(Shell::Zsh),
-                "fish" => Some(Shell::Fish),
-                "powershell" | "pwsh" => Some(Shell::PowerShell),
-                _ => None,
-            };
-
-            let Some(shell) = shell else {
-                DiagnosticReporter::report(&Diagnostic {
-                    code: crate::parser::error_codes::E_UNSUPPORTED_SHELL,
-                    category: DiagnosticCategory::Completion,
-                    message: format!(
-                        "unsupported shell '{}'; expected bash, zsh, fish, powershell, or pwsh",
-                        shell_token
-                    ),
-                    suggestion: None,
-                    span: None,
-                });
-                return Err(anyhow::anyhow!("completion: unsupported shell"));
-            };
-
-            let mut stdout = std::io::stdout();
-            self.emit_completion(shell, &mut stdout)?;
-            stdout.flush().ok();
-            return Ok(());
-        }
+        let effective_args = if let Some(ref typed) = typed_args {
+            crate::app::dispatch::enrich_args(args, typed)
+        } else {
+            args
+        };
 
         let env = crate::app::dispatch::DispatchEnv {
             command_registry: self.command_registry.as_ref(),

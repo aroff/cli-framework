@@ -77,8 +77,13 @@ pub fn create_spec_command(app_name: &'static str, app_version: &'static str) ->
 }
 
 /// Returns the built-in `completion` Command for auto-registration in AppBuilder::build.
-pub fn create_completion_command(app_name: &'static str) -> Command {
-    let _ = app_name;
+///
+/// The `clap_root` is captured in the execute closure so shell completion scripts can be
+/// generated without requiring a reference to `App`.
+pub fn create_completion_command(
+    app_name: &'static str,
+    clap_root: std::sync::Arc<clap::Command>,
+) -> Command {
     Command {
         id: "completion",
         summary: "Emit a shell completion stub for top-level subcommands",
@@ -87,9 +92,61 @@ pub fn create_completion_command(app_name: &'static str) -> Command {
         spec: Some(Arc::new(completion_spec())),
         validator: None,
         expose_mcp: false,
-        // Actual completion emission is handled by `App::execute_command_direct` so the
-        // built-in implementation is guaranteed to flow through `App::emit_completion(...)`.
-        execute: Arc::new(move |_ctx, _args| Box::pin(async move { Ok(()) })),
+        execute: Arc::new(move |ctx, args| {
+            let _clap_root = std::sync::Arc::clone(&clap_root);
+            Box::pin(async move {
+                use crate::app::builder::{
+                    emit_completion_script, visible_top_level_commands, Shell,
+                };
+                use std::io::Write;
+
+                let shell_token = args
+                    .named
+                    .get("shell")
+                    .cloned()
+                    .or_else(|| args.positional.first().cloned())
+                    .unwrap_or_default();
+
+                let shell = match shell_token.as_str() {
+                    "bash" => Some(Shell::Bash),
+                    "zsh" => Some(Shell::Zsh),
+                    "fish" => Some(Shell::Fish),
+                    "powershell" | "pwsh" => Some(Shell::PowerShell),
+                    _ => None,
+                };
+
+                let Some(shell) = shell else {
+                    use crate::app::diagnostic_reporter::DiagnosticReporter;
+                    use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
+                    DiagnosticReporter::report(&Diagnostic {
+                        code: crate::parser::error_codes::E_UNSUPPORTED_SHELL,
+                        category: DiagnosticCategory::Completion,
+                        message: format!(
+                            "unsupported shell '{}'; expected bash, zsh, fish, powershell, or pwsh",
+                            shell_token
+                        ),
+                        suggestion: None,
+                        span: None,
+                    });
+                    return Err(anyhow::anyhow!(
+                        "unsupported shell '{}'; expected bash, zsh, fish, or powershell",
+                        shell_token
+                    ));
+                };
+
+                let registry = ctx.opt_registry();
+                let cmds = if let Some(reg) = registry {
+                    visible_top_level_commands(reg)
+                } else {
+                    std::collections::BTreeSet::new()
+                };
+
+                let mut stdout = std::io::stdout();
+                emit_completion_script(app_name, shell, &cmds, &mut stdout)?;
+                stdout.flush().ok();
+                Ok(())
+            })
+        }),
     }
 }
 

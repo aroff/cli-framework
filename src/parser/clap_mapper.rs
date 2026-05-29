@@ -10,8 +10,8 @@ use crate::spec::value::ArgValue;
 use std::collections::HashMap;
 
 /// Build a fully-typed `clap::Command` from a `CommandSpec`.
-pub fn build_typed_clap_command(id: &'static str, spec: &CommandSpec) -> clap::Command {
-    let mut cmd = clap::Command::new(id).about(spec.summary);
+pub fn build_typed_clap_command(id: &str, spec: &CommandSpec) -> clap::Command {
+    let mut cmd = clap::Command::new(id.to_owned()).about(spec.summary);
 
     if let Some(long_about) = spec.long_about {
         cmd = cmd.long_about(long_about);
@@ -128,28 +128,13 @@ fn build_clap_arg(arg_spec: &ArgSpec) -> clap::Arg {
         arg = arg.short(short);
     }
 
-    // Apply default_value for optional/repeated args that declare a default.
-    // Clap 4 requires `'static` strings; Box::leak is bounded by the number of
-    // unique default values across all arg specs, which is negligible at startup.
     if arg_spec.cardinality != Cardinality::Required {
         if let Some(ref default) = arg_spec.default {
-            use crate::spec::value::ArgValue;
-            let default_str: &'static str = match default {
-                ArgValue::Str(s) => Box::leak(s.clone().into_boxed_str()),
-                ArgValue::Enum(s) => Box::leak(s.clone().into_boxed_str()),
-                ArgValue::Bool(b) => {
-                    if *b {
-                        "true"
-                    } else {
-                        "false"
-                    }
+            if !matches!(default, crate::spec::value::ArgValue::List(_)) {
+                let default_str = default.to_string();
+                if !default_str.is_empty() {
+                    arg = arg.default_value(default_str);
                 }
-                ArgValue::Int(i) => Box::leak(i.to_string().into_boxed_str()),
-                ArgValue::Float(f) => Box::leak(f.to_string().into_boxed_str()),
-                _ => "",
-            };
-            if !default_str.is_empty() {
-                arg = arg.default_value(default_str);
             }
         }
     }

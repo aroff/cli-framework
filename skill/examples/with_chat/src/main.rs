@@ -5,25 +5,28 @@
 //! the app's registered commands as tools, executed against the real AppContext.
 
 use cli_framework::prelude::*;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-#[derive(Default)]
 struct MyApp {
-    counter: u64,
+    counter: Arc<AtomicU64>,
 }
 
-impl AppContext for MyApp {
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self)
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
+impl Default for MyApp {
+    fn default() -> Self {
+        Self {
+            counter: Arc::new(AtomicU64::new(0)),
+        }
     }
 }
+
+impl AppContext for MyApp {}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let counter = Arc::new(AtomicU64::new(0));
+    let counter_for_inc = Arc::clone(&counter);
+
     let inc_command = Command {
         id: "inc",
         summary: "Increment a counter in app context",
@@ -35,16 +38,11 @@ async fn main() -> anyhow::Result<()> {
         })),
         validator: None,
         expose_mcp: false,
-        execute: Arc::new(|ctx, _args| {
+        execute: Arc::new(move |_ctx, _args| {
+            let counter = Arc::clone(&counter_for_inc);
             Box::pin(async move {
-                // Demonstrate that agent-dispatched commands run with the real AppContext.
-                // (In this example, MyApp is the concrete context.)
-                let app = ctx
-                    .as_any_mut()
-                    .and_then(|a| a.downcast_mut::<MyApp>())
-                    .ok_or_else(|| anyhow::anyhow!("unexpected context type"))?;
-                app.counter += 1;
-                println!("counter={}", app.counter);
+                let val = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                println!("counter={}", val);
                 Ok(())
             })
         }),
@@ -78,5 +76,6 @@ async fn main() -> anyhow::Result<()> {
 
     let mut app = builder.build(MyApp::default())?;
     app.run().await?;
+    let _ = counter;
     Ok(())
 }

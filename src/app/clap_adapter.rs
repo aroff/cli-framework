@@ -140,8 +140,7 @@ fn build_clap_node(
         .map(|m| m.summary)
         .or_else(|| node.command.map(|cmd| cmd.summary))
         .unwrap_or("Command group");
-    let static_name: &'static str = Box::leak(segment.to_string().into_boxed_str());
-    let mut group = clap::Command::new(static_name)
+    let mut group = clap::Command::new(segment.to_string())
         .about(summary)
         .subcommand_required(true)
         .arg_required_else_help(true);
@@ -157,11 +156,11 @@ fn build_clap_node(
 }
 
 fn build_leaf_clap_command(segment: &str, cmd: &crate::command::Command) -> clap::Command {
-    let static_name: &'static str = Box::leak(segment.to_string().into_boxed_str());
+    let name = segment.to_string();
     let mut sub = if let Some(ref spec) = cmd.spec {
-        build_typed_clap_command(static_name, spec)
+        build_typed_clap_command(&name, spec)
     } else {
-        build_legacy_clap_command_with_name(static_name, cmd)
+        build_legacy_clap_command_with_name(&name, cmd)
     };
 
     if let Some(ref spec) = cmd.spec {
@@ -176,16 +175,13 @@ fn build_leaf_clap_command(segment: &str, cmd: &crate::command::Command) -> clap
     sub
 }
 
-fn build_legacy_clap_command_with_name(
-    name: &'static str,
-    cmd: &crate::command::Command,
-) -> clap::Command {
+fn build_legacy_clap_command_with_name(name: &str, cmd: &crate::command::Command) -> clap::Command {
     log::warn!(
         "legacy-parse-path: command '{}' has no ArgSpec; using trailing var-arg",
         cmd.id
     );
 
-    let mut sub = clap::Command::new(name).about(cmd.summary);
+    let mut sub = clap::Command::new(name.to_owned()).about(cmd.summary);
 
     #[cfg(not(feature = "strict-args"))]
     {
@@ -428,5 +424,9 @@ fn match_to_command_args(sub_matches: &clap::ArgMatches) -> CommandArgs {
         }
     }
 
-    CommandArgs { positional, named }
+    CommandArgs {
+        positional,
+        named,
+        ..Default::default()
+    }
 }

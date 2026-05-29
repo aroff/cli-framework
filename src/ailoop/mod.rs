@@ -46,7 +46,6 @@
 //! or returns an unexpected response. No silent fallback to stdin is permitted.
 
 use anyhow::{anyhow, Result};
-use async_trait::async_trait;
 
 /// Configuration for ailoop integration
 #[derive(Debug, Clone)]
@@ -311,10 +310,9 @@ impl AiloopClient {
 ///
 /// Applications can implement this trait on their AppContext to provide
 /// ailoop client access to commands.
-#[async_trait]
 pub trait AiloopContext {
     /// Get access to the ailoop client for interactions.
-    fn ailoop_client(&self) -> &AiloopClient;
+    fn ailoop_client(&self) -> Option<&AiloopClient>;
 }
 
 #[cfg(test)]

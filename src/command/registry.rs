@@ -4,46 +4,20 @@ use crate::command::Command;
 use crate::parser::error_codes::{E_ALIAS_CONFLICT, E_REGISTRATION_COLLISION};
 use crate::spec::command_tree::{CommandPath, GroupMetadata};
 use std::collections::HashMap;
-use std::fmt;
 
 // ── RegistrationError ─────────────────────────────────────────────────────────
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum RegistrationError {
-    Collision {
-        path: String,
-    },
+    #[error("[{code}] command path '{path}' is already occupied", code = E_REGISTRATION_COLLISION)]
+    Collision { path: String },
+
+    #[error("[{code}] alias '{alias}' conflicts with existing path '{existing_path}'", code = E_ALIAS_CONFLICT)]
     AliasConflict {
         alias: String,
         existing_path: String,
     },
 }
-
-impl fmt::Display for RegistrationError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RegistrationError::Collision { path } => {
-                write!(
-                    f,
-                    "[{}] command path '{}' is already occupied",
-                    E_REGISTRATION_COLLISION, path
-                )
-            }
-            RegistrationError::AliasConflict {
-                alias,
-                existing_path,
-            } => {
-                write!(
-                    f,
-                    "[{}] alias '{}' conflicts with existing path '{}'",
-                    E_ALIAS_CONFLICT, alias, existing_path
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for RegistrationError {}
 
 // ── CommandRegistry ───────────────────────────────────────────────────────────
 
@@ -135,10 +109,10 @@ impl CommandRegistry {
 
         if let Some(ref spec) = command.spec {
             for alias in spec.aliases.iter().chain(spec.hidden_aliases.iter()) {
-                if self.tree_commands.contains_key(*alias) {
+                if let Some(occupying) = self.tree_commands.get(*alias) {
                     return Err(RegistrationError::AliasConflict {
                         alias: alias.to_string(),
-                        existing_path: alias.to_string(),
+                        existing_path: occupying.id.to_string(),
                     });
                 }
             }
@@ -238,7 +212,13 @@ mod tests {
             .register_at(&CommandPath::root_for("greet"), cmd)
             .unwrap_err();
         match err {
-            RegistrationError::AliasConflict { alias, .. } => assert_eq!(alias, "hello"),
+            RegistrationError::AliasConflict {
+                alias,
+                existing_path,
+            } => {
+                assert_eq!(alias, "hello");
+                assert_eq!(existing_path, "hello");
+            }
             _ => panic!("expected AliasConflict"),
         }
     }
@@ -258,7 +238,13 @@ mod tests {
             .register_at(&CommandPath::root_for("greet"), cmd)
             .unwrap_err();
         match err {
-            RegistrationError::AliasConflict { alias, .. } => assert_eq!(alias, "hello"),
+            RegistrationError::AliasConflict {
+                alias,
+                existing_path,
+            } => {
+                assert_eq!(alias, "hello");
+                assert_eq!(existing_path, "hello");
+            }
             _ => panic!("expected AliasConflict"),
         }
     }

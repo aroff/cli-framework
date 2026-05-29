@@ -21,7 +21,7 @@ pub fn create_mcp_serve_command_with_deps(
     app_name: &'static str,
     risk_policy: crate::security::command_risk::CommandRiskPolicy,
     export_policy: crate::mcp::McpToolExportPolicy,
-    gate: Option<std::sync::Arc<dyn crate::mcp::McpToolGate>>,
+    gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
 ) -> Command {
     Command {
         id: "serve",
@@ -399,17 +399,6 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
 
                 let agent_key = aikit_sdk::normalize_mcp_agent_key(&agent).to_string();
 
-                // Helper: split a comma-joined repeated-arg string into a Vec<String>.
-                // Repeated args with Cardinality::Repeated are joined with ',' by the
-                // framework's typed-arg-to-CommandArgs conversion.
-                let split_repeated = |raw: &str| -> Vec<String> {
-                    if raw.is_empty() {
-                        vec![]
-                    } else {
-                        raw.split(',').map(|s| s.to_string()).collect()
-                    }
-                };
-
                 let transport = if stdio_mode {
                     let exe_path = std::env::current_exe().map_err(|e| {
                         anyhow::anyhow!(
@@ -420,10 +409,10 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                     })?;
 
                     let exe_args: Vec<String> = args
-                        .named
-                        .get("arg")
-                        .map(|r| split_repeated(r))
-                        .unwrap_or_default();
+                        .get_list("arg")
+                        .into_iter()
+                        .map(|v| v.to_string())
+                        .collect();
                     let exe_args = if exe_args.is_empty() {
                         vec![
                             "mcp".to_string(),
@@ -436,10 +425,10 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                     };
 
                     let env_pairs: Vec<String> = args
-                        .named
-                        .get("env")
-                        .map(|r| split_repeated(r))
-                        .unwrap_or_default();
+                        .get_list("env")
+                        .into_iter()
+                        .map(|v| v.to_string())
+                        .collect();
                     let env_map = if env_pairs.is_empty() {
                         None
                     } else {
@@ -492,10 +481,10 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                         .unwrap_or_else(|| format!("http://{}:{}{}", host, port, path));
 
                     let header_pairs: Vec<String> = args
-                        .named
-                        .get("header")
-                        .map(|r| split_repeated(r))
-                        .unwrap_or_default();
+                        .get_list("header")
+                        .into_iter()
+                        .map(|v| v.to_string())
+                        .collect();
                     let headers = if header_pairs.is_empty() {
                         None
                     } else {

@@ -1,7 +1,7 @@
 use cli_framework::app::{AppBuilder, AppContext};
 use cli_framework::command::{Command, CommandArgs, CommandRegistry};
 use cli_framework::mcp::{
-    serve_mcp, CliFrameworkHandler, McpServerArgs, McpToolExportPolicy, McpToolRegistry,
+    serve_mcp_with_gate, CliFrameworkHandler, McpServerArgs, McpToolExportPolicy, McpToolRegistry,
     McpTransportKind,
 };
 use cli_framework::security::CommandRiskPolicy;
@@ -116,12 +116,13 @@ async fn test_tools_list_over_http() {
     let registry_clone = Arc::clone(&registry);
     let args_clone = args.clone();
     tokio::spawn(async move {
-        let _ = serve_mcp(
+        let _ = serve_mcp_with_gate(
             registry_clone,
             "testapp",
             args_clone,
             CommandRiskPolicy::default(),
             McpToolExportPolicy::AllCommands,
+            None,
         )
         .await;
     });
@@ -214,12 +215,13 @@ async fn test_tool_call_success_over_http() {
     let registry_clone = Arc::clone(&registry);
     let args_clone = args.clone();
     tokio::spawn(async move {
-        let _ = serve_mcp(
+        let _ = serve_mcp_with_gate(
             registry_clone,
             "testapp",
             args_clone,
             CommandRiskPolicy::default(),
             McpToolExportPolicy::AllCommands,
+            None,
         )
         .await;
     });
@@ -388,12 +390,13 @@ async fn test_bind_failure() {
     };
 
     // Try to start the MCP server on the already-bound port
-    let result = serve_mcp(
+    let result = serve_mcp_with_gate(
         registry,
         "testapp",
         args,
         CommandRiskPolicy::default(),
         McpToolExportPolicy::AllCommands,
+        None,
     )
     .await;
 
