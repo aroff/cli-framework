@@ -16,13 +16,13 @@ pub(crate) struct DispatchEnv<'a> {
 }
 
 pub(crate) struct CliAppContextWrapper<'a> {
-    inner: &'a mut dyn AppContext,
+    _inner: &'a mut dyn AppContext,
     env: DispatchEnv<'a>,
 }
 
 impl<'a> CliAppContextWrapper<'a> {
     pub(crate) fn new(inner: &'a mut dyn AppContext, env: DispatchEnv<'a>) -> Self {
-        Self { inner, env }
+        Self { _inner: inner, env }
     }
 }
 
@@ -44,14 +44,6 @@ impl<'a> AppContext for CliAppContextWrapper<'a> {
 
         let mut stdout = std::io::stdout();
         let _ = writeln!(stdout, "{}", s);
-    }
-
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        self.inner.as_any()
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        self.inner.as_any_mut()
     }
 }
 
@@ -84,18 +76,15 @@ impl<'a> crate::app::context::CommandRegistryContext for CliAppContextWrapper<'a
 }
 
 impl<'a> crate::ailoop::AiloopContext for CliAppContextWrapper<'a> {
-    fn ailoop_client(&self) -> &AiloopClient {
-        self.env
-            .ailoop_client
-            .as_ref()
-            .expect("Ailoop client not configured")
+    fn ailoop_client(&self) -> Option<&AiloopClient> {
+        self.env.ailoop_client.as_ref()
     }
 }
 
 pub(crate) fn validate_typed_args(
     command: &Command,
     typed_args: &HashMap<String, ArgValue>,
-) -> anyhow::Result<Vec<crate::parser::diagnostic::Diagnostic>> {
+) -> Vec<crate::parser::diagnostic::Diagnostic> {
     let mut diags = Vec::new();
 
     if let Some(ref spec) = command.spec {
@@ -106,43 +95,18 @@ pub(crate) fn validate_typed_args(
         diags.extend(validator(typed_args));
     }
 
-    Ok(diags)
+    diags
 }
 
-pub(crate) fn effective_args_for_execution(
-    args: CommandArgs,
-    typed_args: Option<&HashMap<String, ArgValue>>,
+pub(crate) fn enrich_args(
+    mut args: CommandArgs,
+    typed_args: &HashMap<String, ArgValue>,
 ) -> CommandArgs {
-    let Some(typed_map) = typed_args else {
-        return args;
-    };
-
-    let mut named = HashMap::new();
-    for (k, v) in typed_map {
-        let s = match v {
-            ArgValue::Bool(b) => b.to_string(),
-            ArgValue::Str(s) => s.clone(),
-            ArgValue::Int(i) => i.to_string(),
-            ArgValue::Float(f) => f.to_string(),
-            ArgValue::Enum(e) => e.clone(),
-            ArgValue::Count(c) => c.to_string(),
-            ArgValue::List(items) => items
-                .iter()
-                .map(|i| match i {
-                    ArgValue::Str(s) => s.clone(),
-                    ArgValue::Int(i) => i.to_string(),
-                    ArgValue::Float(f) => f.to_string(),
-                    ArgValue::Enum(e) => e.clone(),
-                    _ => String::new(),
-                })
-                .collect::<Vec<_>>()
-                .join(","),
-        };
-        named.insert(k.clone(), s);
+    args.named_typed = typed_args.clone();
+    for (k, v) in typed_args {
+        if !matches!(v, ArgValue::List(_)) {
+            args.named.insert(k.clone(), v.to_string());
+        }
     }
-
-    CommandArgs {
-        positional: Vec::new(),
-        named,
-    }
+    args
 }

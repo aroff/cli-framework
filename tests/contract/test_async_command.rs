@@ -45,6 +45,7 @@ fn create_async_command(id: &'static str, summary: &'static str) -> Command {
     let args = CommandArgs {
         positional: vec![],
         named: HashMap::new(),
+        ..Default::default()
     };
 
     let start = std::time::Instant::now();
@@ -121,6 +122,7 @@ async fn test_async_command_can_access_args() {
     let args = CommandArgs {
         positional: vec!["arg1".to_string(), "arg2".to_string()],
         named,
+        ..Default::default()
     };
 
     let result = (command.execute)(&mut ctx, args).await;

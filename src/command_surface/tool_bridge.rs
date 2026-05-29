@@ -3,10 +3,10 @@ use crate::app::context::AppContext;
 use crate::command::{Command, CommandArgs};
 use crate::mcp::schema::McpToolDescriptor;
 use crate::security::command_risk::{CommandRiskPolicy, CommandRiskTier};
+use crate::security::gate::{ExecutionGate, GateError};
 use crate::security::risk_enforcer::PrefightError;
 use crate::security::RiskEnforcer;
 use crate::spec::value::ArgValue;
-use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -26,7 +26,7 @@ pub enum ConfirmationMode {
 /// Whether the bridge is acting on behalf of an interactive user or the MCP protocol.
 ///
 /// - `Interactive`: runs risk preflight + optional confirmation prompt (chat).
-/// - `Mcp`: skips preflight and prompts; the MCP gate (`BridgeGate`) is the
+/// - `Mcp`: skips preflight and prompts; the `ExecutionGate` is the
 ///   authorization point for destructive commands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BridgeMode {
@@ -81,19 +81,9 @@ pub enum BridgeError {
     Execution(#[source] anyhow::Error),
 }
 
-#[async_trait]
-pub trait BridgeGate: Send + Sync {
-    async fn before_execute(
-        &self,
-        cmd: &Command,
-        args: &CommandArgs,
-        tier: CommandRiskTier,
-    ) -> Result<(), BridgeError>;
-}
-
 pub struct CommandAsToolBridge {
     risk_policy: CommandRiskPolicy,
-    gate: Option<Arc<dyn BridgeGate>>,
+    gate: Option<Arc<dyn ExecutionGate>>,
 }
 
 impl CommandAsToolBridge {
@@ -104,7 +94,7 @@ impl CommandAsToolBridge {
         }
     }
 
-    pub fn with_gate(mut self, gate: Arc<dyn BridgeGate>) -> Self {
+    pub fn with_gate(mut self, gate: Arc<dyn ExecutionGate>) -> Self {
         self.gate = Some(gate);
         self
     }
@@ -140,22 +130,23 @@ impl CommandAsToolBridge {
         ctx: &mut dyn AppContext,
         invocation: BridgeInvocation<'_>,
     ) -> Result<(), BridgeError> {
-        let cmd = invocation.command;
-        let is_mcp = invocation.mode == BridgeMode::Mcp;
+        match invocation.mode {
+            BridgeMode::Interactive => self.invoke_interactive(ctx, invocation).await,
+            BridgeMode::Mcp => self.invoke_mcp(ctx, invocation).await,
+        }
+    }
 
+    async fn invoke_interactive(
+        &self,
+        ctx: &mut dyn AppContext,
+        invocation: BridgeInvocation<'_>,
+    ) -> Result<(), BridgeError> {
+        let cmd = invocation.command;
         let parsed = self.parse_args(cmd, invocation.input)?;
 
         if let Some(ref typed) = parsed.typed {
-            let should_validate = if is_mcp {
-                // MCP: validate only when spec is present (no custom validators over the wire).
-                cmd.spec.is_some()
-            } else {
-                // Interactive: validate when spec or custom validator exists.
-                cmd.spec.is_some() || cmd.validator.is_some()
-            };
-            if should_validate {
-                let diagnostics = crate::app::dispatch::validate_typed_args(cmd, typed)
-                    .map_err(|e| BridgeError::ArgValidation(e.to_string()))?;
+            if cmd.spec.is_some() || cmd.validator.is_some() {
+                let diagnostics = crate::app::dispatch::validate_typed_args(cmd, typed);
                 if let Some(first) = diagnostics.first() {
                     return Err(BridgeError::ArgValidation(first.message.clone()));
                 }
@@ -165,52 +156,86 @@ impl CommandAsToolBridge {
         let enforcer = RiskEnforcer::new(self.risk_policy.clone());
         let tier = enforcer.classify(cmd.id, cmd.category);
 
-        if !is_mcp {
-            let assume_yes = matches!(invocation.confirmation, ConfirmationMode::AssumeYes);
-            let ailoop_available = matches!(invocation.confirmation, ConfirmationMode::Ailoop(_));
-            match enforcer.enforce_preflight(cmd.id, cmd.category, assume_yes, ailoop_available) {
-                Ok(()) => {}
-                Err(PrefightError::SensitiveNeedsConfirmation) => {
-                    return Err(BridgeError::SensitiveRequiresConfirmation(
-                        cmd.id.to_string(),
-                        BlockReason::NeedsInteractive,
-                    ));
-                }
-                Err(PrefightError::DestructiveEnvGated) => {
-                    return Err(BridgeError::DestructiveBlocked(
-                        cmd.id.to_string(),
-                        BlockReason::EnvGated,
-                    ));
-                }
-                Err(PrefightError::DestructiveNeedsInteractive) => {
-                    return Err(BridgeError::DestructiveBlocked(
-                        cmd.id.to_string(),
-                        BlockReason::NeedsInteractive,
-                    ));
-                }
+        let assume_yes = matches!(invocation.confirmation, ConfirmationMode::AssumeYes);
+        let ailoop_available = matches!(invocation.confirmation, ConfirmationMode::Ailoop(_));
+        match enforcer.enforce_preflight(cmd.id, cmd.category, assume_yes, ailoop_available) {
+            Ok(()) => {}
+            Err(PrefightError::SensitiveNeedsConfirmation) => {
+                return Err(BridgeError::SensitiveRequiresConfirmation(
+                    cmd.id.to_string(),
+                    BlockReason::NeedsInteractive,
+                ));
             }
+            Err(PrefightError::DestructiveEnvGated) => {
+                return Err(BridgeError::DestructiveBlocked(
+                    cmd.id.to_string(),
+                    BlockReason::EnvGated,
+                ));
+            }
+            Err(PrefightError::DestructiveNeedsInteractive) => {
+                return Err(BridgeError::DestructiveBlocked(
+                    cmd.id.to_string(),
+                    BlockReason::NeedsInteractive,
+                ));
+            }
+        }
 
-            if !assume_yes {
-                match tier {
-                    CommandRiskTier::Safe => {}
-                    CommandRiskTier::Sensitive => {
-                        request_confirmation(&invocation.confirmation, cmd, false).await?;
-                    }
-                    CommandRiskTier::Destructive => {
-                        request_confirmation(&invocation.confirmation, cmd, true).await?;
-                    }
+        if !assume_yes {
+            match tier {
+                CommandRiskTier::Safe => {}
+                CommandRiskTier::Sensitive => {
+                    request_confirmation(&invocation.confirmation, cmd, false).await?;
+                }
+                CommandRiskTier::Destructive => {
+                    request_confirmation(&invocation.confirmation, cmd, true).await?;
                 }
             }
         }
 
+        self.invoke_inner(ctx, cmd, parsed, tier).await
+    }
+
+    async fn invoke_mcp(
+        &self,
+        ctx: &mut dyn AppContext,
+        invocation: BridgeInvocation<'_>,
+    ) -> Result<(), BridgeError> {
+        let cmd = invocation.command;
+        let parsed = self.parse_args(cmd, invocation.input)?;
+
+        if let Some(ref typed) = parsed.typed {
+            if cmd.spec.is_some() {
+                let diagnostics = crate::app::dispatch::validate_typed_args(cmd, typed);
+                if let Some(first) = diagnostics.first() {
+                    return Err(BridgeError::ArgValidation(first.message.clone()));
+                }
+            }
+        }
+
+        let enforcer = RiskEnforcer::new(self.risk_policy.clone());
+        let tier = enforcer.classify(cmd.id, cmd.category);
+
+        self.invoke_inner(ctx, cmd, parsed, tier).await
+    }
+
+    async fn invoke_inner(
+        &self,
+        ctx: &mut dyn AppContext,
+        cmd: &Command,
+        parsed: ParsedArgs,
+        tier: CommandRiskTier,
+    ) -> Result<(), BridgeError> {
         if let Some(ref gate) = self.gate {
-            gate.before_execute(cmd, &parsed.args, tier).await?;
+            gate.before_execute(cmd, &parsed.args, tier)
+                .await
+                .map_err(|e| match e {
+                    GateError::Denied { reason } => BridgeError::GateDenied(reason),
+                    GateError::Failed { reason } => BridgeError::GateFailed(reason),
+                })?;
         }
 
         let effective_args = match parsed.typed.as_ref() {
-            Some(typed) => {
-                crate::app::dispatch::effective_args_for_execution(parsed.args.clone(), Some(typed))
-            }
+            Some(typed) => crate::app::dispatch::enrich_args(parsed.args, typed),
             None => parsed.args,
         };
 
@@ -326,13 +351,13 @@ mod tests {
 
     struct NoopGate;
     #[async_trait::async_trait]
-    impl BridgeGate for NoopGate {
+    impl ExecutionGate for NoopGate {
         async fn before_execute(
             &self,
             _cmd: &Command,
             _args: &CommandArgs,
             _tier: CommandRiskTier,
-        ) -> Result<(), BridgeError> {
+        ) -> Result<(), GateError> {
             Ok(())
         }
     }
@@ -485,13 +510,13 @@ mod tests {
 
         struct CountingGate(Arc<AtomicUsize>);
         #[async_trait::async_trait]
-        impl BridgeGate for CountingGate {
+        impl ExecutionGate for CountingGate {
             async fn before_execute(
                 &self,
                 _cmd: &Command,
                 _args: &CommandArgs,
                 _tier: CommandRiskTier,
-            ) -> Result<(), BridgeError> {
+            ) -> Result<(), GateError> {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }

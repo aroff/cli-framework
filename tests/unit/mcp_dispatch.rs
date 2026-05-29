@@ -1,9 +1,10 @@
 use cli_framework::app::{AppBuilder, AppContext};
 use cli_framework::command::{Command, CommandArgs, CommandRegistry};
 use cli_framework::mcp::{
-    dispatch_tool_call, dispatch_tool_call_spawned, McpToolCallContext, McpToolGate,
-    McpToolGateError, McpToolRegistry, McpTransportKind,
+    dispatch_tool_call, dispatch_tool_call_spawned, McpToolRegistry, McpTransportKind,
 };
+use cli_framework::security::command_risk::CommandRiskTier;
+use cli_framework::security::gate::{ExecutionGate, GateError};
 use cli_framework::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use cli_framework::spec::command_tree::{CommandPath, CommandSpec};
 use std::future::Future;
@@ -226,14 +227,15 @@ async fn test_tool_call_internal_error() {
 struct DenyGate;
 
 #[async_trait::async_trait]
-impl McpToolGate for DenyGate {
+impl ExecutionGate for DenyGate {
     async fn before_execute(
         &self,
-        _ctx: &McpToolCallContext,
-        _args: &cli_framework::command::CommandArgs,
-    ) -> Result<(), McpToolGateError> {
-        Err(McpToolGateError::Denied {
-            message: "blocked by test gate".to_string(),
+        _cmd: &Command,
+        _args: &CommandArgs,
+        _tier: CommandRiskTier,
+    ) -> Result<(), GateError> {
+        Err(GateError::Denied {
+            reason: "blocked by test gate".to_string(),
         })
     }
 }
@@ -242,14 +244,15 @@ impl McpToolGate for DenyGate {
 struct FailGate;
 
 #[async_trait::async_trait]
-impl McpToolGate for FailGate {
+impl ExecutionGate for FailGate {
     async fn before_execute(
         &self,
-        _ctx: &McpToolCallContext,
-        _args: &cli_framework::command::CommandArgs,
-    ) -> Result<(), McpToolGateError> {
-        Err(McpToolGateError::Failed {
-            message: "gate crashed".to_string(),
+        _cmd: &Command,
+        _args: &CommandArgs,
+        _tier: CommandRiskTier,
+    ) -> Result<(), GateError> {
+        Err(GateError::Failed {
+            reason: "gate crashed".to_string(),
         })
     }
 }

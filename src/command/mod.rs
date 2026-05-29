@@ -25,8 +25,53 @@ pub type CommandId = &'static str;
 pub struct CommandArgs {
     /// Positional arguments
     pub positional: Vec<String>,
-    /// Named arguments (key-value pairs)
+    /// Named arguments (key-value pairs, legacy string representation)
     pub named: HashMap<String, String>,
+    /// Typed named arguments populated when a CommandSpec is present
+    pub named_typed: HashMap<String, ArgValue>,
+}
+
+impl CommandArgs {
+    pub fn get_str(&self, key: &str) -> Option<&str> {
+        self.named_typed
+            .get(key)
+            .and_then(|v| {
+                if let ArgValue::Str(s) = v {
+                    Some(s.as_str())
+                } else {
+                    None
+                }
+            })
+            .or_else(|| self.named.get(key).map(String::as_str))
+    }
+
+    pub fn get_bool(&self, key: &str) -> bool {
+        match self.named_typed.get(key) {
+            Some(ArgValue::Bool(b)) => *b,
+            _ => self.named.get(key).map(|s| s == "true").unwrap_or(false),
+        }
+    }
+
+    pub fn get_int(&self, key: &str) -> Option<i64> {
+        match self.named_typed.get(key) {
+            Some(ArgValue::Int(i)) => Some(*i),
+            _ => self.named.get(key).and_then(|s| s.parse().ok()),
+        }
+    }
+
+    pub fn get_float(&self, key: &str) -> Option<f64> {
+        match self.named_typed.get(key) {
+            Some(ArgValue::Float(fl)) => Some(*fl),
+            _ => self.named.get(key).and_then(|s| s.parse().ok()),
+        }
+    }
+
+    pub fn get_list(&self, key: &str) -> Vec<ArgValue> {
+        match self.named_typed.get(key) {
+            Some(ArgValue::List(items)) => items.clone(),
+            _ => vec![],
+        }
+    }
 }
 
 /// Command result type

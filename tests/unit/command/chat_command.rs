@@ -13,19 +13,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Default)]
-struct Ctx {
-    n: u64,
-}
+struct Ctx;
 
-impl AppContext for Ctx {
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self)
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
-}
+impl AppContext for Ctx {}
 
 fn make_spec_command(id: &'static str) -> Command {
     Command {
@@ -64,14 +54,9 @@ fn make_spec_command(id: &'static str) -> Command {
             vec![]
         })),
         expose_mcp: false,
-        execute: Arc::new(|ctx, args| {
+        execute: Arc::new(|_ctx, args| {
             Box::pin(async move {
                 let name = args.named.get("name").cloned().unwrap_or_default();
-                let c = ctx
-                    .as_any_mut()
-                    .and_then(|a| a.downcast_mut::<Ctx>())
-                    .ok_or_else(|| anyhow::anyhow!("wrong ctx type"))?;
-                c.n += 1;
                 assert!(!name.is_empty());
                 Ok(())
             })

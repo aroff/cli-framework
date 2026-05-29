@@ -60,7 +60,10 @@ fn test_tool_list_includes_all_commands() {
 fn test_completion_is_excluded_even_under_all_commands_policy() {
     let mut registry = CommandRegistry::new();
     registry.register(make_cmd("deploy", "Deploy app"));
-    let completion = cli_framework::command_surface::command::create_completion_command("myapp");
+    let completion = cli_framework::command_surface::command::create_completion_command(
+        "myapp",
+        std::sync::Arc::new(clap::Command::new("myapp")),
+    );
     registry
         .register_at(&CommandPath::root_for("completion"), completion)
         .unwrap();

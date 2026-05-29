@@ -158,6 +158,7 @@ async fn main() -> anyhow::Result<()> {
                 CommandArgs {
                     positional: parts[1..].iter().map(|s| s.to_string()).collect(),
                     named: std::collections::HashMap::new(),
+                    ..Default::default()
                 }
             } else {
                 CommandArgs::default()

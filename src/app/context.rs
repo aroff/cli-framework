@@ -21,19 +21,6 @@ pub trait AppContext: Send + Sync {
         None
     }
 
-    /// Optional downcasting support for commands that need access to concrete app context types.
-    ///
-    /// Framework-internal wrapper contexts are not `'static` and therefore cannot support
-    /// `Any` downcasting; they return `None` by default.
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        None
-    }
-
-    /// Optional mutable downcasting support for commands that need to mutate concrete context state.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        None
-    }
-
     /// Write a line of user-visible output.
     ///
     /// Commands should prefer this over `println!` so framework consumers can

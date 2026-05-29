@@ -4,7 +4,6 @@ use crate::command_surface::document::{
 };
 use crate::command_surface::json_schema::build_input_schema;
 use crate::spec::arg_spec::{ArgKind, ArgValueType, Cardinality};
-use crate::spec::value::ArgValue;
 
 /// Collect all commands from `registry` into a `CliSpecDocument`.
 /// Commands with `CommandSpec.hidden == true` are excluded unless `include_hidden` is true.
@@ -54,7 +53,7 @@ pub fn collect(
                                 Cardinality::Optional => "optional".to_string(),
                                 Cardinality::Repeated => "repeated".to_string(),
                             },
-                            default: a.default.as_ref().map(arg_value_to_string),
+                            default: a.default.as_ref().map(|v| v.to_string()),
                             help: a.help.to_string(),
                         })
                         .collect();
@@ -118,21 +117,5 @@ pub fn collect(
             version: app_version.to_string(),
         },
         commands,
-    }
-}
-
-fn arg_value_to_string(v: &ArgValue) -> String {
-    match v {
-        ArgValue::Bool(b) => b.to_string(),
-        ArgValue::Str(s) => s.clone(),
-        ArgValue::Int(i) => i.to_string(),
-        ArgValue::Float(f) => f.to_string(),
-        ArgValue::Enum(e) => e.clone(),
-        ArgValue::List(items) => items
-            .iter()
-            .map(arg_value_to_string)
-            .collect::<Vec<_>>()
-            .join(","),
-        ArgValue::Count(c) => c.to_string(),
     }
 }

@@ -27,7 +27,14 @@ pub fn parse_command(input: &str) -> Option<(String, CommandArgs)> {
         }
     }
 
-    Some((command_name, CommandArgs { positional, named }))
+    Some((
+        command_name,
+        CommandArgs {
+            positional,
+            named,
+            ..Default::default()
+        },
+    ))
 }
 
 #[cfg(test)]
