@@ -353,37 +353,23 @@ impl ApiServerBuilder {
         ];
         let fixed_prefixes = ["/api".to_string(), "/mcp".to_string()];
 
-        // Check mount collisions with fixed paths and reserved prefixes.
+        // Pre-compute all blocked paths/prefixes for a single O(n) pass per mount.
+        let blocked: Vec<&str> = fixed_paths
+            .iter()
+            .chain(fixed_prefixes.iter())
+            .chain(version_prefixes.iter())
+            .chain(reserved_api_prefixes.iter())
+            .map(|s| s.as_str())
+            .collect();
+
         for (path, _) in mounts.iter() {
-            for fixed in fixed_paths.iter().chain(reserved_api_prefixes.iter()) {
-                if paths_collide(path, fixed) {
+            for blocked_path in blocked.iter() {
+                if paths_collide(path, blocked_path) {
                     panic_config(
                         error_codes::E_API_MOUNT_COLLISION,
                         format!(
                             "mount path '{}' collides with reserved path '{}'",
-                            path, fixed
-                        ),
-                    );
-                }
-            }
-            for vp in version_prefixes.iter() {
-                if paths_collide(path, vp) {
-                    panic_config(
-                        error_codes::E_API_MOUNT_COLLISION,
-                        format!(
-                            "mount path '{}' collides with api version prefix '{}'",
-                            path, vp
-                        ),
-                    );
-                }
-            }
-            for fp in fixed_prefixes.iter() {
-                if paths_collide(path, fp) {
-                    panic_config(
-                        error_codes::E_API_MOUNT_COLLISION,
-                        format!(
-                            "mount path '{}' collides with reserved host prefix '{}'",
-                            path, fp
+                            path, blocked_path
                         ),
                     );
                 }
@@ -510,24 +496,14 @@ impl ApiServerBuilder {
         #[cfg(feature = "mcp-server")]
         if let Some(mcp_router) = self.mcp_router {
             let mcp_router = with_tracing(mcp_router, "mcp");
-            if let Some(cors) = self.cors.clone() {
-                let mcp_router = mcp_router.layer(cors);
-                if let Some(auth) = self.auth.as_ref() {
-                    let svc = auth.0.clone().layer(mcp_router);
-                    router = router
-                        .route_service("/mcp", svc.clone())
-                        .route_service("/mcp/*rest", svc);
-                } else {
-                    router = router.merge(mcp_router);
-                }
-            } else if let Some(auth) = self.auth.as_ref() {
-                let svc = auth.0.clone().layer(mcp_router);
-                router = router
-                    .route_service("/mcp", svc.clone())
-                    .route_service("/mcp/*rest", svc);
-            } else {
-                router = router.merge(mcp_router);
-            }
+            router = route_with_cors_auth(
+                router,
+                "/mcp",
+                "/mcp/*rest",
+                mcp_router,
+                self.cors.clone(),
+                self.auth.as_ref(),
+            );
         }
 
         // Health/readiness — optionally protected by auth.
@@ -650,6 +626,31 @@ fn nest_with_cors_auth(
         root = root.nest_service(path, svc);
     } else {
         root = root.nest_service(path, subrouter.into_service::<axum::body::Body>());
+    }
+    root
+}
+
+/// Apply optional CORS then optional auth, then wire `subrouter` into `root` via
+/// `route_service` at `exact_path` and `wildcard_path` (used for the `/mcp` path).
+#[cfg(feature = "mcp-server")]
+fn route_with_cors_auth(
+    mut root: Router,
+    exact_path: &str,
+    wildcard_path: &str,
+    mut subrouter: Router,
+    cors: Option<tower_http::cors::CorsLayer>,
+    auth: Option<&AuthLayerHolder>,
+) -> Router {
+    if let Some(cors) = cors {
+        subrouter = subrouter.layer(cors);
+    }
+    if let Some(auth) = auth {
+        let svc = auth.0.clone().layer(subrouter);
+        root = root
+            .route_service(exact_path, svc.clone())
+            .route_service(wildcard_path, svc);
+    } else {
+        root = root.merge(subrouter);
     }
     root
 }

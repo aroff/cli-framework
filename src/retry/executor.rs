@@ -1,7 +1,3 @@
-//! Retry execution logic
-//!
-//! Executes operations with retry policies
-
 use crate::retry::policy::RetryPolicy;
 use anyhow::Result;
 use std::time::Duration;
@@ -28,14 +24,7 @@ impl RetryExecutor {
         let mut last_error = None;
 
         for attempt in 0..=self.policy.max_attempts {
-            // Execute the operation
-            let result = if self.policy.timeout.is_some() {
-                // TODO: Implement actual timeout in v2
-                // For v1, we'll just execute without timeout
-                operation()
-            } else {
-                operation()
-            };
+            let result = operation();
 
             match result {
                 Ok(value) => return Ok(value),

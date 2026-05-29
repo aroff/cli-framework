@@ -1,150 +1,125 @@
-//! Tests for terminal dimension detection
+//! Tests for terminal dimension detection.
+//!
+//! `COLUMNS` and `ROWS` are honored unconditionally (TTY not required).
+//! The syscall fallback remains guarded by TTY.
 
 use cli_framework::cli_mode;
 use std::env;
+use std::sync::Mutex;
+
+// Serialize all env-var tests to avoid race conditions between parallel test threads.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn test_terminal_width_from_env() {
-    let original_columns = env::var("COLUMNS").ok();
+    let _guard = ENV_LOCK.lock().unwrap();
+    let original = env::var("COLUMNS").ok();
 
-    // Test reading width from COLUMNS environment variable
     env::set_var("COLUMNS", "120");
     let width = cli_mode::terminal_width();
-    // If stdout is TTY, should return Some(120), otherwise None
-    if cli_mode::is_stdout_tty() {
-        assert_eq!(width, Some(120));
-    } else {
-        assert_eq!(width, None);
-    }
+    // COLUMNS is read unconditionally, regardless of TTY.
+    assert_eq!(width, Some(120));
 
-    // Restore
-    if let Some(val) = original_columns {
-        env::set_var("COLUMNS", val);
-    } else {
-        env::remove_var("COLUMNS");
+    match original {
+        Some(val) => env::set_var("COLUMNS", val),
+        None => env::remove_var("COLUMNS"),
     }
 }
 
 #[test]
 fn test_terminal_height_from_env() {
-    let original_rows = env::var("ROWS").ok();
+    let _guard = ENV_LOCK.lock().unwrap();
+    let original = env::var("ROWS").ok();
 
-    // Test reading height from ROWS environment variable
     env::set_var("ROWS", "40");
     let height = cli_mode::terminal_height();
-    // If stdout is TTY, should return Some(40), otherwise None
-    if cli_mode::is_stdout_tty() {
-        assert_eq!(height, Some(40));
-    } else {
-        assert_eq!(height, None);
-    }
+    // ROWS is read unconditionally, regardless of TTY.
+    assert_eq!(height, Some(40));
 
-    // Restore
-    if let Some(val) = original_rows {
-        env::set_var("ROWS", val);
-    } else {
-        env::remove_var("ROWS");
+    match original {
+        Some(val) => env::set_var("ROWS", val),
+        None => env::remove_var("ROWS"),
     }
 }
 
 #[test]
 fn test_terminal_width_partial_scenario() {
-    let original_columns = env::var("COLUMNS").ok();
-    let original_rows = env::var("ROWS").ok();
+    let _guard = ENV_LOCK.lock().unwrap();
+    let orig_col = env::var("COLUMNS").ok();
+    let orig_row = env::var("ROWS").ok();
 
-    // Test partial information: width available, height not
     env::set_var("COLUMNS", "80");
     env::remove_var("ROWS");
 
-    let width = cli_mode::terminal_width();
-    let height = cli_mode::terminal_height();
-
-    if cli_mode::is_stdout_tty() {
-        assert_eq!(width, Some(80));
-        assert_eq!(height, None);
-    } else {
-        assert_eq!(width, None);
-        assert_eq!(height, None);
+    // COLUMNS set → Some(80); ROWS not set + non-TTY → None.
+    assert_eq!(cli_mode::terminal_width(), Some(80));
+    if !cli_mode::is_stdout_tty() {
+        assert_eq!(cli_mode::terminal_height(), None);
     }
 
-    // Restore
-    if let Some(val) = original_columns {
-        env::set_var("COLUMNS", val);
-    } else {
-        env::remove_var("COLUMNS");
+    match orig_col {
+        Some(v) => env::set_var("COLUMNS", v),
+        None => env::remove_var("COLUMNS"),
     }
-    if let Some(val) = original_rows {
-        env::set_var("ROWS", val);
-    } else {
-        env::remove_var("ROWS");
+    match orig_row {
+        Some(v) => env::set_var("ROWS", v),
+        None => env::remove_var("ROWS"),
     }
 }
 
 #[test]
 fn test_terminal_height_partial_scenario() {
-    let original_columns = env::var("COLUMNS").ok();
-    let original_rows = env::var("ROWS").ok();
+    let _guard = ENV_LOCK.lock().unwrap();
+    let orig_col = env::var("COLUMNS").ok();
+    let orig_row = env::var("ROWS").ok();
 
-    // Test partial information: height available, width not
     env::remove_var("COLUMNS");
     env::set_var("ROWS", "24");
 
-    let width = cli_mode::terminal_width();
-    let height = cli_mode::terminal_height();
-
-    if cli_mode::is_stdout_tty() {
-        assert_eq!(width, None);
-        assert_eq!(height, Some(24));
-    } else {
-        assert_eq!(width, None);
-        assert_eq!(height, None);
+    // ROWS set → Some(24); COLUMNS not set + non-TTY → None.
+    assert_eq!(cli_mode::terminal_height(), Some(24));
+    if !cli_mode::is_stdout_tty() {
+        assert_eq!(cli_mode::terminal_width(), None);
     }
 
-    // Restore
-    if let Some(val) = original_columns {
-        env::set_var("COLUMNS", val);
-    } else {
-        env::remove_var("COLUMNS");
+    match orig_col {
+        Some(v) => env::set_var("COLUMNS", v),
+        None => env::remove_var("COLUMNS"),
     }
-    if let Some(val) = original_rows {
-        env::set_var("ROWS", val);
-    } else {
-        env::remove_var("ROWS");
+    match orig_row {
+        Some(v) => env::set_var("ROWS", v),
+        None => env::remove_var("ROWS"),
     }
 }
 
 #[test]
 fn test_terminal_dimensions_unavailable() {
-    let original_columns = env::var("COLUMNS").ok();
-    let original_rows = env::var("ROWS").ok();
+    let _guard = ENV_LOCK.lock().unwrap();
+    let orig_col = env::var("COLUMNS").ok();
+    let orig_row = env::var("ROWS").ok();
 
-    // Test when dimensions are not available
     env::remove_var("COLUMNS");
     env::remove_var("ROWS");
 
-    let width = cli_mode::terminal_width();
-    let height = cli_mode::terminal_height();
-
-    // Should return None when not available
-    // (May be None even if TTY if COLUMNS/ROWS not set)
-    assert!(width.is_none() || width.is_some());
-    assert!(height.is_none() || height.is_some());
-
-    // Restore
-    if let Some(val) = original_columns {
-        env::set_var("COLUMNS", val);
+    // No env vars set; syscall fallback requires TTY.
+    if !cli_mode::is_stdout_tty() {
+        assert_eq!(cli_mode::terminal_width(), None);
+        assert_eq!(cli_mode::terminal_height(), None);
     }
-    if let Some(val) = original_rows {
-        env::set_var("ROWS", val);
+
+    match orig_col {
+        Some(v) => env::set_var("COLUMNS", v),
+        None => {}
+    }
+    match orig_row {
+        Some(v) => env::set_var("ROWS", v),
+        None => {}
     }
 }
 
 #[test]
 fn test_terminal_dimensions_non_tty() {
-    // Test that dimensions return None when not in TTY
-    // This is tested implicitly - if stdout is not TTY, both should return None
-    // Actual result depends on test environment
+    // Functions must not panic regardless of TTY state.
     let _width = cli_mode::terminal_width();
     let _height = cli_mode::terminal_height();
-    // Functions should not panic
 }

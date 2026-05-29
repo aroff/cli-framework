@@ -1,5 +1,9 @@
 //! Factory functions for the built-in `mcp` command group.
 
+const MCP_DEFAULT_HOST: &str = "127.0.0.1";
+const MCP_DEFAULT_PORT: &str = "8080";
+const MCP_DEFAULT_PATH: &str = "/mcp";
+
 use crate::command::{Command, CommandArgs};
 use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use crate::spec::command_tree::{CommandSpec, GroupMetadata};
@@ -50,7 +54,7 @@ pub fn create_mcp_serve_command_with_deps(
                     long: Some("host"),
                     value_type: ArgValueType::String,
                     cardinality: Cardinality::Optional,
-                    default: Some(ArgValue::Str("127.0.0.1".to_string())),
+                    default: Some(ArgValue::Str(MCP_DEFAULT_HOST.to_string())),
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "Bind address for the MCP server",
@@ -62,7 +66,7 @@ pub fn create_mcp_serve_command_with_deps(
                     long: Some("port"),
                     value_type: ArgValueType::String,
                     cardinality: Cardinality::Optional,
-                    default: Some(ArgValue::Str("8080".to_string())),
+                    default: Some(ArgValue::Str(MCP_DEFAULT_PORT.to_string())),
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "Bind port for the MCP server",
@@ -74,7 +78,7 @@ pub fn create_mcp_serve_command_with_deps(
                     long: Some("path"),
                     value_type: ArgValueType::String,
                     cardinality: Cardinality::Optional,
-                    default: Some(ArgValue::Str("/mcp".to_string())),
+                    default: Some(ArgValue::Str(MCP_DEFAULT_PATH.to_string())),
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "HTTP path prefix for MCP endpoints",
@@ -100,9 +104,18 @@ pub fn create_mcp_serve_command_with_deps(
                     // Check whether the user explicitly overrode the http-only defaults.
                     // After spec-default injection, these keys are always present; a value
                     // equal to the spec default means the user did not override it.
-                    let host_overridden = args.named.get("host").is_some_and(|v| v != "127.0.0.1");
-                    let port_overridden = args.named.get("port").is_some_and(|v| v != "8080");
-                    let path_overridden = args.named.get("path").is_some_and(|v| v != "/mcp");
+                    let host_overridden = args
+                        .named
+                        .get("host")
+                        .is_some_and(|v| v != MCP_DEFAULT_HOST);
+                    let port_overridden = args
+                        .named
+                        .get("port")
+                        .is_some_and(|v| v != MCP_DEFAULT_PORT);
+                    let path_overridden = args
+                        .named
+                        .get("path")
+                        .is_some_and(|v| v != MCP_DEFAULT_PATH);
                     if host_overridden || port_overridden || path_overridden {
                         return Err(anyhow::anyhow!(
                             "[E004] invalid usage: '--host', '--port', and '--path' are only valid when --transport=http"
@@ -122,12 +135,12 @@ pub fn create_mcp_serve_command_with_deps(
                     .named
                     .get("host")
                     .cloned()
-                    .unwrap_or_else(|| "127.0.0.1".to_string());
+                    .unwrap_or_else(|| MCP_DEFAULT_HOST.to_string());
                 let port_str = args
                     .named
                     .get("port")
                     .cloned()
-                    .unwrap_or_else(|| "8080".to_string());
+                    .unwrap_or_else(|| MCP_DEFAULT_PORT.to_string());
                 let port = port_str.parse::<u16>().map_err(|_| {
                     anyhow::anyhow!(
                         "[E004] invalid value '{}' for 'port'; expected u16 (0–65535)",
@@ -138,7 +151,7 @@ pub fn create_mcp_serve_command_with_deps(
                     .named
                     .get("path")
                     .cloned()
-                    .unwrap_or_else(|| "/mcp".to_string());
+                    .unwrap_or_else(|| MCP_DEFAULT_PATH.to_string());
 
                 crate::mcp::serve_mcp_with_gate(
                     registry,
@@ -154,11 +167,236 @@ pub fn create_mcp_serve_command_with_deps(
     }
 }
 
+#[cfg(feature = "mcp-install")]
+struct McpInstallArgs {
+    dry_run: bool,
+    stdio_mode: bool,
+    agent: String,
+    scope: aikit_sdk::McpScope,
+    server_name: String,
+    overwrite: bool,
+    project_root: std::path::PathBuf,
+    url: Option<String>,
+    host: String,
+    port: String,
+    path: String,
+    headers: Option<std::collections::HashMap<String, String>>,
+    exe_args: Vec<String>,
+    env_map: Option<std::collections::HashMap<String, String>>,
+}
+
+#[cfg(feature = "mcp-install")]
+fn parse_mcp_install_args(args: &CommandArgs, app_name: &str) -> anyhow::Result<McpInstallArgs> {
+    use crate::parser::error_codes::E_MCP_INSTALL_WRITE_FAILED;
+
+    let dry_run = args
+        .named
+        .get("dry-run")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    let stdio_mode = args
+        .named
+        .get("stdio")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    let agent = args
+        .named
+        .get("agent")
+        .cloned()
+        .unwrap_or_else(|| "claude".to_string());
+    let scope_str = args
+        .named
+        .get("scope")
+        .cloned()
+        .unwrap_or_else(|| "project".to_string());
+    let server_name = args
+        .named
+        .get("name")
+        .cloned()
+        .unwrap_or_else(|| app_name.to_string());
+    let overwrite = args
+        .named
+        .get("overwrite")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+
+    let project_root = args
+        .named
+        .get("project")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        });
+    let project_root = project_root.canonicalize().unwrap_or(project_root);
+
+    let scope = if scope_str == "global" {
+        aikit_sdk::McpScope::Global
+    } else {
+        aikit_sdk::McpScope::Project
+    };
+
+    let host = args
+        .named
+        .get("host")
+        .cloned()
+        .unwrap_or_else(|| MCP_DEFAULT_HOST.to_string());
+    let port = args
+        .named
+        .get("port")
+        .cloned()
+        .unwrap_or_else(|| MCP_DEFAULT_PORT.to_string());
+    let path = args
+        .named
+        .get("path")
+        .cloned()
+        .unwrap_or_else(|| MCP_DEFAULT_PATH.to_string());
+    let url = args.named.get("url").cloned();
+
+    let header_pairs: Vec<String> = args
+        .get_list("header")
+        .into_iter()
+        .map(|v| v.to_string())
+        .collect();
+    let headers = if header_pairs.is_empty() {
+        None
+    } else {
+        Some(aikit_sdk::parse_header_pairs(&header_pairs).map_err(|e| {
+            anyhow::anyhow!(
+                "[{}] invalid --header value: {}",
+                E_MCP_INSTALL_WRITE_FAILED,
+                e
+            )
+        })?)
+    };
+
+    let raw_exe_args: Vec<String> = args
+        .get_list("arg")
+        .into_iter()
+        .map(|v| v.to_string())
+        .collect();
+    let exe_args = if raw_exe_args.is_empty() {
+        vec![
+            "mcp".to_string(),
+            "serve".to_string(),
+            "--transport".to_string(),
+            "stdio".to_string(),
+        ]
+    } else {
+        raw_exe_args
+    };
+
+    let env_pairs: Vec<String> = args
+        .get_list("env")
+        .into_iter()
+        .map(|v| v.to_string())
+        .collect();
+    let env_map = if env_pairs.is_empty() {
+        None
+    } else {
+        Some(aikit_sdk::parse_env_pairs(&env_pairs).map_err(|e| {
+            anyhow::anyhow!(
+                "[{}] invalid --env value: {}",
+                E_MCP_INSTALL_WRITE_FAILED,
+                e
+            )
+        })?)
+    };
+
+    Ok(McpInstallArgs {
+        dry_run,
+        stdio_mode,
+        agent,
+        scope,
+        server_name,
+        overwrite,
+        project_root,
+        url,
+        host,
+        port,
+        path,
+        headers,
+        exe_args,
+        env_map,
+    })
+}
+
+#[cfg(feature = "mcp-install")]
+fn dry_run_message(parsed: &McpInstallArgs) -> String {
+    let agent_key = aikit_sdk::normalize_mcp_agent_key(&parsed.agent).to_string();
+    if parsed.stdio_mode {
+        let exe = std::env::current_exe()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "<unknown>".to_string());
+        format!(
+            "dry-run: would install stdio MCP server for agent '{}' (scope: {:?}) using exe: {} args: {:?}",
+            agent_key, parsed.scope, exe, parsed.exe_args
+        )
+    } else {
+        let url = parsed
+            .url
+            .clone()
+            .unwrap_or_else(|| format!("http://{}:{}{}", parsed.host, parsed.port, parsed.path));
+        format!(
+            "dry-run: would install HTTP MCP server for agent '{}' (scope: {:?}) at {}",
+            agent_key, parsed.scope, url
+        )
+    }
+}
+
+#[cfg(feature = "mcp-install")]
+async fn run_mcp_install(parsed: McpInstallArgs) -> anyhow::Result<()> {
+    use crate::parser::error_codes::{E_MCP_INSTALL_EXE_NOT_FOUND, E_MCP_INSTALL_WRITE_FAILED};
+
+    let agent_key = aikit_sdk::normalize_mcp_agent_key(&parsed.agent).to_string();
+
+    let transport = if parsed.stdio_mode {
+        let exe_path = std::env::current_exe().map_err(|e| {
+            anyhow::anyhow!(
+                "[{}] failed to locate current executable: {}",
+                E_MCP_INSTALL_EXE_NOT_FOUND,
+                e
+            )
+        })?;
+        aikit_sdk::McpServerTransport::Stdio {
+            command: exe_path.to_string_lossy().into_owned(),
+            args: parsed.exe_args,
+            env: parsed.env_map,
+        }
+    } else {
+        let url = parsed
+            .url
+            .unwrap_or_else(|| format!("http://{}:{}{}", parsed.host, parsed.port, parsed.path));
+        aikit_sdk::McpServerTransport::Http {
+            url,
+            headers: parsed.headers,
+        }
+    };
+
+    let opts = aikit_sdk::AddMcpServerOptions {
+        agent_key,
+        scope: parsed.scope,
+        project_root: parsed.project_root,
+        server_name: parsed.server_name,
+        transport,
+        overwrite: parsed.overwrite,
+    };
+
+    let written_path = tokio::task::spawn_blocking(move || aikit_sdk::add_mcp_server(opts))
+        .await
+        .map_err(|e| anyhow::anyhow!("[{}] internal error: {}", E_MCP_INSTALL_WRITE_FAILED, e))?
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "[{}] failed to install MCP server: {}",
+                E_MCP_INSTALL_WRITE_FAILED,
+                e
+            )
+        })?;
+
+    println!("MCP server installed to: {}", written_path.display());
+    Ok(())
+}
+
 /// Returns the `mcp install` leaf command (requires `mcp-install` feature).
-///
-/// Installs this app as an MCP server entry in an agent configuration file via
-/// `aikit_sdk::add_mcp_server`. When `--dry-run` is set, prints what would be
-/// done without writing anything.
 #[cfg(feature = "mcp-install")]
 pub fn create_mcp_install_command(app_name: &'static str) -> Command {
     Command {
@@ -238,7 +476,7 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                     long: Some("host"),
                     value_type: ArgValueType::String,
                     cardinality: Cardinality::Optional,
-                    default: Some(ArgValue::Str("127.0.0.1".to_string())),
+                    default: Some(ArgValue::Str(MCP_DEFAULT_HOST.to_string())),
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "MCP server host (used when --url is not set)",
@@ -250,7 +488,7 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                     long: Some("port"),
                     value_type: ArgValueType::String,
                     cardinality: Cardinality::Optional,
-                    default: Some(ArgValue::Str("8080".to_string())),
+                    default: Some(ArgValue::Str(MCP_DEFAULT_PORT.to_string())),
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "MCP server port (used when --url is not set)",
@@ -262,7 +500,7 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                     long: Some("path"),
                     value_type: ArgValueType::String,
                     cardinality: Cardinality::Optional,
-                    default: Some(ArgValue::Str("/mcp".to_string())),
+                    default: Some(ArgValue::Str(MCP_DEFAULT_PATH.to_string())),
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "MCP HTTP path prefix (used when --url is not set)",
@@ -346,197 +584,12 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
         expose_mcp: false,
         execute: Arc::new(move |_ctx, args: CommandArgs| {
             Box::pin(async move {
-                use crate::parser::error_codes::{
-                    E_MCP_INSTALL_EXE_NOT_FOUND, E_MCP_INSTALL_WRITE_FAILED,
-                };
-
-                // Defaults injected by spec: agent="claude", scope="project"
-                let dry_run = args
-                    .named
-                    .get("dry-run")
-                    .map(|v| v == "true")
-                    .unwrap_or(false);
-                let stdio_mode = args
-                    .named
-                    .get("stdio")
-                    .map(|v| v == "true")
-                    .unwrap_or(false);
-                let agent = args
-                    .named
-                    .get("agent")
-                    .cloned()
-                    .unwrap_or_else(|| "claude".to_string());
-                let scope_str = args
-                    .named
-                    .get("scope")
-                    .cloned()
-                    .unwrap_or_else(|| "project".to_string());
-                let server_name = args
-                    .named
-                    .get("name")
-                    .cloned()
-                    .unwrap_or_else(|| app_name.to_string());
-                let overwrite = args
-                    .named
-                    .get("overwrite")
-                    .map(|v| v == "true")
-                    .unwrap_or(false);
-
-                let project_root = args
-                    .named
-                    .get("project")
-                    .map(std::path::PathBuf::from)
-                    .unwrap_or_else(|| {
-                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-                    });
-                let project_root = project_root.canonicalize().unwrap_or(project_root.clone());
-
-                let scope = if scope_str == "global" {
-                    aikit_sdk::McpScope::Global
-                } else {
-                    aikit_sdk::McpScope::Project
-                };
-
-                let agent_key = aikit_sdk::normalize_mcp_agent_key(&agent).to_string();
-
-                let transport = if stdio_mode {
-                    let exe_path = std::env::current_exe().map_err(|e| {
-                        anyhow::anyhow!(
-                            "[{}] failed to locate current executable: {}",
-                            E_MCP_INSTALL_EXE_NOT_FOUND,
-                            e
-                        )
-                    })?;
-
-                    let exe_args: Vec<String> = args
-                        .get_list("arg")
-                        .into_iter()
-                        .map(|v| v.to_string())
-                        .collect();
-                    let exe_args = if exe_args.is_empty() {
-                        vec![
-                            "mcp".to_string(),
-                            "serve".to_string(),
-                            "--transport".to_string(),
-                            "stdio".to_string(),
-                        ]
-                    } else {
-                        exe_args
-                    };
-
-                    let env_pairs: Vec<String> = args
-                        .get_list("env")
-                        .into_iter()
-                        .map(|v| v.to_string())
-                        .collect();
-                    let env_map = if env_pairs.is_empty() {
-                        None
-                    } else {
-                        Some(aikit_sdk::parse_env_pairs(&env_pairs).map_err(|e| {
-                            anyhow::anyhow!(
-                                "[{}] invalid --env value: {}",
-                                E_MCP_INSTALL_WRITE_FAILED,
-                                e
-                            )
-                        })?)
-                    };
-
-                    if dry_run {
-                        println!(
-                            "dry-run: would install stdio MCP server for agent '{}' (scope: {:?}) using exe: {} args: {:?}",
-                            agent_key,
-                            scope,
-                            exe_path.display(),
-                            exe_args
-                        );
-                        return Ok(());
-                    }
-
-                    aikit_sdk::McpServerTransport::Stdio {
-                        command: exe_path.to_string_lossy().into_owned(),
-                        args: exe_args,
-                        env: env_map,
-                    }
-                } else {
-                    // Defaults injected by spec: host="127.0.0.1", port="8080", path="/mcp"
-                    let host = args
-                        .named
-                        .get("host")
-                        .cloned()
-                        .unwrap_or_else(|| "127.0.0.1".to_string());
-                    let port = args
-                        .named
-                        .get("port")
-                        .cloned()
-                        .unwrap_or_else(|| "8080".to_string());
-                    let path = args
-                        .named
-                        .get("path")
-                        .cloned()
-                        .unwrap_or_else(|| "/mcp".to_string());
-                    let url = args
-                        .named
-                        .get("url")
-                        .cloned()
-                        .unwrap_or_else(|| format!("http://{}:{}{}", host, port, path));
-
-                    let header_pairs: Vec<String> = args
-                        .get_list("header")
-                        .into_iter()
-                        .map(|v| v.to_string())
-                        .collect();
-                    let headers = if header_pairs.is_empty() {
-                        None
-                    } else {
-                        Some(aikit_sdk::parse_header_pairs(&header_pairs).map_err(|e| {
-                            anyhow::anyhow!(
-                                "[{}] invalid --header value: {}",
-                                E_MCP_INSTALL_WRITE_FAILED,
-                                e
-                            )
-                        })?)
-                    };
-
-                    if dry_run {
-                        println!(
-                            "dry-run: would install HTTP MCP server for agent '{}' (scope: {:?}) at {}",
-                            agent_key, scope, url
-                        );
-                        return Ok(());
-                    }
-
-                    aikit_sdk::McpServerTransport::Http { url, headers }
-                };
-
-                let opts = aikit_sdk::AddMcpServerOptions {
-                    agent_key,
-                    scope,
-                    project_root,
-                    server_name,
-                    transport,
-                    overwrite,
-                };
-
-                let written_path =
-                    tokio::task::spawn_blocking(move || aikit_sdk::add_mcp_server(opts))
-                        .await
-                        .map_err(|e| {
-                            anyhow::anyhow!(
-                                "[{}] internal error: {}",
-                                E_MCP_INSTALL_WRITE_FAILED,
-                                e
-                            )
-                        })?
-                        .map_err(|e| {
-                            anyhow::anyhow!(
-                                "[{}] failed to install MCP server: {}",
-                                E_MCP_INSTALL_WRITE_FAILED,
-                                e
-                            )
-                        })?;
-
-                println!("MCP server installed to: {}", written_path.display());
-                Ok(())
+                let parsed = parse_mcp_install_args(&args, app_name)?;
+                if parsed.dry_run {
+                    println!("{}", dry_run_message(&parsed));
+                    return Ok(());
+                }
+                run_mcp_install(parsed).await
             })
         }),
     }

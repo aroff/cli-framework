@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+use crate::mcp::{McpToolExportPolicy, McpToolRegistry};
+
 use aikit_agent::llm::stream::parse_sse_body;
 use aikit_agent::llm::types::LlmStreamEvent;
 use aikit_agent::llm::types::{
@@ -25,14 +27,14 @@ pub(super) async fn execute_chat(
     // MUST use the same frozen registry snapshot as the running `App<C>` when available (§4.3).
     let registry = ctx.opt_registry().unwrap_or(registry_fallback.as_ref());
 
-    let tool_exec = CommandsAsToolsExecutor::new(registry, app_name, risk_policy).map_err(|e| {
-        // Deterministic error code for collision (construction-time).
-        if e.to_string().contains(CHAT_TOOL_REGISTRY_COLLISION) {
-            anyhow::anyhow!("{}", e)
-        } else {
-            anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e)
-        }
-    })?;
+    let tool_exec = Arc::new(
+        McpToolRegistry::from_command_registry_with_policy(
+            registry,
+            app_name,
+            McpToolExportPolicy::AllCommands,
+        )
+        .with_risk_policy(risk_policy),
+    );
 
     let prompt_flag = args.named.get("prompt").cloned();
     let yolo = args.named.get("yolo").map(|v| v == "true").unwrap_or(false);
@@ -99,7 +101,7 @@ async fn read_stdin_all() -> anyhow::Result<String> {
 #[derive(Clone)]
 struct AgentRunOpts {
     ailoop_client: Option<Arc<AiloopClient>>,
-    tool_exec: CommandsAsToolsExecutor,
+    tool_exec: Arc<McpToolRegistry>,
     yolo: bool,
     stream: bool,
     model: Option<String>,
