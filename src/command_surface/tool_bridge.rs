@@ -3,6 +3,7 @@ use crate::app::context::AppContext;
 use crate::command::{Command, CommandArgs};
 use crate::mcp::schema::McpToolDescriptor;
 use crate::security::command_risk::{CommandRiskPolicy, CommandRiskTier};
+use crate::security::risk_enforcer::PrefightError;
 use crate::security::RiskEnforcer;
 use crate::spec::value::ArgValue;
 use async_trait::async_trait;
@@ -22,6 +23,28 @@ pub enum ConfirmationMode {
     NonInteractive,
 }
 
+/// Whether the bridge is acting on behalf of an interactive user or the MCP protocol.
+///
+/// - `Interactive`: runs risk preflight + optional confirmation prompt (chat).
+/// - `Mcp`: skips preflight and prompts; the MCP gate (`BridgeGate`) is the
+///   authorization point for destructive commands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BridgeMode {
+    Interactive,
+    Mcp,
+}
+
+/// Why a confirmation or preflight gate was blocked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockReason {
+    /// User was prompted (ailoop / interactive stdin) and declined.
+    UserDeclined,
+    /// Non-interactive context with no ailoop available; could not prompt.
+    NeedsInteractive,
+    /// `ALLOW_DESTRUCTIVE_COMMANDS` is not set.
+    EnvGated,
+}
+
 pub struct ParsedArgs {
     pub args: CommandArgs,
     pub typed: Option<HashMap<String, ArgValue>>,
@@ -31,6 +54,7 @@ pub struct BridgeInvocation<'a> {
     pub command: &'a Command,
     pub input: BridgeInput,
     pub confirmation: ConfirmationMode,
+    pub mode: BridgeMode,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -42,10 +66,10 @@ pub enum BridgeError {
     ArgValidation(String),
 
     #[error("RISK_REQUIRES_CONFIRMATION: command '{0}' is sensitive and requires confirmation")]
-    SensitiveRequiresConfirmation(String),
+    SensitiveRequiresConfirmation(String, BlockReason),
 
     #[error("DESTRUCTIVE_BLOCKED: command '{0}' is destructive; requires confirmation")]
-    DestructiveBlocked(String),
+    DestructiveBlocked(String, BlockReason),
 
     #[error("GATE_DENIED: {0}")]
     GateDenied(String),
@@ -116,28 +140,17 @@ impl CommandAsToolBridge {
         ctx: &mut dyn AppContext,
         invocation: BridgeInvocation<'_>,
     ) -> Result<(), BridgeError> {
-        self.invoke_inner(ctx, invocation).await
-    }
-
-    async fn invoke_inner(
-        &self,
-        ctx: &mut dyn AppContext,
-        invocation: BridgeInvocation<'_>,
-    ) -> Result<(), BridgeError> {
         let cmd = invocation.command;
-        // MCP calls are identified by the presence of a bridge gate adapter.
-        // This keeps the bridge's public API surface identical to the spec
-        // while allowing MCP-specific semantics (§4.1).
-        let is_mcp = self.gate.is_some();
+        let is_mcp = invocation.mode == BridgeMode::Mcp;
 
         let parsed = self.parse_args(cmd, invocation.input)?;
 
         if let Some(ref typed) = parsed.typed {
             let should_validate = if is_mcp {
-                // Preserve MCP behavior: typed validation only runs when `spec.is_some()`.
+                // MCP: validate only when spec is present (no custom validators over the wire).
                 cmd.spec.is_some()
             } else {
-                // Preserve chat behavior: validate when `spec` or custom `validator` exists.
+                // Interactive: validate when spec or custom validator exists.
                 cmd.spec.is_some() || cmd.validator.is_some()
             };
             if should_validate {
@@ -152,23 +165,29 @@ impl CommandAsToolBridge {
         let enforcer = RiskEnforcer::new(self.risk_policy.clone());
         let tier = enforcer.classify(cmd.id, cmd.category);
 
-        // Ask/chat semantics: enforce preflight + confirmation. MCP: no preflight, no prompt.
         if !is_mcp {
             let assume_yes = matches!(invocation.confirmation, ConfirmationMode::AssumeYes);
             let ailoop_available = matches!(invocation.confirmation, ConfirmationMode::Ailoop(_));
-            if let Err(e) =
-                enforcer.enforce_preflight(cmd.id, cmd.category, assume_yes, ailoop_available)
-            {
-                let msg = e.to_string();
-                if msg.starts_with("SENSITIVE_COMMAND_REQUIRES_CONFIRMATION:") {
+            match enforcer.enforce_preflight(cmd.id, cmd.category, assume_yes, ailoop_available) {
+                Ok(()) => {}
+                Err(PrefightError::SensitiveNeedsConfirmation) => {
                     return Err(BridgeError::SensitiveRequiresConfirmation(
                         cmd.id.to_string(),
+                        BlockReason::NeedsInteractive,
                     ));
                 }
-                if msg.starts_with("DESTRUCTIVE_COMMAND_BLOCKED:") {
-                    return Err(BridgeError::DestructiveBlocked(cmd.id.to_string()));
+                Err(PrefightError::DestructiveEnvGated) => {
+                    return Err(BridgeError::DestructiveBlocked(
+                        cmd.id.to_string(),
+                        BlockReason::EnvGated,
+                    ));
                 }
-                return Err(BridgeError::Execution(e));
+                Err(PrefightError::DestructiveNeedsInteractive) => {
+                    return Err(BridgeError::DestructiveBlocked(
+                        cmd.id.to_string(),
+                        BlockReason::NeedsInteractive,
+                    ));
+                }
             }
 
             if !assume_yes {
@@ -228,10 +247,14 @@ async fn request_confirmation(
             if confirmed {
                 Ok(())
             } else if destructive {
-                Err(BridgeError::DestructiveBlocked(cmd.id.to_string()))
+                Err(BridgeError::DestructiveBlocked(
+                    cmd.id.to_string(),
+                    BlockReason::UserDeclined,
+                ))
             } else {
                 Err(BridgeError::SensitiveRequiresConfirmation(
                     cmd.id.to_string(),
+                    BlockReason::UserDeclined,
                 ))
             }
         }
@@ -242,19 +265,27 @@ async fn request_confirmation(
             if confirmed {
                 Ok(())
             } else if destructive {
-                Err(BridgeError::DestructiveBlocked(cmd.id.to_string()))
+                Err(BridgeError::DestructiveBlocked(
+                    cmd.id.to_string(),
+                    BlockReason::UserDeclined,
+                ))
             } else {
                 Err(BridgeError::SensitiveRequiresConfirmation(
                     cmd.id.to_string(),
+                    BlockReason::UserDeclined,
                 ))
             }
         }
         ConfirmationMode::NonInteractive => {
             if destructive {
-                Err(BridgeError::DestructiveBlocked(cmd.id.to_string()))
+                Err(BridgeError::DestructiveBlocked(
+                    cmd.id.to_string(),
+                    BlockReason::NeedsInteractive,
+                ))
             } else {
                 Err(BridgeError::SensitiveRequiresConfirmation(
                     cmd.id.to_string(),
+                    BlockReason::NeedsInteractive,
                 ))
             }
         }
@@ -265,7 +296,6 @@ async fn prompt_confirm_blocking(prompt: String) -> anyhow::Result<bool> {
     use anyhow::Context;
     use std::io::Write;
 
-    // Blocking stdin read must not run on the async runtime (§4.3).
     tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
         let mut stderr = std::io::stderr();
         write!(stderr, "{}", prompt)?;
@@ -355,6 +385,7 @@ mod tests {
                     command: &cmd,
                     input: BridgeInput::Json(serde_json::json!({})),
                     confirmation: ConfirmationMode::AssumeYes,
+                    mode: BridgeMode::Interactive,
                 },
             )
             .await
@@ -391,15 +422,19 @@ mod tests {
                     command: &cmd,
                     input: BridgeInput::Args(CommandArgs::default()),
                     confirmation: ConfirmationMode::NonInteractive,
+                    mode: BridgeMode::Interactive,
                 },
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, BridgeError::SensitiveRequiresConfirmation(_)));
+        assert!(matches!(
+            err,
+            BridgeError::SensitiveRequiresConfirmation(_, _)
+        ));
     }
 
     #[tokio::test]
-    async fn mcp_calls_never_enforce_preflight_or_prompt() {
+    async fn mcp_mode_skips_preflight_and_prompt() {
         let mut policy = CommandRiskPolicy::default();
         policy
             .tiers
@@ -424,8 +459,8 @@ mod tests {
             }),
         };
 
-        // Presence of a gate indicates MCP semantics in the bridge.
-        let bridge = CommandAsToolBridge::new(policy).with_gate(Arc::new(NoopGate));
+        // BridgeMode::Mcp without a gate — no gate needed, mode carries the semantics.
+        let bridge = CommandAsToolBridge::new(policy);
         let mut ctx = NoopCtx;
         bridge
             .invoke(
@@ -434,11 +469,97 @@ mod tests {
                     command: &cmd,
                     input: BridgeInput::Json(serde_json::json!({})),
                     confirmation: ConfirmationMode::NonInteractive,
+                    mode: BridgeMode::Mcp,
                 },
             )
             .await
             .unwrap();
 
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn mcp_mode_with_gate_executes_gate() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_gate = Arc::clone(&calls);
+
+        struct CountingGate(Arc<AtomicUsize>);
+        #[async_trait::async_trait]
+        impl BridgeGate for CountingGate {
+            async fn before_execute(
+                &self,
+                _cmd: &Command,
+                _args: &CommandArgs,
+                _tier: CommandRiskTier,
+            ) -> Result<(), BridgeError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let cmd = Command {
+            id: "any",
+            summary: "test",
+            syntax: None,
+            category: None,
+            spec: None,
+            validator: None,
+            expose_mcp: false,
+            execute: noop_execute(),
+        };
+
+        let bridge = CommandAsToolBridge::new(CommandRiskPolicy::default())
+            .with_gate(Arc::new(CountingGate(calls_for_gate)));
+        let mut ctx = NoopCtx;
+        bridge
+            .invoke(
+                &mut ctx,
+                BridgeInvocation {
+                    command: &cmd,
+                    input: BridgeInput::Json(serde_json::json!({})),
+                    confirmation: ConfirmationMode::NonInteractive,
+                    mode: BridgeMode::Mcp,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn block_reason_needs_interactive_on_preflight_block() {
+        let mut policy = CommandRiskPolicy::default();
+        policy
+            .tiers
+            .insert("sensitive".to_string(), CommandRiskTier::Sensitive);
+        let cmd = Command {
+            id: "sensitive",
+            summary: "test",
+            syntax: None,
+            category: None,
+            spec: None,
+            validator: None,
+            expose_mcp: false,
+            execute: noop_execute(),
+        };
+        let bridge = CommandAsToolBridge::new(policy);
+        let mut ctx = NoopCtx;
+        let err = bridge
+            .invoke(
+                &mut ctx,
+                BridgeInvocation {
+                    command: &cmd,
+                    input: BridgeInput::Args(CommandArgs::default()),
+                    confirmation: ConfirmationMode::NonInteractive,
+                    mode: BridgeMode::Interactive,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            BridgeError::SensitiveRequiresConfirmation(_, BlockReason::NeedsInteractive)
+        ));
     }
 }

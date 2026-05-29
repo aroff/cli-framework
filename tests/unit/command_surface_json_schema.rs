@@ -1,6 +1,4 @@
-use cli_framework::command_surface::json_schema::{
-    arg_spec_to_json_schema_property, build_input_schema,
-};
+use cli_framework::command_surface::json_schema::build_input_schema;
 use cli_framework::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use cli_framework::spec::command_tree::CommandSpec;
 
@@ -39,7 +37,7 @@ fn flag_arg_bool_schema() {
         ArgValueType::Bool,
         Cardinality::Optional,
     );
-    let (name, schema) = arg_spec_to_json_schema_property(&arg);
+    let (name, schema) = arg.to_json_schema_property();
     assert_eq!(name, "verbose");
     assert_eq!(schema["type"].as_str(), Some("boolean"));
 }
@@ -52,7 +50,7 @@ fn option_string_schema() {
         ArgValueType::String,
         Cardinality::Optional,
     );
-    let (name, schema) = arg_spec_to_json_schema_property(&arg);
+    let (name, schema) = arg.to_json_schema_property();
     assert_eq!(name, "env");
     assert_eq!(schema["type"].as_str(), Some("string"));
 }
@@ -65,7 +63,7 @@ fn enum_schema() {
         ArgValueType::Enum(vec!["json", "yaml"]),
         Cardinality::Optional,
     );
-    let (name, schema) = arg_spec_to_json_schema_property(&arg);
+    let (name, schema) = arg.to_json_schema_property();
     assert_eq!(name, "format");
     assert_eq!(schema["type"].as_str(), Some("string"));
     let variants = schema["enum"].as_array().expect("enum array");
@@ -114,7 +112,7 @@ fn repeated_flag_count_schema() {
         ArgValueType::Bool,
         Cardinality::Repeated,
     );
-    let (_, schema) = arg_spec_to_json_schema_property(&arg);
+    let (_, schema) = arg.to_json_schema_property();
     assert_eq!(schema["type"].as_str(), Some("integer"));
 }
 
@@ -126,7 +124,7 @@ fn repeated_option_array_schema() {
         ArgValueType::String,
         Cardinality::Repeated,
     );
-    let (_, schema) = arg_spec_to_json_schema_property(&arg);
+    let (_, schema) = arg.to_json_schema_property();
     assert_eq!(schema["type"].as_str(), Some("array"));
     assert_eq!(schema["items"]["type"].as_str(), Some("string"));
 }
@@ -145,6 +143,6 @@ fn long_name_override_used_as_property_key() {
         requires: vec![],
         help: "",
     };
-    let (name, _) = arg_spec_to_json_schema_property(&arg);
+    let (name, _) = arg.to_json_schema_property();
     assert_eq!(name, "verbose");
 }

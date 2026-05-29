@@ -203,9 +203,6 @@ struct McpToolGateBridgeAdapter {
 }
 
 #[cfg(feature = "mcp-server")]
-struct McpNoopBridgeGate;
-
-#[cfg(feature = "mcp-server")]
 #[async_trait::async_trait]
 impl crate::command_surface::tool_bridge::BridgeGate for McpToolGateBridgeAdapter {
     async fn before_execute(
@@ -235,19 +232,6 @@ impl crate::command_surface::tool_bridge::BridgeGate for McpToolGateBridgeAdapte
 }
 
 #[cfg(feature = "mcp-server")]
-#[async_trait::async_trait]
-impl crate::command_surface::tool_bridge::BridgeGate for McpNoopBridgeGate {
-    async fn before_execute(
-        &self,
-        _cmd: &Command,
-        _args: &CommandArgs,
-        _tier: crate::security::command_risk::CommandRiskTier,
-    ) -> Result<(), crate::command_surface::tool_bridge::BridgeError> {
-        Ok(())
-    }
-}
-
-#[cfg(feature = "mcp-server")]
 impl McpToolRegistry {
     fn bridge_for_call(
         &self,
@@ -256,8 +240,6 @@ impl McpToolRegistry {
     ) -> crate::command_surface::tool_bridge::CommandAsToolBridge {
         use crate::command_surface::tool_bridge::CommandAsToolBridge;
 
-        // Always attach a gate adapter so the bridge can apply MCP semantics
-        // (no risk preflight, no confirmation prompts).
         let bridge = CommandAsToolBridge::new(self.risk_enforcer.policy().clone());
         match self.gate.as_ref() {
             Some(gate) => bridge.with_gate(Arc::new(McpToolGateBridgeAdapter {
@@ -265,7 +247,7 @@ impl McpToolRegistry {
                 transport,
                 tool_name: tool_name.to_string(),
             })),
-            None => bridge.with_gate(Arc::new(McpNoopBridgeGate)),
+            None => bridge,
         }
     }
 }
@@ -449,6 +431,7 @@ pub async fn dispatch_tool_call(
                 command: cmd,
                 input: BridgeInput::Json(arguments_value),
                 confirmation: ConfirmationMode::NonInteractive,
+                mode: crate::command_surface::tool_bridge::BridgeMode::Mcp,
             },
         )
         .await;

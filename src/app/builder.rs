@@ -306,33 +306,30 @@ impl AppBuilder {
                 );
             }
 
-            if self.command_registry.get("mcp").is_none() {
-                let app_name_for_install = self.app_name;
-
-                let install_path = CommandPath::new(&["mcp", "install"]).unwrap();
-                if self.command_registry.resolve(&install_path).is_none() {
-                    let install_cmd =
-                        crate::mcp::commands::create_mcp_install_command(app_name_for_install);
-                    let mut register_cmd = install_cmd.clone();
-                    register_cmd.id = "register";
+            let app_name_for_install = self.app_name;
+            let install_path = CommandPath::new(&["mcp", "install"]).unwrap();
+            if self.command_registry.resolve(&install_path).is_none() {
+                let install_cmd =
+                    crate::mcp::commands::create_mcp_install_command(app_name_for_install);
+                let mut register_cmd = install_cmd.clone();
+                register_cmd.id = "register";
+                self.command_registry
+                    .register_at(&install_path, install_cmd)
+                    .expect("mcp install auto-registration");
+                let register_path = CommandPath::new(&["mcp", "register"]).unwrap();
+                if self.command_registry.resolve(&register_path).is_none() {
                     self.command_registry
-                        .register_at(&install_path, install_cmd)
-                        .expect("mcp install auto-registration");
-                    let register_path = CommandPath::new(&["mcp", "register"]).unwrap();
-                    if self.command_registry.resolve(&register_path).is_none() {
-                        self.command_registry
-                            .register_at(&register_path, register_cmd)
-                            .expect("mcp register auto-registration");
-                    }
+                        .register_at(&register_path, register_cmd)
+                        .expect("mcp register auto-registration");
                 }
+            }
 
-                let list_path = CommandPath::new(&["mcp", "list"]).unwrap();
-                if self.command_registry.resolve(&list_path).is_none() {
-                    let list_cmd = crate::mcp::commands::create_mcp_list_command();
-                    self.command_registry
-                        .register_at(&list_path, list_cmd)
-                        .expect("mcp list auto-registration");
-                }
+            let list_path = CommandPath::new(&["mcp", "list"]).unwrap();
+            if self.command_registry.resolve(&list_path).is_none() {
+                let list_cmd = crate::mcp::commands::create_mcp_list_command();
+                self.command_registry
+                    .register_at(&list_path, list_cmd)
+                    .expect("mcp list auto-registration");
             }
         }
 

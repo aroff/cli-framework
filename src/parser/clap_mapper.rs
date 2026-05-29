@@ -107,6 +107,17 @@ pub fn map_matches_to_typed_args(
         }
     }
 
+    // Inject spec-declared defaults for any arg not provided by the user.
+    // This makes `ArgSpec.default` authoritative at runtime, not just for `--help`,
+    // so execute closures receive the default in `args.named` without re-declaring it.
+    for arg_spec in &spec.args {
+        if !result.contains_key(arg_spec.name) {
+            if let Some(ref default) = arg_spec.default {
+                result.insert(arg_spec.name.to_string(), default.clone());
+            }
+        }
+    }
+
     Ok(result)
 }
 
@@ -146,17 +157,21 @@ fn build_clap_arg(arg_spec: &ArgSpec) -> clap::Arg {
     match arg_spec.kind {
         ArgKind::Flag => match arg_spec.cardinality {
             Cardinality::Repeated => {
-                arg = arg.long(arg_spec.name).action(clap::ArgAction::Count);
+                arg = arg
+                    .long(arg_spec.long.unwrap_or(arg_spec.name))
+                    .action(clap::ArgAction::Count);
             }
             _ => {
-                arg = arg.long(arg_spec.name).action(clap::ArgAction::SetTrue);
+                arg = arg
+                    .long(arg_spec.long.unwrap_or(arg_spec.name))
+                    .action(clap::ArgAction::SetTrue);
                 if arg_spec.cardinality == Cardinality::Required {
                     arg = arg.required(true);
                 }
             }
         },
         ArgKind::Option => {
-            arg = arg.long(arg_spec.name);
+            arg = arg.long(arg_spec.long.unwrap_or(arg_spec.name));
             if let ArgValueType::Enum(allowed) = &arg_spec.value_type {
                 // Add possible values to help text for discoverability without clap-level
                 // validation, so per-command execute closures can return proper error codes.

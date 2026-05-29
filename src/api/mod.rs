@@ -437,10 +437,7 @@ impl ApiServerBuilder {
         };
 
         let mut router = Router::new();
-        // Health and readiness are always present at fixed root paths.
-        //
-        // Implemented via `nest_service` so we can optionally protect them with the same
-        // auth layer even though the auth layer is type-erased for `axum::Router`.
+
         let healthz_router = Router::new()
             .route("/", get(health::healthz))
             .with_state(health_state.clone());
@@ -451,65 +448,40 @@ impl ApiServerBuilder {
         // API root: /api/{version}/...
         let mut api_root = Router::new();
         for (_, v) in validated_versions.iter() {
-            let mut vr = v.router.clone();
-
-            // Attach version identity + deprecation headers.
             let hc = HeaderConfig {
                 api_version: v.name.as_str().to_string(),
                 sunset: v.deprecation.as_ref().map(|d| d.sunset),
                 docs_url: v.deprecation.as_ref().and_then(|d| d.docs_url.clone()),
             };
-            vr = headers::apply_versioned_headers(vr, hc);
-
-            // Minimal host-provided request/response tracing (streaming-safe).
-            vr = vr.layer(axum::middleware::from_fn(
-                |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {
-                let start = std::time::Instant::now();
-                let method = req.method().clone();
-                let path = req.uri().path().to_string();
-                let resp: axum::response::Response = next.run(req).await;
-                log::info!(
-                    "api {} {} -> {} ({:?})",
-                    method,
-                    path,
-                    resp.status(),
-                    start.elapsed()
-                );
-                resp
-            },
-            ));
-
-            // Apply shared layers to the version router.
-            if let Some(cors) = self.cors.clone() {
-                vr = vr.layer(cors);
-            }
+            let vr = with_tracing(
+                headers::apply_versioned_headers(v.router.clone(), hc),
+                "api",
+            );
             let prefix = format!("/{}", v.name.as_str());
-            if let Some(auth) = self.auth.as_ref() {
-                let svc = auth.0.clone().layer(vr);
-                api_root = api_root.nest_service(&prefix, svc);
-            } else {
-                api_root = api_root.nest_service(&prefix, vr.into_service::<axum::body::Body>());
-            }
+            api_root =
+                nest_with_cors_auth(api_root, &prefix, vr, self.cors.clone(), self.auth.as_ref());
         }
 
-        // Requests to `/api/...` without a version segment are handled by a host endpoint.
-        // Since `/api` is a nested router, we implement this behavior in the `/api` router itself.
-        let default_version = self.default_version.clone();
+        // Unversioned /api/... catch-all (redirect to default or 404).
+        let dv = self.default_version.clone();
         let av = available_versions.clone();
         api_root = api_root.route(
             "/",
-            any(move |uri: Uri| async move {
-                versioning::handle_unversioned(default_version.clone(), av.clone(), uri, "").await
+            any(move |uri: Uri| {
+                let dv = dv.clone();
+                let av = av.clone();
+                async move { versioning::handle_unversioned(dv, av, uri, "").await }
             }),
         );
-        let default_version = self.default_version.clone();
+        let dv = self.default_version.clone();
         let av = available_versions.clone();
         api_root = api_root.route(
             "/{*rest}",
             any(
-                move |uri: Uri, axum::extract::Path(rest): axum::extract::Path<String>| async move {
-                    versioning::handle_unversioned(default_version.clone(), av.clone(), uri, &rest)
-                        .await
+                move |uri: Uri, axum::extract::Path(rest): axum::extract::Path<String>| {
+                    let dv = dv.clone();
+                    let av = av.clone();
+                    async move { versioning::handle_unversioned(dv, av, uri, &rest).await }
                 },
             ),
         );
@@ -517,71 +489,38 @@ impl ApiServerBuilder {
         router = router.nest("/api", api_root);
 
         // `/api/` doesn't match the nested router at `/api`, so handle it explicitly.
-        let default_version = self.default_version.clone();
+        let dv = self.default_version.clone();
         let av = available_versions.clone();
         router = router.route(
             "/api/",
-            any(move |uri: Uri| async move {
-                versioning::handle_unversioned(default_version.clone(), av.clone(), uri, "").await
+            any(move |uri: Uri| {
+                let dv = dv.clone();
+                let av = av.clone();
+                async move { versioning::handle_unversioned(dv, av, uri, "").await }
             }),
         );
 
         // Mounts (non-primary).
-        for (p, mut r) in mounts.into_iter() {
-            // Streaming-safe tracing for mount routes.
-            r = r.layer(axum::middleware::from_fn(
-                |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {
-                let start = std::time::Instant::now();
-                let method = req.method().clone();
-                let path = req.uri().path().to_string();
-                let resp: axum::response::Response = next.run(req).await;
-                log::info!(
-                    "api-mount {} {} -> {} ({:?})",
-                    method,
-                    path,
-                    resp.status(),
-                    start.elapsed()
-                );
-                resp
-            },
-            ));
-            if let Some(cors) = self.cors.clone() {
-                r = r.layer(cors);
-            }
-            if let Some(auth) = self.auth.as_ref() {
-                let svc = auth.0.clone().layer(r);
-                router = router.nest_service(&p, svc);
-            } else {
-                router = router.nest_service(&p, r.into_service::<axum::body::Body>());
-            }
+        for (p, r) in mounts.into_iter() {
+            let r = with_tracing(r, "api-mount");
+            router = nest_with_cors_auth(router, &p, r, self.cors.clone(), self.auth.as_ref());
         }
 
         // Optional MCP coexistence at the fixed `/mcp` path.
         #[cfg(feature = "mcp-server")]
-        if let Some(mut mcp_router) = self.mcp_router {
-            // Streaming-safe tracing for MCP routes.
-            mcp_router = mcp_router.layer(axum::middleware::from_fn(
-                |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {
-                    let start = std::time::Instant::now();
-                    let method = req.method().clone();
-                    let path = req.uri().path().to_string();
-                    let resp: axum::response::Response = next.run(req).await;
-                    log::info!(
-                        "mcp {} {} -> {} ({:?})",
-                        method,
-                        path,
-                        resp.status(),
-                        start.elapsed()
-                    );
-                    resp
-                },
-            ));
+        if let Some(mcp_router) = self.mcp_router {
+            let mcp_router = with_tracing(mcp_router, "mcp");
             if let Some(cors) = self.cors.clone() {
-                mcp_router = mcp_router.layer(cors);
-            }
-            if let Some(auth) = self.auth.as_ref() {
-                // The MCP router already owns `/mcp` internally; protect it by routing the `/mcp`
-                // prefix through the auth-wrapped service.
+                let mcp_router = mcp_router.layer(cors);
+                if let Some(auth) = self.auth.as_ref() {
+                    let svc = auth.0.clone().layer(mcp_router);
+                    router = router
+                        .route_service("/mcp", svc.clone())
+                        .route_service("/mcp/*rest", svc);
+                } else {
+                    router = router.merge(mcp_router);
+                }
+            } else if let Some(auth) = self.auth.as_ref() {
                 let svc = auth.0.clone().layer(mcp_router);
                 router = router
                     .route_service("/mcp", svc.clone())
@@ -591,27 +530,12 @@ impl ApiServerBuilder {
             }
         }
 
-        // If health should be protected, cover them with the same auth layer.
+        // Health/readiness — optionally protected by auth.
+        let cors = self.cors.clone();
+        let auth = self.auth.as_ref();
         if self.protect_health {
-            let mut healthz_router = healthz_router;
-            let mut readyz_router = readyz_router;
-            if let Some(cors) = self.cors.clone() {
-                healthz_router = healthz_router.layer(cors.clone());
-                readyz_router = readyz_router.layer(cors);
-            }
-            if let Some(auth) = self.auth.as_ref() {
-                let svc = auth.0.clone().layer(healthz_router);
-                router = router.nest_service("/healthz", svc);
-                let svc = auth.0.clone().layer(readyz_router);
-                router = router.nest_service("/readyz", svc);
-            } else {
-                router = router.nest_service(
-                    "/healthz",
-                    healthz_router.into_service::<axum::body::Body>(),
-                );
-                router = router
-                    .nest_service("/readyz", readyz_router.into_service::<axum::body::Body>());
-            }
+            router = nest_with_cors_auth(router, "/healthz", healthz_router, cors.clone(), auth);
+            router = nest_with_cors_auth(router, "/readyz", readyz_router, cors, auth);
         } else {
             router = router.nest_service(
                 "/healthz",
@@ -628,9 +552,6 @@ impl ApiServerBuilder {
                 .iter()
                 .filter_map(|(name, v)| {
                     v.openapi.as_ref().map(|doc| {
-                        // INVARIANT: serde_json::to_string never fails for a valid Value;
-                        // E022 is unreachable in practice — it guards against future
-                        // Value variants or custom Serialize impls that could theoretically fail.
                         let json = swagger::patch_and_serialize(doc.clone(), name.as_str())
                             .unwrap_or_else(|e| {
                                 panic_config(
@@ -660,16 +581,14 @@ impl ApiServerBuilder {
                     swagger::build_swagger_router(swagger_versions.clone(), &primary);
 
                 if let Some(auth) = self.auth.as_ref() {
-                    // Apply the same auth layer to swagger routes.
                     let svc = auth.0.clone().layer(swagger_router);
-                    // Mount the auth-wrapped service at each swagger path.
                     router = router
                         .route_service("/api/docs", svc.clone())
                         .route_service("/api/docs/", svc.clone())
                         .route_service("/api/docs/{*rest}", svc.clone());
                     for (name, _) in &swagger_versions {
-                        let spec_path = format!("/api/{}/openapi.json", name);
-                        router = router.route_service(&spec_path, svc.clone());
+                        router = router
+                            .route_service(&format!("/api/{}/openapi.json", name), svc.clone());
                     }
                 } else {
                     router = router.merge(swagger_router);
@@ -677,25 +596,9 @@ impl ApiServerBuilder {
             }
         }
 
-        // Root fallback for SPA / static assets — MUST be wired last so all host routes win.
-        if let Some(mut fb) = self.root_fallback {
-            fb = fb.layer(axum::middleware::from_fn(
-                |req: axum::http::Request<axum::body::Body>,
-                 next: axum::middleware::Next| async move {
-                    let start = std::time::Instant::now();
-                    let method = req.method().clone();
-                    let path = req.uri().path().to_string();
-                    let resp: axum::response::Response = next.run(req).await;
-                    log::info!(
-                        "api-fallback {} {} -> {} ({:?})",
-                        method,
-                        path,
-                        resp.status(),
-                        start.elapsed()
-                    );
-                    resp
-                },
-            ));
+        // Root fallback for SPA / static assets — wired last so all host routes win.
+        if let Some(fb) = self.root_fallback {
+            let mut fb = with_tracing(fb, "api-fallback");
             if let Some(cors) = self.cors.clone() {
                 fb = fb.layer(cors);
             }
@@ -708,6 +611,47 @@ impl ApiServerBuilder {
             shutdown_readiness,
         }
     }
+}
+
+/// Wrap a `Router` with a streaming-safe request/response log at `label`.
+fn with_tracing(router: Router, label: &'static str) -> Router {
+    router.layer(axum::middleware::from_fn(
+        move |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {
+            let start = std::time::Instant::now();
+            let method = req.method().clone();
+            let path = req.uri().path().to_string();
+            let resp: axum::response::Response = next.run(req).await;
+            log::info!(
+                "{} {} {} -> {} ({:?})",
+                label,
+                method,
+                path,
+                resp.status(),
+                start.elapsed()
+            );
+            resp
+        },
+    ))
+}
+
+/// Apply optional CORS then optional auth, then nest `subrouter` into `root` at `path`.
+fn nest_with_cors_auth(
+    mut root: Router,
+    path: &str,
+    mut subrouter: Router,
+    cors: Option<tower_http::cors::CorsLayer>,
+    auth: Option<&AuthLayerHolder>,
+) -> Router {
+    if let Some(cors) = cors {
+        subrouter = subrouter.layer(cors);
+    }
+    if let Some(auth) = auth {
+        let svc = auth.0.clone().layer(subrouter);
+        root = root.nest_service(path, svc);
+    } else {
+        root = root.nest_service(path, subrouter.into_service::<axum::body::Body>());
+    }
+    root
 }
 
 fn normalize_mount_path(raw: &str) -> Result<String, String> {

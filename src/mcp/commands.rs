@@ -89,22 +89,25 @@ pub fn create_mcp_serve_command_with_deps(
             let risk_policy = risk_policy.clone();
             let gate = gate.clone();
             Box::pin(async move {
+                // Defaults injected by spec: transport="http", host="127.0.0.1", port="8080", path="/mcp"
                 let transport = args
                     .named
                     .get("transport")
-                    .cloned()
-                    .unwrap_or_else(|| "http".to_string());
+                    .map(|s| s.as_str())
+                    .unwrap_or("http");
 
                 if transport == "stdio" {
-                    if args.named.contains_key("host")
-                        || args.named.contains_key("port")
-                        || args.named.contains_key("path")
-                    {
+                    // Check whether the user explicitly overrode the http-only defaults.
+                    // After spec-default injection, these keys are always present; a value
+                    // equal to the spec default means the user did not override it.
+                    let host_overridden = args.named.get("host").is_some_and(|v| v != "127.0.0.1");
+                    let port_overridden = args.named.get("port").is_some_and(|v| v != "8080");
+                    let path_overridden = args.named.get("path").is_some_and(|v| v != "/mcp");
+                    if host_overridden || port_overridden || path_overridden {
                         return Err(anyhow::anyhow!(
                             "[E004] invalid usage: '--host', '--port', and '--path' are only valid when --transport=http"
                         ));
                     }
-
                     return crate::mcp::serve_mcp_stdio(
                         registry,
                         app_name,
@@ -137,11 +140,10 @@ pub fn create_mcp_serve_command_with_deps(
                     .cloned()
                     .unwrap_or_else(|| "/mcp".to_string());
 
-                let mcp_args = crate::mcp::McpServerArgs { host, port, path };
                 crate::mcp::serve_mcp_with_gate(
                     registry,
                     app_name,
-                    mcp_args,
+                    crate::mcp::McpServerArgs { host, port, path },
                     risk_policy,
                     export_policy,
                     gate,
@@ -348,6 +350,7 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                     E_MCP_INSTALL_EXE_NOT_FOUND, E_MCP_INSTALL_WRITE_FAILED,
                 };
 
+                // Defaults injected by spec: agent="claude", scope="project"
                 let dry_run = args
                     .named
                     .get("dry-run")
@@ -466,6 +469,7 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                         env: env_map,
                     }
                 } else {
+                    // Defaults injected by spec: host="127.0.0.1", port="8080", path="/mcp"
                     let host = args
                         .named
                         .get("host")
