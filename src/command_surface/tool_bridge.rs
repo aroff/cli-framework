@@ -349,19 +349,6 @@ mod tests {
     struct NoopCtx;
     impl AppContext for NoopCtx {}
 
-    struct NoopGate;
-    #[async_trait::async_trait]
-    impl ExecutionGate for NoopGate {
-        async fn before_execute(
-            &self,
-            _cmd: &Command,
-            _args: &CommandArgs,
-            _tier: CommandRiskTier,
-        ) -> Result<(), GateError> {
-            Ok(())
-        }
-    }
-
     fn noop_execute() -> Arc<
         dyn for<'a> Fn(
                 &'a mut dyn crate::app::AppContext,
