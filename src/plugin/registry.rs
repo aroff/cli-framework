@@ -120,7 +120,7 @@ fn validate_manifest_path(
             manifest_path.display(),
             e
         );
-        log::error!(
+        tracing::error!(
             "Plugin path validation failed: cannot resolve manifest path '{}': {}",
             manifest_path.display(),
             e
@@ -133,7 +133,7 @@ fn validate_manifest_path(
             plugin_root.display(),
             e
         );
-        log::error!(
+        tracing::error!(
             "Plugin path validation failed: cannot resolve plugin root '{}': {}",
             plugin_root.display(),
             e
@@ -141,7 +141,7 @@ fn validate_manifest_path(
         err
     })?;
     if !canonical_manifest.starts_with(&canonical_root) {
-        log::error!(
+        tracing::error!(
             "Plugin path escape detected: manifest '{}' is outside root '{}'",
             canonical_manifest.display(),
             canonical_root.display()
@@ -192,11 +192,11 @@ impl PluginRegistryManager {
                         self.loaded_manifests.insert(plugin_id.clone(), manifest);
                     }
                     Err(e) => {
-                        eprintln!("Failed to load plugin {}: {}", plugin_id, e);
+                        tracing::error!(plugin = %plugin_id, error = %e, "failed to load plugin");
                     }
                 },
                 Err(e) => {
-                    eprintln!("Plugin path validation failed for {}: {}", plugin_id, e);
+                    tracing::error!(plugin = %plugin_id, error = %e, "plugin path validation failed");
                 }
             }
         }

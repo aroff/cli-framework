@@ -597,7 +597,7 @@ fn with_tracing(router: Router, label: &'static str) -> Router {
             let method = req.method().clone();
             let path = req.uri().path().to_string();
             let resp: axum::response::Response = next.run(req).await;
-            log::info!(
+            tracing::info!(
                 "{} {} {} -> {} ({:?})",
                 label,
                 method,

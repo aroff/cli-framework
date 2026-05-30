@@ -83,7 +83,7 @@ impl McpToolRegistry {
         policy: McpToolExportPolicy,
     ) -> Self {
         if app_name == "unknown" {
-            log::warn!("MCP: app_name is 'unknown'; use with_version() to set a proper name");
+            tracing::warn!("MCP: app_name is 'unknown'; use with_version() to set a proper name");
         }
         let mut tools = HashMap::new();
         for (path_str, cmd) in registry.all_tree_commands() {
@@ -95,7 +95,7 @@ impl McpToolRegistry {
                 continue;
             }
             if cmd.spec.is_none() {
-                log::warn!(
+                tracing::warn!(
                     "MCP: command '{}' has no CommandSpec; using permissive schema",
                     cmd.id
                 );
@@ -104,7 +104,7 @@ impl McpToolRegistry {
             tools.insert(tool_name, cmd.clone());
         }
         if tools.is_empty() && policy == McpToolExportPolicy::ExposeMcpOnly {
-            log::warn!(
+            tracing::warn!(
                 "MCP: ExposeMcpOnly policy produced an empty tool set; \
                  no commands have expose_mcp: true"
             );
