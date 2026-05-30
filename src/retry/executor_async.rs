@@ -1,29 +1,38 @@
-//! Async retry execution logic
-//!
-//! Executes async operations with retry policies
-
 use crate::retry::policy::RetryPolicy;
 use anyhow::Result;
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 
-/// Async executor that applies retry policies to async operations
+/// Async executor that applies retry policies to async operations.
+/// If `classifier` is set, only errors for which it returns `true` are retried.
+/// If `classifier` is `None`, all errors are retried (backward-compatible default).
+type ErrorClassifier = Arc<dyn Fn(&anyhow::Error) -> bool + Send + Sync>;
+
 pub struct AsyncRetryExecutor {
     policy: RetryPolicy,
+    classifier: Option<ErrorClassifier>,
 }
 
 impl AsyncRetryExecutor {
-    /// Create a new async retry executor with a policy
     pub fn new(policy: RetryPolicy) -> Self {
-        Self { policy }
+        Self {
+            policy,
+            classifier: None,
+        }
     }
 
-    /// Execute an async operation with retry logic
-    ///
-    /// The operation is retried according to the policy if it returns an error.
-    /// Returns the first successful result or the last error if all retries fail.
-    /// T081: Async-compatible retry executor
+    /// Attach a retryability classifier. Errors for which `f` returns `false` stop retrying.
+    pub fn with_classifier<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&anyhow::Error) -> bool + Send + Sync + 'static,
+    {
+        self.classifier = Some(Arc::new(f));
+        self
+    }
+
+    /// Execute an async operation with retry logic and the configured classifier.
     pub async fn execute<F, Fut, T>(&self, mut operation: F) -> Result<T>
     where
         F: FnMut() -> Fut,
@@ -32,9 +41,7 @@ impl AsyncRetryExecutor {
         let mut last_error = None;
 
         for attempt in 0..=self.policy.max_attempts {
-            // Execute the operation
             let result = if let Some(timeout_duration) = self.policy.timeout {
-                // T081: Implement timeout for async operations
                 match tokio::time::timeout(timeout_duration, operation()).await {
                     Ok(Ok(value)) => Ok(value),
                     Ok(Err(e)) => Err(e),
@@ -47,14 +54,17 @@ impl AsyncRetryExecutor {
             match result {
                 Ok(value) => return Ok(value),
                 Err(e) => {
+                    if let Some(ref clf) = self.classifier {
+                        if !clf(&e) {
+                            return Err(e);
+                        }
+                    }
                     last_error = Some(e);
 
-                    // Don't retry if this was the last attempt
                     if attempt >= self.policy.max_attempts {
                         break;
                     }
 
-                    // Calculate delay for next retry
                     let delay = self.policy.delay_for_attempt(attempt);
                     if delay > Duration::ZERO {
                         sleep(delay).await;
@@ -63,7 +73,6 @@ impl AsyncRetryExecutor {
             }
         }
 
-        // Return the last error
         match last_error {
             Some(e) => Err(e),
             None => Err(anyhow::anyhow!(

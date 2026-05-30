@@ -109,10 +109,10 @@ impl CommandRegistry {
 
         if let Some(ref spec) = command.spec {
             for alias in spec.aliases.iter().chain(spec.hidden_aliases.iter()) {
-                if let Some(occupying) = self.tree_commands.get(*alias) {
+                if let Some((existing_key, _)) = self.tree_commands.get_key_value(*alias) {
                     return Err(RegistrationError::AliasConflict {
                         alias: alias.to_string(),
-                        existing_path: occupying.id.to_string(),
+                        existing_path: existing_key.clone(),
                     });
                 }
             }
@@ -218,6 +218,37 @@ mod tests {
             } => {
                 assert_eq!(alias, "hello");
                 assert_eq!(existing_path, "hello");
+            }
+            _ => panic!("expected AliasConflict"),
+        }
+    }
+
+    #[test]
+    fn e008_alias_conflict_reports_full_nested_path() {
+        // Register a nested command: map key is "mcp/serve", Command.id is "serve".
+        // Then register another command using alias "mcp/serve" (the full path string).
+        // Before fix: existing_path = "serve" (Command.id leaf).
+        // After fix: existing_path = "mcp/serve" (full map key).
+        let mut registry = CommandRegistry::new();
+        let path = CommandPath::new(&["mcp", "serve"]).unwrap();
+        registry.register_at(&path, make_cmd("serve")).unwrap();
+
+        let mut cmd = make_cmd("other");
+        cmd.spec = Some(Arc::new(CommandSpec {
+            aliases: vec!["mcp/serve"],
+            ..Default::default()
+        }));
+
+        let err = registry
+            .register_at(&CommandPath::root_for("other"), cmd)
+            .unwrap_err();
+        match err {
+            RegistrationError::AliasConflict {
+                alias,
+                existing_path,
+            } => {
+                assert_eq!(alias, "mcp/serve");
+                assert_eq!(existing_path, "mcp/serve");
             }
             _ => panic!("expected AliasConflict"),
         }

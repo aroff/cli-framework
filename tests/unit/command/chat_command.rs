@@ -1,9 +1,10 @@
 use cli_framework::app::AppContext;
 use cli_framework::command::chat::{
-    ChatToolCallOptions, CommandsAsToolsExecutor, HostToolExecutor, CHAT_ARG_VALIDATION_FAILED,
+    ChatToolCallOptions, HostToolExecutor, CHAT_ARG_VALIDATION_FAILED,
     CHAT_COMMAND_EXECUTION_FAILED, CHAT_TOOL_NOT_FOUND,
 };
 use cli_framework::command::{Command, CommandRegistry};
+use cli_framework::mcp::{McpToolExportPolicy, McpToolRegistry};
 use cli_framework::security::command_risk::CommandRiskPolicy;
 use cli_framework::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use cli_framework::spec::command_tree::CommandPath;
@@ -64,6 +65,15 @@ fn make_spec_command(id: &'static str) -> Command {
     }
 }
 
+fn make_registry_executor(registry: &CommandRegistry) -> McpToolRegistry {
+    McpToolRegistry::from_command_registry_with_policy(
+        registry,
+        "myapp",
+        McpToolExportPolicy::AllCommands,
+    )
+    .with_risk_policy(CommandRiskPolicy::default())
+}
+
 #[tokio::test]
 async fn tool_names_match_mcp_convention() {
     let mut registry = CommandRegistry::new();
@@ -72,19 +82,84 @@ async fn tool_names_match_mcp_convention() {
         .register_at(&path, make_spec_command("do"))
         .unwrap();
 
-    let exec =
-        CommandsAsToolsExecutor::new(&registry, "myapp", CommandRiskPolicy::default()).unwrap();
-
+    let exec = make_registry_executor(&registry);
     let tools = exec.list_tools();
     let names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
     assert!(names.iter().any(|n| n == "myapp.group.do"));
 }
 
 #[tokio::test]
+async fn completion_command_not_exposed_as_tool() {
+    let mut registry = CommandRegistry::new();
+    registry.register(Command {
+        id: "completion",
+        summary: "shell completion",
+        syntax: None,
+        category: None,
+        spec: None,
+        validator: None,
+        expose_mcp: false,
+        execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
+    });
+    registry.register(make_spec_command("deploy"));
+
+    let exec = make_registry_executor(&registry);
+    let tools = exec.list_tools();
+    let names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
+    assert!(
+        !names.iter().any(|n| n.ends_with(".completion")),
+        "completion must not appear in tool list, got: {:?}",
+        names
+    );
+}
+
+#[tokio::test]
+async fn expose_mcp_only_policy_filters_commands() {
+    let mut registry = CommandRegistry::new();
+    registry.register(Command {
+        id: "private_cmd",
+        summary: "not exported",
+        syntax: None,
+        category: None,
+        spec: None,
+        validator: None,
+        expose_mcp: false,
+        execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
+    });
+    registry.register(Command {
+        id: "public_cmd",
+        summary: "exported",
+        syntax: None,
+        category: None,
+        spec: None,
+        validator: None,
+        expose_mcp: true,
+        execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
+    });
+
+    let exec = McpToolRegistry::from_command_registry_with_policy(
+        &registry,
+        "myapp",
+        McpToolExportPolicy::ExposeMcpOnly,
+    )
+    .with_risk_policy(CommandRiskPolicy::default());
+
+    let tools = exec.list_tools();
+    let names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
+    assert!(
+        names.iter().any(|n| n == "myapp.public_cmd"),
+        "public_cmd should be exposed"
+    );
+    assert!(
+        !names.iter().any(|n| n == "myapp.private_cmd"),
+        "private_cmd must not be exposed with ExposeMcpOnly"
+    );
+}
+
+#[tokio::test]
 async fn unknown_tool_returns_chat_tool_not_found() {
     let registry = CommandRegistry::new();
-    let exec =
-        CommandsAsToolsExecutor::new(&registry, "myapp", CommandRiskPolicy::default()).unwrap();
+    let exec = make_registry_executor(&registry);
     let mut ctx = Ctx::default();
 
     let err = exec
@@ -108,8 +183,7 @@ async fn invalid_typed_args_returns_chat_arg_validation_failed() {
     let mut registry = CommandRegistry::new();
     registry.register(make_spec_command("do"));
 
-    let exec =
-        CommandsAsToolsExecutor::new(&registry, "myapp", CommandRiskPolicy::default()).unwrap();
+    let exec = make_registry_executor(&registry);
     let mut ctx = Ctx::default();
 
     let err = exec
@@ -142,8 +216,7 @@ async fn command_execution_error_surfaces_chat_command_execution_failed() {
         execute: Arc::new(|_ctx, _args| Box::pin(async { Err(anyhow::anyhow!("nope")) })),
     });
 
-    let exec =
-        CommandsAsToolsExecutor::new(&registry, "myapp", CommandRiskPolicy::default()).unwrap();
+    let exec = make_registry_executor(&registry);
     let mut ctx = Ctx::default();
 
     let err = exec

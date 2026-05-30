@@ -65,6 +65,9 @@ cargo test --verbose
 cargo test --features chat --verbose
 cargo test --features mcp-server --verbose
 cargo test --features "chat,mcp-server" --verbose
+# Build examples explicitly — `cargo test` skips them, so dead-code in
+# examples is only caught here (RUSTFLAGS=-D warnings applies).
+cargo build --examples --verbose
 set +x
 echo -e "${GREEN}✓ Feature-matrix tests passed${NC}"
 echo ""

@@ -376,6 +376,40 @@ fn e007_registration_collision_produces_e007_code() {
 // ── E008: alias conflict ──────────────────────────────────────────────────────
 
 #[test]
+fn e008_alias_conflict_reports_full_nested_path() {
+    use cli_framework::spec::command_tree::CommandSpec as CmdSpec;
+
+    // Register nested command at "mcp/serve" (key="mcp/serve", id="serve").
+    // Register another command using alias "mcp/serve" (the full path string).
+    // Verify the error reports the full path "mcp/serve", not just the leaf "serve".
+    let mut registry = CommandRegistry::new();
+    let path = CommandPath::new(&["mcp", "serve"]).unwrap();
+    registry.register_at(&path, noop_cmd("serve")).unwrap();
+
+    let mut cmd = noop_cmd("other");
+    cmd.spec = Some(Arc::new(CmdSpec {
+        aliases: vec!["mcp/serve"],
+        ..Default::default()
+    }));
+
+    let err = registry
+        .register_at(&CommandPath::root_for("other"), cmd)
+        .unwrap_err();
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("mcp/serve"),
+        "AliasConflict must report full path 'mcp/serve', got: {}",
+        msg
+    );
+    assert!(
+        msg.contains("E008"),
+        "AliasConflict must contain E008, got: {}",
+        msg
+    );
+}
+
+#[test]
 fn e008_alias_conflict_produces_e008_code() {
     use cli_framework::spec::command_tree::CommandSpec as CmdSpec;
 

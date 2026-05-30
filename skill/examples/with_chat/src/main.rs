@@ -8,17 +8,7 @@ use cli_framework::prelude::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-struct MyApp {
-    counter: Arc<AtomicU64>,
-}
-
-impl Default for MyApp {
-    fn default() -> Self {
-        Self {
-            counter: Arc::new(AtomicU64::new(0)),
-        }
-    }
-}
+struct MyApp;
 
 impl AppContext for MyApp {}
 
@@ -74,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
         .register_command(inc_command)?
         .register_command(status_command)?;
 
-    let mut app = builder.build(MyApp::default())?;
+    let mut app = builder.build(MyApp)?;
     app.run().await?;
     let _ = counter;
     Ok(())
