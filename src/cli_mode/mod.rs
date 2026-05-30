@@ -124,9 +124,17 @@ pub fn terminal_height() -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    // Serialize all tests that mutate COLUMNS/ROWS to prevent env-var races.
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     #[test]
     fn terminal_width_reads_columns_env() {
+        let _g = env_lock();
         std::env::set_var("COLUMNS", "120");
         let w = terminal_width();
         std::env::remove_var("COLUMNS");
@@ -135,6 +143,7 @@ mod tests {
 
     #[test]
     fn terminal_height_reads_rows_env() {
+        let _g = env_lock();
         std::env::set_var("ROWS", "40");
         let h = terminal_height();
         std::env::remove_var("ROWS");
@@ -143,6 +152,7 @@ mod tests {
 
     #[test]
     fn terminal_width_none_when_unset_non_tty() {
+        let _g = env_lock();
         std::env::remove_var("COLUMNS");
         if !is_stdout_tty() {
             assert_eq!(terminal_width(), None);
@@ -151,6 +161,7 @@ mod tests {
 
     #[test]
     fn terminal_height_none_when_unset_non_tty() {
+        let _g = env_lock();
         std::env::remove_var("ROWS");
         if !is_stdout_tty() {
             assert_eq!(terminal_height(), None);
