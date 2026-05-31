@@ -41,19 +41,26 @@ impl AsyncRetryExecutor {
         let mut last_error = None;
 
         for attempt in 0..=self.policy.max_attempts {
-            let result = if let Some(timeout_duration) = self.policy.timeout {
-                match tokio::time::timeout(timeout_duration, operation()).await {
-                    Ok(Ok(value)) => Ok(value),
-                    Ok(Err(e)) => Err(e),
-                    Err(_) => Err(anyhow::anyhow!("Operation timed out")),
-                }
-            } else {
-                operation().await
-            };
+            // Track whether this attempt failed specifically due to the
+            // per-attempt timeout, so `retry_on_timeout` can be honored below.
+            let (result, timed_out): (Result<T>, bool) =
+                if let Some(timeout_duration) = self.policy.timeout {
+                    match tokio::time::timeout(timeout_duration, operation()).await {
+                        Ok(Ok(value)) => (Ok(value), false),
+                        Ok(Err(e)) => (Err(e), false),
+                        Err(_) => (Err(anyhow::anyhow!("Operation timed out")), true),
+                    }
+                } else {
+                    (operation().await, false)
+                };
 
             match result {
                 Ok(value) => return Ok(value),
                 Err(e) => {
+                    // A timeout is retried only when the policy opts in.
+                    if timed_out && !self.policy.retry_on_timeout {
+                        return Err(e);
+                    }
                     if let Some(ref clf) = self.classifier {
                         if !clf(&e) {
                             return Err(e);

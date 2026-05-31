@@ -10,6 +10,14 @@
 - `ApiServerBuilder::root_fallback(axum::Router)`: attach a catch-all router to handle requests not matched by any framework or application route. Intended for serving a SPA or static assets at the root on the same listener as the versioned API. Receives the configured `CorsLayer` (if any); auth is intentionally not applied by default. Framework routes always take priority over the fallback.
 - `ApiServerBuilder::health_version(impl Into<String>)`: override the version string reported by `GET /healthz`. By default `/healthz` reports the framework's own crate version (`env!("CARGO_PKG_VERSION")`), fixed at cli-framework's compile time; consumers can call this to make `/healthz` report THEIR version instead. Back-compatible: when unset, `/healthz` reports the framework version exactly as before.
 
+### Fixed
+
+- `AsyncRetryExecutor` now honors `RetryPolicy::retry_on_timeout`. Previously the flag was ignored
+  and a per-attempt timeout was always retried; with `retry_on_timeout(false)` a timed-out attempt
+  now fails immediately without further retries. Non-timeout operation errors continue to retry
+  regardless of the flag. Added a `unit_retry` test suite covering policy backoff math, the
+  sync/async executors, the async error classifier, and timeout handling.
+
 ### Breaking
 
 - Removed `cli_framework::auth` and `cli_framework::data_source::DataSource` (and the prelude
