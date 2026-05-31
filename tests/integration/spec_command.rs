@@ -256,10 +256,14 @@ async fn spec_include_hidden_flag_includes_hidden() {
     );
 }
 
-// ── CS001: unknown format ─────────────────────────────────────────────────────
+// ── CS001 / R4a: unknown format rejected as usage error ─────────────────────
+//
+// With R4a Enum validation, `--format html` is rejected at parse time (E004)
+// before the command handler runs.  The error is a UsageError (exit 2), and
+// the message names the invalid value and the allowed set.
 
 #[tokio::test]
-async fn spec_format_html_cs001_error() {
+async fn spec_format_html_rejected_as_usage_error() {
     let mut app = AppBuilder::new()
         .register_command(noop_command("deploy"))
         .unwrap()
@@ -276,11 +280,18 @@ async fn spec_format_html_cs001_error() {
         .await;
 
     assert!(result.is_err(), "spec --format html should fail");
-    let err_msg = result.unwrap_err().to_string();
+    let err = result.unwrap_err();
+    // R4a: parse-time Enum validation returns UsageError (exit 2).
     assert!(
-        err_msg.contains("CS001"),
-        "error should contain CS001, got: {}",
-        err_msg
+        err.downcast_ref::<cli_framework::UsageError>().is_some(),
+        "expected UsageError for invalid Enum value, got: {}",
+        err
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("html"),
+        "error should name the invalid value, got: {}",
+        msg
     );
 }
 

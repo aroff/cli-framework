@@ -308,7 +308,7 @@ mod clap_dispatch_tests {
     }
 
     #[tokio::test]
-    async fn clap_unknown_command_returns_ok() {
+    async fn clap_unknown_command_returns_usage_error() {
         let mut app = AppBuilder::new()
             .with_version("myapp", "1.2.3")
             .build(DummyCtx)
@@ -317,7 +317,15 @@ mod clap_dispatch_tests {
         let result = app
             .run_with_args(vec!["myapp".to_string(), "bogus".to_string()])
             .await;
-        assert!(result.is_ok());
+        // R1: unrecognized subcommand must return Err(UsageError), not Ok.
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .downcast_ref::<cli_framework::UsageError>()
+                .is_some(),
+            "expected UsageError for unknown command"
+        );
     }
 
     #[tokio::test]
@@ -445,7 +453,8 @@ mod clap_dispatch_tests {
         let mut harness = CliTestHarness::new(app);
 
         let out = harness.run(&["myapp", "bogus"]).await;
-        out.assert_exit_code(0);
+        // R1 + R5: unrecognized subcommand must exit 2 (usage error).
+        out.assert_exit_code(2);
         out.assert_stderr_contains("unrecognized");
     }
 
@@ -709,7 +718,9 @@ async fn completions_hidden_alias_routes_but_does_not_appear_in_help() {
 }
 
 #[tokio::test]
-async fn completion_invalid_shell_emits_e013_and_returns_error() {
+async fn completion_invalid_shell_emits_single_diagnostic_and_returns_usage_error() {
+    // R3 + R4a: invalid shell value is rejected at parse time (Enum validation → E004).
+    // The error is emitted exactly once (no double-print from E013 path).
     let mut app = AppBuilder::new()
         .with_version("myapp", "1.0.0")
         .build(DummyCtx)
@@ -725,10 +736,26 @@ async fn completion_invalid_shell_emits_e013_and_returns_error() {
         .await;
     let stderr = stderr_cap.finish();
 
+    // R1/R5: must return Err(UsageError).
     assert!(result.is_err());
+    let err = result.unwrap_err();
     assert!(
-        stderr.lines().count() == 1 && stderr.contains("error[E013]:"),
-        "expected exactly one diagnostic line containing error[E013]:, got:\n{}",
+        err.downcast_ref::<cli_framework::UsageError>().is_some(),
+        "expected UsageError, got: {}",
+        err
+    );
+
+    // R3: exactly one diagnostic line, mentions the invalid value.
+    let diag_lines: Vec<&str> = stderr.lines().filter(|l| l.contains("error[")).collect();
+    assert_eq!(
+        diag_lines.len(),
+        1,
+        "expected exactly one error diagnostic line, got:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("invalidshell"),
+        "diagnostic should name the invalid value, got:\n{}",
         stderr
     );
 }

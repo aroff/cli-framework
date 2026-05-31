@@ -31,7 +31,11 @@ impl<C: AppContext + 'static> CliTestHarness<C> {
         let stderr = DiagnosticReporter::take_capture();
         self.app.stdout_capture = None;
 
-        let exit_code = if result.is_ok() { 0 } else { 1 };
+        let exit_code = match &result {
+            Ok(()) => 0,
+            Err(e) if e.downcast_ref::<crate::app::UsageError>().is_some() => 2,
+            Err(_) => 1,
+        };
         let stdout_bytes = stdout_buf.lock().unwrap().clone();
 
         TestOutput {

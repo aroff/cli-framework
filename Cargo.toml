@@ -207,6 +207,11 @@ name = "unit_parser_diagnostics"
 path = "tests/unit/parser_diagnostics.rs"
 
 [[test]]
+name = "unit_exit_codes"
+path = "tests/unit/exit_codes.rs"
+required-features = ["testkit"]
+
+[[test]]
 name = "unit_mcp_tool_export"
 path = "tests/unit/mcp_tool_export.rs"
 required-features = ["mcp-server"]

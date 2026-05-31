@@ -22,7 +22,9 @@ use crate::app::AppMeta;
 use crate::command::{CommandArgs, CommandRegistry};
 use crate::parser::clap_mapper::{build_typed_clap_command, map_matches_to_typed_args};
 use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
-use crate::parser::error_codes::{E_NESTED_COMMAND_NOT_FOUND, E_UNKNOWN_COMMAND, E_UNKNOWN_FLAG};
+use crate::parser::error_codes::{
+    E_MISSING_REQUIRED, E_NESTED_COMMAND_NOT_FOUND, E_UNKNOWN_COMMAND, E_UNKNOWN_FLAG,
+};
 use crate::parser::outcome::ParseOutcome;
 use crate::spec::command_tree::CommandPath;
 
@@ -304,6 +306,32 @@ pub fn parse_with_clap(
                     suggestion: Some("Use --help to see available arguments".to_string()),
                     span: None,
                 }),
+                ErrorKind::MissingRequiredArgument => {
+                    // Extract missing argument names from clap's error context.
+                    use clap::error::ContextKind;
+                    let missing: Vec<String> = e
+                        .context()
+                        .filter_map(|(kind, val)| {
+                            if kind == ContextKind::InvalidArg {
+                                Some(val.to_string())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    let arg_desc = if missing.is_empty() {
+                        "required argument".to_string()
+                    } else {
+                        missing.join(", ")
+                    };
+                    ParseOutcome::ParseError(Diagnostic {
+                        code: E_MISSING_REQUIRED,
+                        category: DiagnosticCategory::Parse,
+                        message: format!("missing required argument {}", arg_desc),
+                        suggestion: Some("Use --help to see required arguments".to_string()),
+                        span: None,
+                    })
+                }
                 _ => {
                     let cmd_arg = args.get(1).cloned().unwrap_or_default();
                     // Heuristic: if there are more than 2 argv tokens (prog + group + sub),

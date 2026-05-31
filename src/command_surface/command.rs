@@ -37,10 +37,25 @@ pub fn create_spec_command(app_name: &'static str, app_version: &'static str) ->
 
             Box::pin(async move {
                 if format_str != "json" && format_str != "yaml" && format_str != "markdown" {
-                    return Err(anyhow::anyhow!(
-                        "CS001: unknown format '{}'; expected json, yaml, or markdown",
+                    // R4a rejects invalid Enum values at parse time; this is a defensive
+                    // fallback for the legacy (non-typed) path only.
+                    use crate::app::diagnostic_reporter::DiagnosticReporter;
+                    use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
+                    use crate::parser::error_codes::E_UNKNOWN_SPEC_FORMAT;
+                    DiagnosticReporter::report(&Diagnostic {
+                        code: E_UNKNOWN_SPEC_FORMAT,
+                        category: DiagnosticCategory::Validation,
+                        message: format!(
+                            "unknown format '{}'; expected json, yaml, or markdown",
+                            format_str
+                        ),
+                        suggestion: Some("Use --format json, yaml, or markdown".to_string()),
+                        span: Some(format_str.clone()),
+                    });
+                    return Err(anyhow::Error::new(crate::app::UsageError(format!(
+                        "unknown format '{}'; expected json, yaml, or markdown",
                         format_str
-                    ));
+                    ))));
                 }
 
                 let doc = doc.unwrap_or_else(|| {
@@ -100,6 +115,8 @@ pub fn create_completion_command(
                 };
                 use std::io::Write;
 
+                // R4a (Enum validation) rejects invalid shell values at parse time,
+                // so shell_token is always a valid value when this closure runs.
                 let shell_token = args
                     .named
                     .get("shell")
@@ -108,30 +125,17 @@ pub fn create_completion_command(
                     .unwrap_or_default();
 
                 let shell = match shell_token.as_str() {
-                    "bash" => Some(Shell::Bash),
-                    "zsh" => Some(Shell::Zsh),
-                    "fish" => Some(Shell::Fish),
-                    "powershell" | "pwsh" => Some(Shell::PowerShell),
-                    _ => None,
-                };
-
-                let Some(shell) = shell else {
-                    use crate::app::diagnostic_reporter::DiagnosticReporter;
-                    use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
-                    DiagnosticReporter::report(&Diagnostic {
-                        code: crate::parser::error_codes::E_UNSUPPORTED_SHELL,
-                        category: DiagnosticCategory::Completion,
-                        message: format!(
-                            "unsupported shell '{}'; expected bash, zsh, fish, powershell, or pwsh",
-                            shell_token
-                        ),
-                        suggestion: None,
-                        span: None,
-                    });
-                    return Err(anyhow::anyhow!(
-                        "unsupported shell '{}'; expected bash, zsh, fish, or powershell",
-                        shell_token
-                    ));
+                    "bash" => Shell::Bash,
+                    "zsh" => Shell::Zsh,
+                    "fish" => Shell::Fish,
+                    "powershell" | "pwsh" => Shell::PowerShell,
+                    other => {
+                        // Defensive fallback; should not be reached after R4a.
+                        return Err(anyhow::anyhow!(
+                            "E013: unsupported shell '{}'; expected bash, zsh, fish, powershell, or pwsh",
+                            other
+                        ));
+                    }
                 };
 
                 let registry = ctx.opt_registry();
