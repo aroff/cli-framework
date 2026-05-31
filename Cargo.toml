@@ -1,7 +1,24 @@
+[workspace]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.83.0"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+tokio = { version = "1.52", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+
 [package]
 name = "cli-framework"
 version = "0.4.2"
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
 authors = ["CLI Framework Team"]
 description = "A pure CLI framework with AI-powered command resolution and plugin system"
 license = "Apache-2.0"
@@ -11,21 +28,21 @@ repository = "https://github.com/aroff/cli-framework"
 anyhow = "1.0"
 regex = "1"
 thiserror = "1.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-serde_yaml = "0.9"
-tokio = { version = "1.0", features = ["full"] }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+tokio.workspace = true
 async-trait = "0.1"
 tokio-util = { version = "0.7", features = ["time"], optional = true }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { workspace = true, features = ["json"] }
 httpdate = "1.0"
-log = "0.4"
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter", "fmt"] }
 clap = { version = "4.0", features = ["derive", "string"] }
 toml = "0.8"
 dirs = "5.0"
-uuid = { version = "1.0", features = ["v4"] }
+uuid.workspace = true
 crossterm = "0.28"
-# ailoop-core integration
 ailoop-core = { git = "https://github.com/goailoop/ailoop.git", rev = "dd186c055dbfcbf5c32c8e58b251eaf0bf07343b", default-features = false }
 
 # Optional dependencies for CLI output utilities
@@ -47,6 +64,8 @@ aikit-sdk = { git = "https://github.com/goaikit/aikit.git", package = "aikit-sdk
 aikit-agent = { git = "https://github.com/goaikit/aikit.git", package = "aikit-agent", rev = "a22a619fa61d2fce7f7364c18199b75b72d74e4b", optional = true }
 # Optional Swagger UI dependency for api-swagger feature
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"], optional = true }
+# Optional emulation dependencies
+mockall = { version = "0.13", optional = true }
 
 # Optional OpenTelemetry dependencies (applications can enable)
 # Note: Applications should add these dependencies themselves when using observability feature
@@ -58,6 +77,7 @@ utoipa-swagger-ui = { version = "9.0.2", features = ["axum"], optional = true }
 reqwest = { version = "0.12", features = ["json"] }
 wiremock = "0.6"
 env_logger = "0.11"
+log = "0.4"
 tempfile = "3.0"
 libc = "0.2"
 insta = { version = "1", features = ["json"] }
@@ -73,7 +93,7 @@ default = ["clap-dispatch", "chat"]
 # observability = ["opentelemetry", "opentelemetry-otlp", "opentelemetry-sdk"]
 # Note: OpenTelemetry integration will be implemented in src/observability/mod.rs
 # Applications should add opentelemetry crates to their own Cargo.toml when using this feature
-observability = []
+observability = ["dep:tracing-subscriber"]
 # CLI output utilities optional features
 table-advanced = ["comfy-table"]
 progress = ["indicatif"]
@@ -99,6 +119,8 @@ project-config = []
 chat = ["dep:aikit-agent", "dep:tokio-util"]
 # Swagger UI / OpenAPI docs — served OpenAPI spec at /api/{version}/openapi.json + embedded Swagger UI at /api/docs
 api-swagger = ["api-server", "dep:utoipa-swagger-ui"]
+# Emulation support — mock executors and test harnesses for testing CLI behavior
+emulation = ["dep:mockall"]
 
 [lib]
 name = "cli_framework"

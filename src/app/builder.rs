@@ -218,7 +218,7 @@ impl AppBuilder {
                 );
                 self.command_registry.register(chat_command);
             } else {
-                log::warn!("'chat' command already registered; skipping built-in chat command");
+                tracing::warn!("'chat' command already registered; skipping built-in chat command");
             }
         }
 
@@ -231,7 +231,7 @@ impl AppBuilder {
                     ));
                     self.command_registry.register(cmd);
                 } else {
-                    log::warn!(
+                    tracing::warn!(
                         "'doctor' command already registered; skipping auto-registration from doctor_checks"
                     );
                 }
@@ -246,7 +246,7 @@ impl AppBuilder {
             );
             self.command_registry.register(spec_cmd);
         } else {
-            log::warn!("'spec' command already registered; skipping built-in spec command");
+            tracing::warn!("'spec' command already registered; skipping built-in spec command");
         }
 
         // Auto-register built-in `completion` command (always-on, opt-out via without_completion()).
@@ -432,7 +432,7 @@ impl<C: AppContext> App<C> {
                 let cmd_id = command_path.leaf().unwrap_or("").to_string();
                 if cmd_id == "version" && self.command_registry.get("version").is_none() {
                     if self.app_name == "unknown" {
-                        log::warn!("version called but with_version() was not configured");
+                        tracing::warn!("version called but with_version() was not configured");
                     }
                     self.framework_println(&self.version_string());
                     return Ok(());

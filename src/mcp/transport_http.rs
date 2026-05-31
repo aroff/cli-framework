@@ -51,13 +51,13 @@ pub async fn start_streamable_http(
         )
     })?;
 
-    log::info!(
+    tracing::info!(
         "MCP server listening on http://{}:{}{}",
         args.host,
         args.port,
         args.path
     );
-    log::info!("MCP: exported {} tools", tool_registry.tool_count());
+    tracing::info!("MCP: exported {} tools", tool_registry.tool_count());
 
     let router = mcp_axum_router(tool_registry, &args.path);
 

@@ -176,7 +176,7 @@ fn build_leaf_clap_command(segment: &str, cmd: &crate::command::Command) -> clap
 }
 
 fn build_legacy_clap_command_with_name(name: &str, cmd: &crate::command::Command) -> clap::Command {
-    log::warn!(
+    tracing::warn!(
         "legacy-parse-path: command '{}' has no ArgSpec; using trailing var-arg",
         cmd.id
     );

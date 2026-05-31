@@ -110,6 +110,10 @@ pub mod tower;
 #[cfg(feature = "project-config")]
 pub mod project_config;
 
+// Emulation support — mock executors and test harnesses
+#[cfg(feature = "emulation")]
+pub mod emulation;
+
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::app::{AppBuilder, AppContext, AppMeta};
@@ -128,4 +132,16 @@ pub mod prelude {
         find_and_load, find_and_load_with_options, find_file_upward, find_file_upward_with_options,
         load_toml_file, load_toml_str, DiscoverOptions, ProjectConfigError, ProjectRoot,
     };
+}
+
+#[cfg(feature = "observability")]
+pub fn init_default_logging() {
+    use tracing_subscriber::EnvFilter;
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(true)
+        .init();
 }

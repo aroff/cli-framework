@@ -15,7 +15,7 @@ pub fn sanitize_git_sha_short(sha: Option<&'static str>) -> Option<&'static str>
     let is_hex = sha.chars().all(|c| c.is_ascii_hexdigit());
 
     if !is_valid_len || !is_hex {
-        log::warn!(
+        tracing::warn!(
             "ERR_VERSION_SHA_001: invalid git sha short {:?} (len={}, hex={}); omitting from version output",
             sha,
             len,

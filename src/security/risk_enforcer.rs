@@ -72,7 +72,7 @@ impl RiskEnforcer {
             CommandRiskTier::Safe => Ok(()),
             CommandRiskTier::Sensitive => {
                 if !ailoop_available && !crate::cli_mode::is_interactive() && !assume_yes {
-                    log::warn!(
+                    tracing::warn!(
                         "Sensitive command '{}' blocked in non-interactive mode without --yes",
                         command_id
                     );
@@ -85,14 +85,14 @@ impl RiskEnforcer {
                     .map(|v| v == "1" || v == "true")
                     .unwrap_or(false);
                 if !env_allowed {
-                    log::warn!(
+                    tracing::warn!(
                         "Destructive command '{}' blocked: ALLOW_DESTRUCTIVE_COMMANDS not set",
                         command_id
                     );
                     return Err(PrefightError::DestructiveEnvGated);
                 }
                 if !ailoop_available && !crate::cli_mode::is_interactive() {
-                    log::warn!(
+                    tracing::warn!(
                         "Destructive command '{}' blocked: non-interactive terminal",
                         command_id
                     );

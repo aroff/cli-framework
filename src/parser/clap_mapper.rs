@@ -26,7 +26,7 @@ pub fn build_typed_clap_command(id: &str, spec: &CommandSpec) -> clap::Command {
 
 /// Build a legacy `clap::Command` with a trailing var-arg (no spec required).
 pub fn build_legacy_clap_command(cmd: &Command) -> clap::Command {
-    log::warn!(
+    tracing::warn!(
         "legacy-parse-path: command '{}' has no ArgSpec; using trailing var-arg",
         cmd.id
     );
