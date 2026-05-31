@@ -100,7 +100,7 @@ impl McpToolRegistry {
                     cmd.id
                 );
             }
-            let tool_name = format!("{}.{}", app_name, path_str.replace('/', "."));
+            let tool_name = format!("{}_{}", app_name, path_str.replace('/', "_"));
             tools.insert(tool_name, cmd.clone());
         }
         if tools.is_empty() && policy == McpToolExportPolicy::ExposeMcpOnly {
