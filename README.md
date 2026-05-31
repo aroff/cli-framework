@@ -150,6 +150,45 @@ Versions that set `openapi: None` get no spec endpoint and do not appear in the 
 
 If your app already defines a root-level `completion` command, call `AppBuilder::without_completion()` to opt out of auto-registration and avoid a registration collision.
 
+## Exit-code contract
+
+`App::run()` enforces a two-tier exit-code contract. Consumers can rely on this in CI scripts (`set -e`, `if`-chains, etc.):
+
+| Outcome | Exit code |
+|---------|-----------|
+| Success | **0** |
+| Usage / parse error | **2** |
+| Runtime error | **1** |
+
+**Exit 2 (usage error)** covers any error where the user supplied invalid or missing input before the command handler ran:
+
+- Unrecognized subcommand (E001)
+- Unknown flag (E002)
+- Missing required argument (E003)
+- Invalid value type or out-of-set Enum value (E004)
+- Conflicting arguments (E005)
+- Unsatisfied `requires` constraint (E006)
+- Unsupported `completion` shell (E013)
+- Unknown `spec --format` value (CS001)
+- Unknown `doctor --check` id (DR003)
+
+**Exit 1 (runtime error)** covers failures that occur *after* arguments are accepted: agent/IO failures, `doctor` reporting health problems (a successful diagnostic run that *found* errors is a runtime result, not a usage error).
+
+These errors are signalled to the caller as `Err(UsageError)` from `App::run_with_args()` so test code can inspect the type directly:
+
+```rust
+use cli_framework::UsageError;
+
+let result = app.run_with_args(args).await;
+if let Err(e) = result {
+    if e.downcast_ref::<UsageError>().is_some() {
+        // parse/usage error — would have been exit 2 in a real binary
+    } else {
+        // runtime error — would have been exit 1
+    }
+}
+```
+
 ## Documentation
 
 | Document | What it covers |
