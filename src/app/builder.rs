@@ -13,6 +13,24 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// Marker error for parse and usage failures.
+///
+/// When [`App::run`] receives this error from [`App::run_with_args`] it calls
+/// `std::process::exit(2)` — the diagnostic message has already been printed
+/// to stderr by [`DiagnosticReporter`][crate::app::diagnostic_reporter::DiagnosticReporter].
+///
+/// # Exit-code contract (spec 012 §R5)
+///
+/// - **Usage / parse errors → exit `2`**: unrecognized subcommand, missing required
+///   argument, invalid Enum value, unsupported completion shell, unknown spec format,
+///   unknown doctor check, validation failures (E003–E006).
+/// - **Runtime errors → exit `1`**: agent/IO failures, `doctor` reporting health
+///   problems (a successful diagnostic run that found errors is a runtime result).
+/// - **`0`** remains success only.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct UsageError(pub String);
+
 #[cfg(feature = "testkit")]
 use std::sync::Mutex;
 
@@ -400,7 +418,16 @@ impl<C: AppContext> App<C> {
 
     pub async fn run(&mut self) -> Result<()> {
         let args: Vec<String> = std::env::args().collect();
-        self.run_with_args(args).await
+        match self.run_with_args(args).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                if e.downcast_ref::<UsageError>().is_some() {
+                    // Diagnostic already printed by DiagnosticReporter; exit 2 per R5.
+                    std::process::exit(2);
+                }
+                Err(e)
+            }
+        }
     }
 
     pub fn rebuild_clap_root(&mut self) {
@@ -447,19 +474,20 @@ impl<C: AppContext> App<C> {
                                 .await
                         }
                         None => {
+                            let msg = format!(
+                                "nested command '{}' not found",
+                                command_path.to_path_string()
+                            );
                             DiagnosticReporter::report(&Diagnostic {
                                 code: E_NESTED_COMMAND_NOT_FOUND,
                                 category: DiagnosticCategory::Parse,
-                                message: format!(
-                                    "nested command '{}' not found",
-                                    command_path.to_path_string()
-                                ),
+                                message: msg.clone(),
                                 suggestion: Some(
                                     "Use --help to see available commands".to_string(),
                                 ),
                                 span: None,
                             });
-                            Ok(())
+                            Err(anyhow::Error::new(UsageError(msg)))
                         }
                     }
                 } else {
@@ -488,7 +516,7 @@ impl<C: AppContext> App<C> {
                     }
                 }
                 DiagnosticReporter::report(&d);
-                Ok(())
+                Err(anyhow::Error::new(UsageError(d.message.clone())))
             }
         }
     }
@@ -581,7 +609,9 @@ impl<C: AppContext> App<C> {
             if !diags.is_empty() {
                 use crate::app::diagnostic_reporter::DiagnosticReporter;
                 DiagnosticReporter::report_all(&diags);
-                return Err(anyhow::anyhow!("validation failed"));
+                return Err(anyhow::Error::new(UsageError(
+                    "validation failed".to_string(),
+                )));
             }
         }
 

@@ -1,7 +1,11 @@
+use crate::app::diagnostic_reporter::DiagnosticReporter;
+use crate::app::UsageError;
 use crate::command::Command;
 use crate::doctor::check::{CheckSeverity, DoctorCheck, DoctorFinding, DoctorFuture};
 use crate::doctor::render::{render_json, render_terminal};
 use crate::doctor::runner::DoctorReport;
+use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
+use crate::parser::error_codes::E_UNKNOWN_DOCTOR_CHECK;
 use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use crate::spec::command_tree::CommandSpec;
 use std::sync::Arc;
@@ -24,23 +28,30 @@ pub fn create_doctor_command(checks: Vec<Arc<dyn DoctorCheck>>) -> Command {
             // ctx is only borrowed here — DoctorFuture is 'static so it does not
             // capture ctx, meaning ctx is released before any .await below.
             let mut pending: Vec<(usize, DoctorFuture)> = Vec::new();
-            let mut pre_findings: Vec<DoctorFinding> = Vec::new();
             let total: usize;
 
             if let Some(ref id) = filter_id {
-                total = 1;
                 match checks.iter().find(|c| c.id() == id.as_str()) {
-                    Some(check) => pending.push((0, check.run(ctx))),
-                    None => pre_findings.push(DoctorFinding {
-                        check_id: id.clone(),
-                        title: format!("Unknown check '{}'", id),
-                        severity: CheckSeverity::Error,
-                        message: format!("DR003: unknown check id '{}'", id),
-                        detail: None,
-                        remediation: Some(
-                            "Run 'doctor' without --check to see all available checks.".to_string(),
-                        ),
-                    }),
+                    Some(check) => {
+                        total = 1;
+                        pending.push((0, check.run(ctx)));
+                    }
+                    None => {
+                        // Usage error: unknown check id — report and return exit 2.
+                        let err_msg = format!("unknown check id '{}'", id);
+                        DiagnosticReporter::report(&Diagnostic {
+                            code: E_UNKNOWN_DOCTOR_CHECK,
+                            category: DiagnosticCategory::Validation,
+                            message: err_msg.clone(),
+                            suggestion: Some(
+                                "Run 'doctor' without --check to see available checks.".to_string(),
+                            ),
+                            span: Some(id.clone()),
+                        });
+                        return Box::pin(
+                            async move { Err(anyhow::Error::new(UsageError(err_msg))) },
+                        );
+                    }
                 }
             } else {
                 total = checks.len();
@@ -84,8 +95,7 @@ pub fn create_doctor_command(checks: Vec<Arc<dyn DoctorCheck>>) -> Command {
                     }
                 }
 
-                let mut findings: Vec<DoctorFinding> = slots.into_iter().flatten().collect();
-                findings.extend(pre_findings);
+                let findings: Vec<DoctorFinding> = slots.into_iter().flatten().collect();
 
                 let report = DoctorReport::from_findings(findings);
                 if is_json {

@@ -114,9 +114,12 @@ pub mod project_config;
 #[cfg(feature = "emulation")]
 pub mod emulation;
 
+/// Re-export the exit-code marker for parse/usage errors (spec 012 §R5).
+pub use app::UsageError;
+
 /// Prelude module for convenient imports
 pub mod prelude {
-    pub use crate::app::{AppBuilder, AppContext, AppMeta};
+    pub use crate::app::{AppBuilder, AppContext, AppMeta, UsageError};
     pub use crate::command::{Command, CommandArgs};
     pub use crate::message::{AppMessage, AppMessageKind};
     pub use crate::plugin::PluginRegistryManager;

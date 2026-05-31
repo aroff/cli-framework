@@ -43,3 +43,8 @@ pub const E_API_VERSION_REQUIRED: &str = "E020";
 pub const E_API_NOT_READY: &str = "E021";
 /// Swagger: failed to serialize an app-supplied OpenAPI document at build time.
 pub const E_API_SWAGGER_SERIALIZE: &str = "E022";
+
+/// Returned when `doctor --check <id>` specifies an id not in the registered checks.
+pub const E_UNKNOWN_DOCTOR_CHECK: &str = "DR003";
+/// Returned when `spec --format <format>` specifies an unrecognized format value.
+pub const E_UNKNOWN_SPEC_FORMAT: &str = "CS001";
