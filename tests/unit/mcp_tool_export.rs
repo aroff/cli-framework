@@ -75,7 +75,7 @@ fn test_completion_is_excluded_even_under_all_commands_policy() {
     );
     let tools = tool_registry.list_tools();
     let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
-    assert!(tool_names.contains(&"myapp.deploy".to_string()));
+    assert!(tool_names.contains(&"myapp_deploy".to_string()));
     assert!(
         !tool_names.iter().any(|n| n.ends_with(".completion")),
         "expected no tool name ending in .completion, got: {:?}",
@@ -91,7 +91,7 @@ fn test_tool_name_format() {
     let tool_registry = McpToolRegistry::from_command_registry(&registry, "myapp");
     let tools = tool_registry.list_tools();
     assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0].name, "myapp.deploy");
+    assert_eq!(tools[0].name, "myapp_deploy");
 }
 
 #[test]
@@ -178,8 +178,8 @@ fn test_plugin_command_included() {
     let tools = tool_registry.list_tools();
     assert_eq!(tools.len(), 2);
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-    assert!(names.contains(&"myapp.native-cmd"));
-    assert!(names.contains(&"myapp.plugin-cmd"));
+    assert!(names.contains(&"myapp_native-cmd"));
+    assert!(names.contains(&"myapp_plugin-cmd"));
 }
 
 #[test]
@@ -192,7 +192,7 @@ fn test_hierarchical_command_name_uses_dots() {
     let tool_registry = McpToolRegistry::from_command_registry(&registry, "myapp");
     let tools = tool_registry.list_tools();
     assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0].name, "myapp.cluster.get");
+    assert_eq!(tools[0].name, "myapp_cluster_get");
 }
 
 #[test]
@@ -220,7 +220,7 @@ fn test_tool_descriptor_snapshot() {
     assert_eq!(tools.len(), 1);
 
     let tool = &tools[0];
-    assert_eq!(tool.name, "myapp.deploy");
+    assert_eq!(tool.name, "myapp_deploy");
     assert_eq!(tool.description, "Deploy the application");
 
     // Snapshot test: stable serialized output committed as fixture (AC-SNAPSHOT)
@@ -265,7 +265,7 @@ fn test_expose_mcp_only_filters_commands() {
     );
     let tools = tool_registry.list_tools();
     assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0].name, "myapp.included");
+    assert_eq!(tools[0].name, "myapp_included");
 }
 
 #[test]
@@ -297,7 +297,7 @@ async fn test_call_excluded_tool_returns_not_found() {
 
     let result = dispatch_tool_call(
         &tool_registry,
-        "myapp.excluded",
+        "myapp_excluded",
         None,
         cli_framework::mcp::McpTransportKind::Http,
     )

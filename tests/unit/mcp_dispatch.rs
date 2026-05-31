@@ -75,7 +75,7 @@ async fn test_tool_call_success() {
     let tool_registry = make_registry_with_cmd("hello", cmd);
 
     let result =
-        dispatch_tool_call(&tool_registry, "myapp.hello", None, McpTransportKind::Http).await;
+        dispatch_tool_call(&tool_registry, "myapp_hello", None, McpTransportKind::Http).await;
     assert!(result.is_ok());
     let call_result = result.unwrap();
     assert_eq!(call_result.is_error, Some(false));
@@ -87,7 +87,7 @@ async fn test_tool_call_cmd_not_found() {
 
     let result = dispatch_tool_call(
         &tool_registry,
-        "myapp.nonexistent",
+        "myapp_nonexistent",
         None,
         McpTransportKind::Http,
     )
@@ -136,7 +136,7 @@ async fn test_tool_call_arg_validation_failed() {
     // Call without required arg
     let result = dispatch_tool_call(
         &tool_registry,
-        "myapp.test-cmd",
+        "myapp_test-cmd",
         None,
         McpTransportKind::Http,
     )
@@ -167,7 +167,7 @@ async fn test_tool_call_execution_failed() {
 
     let result = dispatch_tool_call(
         &tool_registry,
-        "myapp.fail-cmd",
+        "myapp_fail-cmd",
         None,
         McpTransportKind::Http,
     )
@@ -209,7 +209,7 @@ async fn test_tool_call_internal_error() {
 
     let result = dispatch_tool_call_spawned(
         tool_registry,
-        "myapp.panic-cmd".to_string(),
+        "myapp_panic-cmd".to_string(),
         None,
         McpTransportKind::Http,
     )
@@ -265,7 +265,7 @@ async fn test_gate_denied_maps_to_mcp_tool_denied() {
     let tool_registry =
         McpToolRegistry::from_command_registry(&registry, "myapp").with_gate(Arc::new(DenyGate));
 
-    let err = dispatch_tool_call(&tool_registry, "myapp.hello", None, McpTransportKind::Http)
+    let err = dispatch_tool_call(&tool_registry, "myapp_hello", None, McpTransportKind::Http)
         .await
         .unwrap_err();
 
@@ -285,7 +285,7 @@ async fn test_gate_failed_maps_to_mcp_tool_gate_failed() {
     let tool_registry =
         McpToolRegistry::from_command_registry(&registry, "myapp").with_gate(Arc::new(FailGate));
 
-    let err = dispatch_tool_call(&tool_registry, "myapp.hello", None, McpTransportKind::Http)
+    let err = dispatch_tool_call(&tool_registry, "myapp_hello", None, McpTransportKind::Http)
         .await
         .unwrap_err();
 

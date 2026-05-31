@@ -58,7 +58,7 @@ my-app mcp serve --transport stdio
 
 ### Tool naming convention
 
-Each registered command is exported as `<app_name>.<command_id>`. Hierarchical commands (e.g. `cluster/get`) use dots: `myapp.cluster.get`.
+Each registered command is exported as `<app_name>_<command_id>`. Hierarchical commands (e.g. `cluster/get`) use underscores: `myapp_cluster_get`. Underscores (rather than dots) keep tool names within OpenAI's `^[a-zA-Z0-9_-]+$` constraint.
 
 ### Schema inference
 

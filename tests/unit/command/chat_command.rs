@@ -85,7 +85,7 @@ async fn tool_names_match_mcp_convention() {
     let exec = make_registry_executor(&registry);
     let tools = exec.list_tools();
     let names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
-    assert!(names.iter().any(|n| n == "myapp.group.do"));
+    assert!(names.iter().any(|n| n == "myapp_group_do"));
 }
 
 #[tokio::test]
@@ -107,7 +107,7 @@ async fn completion_command_not_exposed_as_tool() {
     let tools = exec.list_tools();
     let names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
     assert!(
-        !names.iter().any(|n| n.ends_with(".completion")),
+        !names.iter().any(|n| n.ends_with("_completion")),
         "completion must not appear in tool list, got: {:?}",
         names
     );
@@ -147,11 +147,11 @@ async fn expose_mcp_only_policy_filters_commands() {
     let tools = exec.list_tools();
     let names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
     assert!(
-        names.iter().any(|n| n == "myapp.public_cmd"),
+        names.iter().any(|n| n == "myapp_public_cmd"),
         "public_cmd should be exposed"
     );
     assert!(
-        !names.iter().any(|n| n == "myapp.private_cmd"),
+        !names.iter().any(|n| n == "myapp_private_cmd"),
         "private_cmd must not be exposed with ExposeMcpOnly"
     );
 }
@@ -164,7 +164,7 @@ async fn unknown_tool_returns_chat_tool_not_found() {
 
     let err = exec
         .call_tool(
-            "myapp.missing",
+            "myapp_missing",
             serde_json::json!({}),
             &mut ctx,
             &ChatToolCallOptions {
@@ -188,7 +188,7 @@ async fn invalid_typed_args_returns_chat_arg_validation_failed() {
 
     let err = exec
         .call_tool(
-            "myapp.do",
+            "myapp_do",
             serde_json::json!({}),
             &mut ctx,
             &ChatToolCallOptions {
@@ -221,7 +221,7 @@ async fn command_execution_error_surfaces_chat_command_execution_failed() {
 
     let err = exec
         .call_tool(
-            "myapp.boom",
+            "myapp_boom",
             serde_json::json!({}),
             &mut ctx,
             &ChatToolCallOptions {

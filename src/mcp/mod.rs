@@ -524,7 +524,7 @@ pub async fn dispatch_tool_call_spawned(
 ///
 /// Suitable for embedding MCP into an existing Axum application that already owns
 /// a `TcpListener`. The caller MUST supply the same `app_name` they pass to
-/// `AppBuilder::with_version` so tool names match the `{app_name}.{command}` convention.
+/// `AppBuilder::with_version` so tool names match the `{app_name}_{command}` convention.
 ///
 /// # Example
 ///

@@ -173,13 +173,13 @@ async fn test_tools_list_over_http() {
 
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     assert!(
-        names.contains(&"testapp.hello"),
-        "testapp.hello not found in {:?}",
+        names.contains(&"testapp_hello"),
+        "testapp_hello not found in {:?}",
         names
     );
     assert!(
-        names.contains(&"testapp.goodbye"),
-        "testapp.goodbye not found in {:?}",
+        names.contains(&"testapp_goodbye"),
+        "testapp_goodbye not found in {:?}",
         names
     );
 }
@@ -249,7 +249,7 @@ async fn test_tool_call_success_over_http() {
             "id": "3",
             "method": "tools/call",
             "params": {
-                "name": "testapp.ping",
+                "name": "testapp_ping",
                 "arguments": {}
             }
         }))
@@ -368,8 +368,8 @@ async fn test_mcp_serve_subcommand_tools_list() {
     assert!(
         tools
             .iter()
-            .any(|t| t["name"].as_str() == Some("testapp.widget")),
-        "testapp.widget not found in tools: {:?}",
+            .any(|t| t["name"].as_str() == Some("testapp_widget")),
+        "testapp_widget not found in tools: {:?}",
         tools
     );
 }
@@ -466,14 +466,14 @@ async fn test_tools_list_and_call_over_stdio_transport() {
         .expect("tools/list failed");
 
     assert!(
-        tools.tools.iter().any(|t| t.name == "testapp.hello"),
-        "expected testapp.hello in tools: {:?}",
+        tools.tools.iter().any(|t| t.name == "testapp_hello"),
+        "expected testapp_hello in tools: {:?}",
         tools.tools
     );
 
     let call = client
         .peer()
-        .call_tool(rmcp::model::CallToolRequestParams::new("testapp.hello"))
+        .call_tool(rmcp::model::CallToolRequestParams::new("testapp_hello"))
         .await
         .expect("tools/call failed");
 
@@ -560,15 +560,15 @@ async fn test_tools_list_and_call_via_mcp_serve_stdio_subcommand() {
         tools
             .tools
             .iter()
-            .any(|t| t.name == "cfw-mcp-stdio-test-server.ping"),
-        "expected cfw-mcp-stdio-test-server.ping in tools: {:?}",
+            .any(|t| t.name == "cfw-mcp-stdio-test-server_ping"),
+        "expected cfw-mcp-stdio-test-server_ping in tools: {:?}",
         tools.tools
     );
 
     let call = client
         .peer()
         .call_tool(rmcp::model::CallToolRequestParams::new(
-            "cfw-mcp-stdio-test-server.ping",
+            "cfw-mcp-stdio-test-server_ping",
         ))
         .await
         .expect("tools/call failed");

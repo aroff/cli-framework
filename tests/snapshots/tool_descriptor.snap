@@ -4,7 +4,7 @@ assertion_line: 204
 expression: tool
 ---
 {
-  "name": "myapp.deploy",
+  "name": "myapp_deploy",
   "description": "Deploy the application",
   "inputSchema": {
     "properties": {
