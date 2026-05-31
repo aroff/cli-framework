@@ -191,6 +191,10 @@ name = "unit_security_http_client"
 path = "tests/unit/security_http_client.rs"
 
 [[test]]
+name = "unit_retry"
+path = "tests/unit/retry.rs"
+
+[[test]]
 name = "unit_http_retry_client"
 path = "tests/unit/http_retry_client.rs"
 
