@@ -47,12 +47,10 @@ impl McpHostToolAdapter {
 }
 
 impl McpHostToolAdapter {
-    /// Inherent wrapper so callers don't need `HostToolProvider` in scope.
     pub fn call_tool(&self, name: &str, arguments: Value) -> Result<String, String> {
         <Self as HostToolProvider>::call_tool(self, name, arguments)
     }
 
-    /// Inherent wrapper so callers don't need `HostToolProvider` in scope.
     pub fn list_tools(&self) -> Vec<HostToolDefinition> {
         <Self as HostToolProvider>::list_tools(self)
     }

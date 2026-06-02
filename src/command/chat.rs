@@ -5,10 +5,8 @@ use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use crate::spec::command_tree::{CommandSpec, EnvVarEntry, ExitCodeEntry};
 use std::sync::Arc;
 
-pub(crate) mod host_tool_adapter;
+pub mod host_tool_adapter;
 mod runtime;
-
-pub use host_tool_adapter::McpHostToolAdapter;
 
 pub const CHAT_FEATURE_DISABLED: &str = "CHAT_FEATURE_DISABLED";
 pub const CHAT_AGENT_START_FAILED: &str = "CHAT_AGENT_START_FAILED";

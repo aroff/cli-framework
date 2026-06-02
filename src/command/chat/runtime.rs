@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::context::AppContext;
+use crate::command::chat::host_tool_adapter::McpHostToolAdapter;
 
 use anyhow::anyhow;
 use std::io::Write;

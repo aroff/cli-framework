@@ -1,6 +1,7 @@
+use cli_framework::command::chat::host_tool_adapter::McpHostToolAdapter;
 use cli_framework::command::chat::{
-    ChatToolCallOptions, McpHostToolAdapter, CHAT_ARG_VALIDATION_FAILED,
-    CHAT_COMMAND_EXECUTION_FAILED, CHAT_TOOL_NOT_FOUND,
+    ChatToolCallOptions, CHAT_ARG_VALIDATION_FAILED, CHAT_COMMAND_EXECUTION_FAILED,
+    CHAT_TOOL_NOT_FOUND,
 };
 use cli_framework::command::{Command, CommandRegistry};
 use cli_framework::mcp::{McpToolExportPolicy, McpToolRegistry};
