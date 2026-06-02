@@ -1,6 +1,7 @@
 use super::*;
+use crate::app::context::AppContext;
 
-use anyhow::Context;
+use anyhow::anyhow;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -8,13 +9,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::mcp::{McpToolExportPolicy, McpToolRegistry};
 
-use aikit_agent::llm::stream::parse_sse_body;
-use aikit_agent::llm::types::LlmStreamEvent;
-use aikit_agent::llm::types::{
-    FunctionDefinition, LlmMessage, LlmRequest, MessageToolCall, MessageToolCallFunction,
-    ToolChoice, ToolDefinition,
-};
-use aikit_agent::AgentConfig;
+use aikit_agent::llm::openai_compat::OpenAiCompatProvider;
+use aikit_agent::{AgentConfig, AgentInternalEvent, Turn};
 
 pub(super) async fn execute_chat(
     ctx: &mut dyn AppContext,
@@ -53,18 +49,38 @@ pub(super) async fn execute_chat(
 
     if let Some(prompt) = prompt_flag.or(prompt_from_stdin) {
         let cancel = CancellationToken::new();
+        let workdir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let mut config = AgentConfig::from_env(workdir, stream, model.clone())
+            .map_err(|e| anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?;
+
+        let adapter = Arc::new(McpHostToolAdapter::new(
+            Arc::clone(&tool_exec),
+            ChatToolCallOptions {
+                yolo,
+                interactive: crate::cli_mode::is_interactive(),
+                ailoop_client: ailoop_client.clone(),
+            },
+        ));
+        config.host_tool_provider = Some(adapter);
+
+        let gateway = OpenAiCompatProvider::new(config.timeout_secs, config.connect_timeout_secs)
+            .map_err(|e| anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?;
+
+        let prompt_clone = prompt.clone();
+        let run_fut = tokio::task::spawn_blocking(move || {
+            aikit_agent::run_with_context(config, vec![], &prompt_clone, Box::new(gateway))
+        });
+
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 cancel.cancel();
                 return Ok(());
             }
-            res = run_agent_one_shot(
-                ctx,
-                AgentRunOpts { ailoop_client, tool_exec, yolo, stream, model },
-                prompt,
-                cancel.clone(),
-            ) => {
-                res?;
+            res = run_fut => {
+                let events = res
+                    .map_err(|e| anyhow!("{}: task join: {}", CHAT_AGENT_START_FAILED, e))?
+                    .map_err(|e| anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?;
+                print_text_from_events(&events);
             }
         }
         return Ok(());
@@ -77,16 +93,13 @@ pub(super) async fn execute_chat(
         ));
     }
 
-    repl_loop(
-        ctx,
-        AgentRunOpts {
-            ailoop_client,
-            tool_exec,
-            yolo,
-            stream,
-            model,
-        },
-    )
+    repl_loop(AgentRunOpts {
+        ailoop_client,
+        tool_exec,
+        yolo,
+        stream,
+        model,
+    })
     .await
 }
 
@@ -99,23 +112,18 @@ async fn read_stdin_all() -> anyhow::Result<String> {
 }
 
 #[derive(Clone)]
-struct AgentRunOpts {
-    ailoop_client: Option<Arc<AiloopClient>>,
-    tool_exec: Arc<McpToolRegistry>,
-    yolo: bool,
-    stream: bool,
-    model: Option<String>,
+pub(crate) struct AgentRunOpts {
+    pub ailoop_client: Option<Arc<AiloopClient>>,
+    pub tool_exec: Arc<McpToolRegistry>,
+    pub yolo: bool,
+    pub stream: bool,
+    pub model: Option<String>,
 }
 
-async fn repl_loop(ctx: &mut dyn AppContext, opts: AgentRunOpts) -> CommandResult {
-    let AgentRunOpts {
-        ailoop_client,
-        tool_exec,
-        yolo,
-        stream,
-        model,
-    } = opts;
+async fn repl_loop(opts: AgentRunOpts) -> CommandResult {
     use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let mut prior_turns: Vec<Turn> = vec![];
 
     eprintln!("Entering chat REPL. Ctrl+D to exit. Ctrl+C cancels the current turn and exits.");
     let mut reader = BufReader::new(tokio::io::stdin());
@@ -126,394 +134,204 @@ async fn repl_loop(ctx: &mut dyn AppContext, opts: AgentRunOpts) -> CommandResul
         eprint!("chat> ");
         let _ = std::io::stderr().flush();
 
-        tokio::select! {
+        let n = tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\nCtrl+C: exiting");
                 return Ok(());
             }
             read = reader.read_line(&mut line) => {
-                let n = read?;
-                if n == 0 {
-                    eprintln!("\nEOF: exiting");
-                    return Ok(());
-                }
+                read?
             }
+        };
+
+        if n == 0 {
+            eprintln!("\nEOF: exiting");
+            return Ok(());
         }
 
-        let prompt = line.trim();
+        let prompt = line.trim().to_string();
         if prompt.is_empty() {
             continue;
         }
 
-        let cancel = CancellationToken::new();
-        let turn_fut = run_agent_one_shot(
-            ctx,
-            AgentRunOpts {
-                ailoop_client: ailoop_client.clone(),
-                tool_exec: tool_exec.clone(),
-                yolo,
-                stream,
-                model: model.clone(),
-            },
-            prompt.to_string(),
-            cancel.clone(),
-        );
-        tokio::pin!(turn_fut);
+        let workdir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let mut config = AgentConfig::from_env(workdir, opts.stream, opts.model.clone())
+            .map_err(|e| anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?;
 
-        tokio::select! {
+        let adapter = Arc::new(McpHostToolAdapter::new(
+            Arc::clone(&opts.tool_exec),
+            ChatToolCallOptions {
+                yolo: opts.yolo,
+                interactive: crate::cli_mode::is_interactive(),
+                ailoop_client: opts.ailoop_client.clone(),
+            },
+        ));
+        config.host_tool_provider = Some(adapter);
+
+        let gateway = OpenAiCompatProvider::new(config.timeout_secs, config.connect_timeout_secs)
+            .map_err(|e| anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?;
+
+        let prior_turns_clone = prior_turns.clone();
+        let prompt_clone = prompt.clone();
+        let run_fut = tokio::task::spawn_blocking(move || {
+            aikit_agent::run_with_context(
+                config,
+                prior_turns_clone,
+                &prompt_clone,
+                Box::new(gateway),
+            )
+        });
+
+        tokio::pin!(run_fut);
+
+        let events = tokio::select! {
             _ = tokio::signal::ctrl_c() => {
-                cancel.cancel();
-                let _ = (&mut turn_fut).await;
                 eprintln!("\nCtrl+C: turn canceled; exiting");
                 return Ok(());
             }
-            res = &mut turn_fut => {
-                res?;
+            res = &mut run_fut => {
+                res.map_err(|e| anyhow!("{}: task join: {}", CHAT_AGENT_START_FAILED, e))?
+                   .map_err(|e| anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?
             }
-        }
-    }
-}
-
-async fn run_agent_one_shot(
-    ctx: &mut dyn AppContext,
-    opts: AgentRunOpts,
-    prompt: String,
-    cancel: CancellationToken,
-) -> CommandResult {
-    let AgentRunOpts {
-        ailoop_client,
-        tool_exec,
-        yolo,
-        stream,
-        model,
-    } = opts;
-    let workdir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let config = AgentConfig::from_env(workdir, stream, model)
-        .map_err(|e| anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?;
-    let http = Arc::new(
-        reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_secs))
-            .connect_timeout(std::time::Duration::from_secs(config.connect_timeout_secs))
-            .build()
-            .context("failed to build HTTP client")?,
-    );
-
-    let tools: Vec<ToolDefinition> = tool_exec
-        .list_tools()
-        .into_iter()
-        .map(|t| ToolDefinition {
-            tool_type: "function".to_string(),
-            function: FunctionDefinition {
-                name: t.name,
-                description: Some(t.description),
-                parameters: t.input_schema,
-            },
-        })
-        .collect();
-
-    let mut messages = vec![LlmMessage {
-        role: "system".to_string(),
-        content: Some(build_chat_system_instructions()),
-        tool_calls: None,
-        tool_call_id: None,
-    }];
-    messages.push(LlmMessage {
-        role: "user".to_string(),
-        content: Some(prompt),
-        tool_calls: None,
-        tool_call_id: None,
-    });
-
-    let tool_opts = ChatToolCallOptions {
-        yolo,
-        interactive: crate::cli_mode::is_interactive(),
-        ailoop_client,
-    };
-
-    for _ in 0..config.max_iterations {
-        let req = LlmRequest {
-            model: config.model.clone(),
-            base_url: config.base_url.clone(),
-            api_key: config.api_key.clone(),
-            messages: messages.clone(),
-            tools: tools.clone(),
-            tool_choice: Some(ToolChoice::auto()),
-            temperature: None,
-            top_p: None,
-            max_tokens: None,
-            stream,
         };
 
-        let resp = call_llm(http.clone(), req, cancel.clone()).await?;
+        prior_turns.extend(turns_from_events(&prompt, &events));
+        print_text_from_events(&events);
+    }
+}
 
-        if !resp.tool_calls.is_empty() {
-            let tool_calls_for_ctx: Vec<MessageToolCall> = resp
-                .tool_calls
-                .iter()
-                .map(|tc| MessageToolCall {
-                    id: tc.id.clone(),
-                    call_type: "function".to_string(),
-                    function: MessageToolCallFunction {
-                        name: tc.function.name.clone(),
-                        arguments: tc.function.arguments.clone(),
-                    },
-                })
-                .collect();
+/// Reconstructs conversation history turns from agent events for the next `run_with_context` call.
+///
+/// Always prepends a user turn for `prompt`. Tool use events are paired with their results;
+/// missing results emit a synthetic error turn rather than panicking (AC-MISSING-RESULT).
+pub(crate) fn turns_from_events(prompt: &str, events: &[AgentInternalEvent]) -> Vec<Turn> {
+    use aikit_agent::context::{ContextToolCall, ContextToolResult};
 
-            messages.push(LlmMessage {
-                role: "assistant".to_string(),
-                content: resp.content.clone().filter(|s| !s.is_empty()),
-                tool_calls: Some(tool_calls_for_ctx),
-                tool_call_id: None,
-            });
+    let mut turns = Vec::new();
+    turns.push(Turn::user(prompt));
 
-            for tc in resp.tool_calls {
-                let tool_name = tc.function.name;
-                let call_id = tc.id;
-                let args = parse_tool_arguments_blocking(tc.function.arguments).await;
+    let mut tool_uses: Vec<(String, String, serde_json::Value)> = Vec::new(); // (call_id, name, args)
+    let mut tool_results: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut text_final: Option<String> = None;
 
-                // Tool calls are serialized by design.
-                let output = match tool_exec.call_tool(&tool_name, args, ctx, &tool_opts).await {
-                    Ok(()) => "OK".to_string(),
-                    Err(e) => e.to_string(),
-                };
-
-                messages.push(LlmMessage {
-                    role: "tool".to_string(),
-                    content: Some(output),
-                    tool_calls: None,
-                    tool_call_id: Some(call_id),
-                });
+    for event in events {
+        match event {
+            AgentInternalEvent::ToolUse {
+                tool_name,
+                tool_input,
+                call_id,
+            } => {
+                tool_uses.push((call_id.clone(), tool_name.clone(), tool_input.clone()));
             }
-
-            continue;
-        }
-
-        if let Some(text) = resp.content.as_ref() {
-            if !text.trim().is_empty() {
-                println!("{}", text.trim_end());
+            AgentInternalEvent::ToolResult {
+                call_id, output, ..
+            } => {
+                tool_results.insert(call_id.clone(), output.clone());
             }
-        }
-
-        messages.push(LlmMessage {
-            role: "assistant".to_string(),
-            content: resp.content.clone(),
-            tool_calls: None,
-            tool_call_id: None,
-        });
-
-        if resp.finish_reason.as_deref() == Some("stop") {
-            return Ok(());
+            AgentInternalEvent::TextFinal { content, .. } => {
+                text_final = Some(content.clone());
+            }
+            _ => {}
         }
     }
 
-    Err(anyhow::anyhow!(
-        "{}: exceeded max iterations ({})",
-        CHAT_AGENT_START_FAILED,
-        config.max_iterations
-    ))
-}
-
-async fn parse_tool_arguments_blocking(arguments: String) -> Value {
-    tokio::task::spawn_blocking(move || serde_json::from_str(&arguments).unwrap_or(Value::Null))
-        .await
-        .unwrap_or(Value::Null)
-}
-
-fn build_chat_system_instructions() -> String {
-    let mut s = String::new();
-    s.push_str("You are an in-process CLI agent.\n");
-    s.push_str(
-        "You can only use the provided tools, which correspond to this app's registered CLI commands.\n",
-    );
-    s.push_str(
-        "Prefer using tools to perform actions. After completing tool calls, respond to the user with a short summary.\n",
-    );
-    s
-}
-
-struct LlmResponseEnvelope {
-    content: Option<String>,
-    tool_calls: Vec<aikit_agent::llm::types::ToolCall>,
-    finish_reason: Option<String>,
-}
-
-async fn call_llm(
-    http: Arc<reqwest::Client>,
-    req: LlmRequest,
-    cancel: CancellationToken,
-) -> anyhow::Result<LlmResponseEnvelope> {
-    let url = format!("{}/chat/completions", req.base_url.trim_end_matches('/'));
-
-    let mut body = serde_json::json!({
-        "model": req.model,
-        "messages": req.messages,
-        "tools": req.tools,
-        "tool_choice": req.tool_choice,
-        "temperature": req.temperature,
-        "top_p": req.top_p,
-        "max_tokens": req.max_tokens,
-        "stream": req.stream,
-    });
-    if req.stream {
-        body["stream_options"] = serde_json::json!({ "include_usage": true });
-    }
-
-    let send_fut = http
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", req.api_key))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send();
-
-    let response = tokio::select! {
-        _ = cancel.cancelled() => {
-            return Err(anyhow::anyhow!("{}: cancelled", CHAT_AGENT_START_FAILED));
-        }
-        res = send_fut => {
-            res.map_err(|e| anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?
-        }
-    };
-
-    let status = response.status();
-    if !status.is_success() {
-        let body_text = response.text().await.unwrap_or_default();
-        return Err(anyhow::anyhow!(
-            "{}: HTTP {} from {}: {}",
-            CHAT_AGENT_START_FAILED,
-            status.as_u16(),
-            url,
-            body_text
-        ));
-    }
-
-    let body_text = tokio::select! {
-        _ = cancel.cancelled() => {
-            return Err(anyhow::anyhow!("{}: cancelled", CHAT_AGENT_START_FAILED));
-        }
-        t = response.text() => {
-            t.map_err(|e| anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?
-        }
-    };
-
-    if req.stream {
-        let events = tokio::task::spawn_blocking(move || parse_sse_body(&body_text))
-            .await
-            .context("stream parse task failed")?
-            .map_err(|e| anyhow::anyhow!("{}: {}", CHAT_AGENT_START_FAILED, e))?;
-
-        let mut content = String::new();
-        let mut tool_calls_by_id: std::collections::HashMap<String, (String, String)> =
-            std::collections::HashMap::new();
-        let mut finish_reason = None;
-
-        for ev in events {
-            match ev {
-                LlmStreamEvent::TextDelta { content: delta } => content.push_str(&delta),
-                LlmStreamEvent::ToolCallDelta {
-                    id,
-                    function_name,
-                    arguments_delta,
-                } => {
-                    let entry = tool_calls_by_id
-                        .entry(id)
-                        .or_insert_with(|| (function_name.clone(), String::new()));
-                    entry.0 = function_name;
-                    entry.1.push_str(&arguments_delta);
-                }
-                LlmStreamEvent::Completed {
-                    finish_reason: r, ..
-                } => finish_reason = Some(r),
-                _ => {}
-            }
-        }
-
-        let tool_calls = tool_calls_by_id
-            .into_iter()
-            .map(|(id, (name, args))| aikit_agent::llm::types::ToolCall {
-                id,
-                call_type: None,
-                function: aikit_agent::llm::types::ToolCallFunction {
-                    name,
-                    arguments: args,
-                },
+    if !tool_uses.is_empty() {
+        let calls: Vec<ContextToolCall> = tool_uses
+            .iter()
+            .map(|(call_id, name, args)| ContextToolCall {
+                id: call_id.clone(),
+                name: name.clone(),
+                arguments: args.to_string(),
             })
             .collect();
 
-        return Ok(LlmResponseEnvelope {
-            content: Some(content),
-            tool_calls,
-            finish_reason,
-        });
+        let assistant_content = text_final.unwrap_or_default();
+        turns.push(Turn::assistant_with_tool_calls(assistant_content, calls));
+
+        for (call_id, _, _) in &tool_uses {
+            let output = tool_results
+                .get(call_id)
+                .cloned()
+                .unwrap_or_else(|| format!("ERROR: no result received for tool call {}", call_id));
+            turns.push(Turn::tool_result(vec![ContextToolResult {
+                call_id: call_id.clone(),
+                output,
+                is_error: false,
+            }]));
+        }
+    } else if let Some(content) = text_final {
+        turns.push(Turn::assistant(content));
     }
 
-    #[derive(serde::Deserialize)]
-    struct OpenAiToolCallFunction {
-        name: String,
-        arguments: String,
+    turns
+}
+
+fn print_text_from_events(events: &[AgentInternalEvent]) {
+    for event in events {
+        if let AgentInternalEvent::TextFinal { content, .. } = event {
+            let trimmed = content.trim_end();
+            if !trimmed.is_empty() {
+                println!("{}", trimmed);
+            }
+        }
     }
-    #[derive(serde::Deserialize)]
-    struct OpenAiToolCall {
-        id: String,
-        #[serde(rename = "type")]
-        call_type: Option<String>,
-        function: OpenAiToolCallFunction,
-    }
-    #[derive(serde::Deserialize)]
-    struct OpenAiMessage {
-        content: Option<String>,
-        tool_calls: Option<Vec<OpenAiToolCall>>,
-    }
-    #[derive(serde::Deserialize)]
-    struct OpenAiChoice {
-        message: Option<OpenAiMessage>,
-        finish_reason: Option<String>,
-    }
-    #[derive(serde::Deserialize)]
-    struct OpenAiResponse {
-        choices: Vec<OpenAiChoice>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::turns_from_events;
+    use aikit_agent::AgentInternalEvent;
+
+    /// U8: turns_from_events with TextFinal produces user + assistant turns.
+    #[test]
+    fn turns_from_events_text_final_produces_assistant_turn() {
+        let events = vec![AgentInternalEvent::TextFinal {
+            content: "world".to_string(),
+            turn_id: None,
+        }];
+        let turns = turns_from_events("hello", &events);
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].content, "hello");
+        assert_eq!(turns[1].content, "world");
     }
 
-    let resp: OpenAiResponse =
-        tokio::task::spawn_blocking(move || serde_json::from_str(&body_text))
-            .await
-            .context("response parse task failed")?
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "{}: failed to parse response: {}",
-                    CHAT_AGENT_START_FAILED,
-                    e
-                )
-            })?;
+    /// U9: turns_from_events with ToolUse + ToolResult produces correct turns.
+    #[test]
+    fn turns_from_events_tool_use_and_result_roundtrip() {
+        let events = vec![
+            AgentInternalEvent::ToolUse {
+                call_id: "c1".to_string(),
+                tool_name: "t".to_string(),
+                tool_input: serde_json::json!({}),
+            },
+            AgentInternalEvent::ToolResult {
+                call_id: "c1".to_string(),
+                output: "out".to_string(),
+                is_error: false,
+            },
+        ];
+        let turns = turns_from_events("prompt", &events);
+        // user + assistant_with_tool_calls + tool_result
+        assert_eq!(turns.len(), 3);
+        assert_eq!(turns[1].tool_calls.as_ref().unwrap()[0].id, "c1");
+        let result = &turns[2].tool_results.as_ref().unwrap()[0];
+        assert_eq!(result.call_id, "c1");
+        assert_eq!(result.output, "out");
+    }
 
-    let first = resp.choices.into_iter().next();
-    let content = first
-        .as_ref()
-        .and_then(|c| c.message.as_ref())
-        .and_then(|m| m.content.clone());
-    let tool_calls = first
-        .as_ref()
-        .and_then(|c| c.message.as_ref())
-        .and_then(|m| m.tool_calls.as_ref())
-        .map(|calls| {
-            calls
-                .iter()
-                .map(|tc| aikit_agent::llm::types::ToolCall {
-                    id: tc.id.clone(),
-                    call_type: tc.call_type.clone(),
-                    function: aikit_agent::llm::types::ToolCallFunction {
-                        name: tc.function.name.clone(),
-                        arguments: tc.function.arguments.clone(),
-                    },
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let finish_reason = first.and_then(|c| c.finish_reason);
-
-    Ok(LlmResponseEnvelope {
-        content,
-        tool_calls,
-        finish_reason,
-    })
+    /// AC-MISSING-RESULT: ToolUse with no matching ToolResult must not panic.
+    #[test]
+    fn turns_from_events_missing_tool_result_emits_synthetic_error() {
+        let events = vec![AgentInternalEvent::ToolUse {
+            call_id: "c1".to_string(),
+            tool_name: "t".to_string(),
+            tool_input: serde_json::json!({}),
+        }];
+        let turns = turns_from_events("prompt", &events);
+        assert!(turns.len() >= 3);
+        let result = &turns[2].tool_results.as_ref().unwrap()[0];
+        assert_eq!(result.call_id, "c1");
+        assert!(result.output.contains("ERROR"));
+    }
 }
