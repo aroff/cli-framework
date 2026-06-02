@@ -126,10 +126,9 @@ fn show_help_contains_version_entry() {
         .unwrap();
 
     let help = app.render_help();
-    assert!(help.contains("version"));
-
-    let version_line = help.lines().next().unwrap();
-    assert_eq!(version_line, "  version - Print version information");
+    // render_help() delegates directly to HelpRenderer; version appears in Options block.
+    assert!(help.contains("--version, -V"));
+    assert!(!help.contains("version - Print version information"));
 }
 
 #[test]
@@ -156,9 +155,11 @@ fn show_help_version_appears_before_registered_commands() {
         .unwrap();
 
     let help = app.render_help();
-    let version_pos = help.find("version - Print version information").unwrap();
+    // The spurious prefix is gone; version is documented in the Options block which follows commands.
+    assert!(!help.contains("version - Print version information"));
     let alpha_pos = help.find("alpha").unwrap();
-    assert!(version_pos < alpha_pos);
+    let options_pos = help.find("Options:").unwrap();
+    assert!(alpha_pos < options_pos);
 }
 
 #[test]

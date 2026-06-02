@@ -440,12 +440,25 @@ impl<C: AppContext> App<C> {
         );
     }
 
+    /// Returns true if any root-level command has a non-None category.
+    fn has_categories(&self) -> bool {
+        self.command_registry
+            .commands()
+            .any(|cmd| cmd.category.is_some())
+    }
+
     pub async fn run_with_args(&mut self, args: Vec<String>) -> Result<()> {
         use crate::app::clap_adapter::parse_with_clap;
         use crate::app::diagnostic_reporter::DiagnosticReporter;
         use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
         use crate::parser::error_codes::E_NESTED_COMMAND_NOT_FOUND;
         use crate::parser::outcome::ParseOutcome;
+
+        // Route root-level help through HelpRenderer when any command carries a category.
+        if App::<C>::should_show_help(&args) && self.has_categories() {
+            self.framework_println(&self.render_help());
+            return Ok(());
+        }
 
         #[cfg(not(feature = "chat"))]
         let second_arg = args.get(1).cloned();
@@ -539,20 +552,15 @@ impl<C: AppContext> App<C> {
     }
 
     pub fn show_help(&self) {
-        println!("  version - Print version information");
         HelpRenderer::new(self.meta.as_ref(), self.command_registry.as_ref())
             .with_version_string(self.version_string())
             .print();
     }
 
     pub fn render_help(&self) -> String {
-        let mut out = String::from("  version - Print version information\n");
-        out.push_str(
-            &HelpRenderer::new(self.meta.as_ref(), self.command_registry.as_ref())
-                .with_version_string(self.version_string())
-                .render(),
-        );
-        out
+        HelpRenderer::new(self.meta.as_ref(), self.command_registry.as_ref())
+            .with_version_string(self.version_string())
+            .render()
     }
 
     pub fn version_string(&self) -> String {

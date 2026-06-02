@@ -3,9 +3,10 @@ use crate::command::CommandRegistry;
 
 /// Renders formatted help text for a CLI application.
 ///
-/// **Deprecated for the primary CLI help path.** When the `clap-dispatch` feature
-/// is enabled, Clap handles `--help`/`-h` output. This renderer is preserved for
-/// applications that call `render_help()` directly for custom category-grouped formatting.
+/// Used by `App::run_with_args` for root-level `--help`/`-h` output when at least one
+/// registered command carries a `category`. Also used directly via `App::render_help()`
+/// and `App::show_help()`. For per-subcommand help (`app <cmd> --help`), clap renders
+/// its own output.
 pub struct HelpRenderer<'a> {
     meta: Option<&'a AppMeta>,
     commands: &'a CommandRegistry,

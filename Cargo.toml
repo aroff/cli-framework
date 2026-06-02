@@ -89,7 +89,7 @@ tokio-tungstenite = "0.21"
 tower-http = { version = "0.6", features = ["cors"] }
 
 [features]
-default = ["clap-dispatch", "chat"]
+default = ["chat"]
 # observability = ["opentelemetry", "opentelemetry-otlp", "opentelemetry-sdk"]
 # Note: OpenTelemetry integration will be implemented in src/observability/mod.rs
 # Applications should add opentelemetry crates to their own Cargo.toml when using this feature
@@ -97,7 +97,6 @@ observability = ["dep:tracing-subscriber"]
 # CLI output utilities optional features
 table-advanced = ["comfy-table"]
 progress = ["indicatif"]
-clap-dispatch = []  # no-op since v0.4.0; remove in v0.5.0
 # Reject unknown flags on legacy (no-spec) commands
 strict-args = []
 # Reject registration of commands without a CommandSpec
