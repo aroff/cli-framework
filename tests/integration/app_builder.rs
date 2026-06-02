@@ -126,10 +126,9 @@ fn show_help_contains_version_entry() {
         .unwrap();
 
     let help = app.render_help();
-    assert!(help.contains("version"));
-
-    let version_line = help.lines().next().unwrap();
-    assert_eq!(version_line, "  version - Print version information");
+    // render_help() delegates directly to HelpRenderer; version appears in Options block.
+    assert!(help.contains("--version, -V"));
+    assert!(!help.contains("version - Print version information"));
 }
 
 #[test]
@@ -156,9 +155,11 @@ fn show_help_version_appears_before_registered_commands() {
         .unwrap();
 
     let help = app.render_help();
-    let version_pos = help.find("version - Print version information").unwrap();
+    // The spurious prefix is gone; version is documented in the Options block which follows commands.
+    assert!(!help.contains("version - Print version information"));
     let alpha_pos = help.find("alpha").unwrap();
-    assert!(version_pos < alpha_pos);
+    let options_pos = help.find("Options:").unwrap();
+    assert!(alpha_pos < options_pos);
 }
 
 #[test]
@@ -269,7 +270,6 @@ async fn meta_overrides_name_and_version_consistently_for_version_output() {
     assert_eq!(out.stdout.trim_end(), "meta-name 9.9.9 (abc1234)");
 }
 
-#[cfg(feature = "clap-dispatch")]
 mod clap_dispatch_tests {
     use super::*;
 
@@ -411,8 +411,12 @@ mod clap_dispatch_tests {
             .unwrap();
 
         let help = app.render_help();
-        assert!(help.contains("version - Print version information"));
+        // render_help() delegates to the framework's grouped HelpRenderer, which
+        // emits an Options: block listing --help/--version (no clap output, and no
+        // legacy "version - Print version information" prefix line).
         assert!(help.contains("Options:"));
+        assert!(help.contains("--help"));
+        assert!(help.contains("--version"));
     }
 
     // AC-G2.2: `prog --version` outputs "{name} {version}" format.

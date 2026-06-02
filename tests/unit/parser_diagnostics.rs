@@ -1,6 +1,6 @@
 //! Tests that exercise all 8 structured error codes (E001–E008).
 //!
-//! E001-E002 require the clap-dispatch feature (parse_with_clap).
+//! E001-E002 are produced by the clap parse path (parse_with_clap).
 //! E003-E006 are produced by SpecValidator.
 //! E007-E008 are produced by CommandRegistry::register_at.
 
