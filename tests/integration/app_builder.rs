@@ -270,7 +270,6 @@ async fn meta_overrides_name_and_version_consistently_for_version_output() {
     assert_eq!(out.stdout.trim_end(), "meta-name 9.9.9 (abc1234)");
 }
 
-#[cfg(feature = "clap-dispatch")]
 mod clap_dispatch_tests {
     use super::*;
 
@@ -412,8 +411,12 @@ mod clap_dispatch_tests {
             .unwrap();
 
         let help = app.render_help();
-        assert!(help.contains("version - Print version information"));
+        // render_help() delegates to the framework's grouped HelpRenderer, which
+        // emits an Options: block listing --help/--version (no clap output, and no
+        // legacy "version - Print version information" prefix line).
         assert!(help.contains("Options:"));
+        assert!(help.contains("--help"));
+        assert!(help.contains("--version"));
     }
 
     // AC-G2.2: `prog --version` outputs "{name} {version}" format.
