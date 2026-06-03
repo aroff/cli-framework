@@ -1,16 +1,57 @@
 use cli_framework::app::AppMeta;
 use cli_framework::app::{AppBuilder, Shell};
-use cli_framework::command::{Command, CommandArgs, CommandRegistry};
+use cli_framework::command::{Command, CommandRegistry};
 use cli_framework::parser::ParseOutcome;
+use cli_framework::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use cli_framework::spec::command_tree::CommandSpec;
+use cli_framework::spec::value::ArgValue;
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+fn name_arg() -> ArgSpec {
+    ArgSpec {
+        name: "name",
+        kind: ArgKind::Option,
+        value_type: ArgValueType::String,
+        cardinality: Cardinality::Optional,
+        ..Default::default()
+    }
+}
+
+fn positional_arg() -> ArgSpec {
+    ArgSpec {
+        name: "positional",
+        kind: ArgKind::Positional,
+        value_type: ArgValueType::String,
+        cardinality: Cardinality::Optional,
+        ..Default::default()
+    }
+}
+
+fn hello_spec_with_name() -> CommandSpec {
+    CommandSpec {
+        summary: "Say hello",
+        args: vec![name_arg()],
+        ..Default::default()
+    }
+}
+
+fn assert_str_arg(args: &HashMap<String, ArgValue>, key: &str, expected: &str) {
+    match args.get(key) {
+        Some(ArgValue::Str(s)) => assert_eq!(s, expected, "arg {} mismatch", key),
+        other => panic!(
+            "expected Str({:?}) for arg {}, got {:?}",
+            expected, key, other
+        ),
+    }
+}
+
 fn noop_execute() -> Arc<
     dyn for<'a> Fn(
             &'a mut dyn cli_framework::app::AppContext,
-            CommandArgs,
+            HashMap<String, cli_framework::spec::value::ArgValue>,
         ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>
         + Send
         + Sync,
@@ -31,15 +72,13 @@ impl cli_framework::app::AppContext for DummyCtx {}
 
 fn make_cmd_with_hidden(id: &'static str, hidden: bool) -> Command {
     Command {
-        id,
-        summary: id,
-        syntax: None,
-        category: None,
-        spec: Some(Arc::new(CommandSpec {
+        id: Arc::from(id),
+        spec: Arc::new(CommandSpec {
+            summary: id,
             hidden,
             args: vec![],
             ..Default::default()
-        })),
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_execute(),
@@ -54,21 +93,21 @@ fn first_non_blank_line(s: &str) -> &str {
 fn build_clap_root_subcommand_count_matches_registry() {
     let registry = make_registry_with(vec![
         Command {
-            id: "hello",
-            summary: "Say hello",
-            syntax: None,
-            category: None,
-            spec: None,
+            id: Arc::from("hello"),
+            spec: Arc::new(CommandSpec {
+                summary: "Say hello",
+                ..Default::default()
+            }),
             validator: None,
             expose_mcp: false,
             execute: noop_execute(),
         },
         Command {
-            id: "goodbye",
-            summary: "Say goodbye",
-            syntax: None,
-            category: None,
-            spec: None,
+            id: Arc::from("goodbye"),
+            spec: Arc::new(CommandSpec {
+                summary: "Say goodbye",
+                ..Default::default()
+            }),
             validator: None,
             expose_mcp: false,
             execute: noop_execute(),
@@ -178,11 +217,11 @@ fn build_clap_root_adds_version_subcommand_when_not_registered() {
 #[test]
 fn build_clap_root_no_version_subcommand_when_user_registers_version() {
     let registry = make_registry_with(vec![Command {
-        id: "version",
-        summary: "Custom version",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("version"),
+        spec: Arc::new(CommandSpec {
+            summary: "Custom version",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_execute(),
@@ -196,30 +235,17 @@ fn build_clap_root_no_version_subcommand_when_user_registers_version() {
         .clone()
         .try_get_matches_from(["testapp", "version"])
         .unwrap();
-    let (name, sub_matches) = matches.subcommand().unwrap();
+    let (name, _sub_matches) = matches.subcommand().unwrap();
     assert_eq!(name, "version");
-    // strict-args disables trailing vararg, so the "trailing" id is not registered
-    #[cfg(not(feature = "strict-args"))]
-    {
-        let trailing: Vec<String> = sub_matches
-            .get_many::<String>("trailing")
-            .map(|v| v.cloned().collect())
-            .unwrap_or_default();
-        assert!(trailing.is_empty());
-    }
-    #[cfg(feature = "strict-args")]
-    let _ = sub_matches;
+    // With strict-by-default design (#89), typed commands never use trailing_var_arg.
 }
 
 #[test]
 #[cfg(not(feature = "strict-args"))]
 fn parse_with_clap_key_value() {
     let registry = make_registry_with(vec![Command {
-        id: "hello",
-        summary: "Say hello",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("hello"),
+        spec: Arc::new(hello_spec_with_name()),
         validator: None,
         expose_mcp: false,
         execute: noop_execute(),
@@ -245,8 +271,7 @@ fn parse_with_clap_key_value() {
             command_path, args, ..
         } => {
             assert_eq!(command_path.leaf().unwrap(), "hello");
-            assert_eq!(args.named.get("name").unwrap(), "Alice");
-            assert!(args.positional.is_empty());
+            assert_str_arg(&args, "name", "Alice");
         }
         other => panic!("expected Parsed, got {:?}", other),
     }
@@ -256,11 +281,8 @@ fn parse_with_clap_key_value() {
 #[cfg(not(feature = "strict-args"))]
 fn parse_with_clap_key_equals_value() {
     let registry = make_registry_with(vec![Command {
-        id: "hello",
-        summary: "Say hello",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("hello"),
+        spec: Arc::new(hello_spec_with_name()),
         validator: None,
         expose_mcp: false,
         execute: noop_execute(),
@@ -285,7 +307,7 @@ fn parse_with_clap_key_equals_value() {
             command_path, args, ..
         } => {
             assert_eq!(command_path.leaf().unwrap(), "hello");
-            assert_eq!(args.named.get("name").unwrap(), "Alice");
+            assert_str_arg(&args, "name", "Alice");
         }
         other => panic!("expected Parsed, got {:?}", other),
     }
@@ -295,11 +317,12 @@ fn parse_with_clap_key_equals_value() {
 #[cfg(not(feature = "strict-args"))]
 fn parse_with_clap_positional_after_double_dash() {
     let registry = make_registry_with(vec![Command {
-        id: "hello",
-        summary: "Say hello",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("hello"),
+        spec: Arc::new(CommandSpec {
+            summary: "Say hello",
+            args: vec![positional_arg()],
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_execute(),
@@ -325,7 +348,11 @@ fn parse_with_clap_positional_after_double_dash() {
             command_path, args, ..
         } => {
             assert_eq!(command_path.leaf().unwrap(), "hello");
-            assert!(args.positional.contains(&"positional".to_string()));
+            assert!(
+                matches!(args.get("positional"), Some(ArgValue::Str(s)) if s == "positional"),
+                "expected positional='positional' in args, got: {:?}",
+                args
+            );
         }
         other => panic!("expected Parsed, got {:?}", other),
     }
@@ -335,11 +362,12 @@ fn parse_with_clap_positional_after_double_dash() {
 #[cfg(not(feature = "strict-args"))]
 fn parse_with_clap_legacy_leaf_trailing_help_flag_returns_help_shown() {
     let registry = make_registry_with(vec![Command {
-        id: "hello",
-        summary: "Say hello",
-        syntax: Some("testapp hello [-- <args>]"),
-        category: None,
-        spec: None,
+        id: Arc::from("hello"),
+        spec: Arc::new(CommandSpec {
+            summary: "Say hello",
+            syntax: Some("testapp hello [-- <args>]"),
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_execute(),
@@ -374,11 +402,11 @@ fn parse_with_clap_legacy_leaf_trailing_help_flag_returns_help_shown() {
 #[cfg(not(feature = "strict-args"))]
 fn parse_with_clap_legacy_leaf_trailing_h_flag_returns_help_shown() {
     let registry = make_registry_with(vec![Command {
-        id: "hello",
-        summary: "Say hello",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("hello"),
+        spec: Arc::new(CommandSpec {
+            summary: "Say hello",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_execute(),
@@ -402,14 +430,16 @@ fn parse_with_clap_legacy_leaf_trailing_h_flag_returns_help_shown() {
 }
 
 #[test]
-#[cfg(not(feature = "strict-args"))]
-fn parse_with_clap_legacy_leaf_help_after_terminator_is_positional() {
+fn parse_with_clap_legacy_leaf_help_after_terminator_strict_rejects() {
+    // With strict-by-default design (#89), commands with no declared positional args
+    // reject any trailing args (including -- --help) with an error.
+    // This is the intended behavior: args after -- must be declared in the spec.
     let registry = make_registry_with(vec![Command {
-        id: "hello",
-        summary: "Say hello",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("hello"),
+        spec: Arc::new(CommandSpec {
+            summary: "Say hello",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_execute(),
@@ -430,9 +460,10 @@ fn parse_with_clap_legacy_leaf_help_after_terminator_is_positional() {
         ],
     );
 
+    // Strict mode: unknown positional args are rejected
     assert!(
-        matches!(outcome, ParseOutcome::Parsed { .. }),
-        "expected Parsed, got {:?}",
+        matches!(outcome, ParseOutcome::ParseError(_)),
+        "expected ParseError in strict mode, got {:?}",
         outcome
     );
 }
@@ -600,11 +631,12 @@ fn emit_completion_powershell_contains_register_argument_completer() {
 #[cfg(not(feature = "strict-args"))]
 fn parse_with_clap_mixed_positional_and_named() {
     let registry = make_registry_with(vec![Command {
-        id: "hello",
-        summary: "Say hello",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("hello"),
+        spec: Arc::new(CommandSpec {
+            summary: "Say hello",
+            args: vec![positional_arg(), name_arg()],
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_execute(),
@@ -631,23 +663,23 @@ fn parse_with_clap_mixed_positional_and_named() {
             command_path, args, ..
         } => {
             assert_eq!(command_path.leaf().unwrap(), "hello");
-            assert_eq!(args.positional, vec!["file.txt"]);
-            assert_eq!(args.named.get("name").unwrap(), "Alice");
+            assert_str_arg(&args, "positional", "file.txt");
+            assert_str_arg(&args, "name", "Alice");
         }
         other => panic!("expected Parsed, got {:?}", other),
     }
 }
 
-// DD#8: bare --flag without a value must NOT insert "true" into named args.
+// DD#8 / strict-by-default (#89): unknown flags are always rejected (E002).
+// A command must declare args in its spec; undeclared flags are rejected.
 #[test]
-#[cfg(not(feature = "strict-args"))]
-fn parse_with_clap_bare_flag_not_inserted_as_true() {
+fn parse_with_clap_unknown_flag_is_rejected_strict() {
     let registry = make_registry_with(vec![Command {
-        id: "hello",
-        summary: "Say hello",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("hello"),
+        spec: Arc::new(CommandSpec {
+            summary: "Say hello",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_execute(),
@@ -667,22 +699,12 @@ fn parse_with_clap_bare_flag_not_inserted_as_true() {
         ],
     );
 
-    match outcome {
-        ParseOutcome::Parsed {
-            command_path, args, ..
-        } => {
-            assert_eq!(command_path.leaf().unwrap(), "hello");
-            assert!(
-                args.named.get("verbose").is_none(),
-                "bare --flag must NOT appear in named (DD#8)"
-            );
-            assert!(
-                !args.positional.contains(&"--verbose".to_string()),
-                "bare --flag must NOT appear in positional"
-            );
-        }
-        other => panic!("expected Parsed, got {:?}", other),
-    }
+    // With strict-by-default design, unknown flags are always rejected.
+    assert!(
+        matches!(outcome, ParseOutcome::ParseError(_)),
+        "expected ParseError for undeclared flag in strict mode, got {:?}",
+        outcome
+    );
 }
 
 #[test]
@@ -762,14 +784,11 @@ fn parse_nested_argv_yields_multi_segment_path() {
         .register_at(
             &path,
             Command {
-                id: "get",
-                summary: "Get cluster",
-                syntax: None,
-                category: None,
-                spec: Some(Arc::new(CommandSpec {
+                id: Arc::from("get"),
+                spec: Arc::new(CommandSpec {
                     summary: "Get cluster",
                     ..Default::default()
-                })),
+                }),
                 validator: None,
                 expose_mcp: false,
                 execute: noop_execute(),
@@ -812,14 +831,11 @@ fn parse_deep_nested_argv_uses_registered_path_segments() {
         .register_at(
             &path,
             Command {
-                id: "lookup",
-                summary: "Get cluster node",
-                syntax: None,
-                category: None,
-                spec: Some(Arc::new(CommandSpec {
+                id: Arc::from("lookup"),
+                spec: Arc::new(CommandSpec {
                     summary: "Get cluster node",
                     ..Default::default()
-                })),
+                }),
                 validator: None,
                 expose_mcp: false,
                 execute: noop_execute(),
@@ -861,14 +877,11 @@ fn parse_nested_group_help_returns_help_shown() {
         .register_at(
             &path,
             Command {
-                id: "get",
-                summary: "Get cluster",
-                syntax: None,
-                category: None,
-                spec: Some(Arc::new(CommandSpec {
+                id: Arc::from("get"),
+                spec: Arc::new(CommandSpec {
                     summary: "Get cluster",
                     ..Default::default()
-                })),
+                }),
                 validator: None,
                 expose_mcp: false,
                 execute: noop_execute(),
@@ -909,14 +922,11 @@ fn parse_unknown_nested_subcommand_returns_e012() {
         .register_at(
             &path,
             Command {
-                id: "get",
-                summary: "Get cluster",
-                syntax: None,
-                category: None,
-                spec: Some(Arc::new(CommandSpec {
+                id: Arc::from("get"),
+                spec: Arc::new(CommandSpec {
                     summary: "Get cluster",
                     ..Default::default()
-                })),
+                }),
                 validator: None,
                 expose_mcp: false,
                 execute: noop_execute(),
@@ -956,11 +966,8 @@ fn parse_unknown_nested_subcommand_returns_e012() {
 #[cfg(not(feature = "strict-args"))]
 fn parse_with_clap_key_value_and_equals_value_parity() {
     let registry = make_registry_with(vec![Command {
-        id: "hello",
-        summary: "Say hello",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("hello"),
+        spec: Arc::new(hello_spec_with_name()),
         validator: None,
         expose_mcp: false,
         execute: noop_execute(),
@@ -1005,8 +1012,7 @@ fn parse_with_clap_key_value_and_equals_value_parity() {
             },
         ) => {
             assert_eq!(p1.leaf().unwrap(), p2.leaf().unwrap());
-            assert_eq!(a1.named, a2.named);
-            assert_eq!(a1.positional, a2.positional);
+            assert_eq!(a1, a2);
         }
         other => panic!("expected both Parsed, got {:?}", other),
     }

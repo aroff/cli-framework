@@ -1,5 +1,7 @@
-use crate::command::{Command, CommandArgs};
+use crate::command::Command;
 use crate::security::command_risk::CommandRiskTier;
+use crate::spec::value::ArgValue;
+use std::collections::HashMap;
 
 /// Pre-execution authorization gate for command invocations.
 ///
@@ -11,7 +13,7 @@ pub trait ExecutionGate: Send + Sync {
     async fn before_execute(
         &self,
         cmd: &Command,
-        args: &CommandArgs,
+        args: &HashMap<String, ArgValue>,
         tier: CommandRiskTier,
     ) -> Result<(), GateError>;
 }

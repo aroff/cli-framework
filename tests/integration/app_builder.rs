@@ -4,7 +4,6 @@ use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 
 use cli_framework::app::{AppBuilder, AppContext};
-use cli_framework::command::CommandArgs;
 use cli_framework::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use cli_framework::spec::command_tree::{CommandPath, CommandSpec, GroupMetadata};
 
@@ -112,7 +111,9 @@ async fn execute_command_version_returns_not_found() {
         .build(DummyCtx)
         .unwrap();
 
-    let result = app.execute_command("version", CommandArgs::default()).await;
+    let result = app
+        .execute_command("version", std::collections::HashMap::new())
+        .await;
 
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
@@ -137,11 +138,12 @@ fn show_help_version_appears_before_registered_commands() {
     use cli_framework::command::Command;
 
     let cmd = Command {
-        id: "alpha",
-        summary: "Alpha command",
-        syntax: None,
-        category: Some("test"),
-        spec: None,
+        id: Arc::from("alpha"),
+        spec: Arc::new(cli_framework::spec::command_tree::CommandSpec {
+            summary: "Alpha command",
+            category: Some("test"),
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
@@ -275,11 +277,11 @@ mod clap_dispatch_tests {
 
     fn hello_command() -> cli_framework::command::Command {
         cli_framework::command::Command {
-            id: "hello",
-            summary: "Say hello",
-            syntax: None,
-            category: None,
-            spec: None,
+            id: Arc::from("hello"),
+            spec: Arc::new(cli_framework::spec::command_tree::CommandSpec {
+                summary: "Say hello",
+                ..Default::default()
+            }),
             validator: None,
             expose_mcp: false,
             execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
@@ -337,17 +339,39 @@ mod clap_dispatch_tests {
         let captured_clone = captured.clone();
 
         let cmd = cli_framework::command::Command {
-            id: "hello",
-            summary: "Say hello",
-            syntax: None,
-            category: None,
-            spec: None,
+            id: Arc::from("hello"),
+            spec: Arc::new(cli_framework::spec::command_tree::CommandSpec {
+                summary: "Say hello",
+                args: vec![ArgSpec {
+                    name: "name",
+                    kind: ArgKind::Option,
+                    short: None,
+                    long: Some("name"),
+                    value_type: ArgValueType::String,
+                    cardinality: Cardinality::Optional,
+                    default: None,
+                    conflicts_with: vec![],
+                    requires: vec![],
+                    help: "Name to greet",
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
             validator: None,
             expose_mcp: false,
             execute: Arc::new(move |_ctx, args| {
                 let captured = captured_clone.clone();
                 Box::pin(async move {
-                    let name = args.named.get("name").cloned().unwrap_or_default();
+                    let name = args
+                        .get("name")
+                        .and_then(|v| {
+                            if let cli_framework::spec::value::ArgValue::Str(s) = v {
+                                Some(s.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_default();
                     captured.lock().unwrap().push(name);
                     Ok(())
                 })
@@ -477,21 +501,25 @@ mod clap_dispatch_tests {
         let captured_clone = captured.clone();
 
         let cmd = cli_framework::command::Command {
-            id: "hello",
-            summary: "Say hello",
-            syntax: None,
-            category: None,
-            spec: None,
+            id: Arc::from("hello"),
+            spec: Arc::new(cli_framework::spec::command_tree::CommandSpec {
+                summary: "Say hello",
+                ..Default::default()
+            }),
             validator: None,
             expose_mcp: false,
             execute: Arc::new(move |_ctx, args| {
                 let captured = captured_clone.clone();
                 Box::pin(async move {
                     let all_args: Vec<String> = args
-                        .named
                         .values()
-                        .chain(args.positional.iter())
-                        .cloned()
+                        .filter_map(|v| {
+                            if let cli_framework::spec::value::ArgValue::Str(s) = v {
+                                Some(s.clone())
+                            } else {
+                                None
+                            }
+                        })
                         .collect();
                     *captured.lock().unwrap() = all_args;
                     Ok(())
@@ -514,33 +542,24 @@ mod clap_dispatch_tests {
             ])
             .await;
 
+        // With strict-by-default design (#89), unknown flags are always rejected (E002/E008).
+        // The legacy trailing_var_arg capture path has been removed.
         assert!(
-            result.is_ok(),
-            "with trailing_var_arg, unknown flags are captured, not rejected"
-        );
-
-        // The bare --nonexistent-flag is not inserted as "true" per DD#8,
-        // so captured args should be empty (flag is skipped, not stored).
-        let vals = captured.lock().unwrap();
-        assert!(
-            vals.is_empty(),
-            "bare --flag without value should not appear in named or positional (DD#8)"
+            result.is_err(),
+            "unknown flags must be rejected with an error in strict mode"
         );
     }
 }
 
 fn make_hidden_cmd(id: &'static str, hidden: bool) -> cli_framework::command::Command {
     cli_framework::command::Command {
-        id,
-        summary: "test",
-        syntax: None,
-        category: None,
-        spec: Some(Arc::new(CommandSpec {
+        id: Arc::from(id),
+        spec: Arc::new(CommandSpec {
             summary: "test",
             hidden,
             args: vec![],
             ..Default::default()
-        })),
+        }),
         validator: None,
         expose_mcp: false,
         execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
@@ -767,11 +786,8 @@ async fn completion_invalid_shell_emits_single_diagnostic_and_returns_usage_erro
 #[tokio::test]
 async fn without_completion_disables_builtin_and_allows_user_completion() {
     let user_completion = cli_framework::command::Command {
-        id: "completion",
-        summary: "user completion",
-        syntax: None,
-        category: None,
-        spec: Some(Arc::new(CommandSpec {
+        id: Arc::from("completion"),
+        spec: Arc::new(CommandSpec {
             summary: "user completion",
             args: vec![ArgSpec {
                 name: "shell",
@@ -784,9 +800,10 @@ async fn without_completion_disables_builtin_and_allows_user_completion() {
                 conflicts_with: vec![],
                 requires: vec![],
                 help: "shell",
+                ..Default::default()
             }],
             ..Default::default()
-        })),
+        }),
         validator: None,
         expose_mcp: false,
         execute: Arc::new(|ctx, _args| {

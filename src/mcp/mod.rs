@@ -8,7 +8,6 @@ pub mod transport_stdio;
 
 use crate::command::registry::CommandRegistry;
 use crate::command::Command;
-use crate::command::CommandArgs;
 use crate::security::RiskEnforcer;
 use crate::spec::value::ArgValue;
 #[cfg(feature = "mcp-server")]
@@ -93,12 +92,6 @@ impl McpToolRegistry {
             if policy == McpToolExportPolicy::ExposeMcpOnly && !cmd.expose_mcp {
                 continue;
             }
-            if cmd.spec.is_none() {
-                tracing::warn!(
-                    "MCP: command '{}' has no CommandSpec; using permissive schema",
-                    cmd.id
-                );
-            }
             let tool_name = format!("{}_{}", app_name, path_str.replace('/', "_"));
             tools.insert(tool_name, cmd.clone());
         }
@@ -135,7 +128,7 @@ impl McpToolRegistry {
     pub fn list_tools(&self) -> Vec<McpToolDescriptor> {
         self.tools
             .iter()
-            .map(|(name, cmd)| command_to_tool_descriptor(name, cmd.summary, cmd.spec.as_deref()))
+            .map(|(name, cmd)| command_to_tool_descriptor(name, cmd.summary(), Some(&cmd.spec)))
             .collect()
     }
 
@@ -206,63 +199,18 @@ pub(crate) fn json_value_to_arg_value(v: &Value) -> Option<ArgValue> {
     }
 }
 
-/// Map JSON tool-call arguments into `CommandArgs` (stringly) and typed args (`ArgValue`).
+/// Map a JSON object of tool-call arguments into a typed `HashMap<String, ArgValue>`.
 ///
-/// Parity contract (used by MCP and `chat`):
-/// - `_positional: [..]` maps to `CommandArgs.positional`
-/// - all other keys map to `CommandArgs.named` via stringification
-/// - typed values are converted via `json_value_to_arg_value`
-pub(crate) fn map_mcp_args_to_command_args_from_json(
-    arguments: Value,
-) -> anyhow::Result<(CommandArgs, HashMap<String, ArgValue>)> {
-    let obj = match arguments {
-        Value::Null => serde_json::Map::new(),
-        Value::Object(m) => m,
-        other => {
-            return Err(anyhow::anyhow!(
-                "expected tool arguments to be an object, got {}",
-                other
-            ));
-        }
-    };
-
-    let mut named = HashMap::new();
-    let mut positional = Vec::new();
-    let mut typed = HashMap::new();
-
-    if let Some(Value::Array(pos)) = obj.get("_positional") {
-        for v in pos {
-            positional.push(match v {
-                Value::String(s) => s.clone(),
-                other => other.to_string(),
-            });
-        }
-    }
-
-    for (k, v) in &obj {
-        if k == "_positional" {
-            continue;
-        }
-        named.insert(
-            k.clone(),
-            match v {
-                Value::String(s) => s.clone(),
-                other => other.to_string(),
-            },
-        );
-        if let Some(av) = json_value_to_arg_value(v) {
-            typed.insert(k.clone(), av);
-        }
-    }
-
-    Ok((
-        CommandArgs {
-            positional,
-            named,
-            ..Default::default()
-        },
-        typed,
-    ))
+/// The `_positional` key is ignored (positional args are not supported in the typed map).
+/// All other keys are converted via `json_value_to_arg_value`.
+pub fn json_value_to_typed_map(
+    json_obj: &serde_json::Map<String, Value>,
+) -> HashMap<String, ArgValue> {
+    json_obj
+        .iter()
+        .filter(|(k, _)| k.as_str() != "_positional")
+        .filter_map(|(k, v)| json_value_to_arg_value(v).map(|av| (k.clone(), av)))
+        .collect()
 }
 
 #[cfg(feature = "mcp-server")]

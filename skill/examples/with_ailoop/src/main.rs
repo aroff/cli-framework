@@ -4,6 +4,7 @@
 //! for human-in-the-loop confirmations and interactions.
 
 use cli_framework::prelude::*;
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::Arc;
 
@@ -16,19 +17,26 @@ impl AppContext for MyApp {}
 async fn main() -> anyhow::Result<()> {
     // Create a command that requires confirmation
     let deploy_command = Command {
-        id: "deploy",
-        summary: "Deploy application (requires confirmation)",
-        syntax: Some("deploy --env <environment>"),
-        category: Some("deployment"),
-        spec: None,
+        id: Arc::from("deploy"),
+        spec: Arc::new(CommandSpec {
+            summary: "Deploy application (requires confirmation)",
+            syntax: Some("deploy --env <environment>"),
+            category: Some("deployment"),
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: Arc::new(|_ctx, args| {
             Box::pin(async move {
                 let env = args
-                    .named
                     .get("env")
-                    .map(String::as_str)
+                    .and_then(|v| {
+                        if let ArgValue::Str(s) = v {
+                            Some(s.as_str())
+                        } else {
+                            None
+                        }
+                    })
                     .unwrap_or("staging");
 
                 println!("🚀 Preparing to deploy to {} environment...", env);
@@ -57,11 +65,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Create a command that asks questions
     let configure_command = Command {
-        id: "configure",
-        summary: "Configure application settings",
-        syntax: Some("configure"),
-        category: Some("setup"),
-        spec: None,
+        id: Arc::from("configure"),
+        spec: Arc::new(CommandSpec {
+            summary: "Configure application settings",
+            syntax: Some("configure"),
+            category: Some("setup"),
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: Arc::new(|_ctx, _args| {
@@ -154,15 +164,23 @@ async fn main() -> anyhow::Result<()> {
         // Parse command (basic parsing for demo)
         let parts: Vec<&str> = input.split_whitespace().collect();
         if let Some(command_id) = parts.first() {
-            let args = if parts.len() > 1 {
-                CommandArgs {
-                    positional: parts[1..].iter().map(|s| s.to_string()).collect(),
-                    named: std::collections::HashMap::new(),
-                    ..Default::default()
+            let mut args: HashMap<String, ArgValue> = HashMap::new();
+            // Parse --key value pairs from remaining parts
+            let rest = &parts[1..];
+            let mut i = 0;
+            while i < rest.len() {
+                if let Some(key) = rest[i].strip_prefix("--") {
+                    if i + 1 < rest.len() {
+                        args.insert(key.to_string(), ArgValue::Str(rest[i + 1].to_string()));
+                        i += 2;
+                    } else {
+                        args.insert(key.to_string(), ArgValue::Bool(true));
+                        i += 1;
+                    }
+                } else {
+                    i += 1;
                 }
-            } else {
-                CommandArgs::default()
-            };
+            }
 
             match app.execute_command(command_id, args).await {
                 Ok(()) => {}

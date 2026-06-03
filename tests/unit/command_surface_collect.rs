@@ -1,6 +1,7 @@
-use cli_framework::command::{Command, CommandArgs, CommandRegistry};
+use cli_framework::command::{Command, CommandRegistry};
 use cli_framework::command_surface::collect::collect;
 use cli_framework::spec::command_tree::{CommandPath, CommandSpec};
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -8,7 +9,7 @@ use std::sync::Arc;
 fn noop_execute() -> Arc<
     dyn for<'a> Fn(
             &'a mut dyn cli_framework::app::AppContext,
-            CommandArgs,
+            HashMap<String, cli_framework::spec::value::ArgValue>,
         ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>
         + Send
         + Sync,
@@ -18,11 +19,11 @@ fn noop_execute() -> Arc<
 
 fn make_cmd(id: &'static str, summary: &'static str) -> Command {
     Command {
-        id,
-        summary,
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from(id),
+        spec: Arc::new(CommandSpec {
+            summary,
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_execute(),
@@ -31,11 +32,8 @@ fn make_cmd(id: &'static str, summary: &'static str) -> Command {
 
 fn make_cmd_with_spec(id: &'static str, summary: &'static str, spec: CommandSpec) -> Command {
     Command {
-        id,
-        summary,
-        syntax: None,
-        category: None,
-        spec: Some(Arc::new(spec)),
+        id: Arc::from(id),
+        spec: Arc::new(CommandSpec { summary, ..spec }),
         validator: None,
         expose_mcp: false,
         execute: noop_execute(),
@@ -102,15 +100,17 @@ fn hidden_command_included_with_flag() {
 }
 
 #[test]
-fn spec_less_command_collected() {
+fn empty_spec_command_collected() {
+    // With spec #89, all commands must have a spec (mandatory).
+    // A command with an empty spec (no args declared) produces a typed empty schema.
     let mut registry = CommandRegistry::new();
     registry.register(make_cmd("hello", "Say hello"));
     let doc = collect(&registry, "myapp", "1.0.0", false);
     assert_eq!(doc.commands.len(), 1);
-    // spec-less command: permissive schema
+    // typed empty spec: schema is {"type": "object", "properties": {}}
     let schema = &doc.commands[0].input_schema;
     assert_eq!(schema["type"].as_str(), Some("object"));
-    assert_eq!(schema["additionalProperties"].as_bool(), Some(true));
+    assert!(schema["properties"].is_object());
     assert_eq!(doc.commands[0].hidden, false);
     assert!(doc.commands[0].args.is_empty());
 }
@@ -142,6 +142,7 @@ fn spec_command_args_mapped() {
             conflicts_with: vec![],
             requires: vec![],
             help: "Target environment",
+            ..Default::default()
         }],
         ..Default::default()
     };

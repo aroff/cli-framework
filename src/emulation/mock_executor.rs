@@ -21,7 +21,7 @@ impl MockExecutor {
 
     pub async fn execute(&self, command: &Command) -> Result<String, String> {
         self.responses
-            .get(command.id)
+            .get(command.id.as_ref())
             .cloned()
             .ok_or_else(|| format!("No mock response for command: {}", command.id))
     }

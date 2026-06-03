@@ -13,15 +13,14 @@ async fn main() -> anyhow::Result<()> {
     builder = builder
         .with_version("cfw-mcp-stdio-test-server", "0.1.0")
         .register_command(Command {
-            id: "ping",
-            summary: "Ping (no stdout)",
-            syntax: Some("ping"),
-            category: Some("test"),
-            spec: Some(Arc::new(CommandSpec {
+            id: Arc::from("ping"),
+            spec: Arc::new(CommandSpec {
                 summary: "Ping (no stdout)",
+                syntax: Some("ping"),
+                category: Some("test"),
                 args: vec![],
                 ..Default::default()
-            })),
+            }),
             validator: None,
             expose_mcp: true,
             execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),

@@ -1,6 +1,7 @@
 use crate::ailoop::AiloopClient;
 use crate::app::context::AppContext;
-use crate::command::{Command, CommandArgs};
+use crate::command::Command;
+use crate::parser::diagnostic::Diagnostic;
 use crate::spec::value::ArgValue;
 use std::collections::HashMap;
 #[cfg(feature = "testkit")]
@@ -66,7 +67,7 @@ impl<'a> crate::app::context::CommandRegistryContext for CliAppContextWrapper<'a
     fn execute_command_sync(
         &self,
         command_id: &str,
-        args: crate::command::CommandArgs,
+        args: HashMap<String, ArgValue>,
     ) -> anyhow::Result<()> {
         let command = self
             .command_registry()
@@ -130,29 +131,14 @@ mod tests {
 pub(crate) fn validate_typed_args(
     command: &Command,
     typed_args: &HashMap<String, ArgValue>,
-) -> Vec<crate::parser::diagnostic::Diagnostic> {
+) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
 
-    if let Some(ref spec) = command.spec {
-        diags.extend(spec.validate_typed_args(typed_args));
-    }
+    diags.extend(command.spec.validate_typed_args(typed_args));
 
     if let Some(ref validator) = command.validator {
         diags.extend(validator(typed_args));
     }
 
     diags
-}
-
-pub(crate) fn enrich_args(
-    mut args: CommandArgs,
-    typed_args: &HashMap<String, ArgValue>,
-) -> CommandArgs {
-    args.named_typed = typed_args.clone();
-    for (k, v) in typed_args {
-        if !matches!(v, ArgValue::List(_)) {
-            args.named.insert(k.clone(), v.to_string());
-        }
-    }
-    args
 }

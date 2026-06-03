@@ -19,6 +19,7 @@ fn make_arg(
         conflicts_with: vec![],
         requires: vec![],
         help: "test arg",
+        ..Default::default()
     }
 }
 
@@ -142,6 +143,7 @@ fn long_name_override_used_as_property_key() {
         conflicts_with: vec![],
         requires: vec![],
         help: "",
+        ..Default::default()
     };
     let (name, _) = arg.to_json_schema_property();
     assert_eq!(name, "verbose");

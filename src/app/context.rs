@@ -49,6 +49,6 @@ pub trait CommandRegistryContext {
     fn execute_command_sync(
         &self,
         command_id: &str,
-        args: crate::command::CommandArgs,
+        args: std::collections::HashMap<String, crate::spec::value::ArgValue>,
     ) -> anyhow::Result<()>;
 }

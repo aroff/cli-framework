@@ -19,6 +19,10 @@ pub struct CommandSpec {
     pub exit_codes: Vec<ExitCodeEntry>,
     pub args: Vec<ArgSpec>,
     pub notes: Option<&'static str>,
+    /// Optional grouping label for help output.
+    pub category: Option<&'static str>,
+    /// Usage hint shown in help, e.g. `"cmd [--flag] <pos>"`.
+    pub syntax: Option<&'static str>,
 }
 
 impl CommandSpec {
@@ -88,6 +92,127 @@ impl CommandSpec {
                         suggestion: Some(format!("Provide a valid value for --{}", arg_spec.name)),
                         span: None,
                     });
+                }
+            }
+        }
+
+        // Constraint checks (E004) — min/max/min_f/max_f/pattern
+        for arg_spec in &self.args {
+            if let Some(value) = args.get(arg_spec.name) {
+                // Integer range checks
+                if let ArgValue::Int(i) = value {
+                    if let Some(min) = arg_spec.min {
+                        if *i < min {
+                            diagnostics.push(Diagnostic {
+                                code: E_INVALID_VALUE,
+                                category: DiagnosticCategory::Spec,
+                                message: format!(
+                                    "value {} for '--{}' is below minimum {}",
+                                    i, arg_spec.name, min
+                                ),
+                                suggestion: Some(format!(
+                                    "Provide a value >= {} for --{}",
+                                    min, arg_spec.name
+                                )),
+                                span: None,
+                            });
+                        }
+                    }
+                    if let Some(max) = arg_spec.max {
+                        if *i > max {
+                            diagnostics.push(Diagnostic {
+                                code: E_INVALID_VALUE,
+                                category: DiagnosticCategory::Spec,
+                                message: format!(
+                                    "value {} for '--{}' is above maximum {}",
+                                    i, arg_spec.name, max
+                                ),
+                                suggestion: Some(format!(
+                                    "Provide a value <= {} for --{}",
+                                    max, arg_spec.name
+                                )),
+                                span: None,
+                            });
+                        }
+                    }
+                }
+
+                // Float range checks
+                if let ArgValue::Float(f) = value {
+                    if let Some(min_f) = arg_spec.min_f {
+                        if *f < min_f {
+                            diagnostics.push(Diagnostic {
+                                code: E_INVALID_VALUE,
+                                category: DiagnosticCategory::Spec,
+                                message: format!(
+                                    "value {} for '--{}' is below minimum {}",
+                                    f, arg_spec.name, min_f
+                                ),
+                                suggestion: Some(format!(
+                                    "Provide a value >= {} for --{}",
+                                    min_f, arg_spec.name
+                                )),
+                                span: None,
+                            });
+                        }
+                    }
+                    if let Some(max_f) = arg_spec.max_f {
+                        if *f > max_f {
+                            diagnostics.push(Diagnostic {
+                                code: E_INVALID_VALUE,
+                                category: DiagnosticCategory::Spec,
+                                message: format!(
+                                    "value {} for '--{}' is above maximum {}",
+                                    f, arg_spec.name, max_f
+                                ),
+                                suggestion: Some(format!(
+                                    "Provide a value <= {} for --{}",
+                                    max_f, arg_spec.name
+                                )),
+                                span: None,
+                            });
+                        }
+                    }
+                }
+
+                // Pattern check
+                if let ArgValue::Str(s) = value {
+                    if let Some(pattern) = arg_spec.pattern {
+                        match regex::Regex::new(pattern) {
+                            Ok(re) => {
+                                if !re.is_match(s) {
+                                    diagnostics.push(Diagnostic {
+                                        code: E_INVALID_VALUE,
+                                        category: DiagnosticCategory::Spec,
+                                        message: format!(
+                                            "value '{}' for '--{}' does not match pattern '{}'",
+                                            s, arg_spec.name, pattern
+                                        ),
+                                        suggestion: Some(format!(
+                                            "Provide a value matching '{}' for --{}",
+                                            pattern, arg_spec.name
+                                        )),
+                                        span: None,
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                diagnostics.push(Diagnostic {
+                                    code: E_INVALID_VALUE,
+                                    category: DiagnosticCategory::Spec,
+                                    message: format!(
+                                        "invalid pattern '{}' for '--{}': {}",
+                                        pattern, arg_spec.name, e
+                                    ),
+                                    suggestion: Some(format!(
+                                        "Fix the pattern spec for --{}",
+                                        arg_spec.name
+                                    )),
+                                    span: None,
+                                });
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -336,6 +461,7 @@ mod tests {
             conflicts_with: vec![],
             requires: vec![],
             help: "",
+            ..Default::default()
         }
     }
 
@@ -351,6 +477,7 @@ mod tests {
             conflicts_with: vec![],
             requires: vec![],
             help: "",
+            ..Default::default()
         }
     }
 
@@ -386,6 +513,7 @@ mod tests {
             conflicts_with: vec![],
             requires: vec![],
             help: "",
+            ..Default::default()
         }]);
         let mut args = HashMap::new();
         args.insert("count".to_string(), ArgValue::Str("notanumber".to_string()));
@@ -406,6 +534,7 @@ mod tests {
             conflicts_with: vec![],
             requires: vec![],
             help: "",
+            ..Default::default()
         }]);
         let mut args = HashMap::new();
         args.insert("count".to_string(), ArgValue::Int(42));
@@ -427,6 +556,7 @@ mod tests {
                 conflicts_with: vec!["arg_b"],
                 requires: vec![],
                 help: "",
+                ..Default::default()
             },
             optional_str_arg("arg_b"),
         ]);
@@ -453,6 +583,7 @@ mod tests {
                 conflicts_with: vec!["arg_b"],
                 requires: vec![],
                 help: "",
+                ..Default::default()
             },
             optional_str_arg("arg_b"),
         ]);
@@ -476,6 +607,7 @@ mod tests {
                 conflicts_with: vec![],
                 requires: vec!["arg_b"],
                 help: "",
+                ..Default::default()
             },
             optional_str_arg("arg_b"),
         ]);
@@ -501,6 +633,7 @@ mod tests {
                 conflicts_with: vec![],
                 requires: vec!["arg_b"],
                 help: "",
+                ..Default::default()
             },
             optional_str_arg("arg_b"),
         ]);

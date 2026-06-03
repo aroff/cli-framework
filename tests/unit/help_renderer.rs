@@ -3,7 +3,9 @@
 use cli_framework::app::AppBuilder;
 use cli_framework::app::AppContext;
 use cli_framework::cli_output::HelpRenderer;
-use cli_framework::command::{Command, CommandArgs, CommandRegistry};
+use cli_framework::command::{Command, CommandRegistry};
+use cli_framework::spec::command_tree::CommandSpec;
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -11,12 +13,12 @@ use std::sync::Arc;
 fn noop_arc_execute() -> Arc<
     dyn for<'a> Fn(
             &'a mut dyn AppContext,
-            CommandArgs,
+            HashMap<String, cli_framework::spec::value::ArgValue>,
         ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>
         + Send
         + Sync,
 > {
-    Arc::new(|_ctx: &mut dyn AppContext, _args: CommandArgs| Box::pin(async move { Ok(()) }))
+    Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) }))
 }
 
 #[test]
@@ -35,31 +37,34 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
 
     // Services group (intentionally registered out of order)
     registry.register(Command {
-        id: "stop",
-        summary: "Stop service",
-        syntax: None,
-        category: Some("Services"),
-        spec: None,
+        id: Arc::from("stop"),
+        spec: Arc::new(CommandSpec {
+            summary: "Stop service",
+            category: Some("Services"),
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_arc_execute(),
     });
     registry.register(Command {
-        id: "start",
-        summary: "Start service",
-        syntax: None,
-        category: Some("Services"),
-        spec: None,
+        id: Arc::from("start"),
+        spec: Arc::new(CommandSpec {
+            summary: "Start service",
+            category: Some("Services"),
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_arc_execute(),
     });
     registry.register(Command {
-        id: "restart",
-        summary: "Restart service",
-        syntax: None,
-        category: Some("Services"),
-        spec: None,
+        id: Arc::from("restart"),
+        spec: Arc::new(CommandSpec {
+            summary: "Restart service",
+            category: Some("Services"),
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_arc_execute(),
@@ -67,21 +72,22 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
 
     // Other groups
     registry.register(Command {
-        id: "metrics",
-        summary: "Show metrics",
-        syntax: None,
-        category: Some("Observability"),
-        spec: None,
+        id: Arc::from("metrics"),
+        spec: Arc::new(CommandSpec {
+            summary: "Show metrics",
+            category: Some("Observability"),
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_arc_execute(),
     });
     registry.register(Command {
-        id: "whoami",
-        summary: "Print user",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("whoami"),
+        spec: Arc::new(CommandSpec {
+            summary: "Print user",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_arc_execute(),
@@ -108,21 +114,21 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
 fn t8_renders_fixed_width_id_column_per_group() {
     let mut registry = CommandRegistry::new();
     registry.register(Command {
-        id: "logs",
-        summary: "Show logs",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("logs"),
+        spec: Arc::new(CommandSpec {
+            summary: "Show logs",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_arc_execute(),
     });
     registry.register(Command {
-        id: "status",
-        summary: "Show status",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("status"),
+        spec: Arc::new(CommandSpec {
+            summary: "Show status",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_arc_execute(),
@@ -154,33 +160,36 @@ async fn t9_run_with_args_help_flag_routes_through_help_renderer_when_categories
     let app = AppBuilder::new()
         .with_version("testapp", "1.0.0")
         .register_command(Command {
-            id: "deploy",
-            summary: "Deploy service",
-            syntax: None,
-            category: Some("Deployment"),
-            spec: None,
+            id: Arc::from("deploy"),
+            spec: Arc::new(CommandSpec {
+                summary: "Deploy service",
+                category: Some("Deployment"),
+                ..Default::default()
+            }),
             validator: None,
             expose_mcp: false,
             execute: noop_arc_execute(),
         })
         .unwrap()
         .register_command(Command {
-            id: "rollback",
-            summary: "Rollback deployment",
-            syntax: None,
-            category: Some("Deployment"),
-            spec: None,
+            id: Arc::from("rollback"),
+            spec: Arc::new(CommandSpec {
+                summary: "Rollback deployment",
+                category: Some("Deployment"),
+                ..Default::default()
+            }),
             validator: None,
             expose_mcp: false,
             execute: noop_arc_execute(),
         })
         .unwrap()
         .register_command(Command {
-            id: "logs",
-            summary: "Show logs",
-            syntax: None,
-            category: Some("Observability"),
-            spec: None,
+            id: Arc::from("logs"),
+            spec: Arc::new(CommandSpec {
+                summary: "Show logs",
+                category: Some("Observability"),
+                ..Default::default()
+            }),
             validator: None,
             expose_mcp: false,
             execute: noop_arc_execute(),
@@ -219,22 +228,24 @@ async fn t10_run_with_args_no_subcommand_routes_through_help_renderer_when_categ
     let app = AppBuilder::new()
         .with_version("testapp", "1.0.0")
         .register_command(Command {
-            id: "deploy",
-            summary: "Deploy service",
-            syntax: None,
-            category: Some("Deployment"),
-            spec: None,
+            id: Arc::from("deploy"),
+            spec: Arc::new(CommandSpec {
+                summary: "Deploy service",
+                category: Some("Deployment"),
+                ..Default::default()
+            }),
             validator: None,
             expose_mcp: false,
             execute: noop_arc_execute(),
         })
         .unwrap()
         .register_command(Command {
-            id: "logs",
-            summary: "Show logs",
-            syntax: None,
-            category: Some("Observability"),
-            spec: None,
+            id: Arc::from("logs"),
+            spec: Arc::new(CommandSpec {
+                summary: "Show logs",
+                category: Some("Observability"),
+                ..Default::default()
+            }),
             validator: None,
             expose_mcp: false,
             execute: noop_arc_execute(),
@@ -267,22 +278,22 @@ async fn t11_run_with_args_help_flag_uses_clap_when_no_categories() {
     let app = AppBuilder::new()
         .with_version("testapp", "1.0.0")
         .register_command(Command {
-            id: "deploy",
-            summary: "Deploy service",
-            syntax: None,
-            category: None,
-            spec: None,
+            id: Arc::from("deploy"),
+            spec: Arc::new(CommandSpec {
+                summary: "Deploy service",
+                ..Default::default()
+            }),
             validator: None,
             expose_mcp: false,
             execute: noop_arc_execute(),
         })
         .unwrap()
         .register_command(Command {
-            id: "logs",
-            summary: "Show logs",
-            syntax: None,
-            category: None,
-            spec: None,
+            id: Arc::from("logs"),
+            spec: Arc::new(CommandSpec {
+                summary: "Show logs",
+                ..Default::default()
+            }),
             validator: None,
             expose_mcp: false,
             execute: noop_arc_execute(),
@@ -314,11 +325,12 @@ fn t12_render_help_does_not_contain_spurious_version_line() {
     let app = AppBuilder::new()
         .with_version("testapp", "1.0.0")
         .register_command(Command {
-            id: "deploy",
-            summary: "Deploy service",
-            syntax: None,
-            category: Some("Deployment"),
-            spec: None,
+            id: Arc::from("deploy"),
+            spec: Arc::new(CommandSpec {
+                summary: "Deploy service",
+                category: Some("Deployment"),
+                ..Default::default()
+            }),
             validator: None,
             expose_mcp: false,
             execute: noop_arc_execute(),

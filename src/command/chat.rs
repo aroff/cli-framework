@@ -1,8 +1,10 @@
 use crate::ailoop::AiloopClient;
-use crate::command::{Command, CommandArgs, CommandRegistry, CommandResult};
+use crate::command::{Command, CommandRegistry, CommandResult};
 use crate::security::command_risk::CommandRiskPolicy;
 use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use crate::spec::command_tree::{CommandSpec, EnvVarEntry, ExitCodeEntry};
+use crate::spec::value::ArgValue;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 pub mod host_tool_adapter;
@@ -31,13 +33,8 @@ pub fn create_chat_command(
     app_name: &'static str,
 ) -> Command {
     Command {
-        id: "chat",
-        summary: "In-process chat session (commands-as-tools)",
-        syntax: Some(
-            "chat [-p <prompt>] [--stream] [--yolo] [--model <model>] [--session-agents <agents>]",
-        ),
-        category: Some("ai"),
-        spec: Some(Arc::new(chat_spec())),
+        id: Arc::from("chat"),
+        spec: Arc::new(chat_spec()),
         validator: None,
         expose_mcp: false,
         execute: Arc::new(move |ctx, args| {
@@ -54,6 +51,10 @@ pub fn create_chat_command(
 fn chat_spec() -> CommandSpec {
     CommandSpec {
         summary: "In-process chat session (commands-as-tools)",
+        syntax: Some(
+            "chat [-p <prompt>] [--stream] [--yolo] [--model <model>] [--session-agents <agents>]",
+        ),
+        category: Some("ai"),
         long_about: Some(
             "Modes:\n\
  - One-shot: provide a prompt with --prompt/-p or pipe stdin.\n\
@@ -113,6 +114,7 @@ Notes:\n\
                 conflicts_with: vec![],
                 requires: vec![],
                 help: "Prompt text (if omitted, reads stdin or starts a REPL)",
+                ..Default::default()
             },
             ArgSpec {
                 name: "model",
@@ -125,6 +127,7 @@ Notes:\n\
                 conflicts_with: vec![],
                 requires: vec![],
                 help: "Model override (OpenAI-compatible; best-effort)",
+                ..Default::default()
             },
             ArgSpec {
                 name: "yolo",
@@ -138,6 +141,7 @@ Notes:\n\
                 requires: vec![],
                 help:
                     "Skip confirmations for Sensitive commands (does not bypass Destructive gating)",
+                ..Default::default()
             },
             ArgSpec {
                 name: "stream",
@@ -150,6 +154,7 @@ Notes:\n\
                 conflicts_with: vec![],
                 requires: vec![],
                 help: "Stream agent output (best-effort; line-oriented)",
+                ..Default::default()
             },
             ArgSpec {
                 name: "session_agents",
@@ -162,6 +167,7 @@ Notes:\n\
                 conflicts_with: vec![],
                 requires: vec![],
                 help: "Comma-separated agent persona IDs (reserved; best-effort)",
+                ..Default::default()
             },
         ],
         ..Default::default()
@@ -174,7 +180,7 @@ async fn execute_chat(
     risk_policy: CommandRiskPolicy,
     ailoop_client: Option<Arc<AiloopClient>>,
     app_name: &'static str,
-    args: CommandArgs,
+    args: HashMap<String, ArgValue>,
 ) -> CommandResult {
     runtime::execute_chat(
         ctx,

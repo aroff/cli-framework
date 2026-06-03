@@ -1,7 +1,6 @@
 //! Converts `CommandSpec` / `ArgSpec` into `clap::Command` / `clap::Arg` instances,
 //! and maps `clap::ArgMatches` back to the typed `ArgValue` map.
 
-use crate::command::Command;
 use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
 use crate::parser::error_codes::E_INVALID_VALUE;
 use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
@@ -17,38 +16,15 @@ pub fn build_typed_clap_command(id: &str, spec: &CommandSpec) -> clap::Command {
         cmd = cmd.long_about(long_about);
     }
 
+    if let Some(syntax) = spec.syntax {
+        cmd = cmd.after_help(format!("Syntax: {}", syntax));
+    }
+
     for arg_spec in &spec.args {
         cmd = cmd.arg(build_clap_arg(arg_spec));
     }
 
     cmd
-}
-
-/// Build a legacy `clap::Command` with a trailing var-arg (no spec required).
-pub fn build_legacy_clap_command(cmd: &Command) -> clap::Command {
-    tracing::warn!(
-        "legacy-parse-path: command '{}' has no ArgSpec; using trailing var-arg",
-        cmd.id
-    );
-
-    let mut sub = clap::Command::new(cmd.id).about(cmd.summary);
-
-    // With strict-args feature, don't use trailing_var_arg (reject unknown flags)
-    #[cfg(not(feature = "strict-args"))]
-    {
-        sub = sub.arg(
-            clap::Arg::new("trailing")
-                .num_args(0..)
-                .trailing_var_arg(true)
-                .allow_hyphen_values(true),
-        );
-    }
-
-    if let Some(syntax) = cmd.syntax {
-        sub = sub.after_help(format!("Syntax: {}", syntax));
-    }
-
-    sub
 }
 
 /// Convert `ArgMatches` to a typed arg map. Returns `Err(Diagnostic{E004})` on type mismatch.
@@ -269,6 +245,7 @@ mod tests {
                 conflicts_with: vec![],
                 requires: vec![],
                 help: "Output format",
+                ..Default::default()
             },
             ArgSpec {
                 name: "verbose",
@@ -281,6 +258,7 @@ mod tests {
                 conflicts_with: vec![],
                 requires: vec![],
                 help: "Verbose output",
+                ..Default::default()
             },
         ]);
 
@@ -288,41 +266,6 @@ mod tests {
         let arg_ids: Vec<_> = cmd.get_arguments().map(|a| a.get_id().as_str()).collect();
         assert!(arg_ids.contains(&"output"), "expected 'output' arg");
         assert!(arg_ids.contains(&"verbose"), "expected 'verbose' arg");
-    }
-
-    #[test]
-    fn build_legacy_clap_command_has_trailing_vararg() {
-        use crate::command::Command;
-        use std::sync::Arc;
-
-        let cmd = Command {
-            id: "legacy",
-            summary: "Legacy command",
-            syntax: None,
-            category: None,
-            spec: None,
-            validator: None,
-            expose_mcp: false,
-            execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
-        };
-
-        let clap_cmd = build_legacy_clap_command(&cmd);
-        let arg_ids: Vec<_> = clap_cmd
-            .get_arguments()
-            .map(|a| a.get_id().as_str())
-            .collect();
-
-        #[cfg(not(feature = "strict-args"))]
-        assert!(
-            arg_ids.contains(&"trailing"),
-            "expected 'trailing' var-arg when strict-args is disabled"
-        );
-
-        #[cfg(feature = "strict-args")]
-        assert!(
-            !arg_ids.contains(&"trailing"),
-            "trailing var-arg should not be present when strict-args is enabled"
-        );
     }
 
     #[test]
@@ -338,6 +281,7 @@ mod tests {
             conflicts_with: vec![],
             requires: vec![],
             help: "",
+            ..Default::default()
         }]);
 
         let cmd = build_typed_clap_command("test", &spec);
@@ -361,6 +305,7 @@ mod tests {
             conflicts_with: vec![],
             requires: vec![],
             help: "",
+            ..Default::default()
         }]);
 
         let cmd = build_typed_clap_command("test", &spec);
@@ -382,6 +327,7 @@ mod tests {
             conflicts_with: vec![],
             requires: vec![],
             help: "",
+            ..Default::default()
         }]);
 
         let cmd = build_typed_clap_command("test", &spec);
@@ -408,6 +354,7 @@ mod tests {
             conflicts_with: vec![],
             requires: vec![],
             help: "",
+            ..Default::default()
         }]);
 
         let cmd = build_typed_clap_command("test", &spec);

@@ -1,7 +1,7 @@
 //! Integration tests for the built-in `spec` command.
 
 use cli_framework::app::{AppBuilder, AppContext};
-use cli_framework::command::{Command, CommandArgs};
+use cli_framework::command::Command;
 use cli_framework::spec::command_tree::CommandSpec;
 use std::sync::Arc;
 
@@ -27,14 +27,11 @@ async fn run_spec_to_tempfile<C: AppContext>(
 
 fn noop_command(id: &'static str) -> Command {
     Command {
-        id,
-        summary: "Test command",
-        syntax: None,
-        category: None,
-        spec: Some(Arc::new(CommandSpec {
+        id: Arc::from(id),
+        spec: Arc::new(CommandSpec {
             summary: "Test command",
             ..Default::default()
-        })),
+        }),
         validator: None,
         expose_mcp: false,
         execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
@@ -43,15 +40,12 @@ fn noop_command(id: &'static str) -> Command {
 
 fn hidden_command() -> Command {
     Command {
-        id: "internal",
-        summary: "Hidden internal command",
-        syntax: None,
-        category: None,
-        spec: Some(Arc::new(CommandSpec {
+        id: Arc::from("internal"),
+        spec: Arc::new(CommandSpec {
             summary: "Hidden internal command",
             hidden: true,
             ..Default::default()
-        })),
+        }),
         validator: None,
         expose_mcp: false,
         execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
@@ -328,17 +322,14 @@ async fn spec_output_invalid_path_cs002_error() {
 #[test]
 fn user_spec_command_not_overwritten() {
     let custom_spec = Command {
-        id: "spec",
-        summary: "Custom spec command",
-        syntax: None,
-        category: None,
-        spec: Some(Arc::new(CommandSpec {
+        id: Arc::from("spec"),
+        spec: Arc::new(CommandSpec {
             summary: "Custom spec command",
             ..Default::default()
-        })),
+        }),
         validator: None,
         expose_mcp: false,
-        execute: Arc::new(|_ctx, _args: CommandArgs| Box::pin(async { Ok(()) })),
+        execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
     };
 
     // Should succeed: collision guard prevents override, no panic

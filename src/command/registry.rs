@@ -47,7 +47,7 @@ impl CommandRegistry {
     /// Panics on collision; prefer `AppBuilder::register_command()` which
     /// surfaces the error as `Result`.
     pub fn register(&mut self, command: Command) {
-        let path = CommandPath::root_for(command.id);
+        let path = CommandPath::root_for(&command.id);
         self.register_at(&path, command)
             .expect("command registration collision");
     }
@@ -107,14 +107,13 @@ impl CommandRegistry {
             return Err(RegistrationError::Collision { path: path_str });
         }
 
-        if let Some(ref spec) = command.spec {
-            for alias in spec.aliases.iter().chain(spec.hidden_aliases.iter()) {
-                if let Some((existing_key, _)) = self.tree_commands.get_key_value(*alias) {
-                    return Err(RegistrationError::AliasConflict {
-                        alias: alias.to_string(),
-                        existing_path: existing_key.clone(),
-                    });
-                }
+        let spec = &command.spec;
+        for alias in spec.aliases.iter().chain(spec.hidden_aliases.iter()) {
+            if let Some((existing_key, _)) = self.tree_commands.get_key_value(*alias) {
+                return Err(RegistrationError::AliasConflict {
+                    alias: alias.to_string(),
+                    existing_path: existing_key.clone(),
+                });
             }
         }
 
@@ -174,11 +173,8 @@ mod tests {
 
     fn make_cmd(id: &'static str) -> Command {
         Command {
-            id,
-            summary: "test",
-            syntax: None,
-            category: None,
-            spec: None,
+            id: Arc::from(id),
+            spec: Arc::new(CommandSpec::default()),
             validator: None,
             expose_mcp: false,
             execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
@@ -202,11 +198,16 @@ mod tests {
         let mut registry = CommandRegistry::new();
         registry.register(make_cmd("hello"));
 
-        let mut cmd = make_cmd("greet");
-        cmd.spec = Some(Arc::new(CommandSpec {
-            aliases: vec!["hello"],
-            ..Default::default()
-        }));
+        let cmd = Command {
+            id: Arc::from("greet"),
+            spec: Arc::new(CommandSpec {
+                aliases: vec!["hello"],
+                ..Default::default()
+            }),
+            validator: None,
+            expose_mcp: false,
+            execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
+        };
 
         let err = registry
             .register_at(&CommandPath::root_for("greet"), cmd)
@@ -233,11 +234,16 @@ mod tests {
         let path = CommandPath::new(&["mcp", "serve"]).unwrap();
         registry.register_at(&path, make_cmd("serve")).unwrap();
 
-        let mut cmd = make_cmd("other");
-        cmd.spec = Some(Arc::new(CommandSpec {
-            aliases: vec!["mcp/serve"],
-            ..Default::default()
-        }));
+        let cmd = Command {
+            id: Arc::from("other"),
+            spec: Arc::new(CommandSpec {
+                aliases: vec!["mcp/serve"],
+                ..Default::default()
+            }),
+            validator: None,
+            expose_mcp: false,
+            execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
+        };
 
         let err = registry
             .register_at(&CommandPath::root_for("other"), cmd)
@@ -259,11 +265,16 @@ mod tests {
         let mut registry = CommandRegistry::new();
         registry.register(make_cmd("hello"));
 
-        let mut cmd = make_cmd("greet");
-        cmd.spec = Some(Arc::new(CommandSpec {
-            hidden_aliases: vec!["hello"],
-            ..Default::default()
-        }));
+        let cmd = Command {
+            id: Arc::from("greet"),
+            spec: Arc::new(CommandSpec {
+                hidden_aliases: vec!["hello"],
+                ..Default::default()
+            }),
+            validator: None,
+            expose_mcp: false,
+            execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
+        };
 
         let err = registry
             .register_at(&CommandPath::root_for("greet"), cmd)
@@ -287,7 +298,7 @@ mod tests {
         registry.register_at(&path, make_cmd("get")).unwrap();
         let found = registry.resolve(&path);
         assert!(found.is_some());
-        assert_eq!(found.unwrap().id, "get");
+        assert_eq!(found.unwrap().id.as_ref(), "get");
     }
 
     #[test]
@@ -332,7 +343,7 @@ mod tests {
                 make_cmd("serve"),
             )
             .unwrap();
-        let root_ids: Vec<_> = registry.commands().map(|c| c.id).collect();
+        let root_ids: Vec<_> = registry.commands().map(|c| c.id.as_ref()).collect();
         assert!(root_ids.contains(&"deploy"));
         assert!(
             !root_ids.contains(&"serve"),

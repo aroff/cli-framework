@@ -1,16 +1,5 @@
 //! Clap-based argv parsing adapter.
 //!
-//! **Design deviation from spec Section 4.3:** The spec suggests using
-//! `sub_matches.ids()` + `get_many::<String>()` to extract parsed args from
-//! Clap. However, because commands are registered dynamically at runtime and
-//! their accepted flags/args are not known at build time, we cannot register
-//! individual named arguments with Clap. Instead, each subcommand uses a
-//! `trailing_var_arg` to capture all remaining args, which are then
-//! classified as named (`--key value` / `--key=value`) or positional in
-//! `match_to_command_args`. This preserves Clap's handling of `--help`,
-//! `--version`, `--` terminator, and subcommand routing while accommodating
-//! the dynamic command model.
-//!
 //! **Design deviation from spec Section 5.1:** `build_clap_root` accepts
 //! `app_name` and `app_version` as separate parameters in addition to
 //! `meta: Option<&AppMeta>`, because `App` stores these independently of
@@ -19,7 +8,7 @@
 //! Clap.
 
 use crate::app::AppMeta;
-use crate::command::{CommandArgs, CommandRegistry};
+use crate::command::CommandRegistry;
 use crate::parser::clap_mapper::{build_typed_clap_command, map_matches_to_typed_args};
 use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
 use crate::parser::error_codes::{
@@ -27,11 +16,8 @@ use crate::parser::error_codes::{
 };
 use crate::parser::outcome::ParseOutcome;
 use crate::spec::command_tree::CommandPath;
-
-pub struct ParsedCommand {
-    pub command_id: String,
-    pub args: CommandArgs,
-}
+use crate::spec::value::ArgValue;
+use std::collections::HashMap;
 
 #[derive(Default)]
 struct ClapTreeNode<'a> {
@@ -140,7 +126,7 @@ fn build_clap_node(
     let summary = registry
         .group_metadata_for(path_str)
         .map(|m| m.summary)
-        .or_else(|| node.command.map(|cmd| cmd.summary))
+        .or_else(|| node.command.map(|cmd| cmd.summary()))
         .unwrap_or("Command group");
     let mut group = clap::Command::new(segment.to_string())
         .about(summary)
@@ -158,47 +144,13 @@ fn build_clap_node(
 }
 
 fn build_leaf_clap_command(segment: &str, cmd: &crate::command::Command) -> clap::Command {
-    let name = segment.to_string();
-    let mut sub = if let Some(ref spec) = cmd.spec {
-        build_typed_clap_command(&name, spec)
-    } else {
-        build_legacy_clap_command_with_name(&name, cmd)
-    };
-
-    if let Some(ref spec) = cmd.spec {
-        for alias in &spec.aliases {
-            sub = sub.visible_alias(alias);
-        }
-        for alias in &spec.hidden_aliases {
-            sub = sub.alias(alias);
-        }
+    let mut sub = build_typed_clap_command(segment, &cmd.spec);
+    for alias in &cmd.spec.aliases {
+        sub = sub.visible_alias(*alias);
     }
-
-    sub
-}
-
-fn build_legacy_clap_command_with_name(name: &str, cmd: &crate::command::Command) -> clap::Command {
-    tracing::warn!(
-        "legacy-parse-path: command '{}' has no ArgSpec; using trailing var-arg",
-        cmd.id
-    );
-
-    let mut sub = clap::Command::new(name.to_owned()).about(cmd.summary);
-
-    #[cfg(not(feature = "strict-args"))]
-    {
-        sub = sub.arg(
-            clap::Arg::new("trailing")
-                .num_args(0..)
-                .trailing_var_arg(true)
-                .allow_hyphen_values(true),
-        );
+    for alias in &cmd.spec.hidden_aliases {
+        sub = sub.alias(*alias);
     }
-
-    if let Some(syntax) = cmd.syntax {
-        sub = sub.after_help(format!("Syntax: {}", syntax));
-    }
-
     sub
 }
 
@@ -241,43 +193,23 @@ pub fn parse_with_clap(
             let (command_path, leaf_matches) = extract_nested_command_path(&matches);
             let leaf_name = command_path.leaf().unwrap_or("");
 
-            // Look up by full path for multi-segment, flat map for single-segment.
             let cmd = if command_path.0.len() > 1 {
                 registry.resolve(&command_path)
             } else {
                 registry.get(leaf_name)
             };
 
-            if let Some(cmd) = cmd {
-                if cmd.spec.is_none() && legacy_trailing_requests_help(&args) {
-                    let argv0 = args.first().map(|s| s.as_str()).unwrap_or("<program>");
-                    return ParseOutcome::HelpShown(render_legacy_command_help(
-                        argv0,
-                        &command_path,
-                        cmd,
-                    ));
-                }
-            }
-
-            let (cmd_args, typed_args) = if let Some(cmd) = cmd {
-                if let Some(ref spec) = cmd.spec {
-                    match map_matches_to_typed_args(spec, leaf_matches) {
-                        Ok(typed) => (CommandArgs::default(), Some(typed)),
-                        Err(d) => return ParseOutcome::ParseError(d),
-                    }
-                } else {
-                    (match_to_command_args(leaf_matches), None)
+            let args: HashMap<String, ArgValue> = if let Some(cmd) = cmd {
+                match map_matches_to_typed_args(&cmd.spec, leaf_matches) {
+                    Ok(typed) => typed,
+                    Err(d) => return ParseOutcome::ParseError(d),
                 }
             } else {
-                // Built-in commands (e.g. "version") not in the user registry
-                (match_to_command_args(leaf_matches), None)
+                // Built-in commands (e.g. "version") not in user registry — no args
+                HashMap::new()
             };
 
-            ParseOutcome::Parsed {
-                command_path,
-                args: cmd_args,
-                typed_args,
-            }
+            ParseOutcome::Parsed { command_path, args }
         }
         Err(e) => {
             use clap::error::ErrorKind;
@@ -365,96 +297,5 @@ pub fn parse_with_clap(
                 }
             }
         }
-    }
-}
-
-fn legacy_trailing_requests_help(args: &[String]) -> bool {
-    let mut past_terminator = false;
-    for arg in args {
-        if arg == "--" {
-            past_terminator = true;
-        } else if !past_terminator && (arg == "--help" || arg == "-h") {
-            return true;
-        }
-    }
-    false
-}
-
-fn render_legacy_command_help(
-    argv0: &str,
-    command_path: &CommandPath,
-    cmd: &crate::command::Command,
-) -> String {
-    let bin = if argv0.is_empty() { "<program>" } else { argv0 };
-    let path = if command_path.0.is_empty() {
-        cmd.id.to_string()
-    } else {
-        command_path.0.join(" ")
-    };
-
-    let mut out = String::new();
-    out.push_str("Command help (legacy)\n\n");
-    out.push_str(&format!("Usage: {} {} [-- <args>]\n", bin, path));
-    out.push('\n');
-    out.push_str(&format!("Summary: {}\n", cmd.summary));
-
-    if let Some(syntax) = cmd.syntax {
-        out.push_str(&format!("\nSyntax: {}\n", syntax));
-    }
-
-    out.push_str(&format!(
-        "\nFor the full command list, run: {} --help\n",
-        bin
-    ));
-
-    out
-}
-
-fn match_to_command_args(sub_matches: &clap::ArgMatches) -> CommandArgs {
-    let mut positional = Vec::new();
-    let mut named = std::collections::HashMap::new();
-
-    if let Some(values) = sub_matches.get_many::<String>("trailing") {
-        let args: Vec<&str> = values.map(|s| s.as_str()).collect();
-        let mut i = 0;
-        while i < args.len() {
-            let arg = args[i];
-            if let Some(stripped) = arg.strip_prefix("--") {
-                if stripped.is_empty() {
-                    // Bare "--" after Clap's terminator: remaining items are positional.
-                    i += 1;
-                    while i < args.len() {
-                        positional.push(args[i].to_string());
-                        i += 1;
-                    }
-                    break;
-                }
-                if let Some(eq_pos) = stripped.find('=') {
-                    let key = &stripped[..eq_pos];
-                    let value = &stripped[eq_pos + 1..];
-                    named.insert(key.to_string(), value.to_string());
-                    i += 1;
-                } else if i + 1 < args.len() && !args[i + 1].starts_with("--") {
-                    named.insert(stripped.to_string(), args[i + 1].to_string());
-                    i += 2;
-                } else {
-                    // DD#8: bare --flag without a value is treated as a boolean flag.
-                    // CommandArgs.named is HashMap<String, String> which cannot represent
-                    // a boolean. Per the spec, we do NOT insert "true" (correctness
-                    // improvement). Apps needing boolean flags should use explicit flag
-                    // args in future phases with Clap derive.
-                    i += 1;
-                }
-            } else {
-                positional.push(arg.to_string());
-                i += 1;
-            }
-        }
-    }
-
-    CommandArgs {
-        positional,
-        named,
-        ..Default::default()
     }
 }

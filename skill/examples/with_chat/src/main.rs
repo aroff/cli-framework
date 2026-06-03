@@ -18,14 +18,11 @@ async fn main() -> anyhow::Result<()> {
     let counter_for_inc = Arc::clone(&counter);
 
     let inc_command = Command {
-        id: "inc",
-        summary: "Increment a counter in app context",
-        syntax: Some("inc"),
-        category: Some("data"),
-        spec: Some(Arc::new(CommandSpec {
+        id: Arc::from("inc"),
+        spec: Arc::new(CommandSpec {
             summary: "Increment a counter in app context",
             ..Default::default()
-        })),
+        }),
         validator: None,
         expose_mcp: false,
         execute: Arc::new(move |_ctx, _args| {
@@ -39,14 +36,11 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let status_command = Command {
-        id: "status",
-        summary: "Show a status line",
-        syntax: Some("status"),
-        category: Some("monitoring"),
-        spec: Some(Arc::new(CommandSpec {
+        id: Arc::from("status"),
+        spec: Arc::new(CommandSpec {
             summary: "Show a status line",
             ..Default::default()
-        })),
+        }),
         validator: None,
         expose_mcp: false,
         execute: Arc::new(|_ctx, _args| {

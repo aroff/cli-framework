@@ -197,11 +197,11 @@ fn i3_repl_two_turns_prior_turns_nonempty_on_second_call() {
 async fn i4_tool_call_result_forwarded_in_events() {
     let mut registry = CommandRegistry::new();
     registry.register(Command {
-        id: "echo_cmd",
-        summary: "echo",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("echo_cmd"),
+        spec: Arc::new(cli_framework::spec::command_tree::CommandSpec {
+            summary: "echo",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: Arc::new(|ctx, _args| {
@@ -294,11 +294,11 @@ fn n3_tool_name_convention_appname_group_cmd() {
         .register_at(
             &path,
             Command {
-                id: "prod",
-                summary: "deploy to prod",
-                syntax: None,
-                category: None,
-                spec: None,
+                id: Arc::from("prod"),
+                spec: Arc::new(cli_framework::spec::command_tree::CommandSpec {
+                    summary: "deploy to prod",
+                    ..Default::default()
+                }),
                 validator: None,
                 expose_mcp: false,
                 execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),

@@ -15,11 +15,8 @@ use std::sync::Arc;
 
 fn make_spec_command(id: &'static str) -> Command {
     Command {
-        id,
-        summary: "test",
-        syntax: None,
-        category: None,
-        spec: Some(Arc::new(CommandSpec {
+        id: Arc::from(id),
+        spec: Arc::new(CommandSpec {
             summary: "test",
             args: vec![ArgSpec {
                 name: "name",
@@ -32,9 +29,10 @@ fn make_spec_command(id: &'static str) -> Command {
                 conflicts_with: vec![],
                 requires: vec![],
                 help: "name",
+                ..Default::default()
             }],
             ..Default::default()
-        })),
+        }),
         validator: Some(Arc::new(|typed: &HashMap<String, ArgValue>| {
             if let Some(ArgValue::Str(s)) = typed.get("name") {
                 if s.is_empty() {
@@ -52,7 +50,16 @@ fn make_spec_command(id: &'static str) -> Command {
         expose_mcp: false,
         execute: Arc::new(|_ctx, args| {
             Box::pin(async move {
-                let name = args.named.get("name").cloned().unwrap_or_default();
+                let name = args
+                    .get("name")
+                    .and_then(|v| {
+                        if let ArgValue::Str(s) = v {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default();
                 assert!(!name.is_empty());
                 Ok(())
             })
@@ -99,11 +106,11 @@ async fn tool_names_match_mcp_convention() {
 async fn completion_command_not_exposed_as_tool() {
     let mut registry = CommandRegistry::new();
     registry.register(Command {
-        id: "completion",
-        summary: "shell completion",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("completion"),
+        spec: Arc::new(CommandSpec {
+            summary: "shell completion",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
@@ -124,21 +131,21 @@ async fn completion_command_not_exposed_as_tool() {
 async fn expose_mcp_only_policy_filters_commands() {
     let mut registry = CommandRegistry::new();
     registry.register(Command {
-        id: "private_cmd",
-        summary: "not exported",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("private_cmd"),
+        spec: Arc::new(CommandSpec {
+            summary: "not exported",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
     });
     registry.register(Command {
-        id: "public_cmd",
-        summary: "exported",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("public_cmd"),
+        spec: Arc::new(CommandSpec {
+            summary: "exported",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: true,
         execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
@@ -198,11 +205,11 @@ async fn invalid_typed_args_returns_chat_arg_validation_failed() {
 async fn command_execution_error_surfaces_chat_command_execution_failed() {
     let mut registry = CommandRegistry::new();
     registry.register(Command {
-        id: "boom",
-        summary: "boom",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("boom"),
+        spec: Arc::new(CommandSpec {
+            summary: "boom",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: Arc::new(|_ctx, _args| Box::pin(async { Err(anyhow::anyhow!("nope")) })),
@@ -224,11 +231,11 @@ async fn command_execution_error_surfaces_chat_command_execution_failed() {
 async fn call_tool_captures_framework_println_output() {
     let mut registry = CommandRegistry::new();
     registry.register(Command {
-        id: "greet",
-        summary: "greet",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("greet"),
+        spec: Arc::new(CommandSpec {
+            summary: "greet",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: Arc::new(|ctx, _args| {

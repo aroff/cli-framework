@@ -8,21 +8,30 @@ use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
 use crate::parser::error_codes::E_UNKNOWN_DOCTOR_CHECK;
 use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use crate::spec::command_tree::CommandSpec;
+use crate::spec::value::ArgValue;
 use std::sync::Arc;
 use tokio::task::JoinSet;
 
 pub fn create_doctor_command(checks: Vec<Arc<dyn DoctorCheck>>) -> Command {
     Command {
-        id: "doctor",
-        summary: "Run diagnostics and report environment health",
-        syntax: Some("doctor [--json] [--check <id>]"),
-        category: Some("ops"),
-        spec: Some(doctor_spec()),
+        id: Arc::from("doctor"),
+        spec: Arc::new(CommandSpec {
+            summary: "Run diagnostics and report environment health",
+            syntax: Some("doctor [--json] [--check <id>]"),
+            category: Some("ops"),
+            ..doctor_spec()
+        }),
         validator: None,
         expose_mcp: false,
         execute: Arc::new(move |ctx, args| {
-            let is_json = args.named.get("json").map(|v| v == "true").unwrap_or(false);
-            let filter_id = args.named.get("check").cloned();
+            let is_json = matches!(args.get("json"), Some(ArgValue::Bool(true)));
+            let filter_id: Option<String> = args.get("check").and_then(|v| {
+                if let ArgValue::Str(s) = v {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            });
 
             // Sync phase: call check.run(ctx) to produce 'static DoctorFutures.
             // ctx is only borrowed here — DoctorFuture is 'static so it does not
@@ -114,9 +123,8 @@ pub fn create_doctor_command(checks: Vec<Arc<dyn DoctorCheck>>) -> Command {
     }
 }
 
-fn doctor_spec() -> Arc<CommandSpec> {
-    Arc::new(CommandSpec {
-        summary: "Run diagnostics and report environment health",
+fn doctor_spec() -> CommandSpec {
+    CommandSpec {
         args: vec![
             ArgSpec {
                 name: "json",
@@ -129,6 +137,7 @@ fn doctor_spec() -> Arc<CommandSpec> {
                 conflicts_with: vec![],
                 requires: vec![],
                 help: "Emit JSON output to stdout",
+                ..Default::default()
             },
             ArgSpec {
                 name: "check",
@@ -141,10 +150,11 @@ fn doctor_spec() -> Arc<CommandSpec> {
                 conflicts_with: vec![],
                 requires: vec![],
                 help: "Run only the check with this ID",
+                ..Default::default()
             },
         ],
         ..Default::default()
-    })
+    }
 }
 
 fn extract_panic_message(e: tokio::task::JoinError) -> String {

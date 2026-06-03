@@ -18,14 +18,16 @@ _Avoid_: Action, operation, handler.
 **Tool**:
 An MCP-surface projection of a **Command**. Not a distinct type — when a
 binary runs in MCP mode (or under `chat`), each registered Command is exposed
-as a tool named `<app_name>.<command_id>` with a JSON Schema derived from its
-`CommandSpec`. "Tool" is only used at the MCP/`chat` boundary.
+as a tool named `<app_name>_<command_id>` (underscores; nested paths flatten
+`/`→`_`, e.g. `myapp_cluster_get`) with a JSON Schema derived from its
+`CommandSpec`. Underscores are used for OpenAI tool-name compatibility
+(`src/mcp/mod.rs`). "Tool" is only used at the MCP/`chat` boundary.
 _Avoid_ using "tool" to mean Command in any other context.
 
 **Resolution**:
 The phase that turns some input — argv, a natural-language `ask` query, an
 MCP tool call, or a `chat` tool call — into a concrete `(Command,
-CommandArgs)` pair. Different entry paths have different Resolution
+ArgValue map)` pair. Different entry paths have different Resolution
 strategies but all share the same downstream **Dispatch**.
 _Avoid_: routing, lookup, matching.
 
@@ -69,25 +71,36 @@ ad-hoc via `AiloopClient`.
 _Avoid_: prompt, approval (overloaded).
 
 **CommandSpec**:
-A Command's typed argument declaration (`src/spec/`). Optional today — a
-Command may set `spec: None` and still register. Used to drive the parser,
-generate help, derive MCP JSON Schemas, and feed the Spec validator. Use
-"spec" only as shorthand for CommandSpec; never as a generic word for any
-declaration.
+A Command's typed argument declaration (`src/spec/`). **Mandatory** — every
+Command has one (see ADR 0065); generated from the command's annotated struct
+by `#[derive(CommandSpec)]` (ADR 0064). Drives the parser, generates help,
+derives MCP JSON Schemas, feeds the Spec validator, and produces the typed
+extractor. Use "spec" only as shorthand for CommandSpec; never as a generic
+word for any declaration.
 
 **ArgSpec**:
 The per-argument piece inside a **CommandSpec** (name, kind, value type,
 required-ness, etc.). Declaration-time, not runtime.
 
-**CommandArgs**:
-The runtime, parsed-args value handed to a Command's `execute` callback
-(`.positional`, `.named`). "Args" alone is ambiguous — always qualify
-`CommandArgs` (runtime) vs `ArgSpec` (declaration).
+**ArgValue map**:
+The runtime, typed parsed-args value (`HashMap<String, ArgValue>`) — the
+**single erased intermediate** every entry path converges on. CLI argv produces
+it via the clap mapper; MCP/`chat` JSON produces it via `json_value_to_arg_value`.
+Dispatch carries it to the leaf, where the typed wrapper deserializes it into the
+Command's typed args struct. "Args" alone is ambiguous — qualify `ArgValue map`
+(runtime) vs `ArgSpec` (declaration). See `docs/adr/0061-typed-handlers-argvalue-backbone.md`.
+
+**CommandArgs** _(removed — see ADR 0061)_:
+Formerly a stringly parsed-args value (`.positional`/`.named`) handed to `execute`.
+The framework flattened the typed **ArgValue map** down to this and consumers
+un-flattened it back to typed structs (newton's `TryFrom<CommandArgs>` adapters,
+fastskill's clap re-parse). Removed: the **ArgValue map** is now the only runtime
+arg form, and `execute` receives a **typed args struct** directly.
 
 **CommandPath**:
 The hierarchical identifier of a Command, e.g. `cluster/get`. Rendered with
-slashes in identifiers and with dots at the MCP boundary
-(`<app>.cluster.get`).
+slashes in identifiers and flattened to underscores at the MCP boundary
+(`<app>_cluster_get`, see `src/mcp/mod.rs`).
 
 **Spec validator**:
 The framework-provided validation pass (`SpecValidator`) derived
@@ -99,11 +112,6 @@ The user-supplied closure on the `Command.validator` field. Runs *in
 addition to* the Spec validator (not as a fallback); the two diagnostic
 lists are concatenated. "Validator" alone is ambiguous — always qualify
 "Spec validator" or "Custom validator".
-
-**Typed-spec model**:
-The optional opt-in style where Commands carry a `CommandSpec`. Contrasted
-with the untyped style (`spec: None`). A migration concept used in prose,
-not a runtime distinction.
 
 **AppContext**:
 The **user-supplied** trait carrying application state and services (API
@@ -221,8 +229,9 @@ channel.
   Chat) — always qualify which.
 - **"Validator"** is ambiguous — Spec validator and Custom validator both
   run; the lists are concatenated, not fallbacks.
-- **"Args"** is ambiguous — `CommandArgs` is runtime, `ArgSpec` is
-  declaration-time.
+- **"Args"** is ambiguous — the **ArgValue map** is the runtime erased form,
+  the Command's typed args struct is what `execute` receives, `ArgSpec` is
+  declaration-time. (`CommandArgs` removed — see ADR 0061.)
 - **"Load a plugin"** does *not* register a Command. The README's
   "load third-party commands" phrasing is `[PLANNED]` (see ADR 0002).
 - **"Account" / "User" / "Project"** — not part of this domain; if any

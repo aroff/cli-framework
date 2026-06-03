@@ -1,7 +1,7 @@
 //! Integration tests for multi-segment CommandPath routing (AC6, AC14, §4.3).
 
 use cli_framework::app::{AppBuilder, AppContext};
-use cli_framework::command::{Command, CommandArgs};
+use cli_framework::command::Command;
 use cli_framework::spec::command_tree::{CommandPath, CommandSpec, GroupMetadata};
 use std::sync::{Arc, Mutex};
 
@@ -10,17 +10,14 @@ impl AppContext for DummyCtx {}
 
 fn make_tracking_cmd(id: &'static str, executed: Arc<Mutex<bool>>) -> Command {
     Command {
-        id,
-        summary: "Test command",
-        syntax: None,
-        category: None,
-        spec: Some(Arc::new(CommandSpec {
+        id: Arc::from(id),
+        spec: Arc::new(CommandSpec {
             summary: "Test command",
             ..Default::default()
-        })),
+        }),
         validator: None,
         expose_mcp: false,
-        execute: Arc::new(move |_ctx, _args: CommandArgs| {
+        execute: Arc::new(move |_ctx, _args| {
             let executed = Arc::clone(&executed);
             Box::pin(async move {
                 *executed.lock().unwrap() = true;

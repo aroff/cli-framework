@@ -1,5 +1,6 @@
 use crate::app::meta::AppMeta;
 use crate::command::CommandRegistry;
+use crate::spec::arg_spec::ArgSpec;
 
 /// Renders formatted help text for a CLI application.
 ///
@@ -11,6 +12,7 @@ pub struct HelpRenderer<'a> {
     meta: Option<&'a AppMeta>,
     commands: &'a CommandRegistry,
     version_string: Option<String>,
+    global_flags: &'a [ArgSpec],
 }
 
 impl<'a> HelpRenderer<'a> {
@@ -20,6 +22,7 @@ impl<'a> HelpRenderer<'a> {
             meta,
             commands,
             version_string: None,
+            global_flags: &[],
         }
     }
 
@@ -33,6 +36,12 @@ impl<'a> HelpRenderer<'a> {
         } else {
             self.version_string = Some(version_string);
         }
+        self
+    }
+
+    /// Provide registered global flags to be enumerated in the Options block.
+    pub fn with_global_flags(mut self, flags: &'a [ArgSpec]) -> Self {
+        self.global_flags = flags;
         self
     }
 
@@ -84,10 +93,10 @@ impl<'a> HelpRenderer<'a> {
 
         for cmd in self.commands.commands() {
             all_entries.push(Entry {
-                id: cmd.id,
-                summary: cmd.summary,
-                syntax: cmd.syntax,
-                category: cmd.category,
+                id: cmd.id.as_ref(),
+                summary: cmd.summary(),
+                syntax: cmd.syntax(),
+                category: cmd.category(),
             });
         }
 
@@ -177,6 +186,29 @@ impl<'a> HelpRenderer<'a> {
                 out.push_str(meta.version);
                 out.push_str(").\n");
             }
+        }
+        // Enumerate registered global flags
+        for flag in self.global_flags {
+            let flag_name = flag.long.unwrap_or(flag.name);
+            let short_part = if let Some(s) = flag.short {
+                format!(", -{}", s)
+            } else {
+                String::new()
+            };
+            let value_hint = match flag.kind {
+                crate::spec::arg_spec::ArgKind::Flag => String::new(),
+                _ => format!(" <{}>", flag.name),
+            };
+            let col = format!("  --{}{}{}", flag_name, short_part, value_hint);
+            let pad = if col.len() < 18 {
+                " ".repeat(18 - col.len())
+            } else {
+                " ".to_string()
+            };
+            out.push_str(&col);
+            out.push_str(&pad);
+            out.push_str(flag.help);
+            out.push('\n');
         }
 
         out

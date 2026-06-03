@@ -9,24 +9,39 @@ use std::sync::Arc;
 /// Returns the built-in `spec` Command for auto-registration in AppBuilder::build.
 pub fn create_spec_command(app_name: &'static str, app_version: &'static str) -> Command {
     Command {
-        id: "spec",
-        summary: "Export the CLI command surface as JSON, YAML, or Markdown",
-        syntax: Some("spec [--format <json|yaml|markdown>] [--output <path>] [--include-hidden]"),
-        category: None,
-        spec: Some(Arc::new(spec_spec())),
+        id: Arc::from("spec"),
+        spec: Arc::new(spec_spec()),
         validator: None,
         expose_mcp: false,
         execute: Arc::new(move |ctx, args| {
             let format_str = args
-                .named
                 .get("format")
-                .cloned()
+                .and_then(|v| {
+                    if let crate::spec::value::ArgValue::Enum(s)
+                    | crate::spec::value::ArgValue::Str(s) = v
+                    {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or_else(|| "json".to_string());
-            let output_path = args.named.get("output").cloned();
+            let output_path = args.get("output").and_then(|v| {
+                if let crate::spec::value::ArgValue::Str(s) = v {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            });
             let include_hidden = args
-                .named
                 .get("include-hidden")
-                .map(|v| v == "true")
+                .and_then(|v| {
+                    if let crate::spec::value::ArgValue::Bool(b) = v {
+                        Some(*b)
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or(false);
 
             // Access the registry synchronously before entering the async block
@@ -36,9 +51,9 @@ pub fn create_spec_command(app_name: &'static str, app_version: &'static str) ->
                 .map(|reg| collect(reg, app_name, app_version, include_hidden));
 
             Box::pin(async move {
+                // R4a rejects invalid Enum values at parse time; this is a defensive
+                // fallback for the legacy (non-typed) path only.
                 if format_str != "json" && format_str != "yaml" && format_str != "markdown" {
-                    // R4a rejects invalid Enum values at parse time; this is a defensive
-                    // fallback for the legacy (non-typed) path only.
                     use crate::app::diagnostic_reporter::DiagnosticReporter;
                     use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
                     use crate::parser::error_codes::E_UNKNOWN_SPEC_FORMAT;
@@ -100,11 +115,8 @@ pub fn create_completion_command(
     clap_root: std::sync::Arc<clap::Command>,
 ) -> Command {
     Command {
-        id: "completion",
-        summary: "Emit a shell completion stub for top-level subcommands",
-        syntax: Some("completion <bash|zsh|fish|powershell|pwsh>"),
-        category: None,
-        spec: Some(Arc::new(completion_spec())),
+        id: Arc::from("completion"),
+        spec: Arc::new(completion_spec()),
         validator: None,
         expose_mcp: false,
         execute: Arc::new(move |ctx, args| {
@@ -118,10 +130,12 @@ pub fn create_completion_command(
                 // R4a (Enum validation) rejects invalid shell values at parse time,
                 // so shell_token is always a valid value when this closure runs.
                 let shell_token = args
-                    .named
                     .get("shell")
-                    .cloned()
-                    .or_else(|| args.positional.first().cloned())
+                    .and_then(|v| match v {
+                        crate::spec::value::ArgValue::Enum(s)
+                        | crate::spec::value::ArgValue::Str(s) => Some(s.clone()),
+                        _ => None,
+                    })
                     .unwrap_or_default();
 
                 let shell = match shell_token.as_str() {
@@ -169,6 +183,7 @@ fn spec_spec() -> CommandSpec {
                 conflicts_with: vec![],
                 requires: vec![],
                 help: "Output format: json, yaml, or markdown (default: json)",
+                ..Default::default()
             },
             ArgSpec {
                 name: "output",
@@ -181,6 +196,7 @@ fn spec_spec() -> CommandSpec {
                 conflicts_with: vec![],
                 requires: vec![],
                 help: "Write output to this file path instead of stdout",
+                ..Default::default()
             },
             ArgSpec {
                 name: "include-hidden",
@@ -193,6 +209,7 @@ fn spec_spec() -> CommandSpec {
                 conflicts_with: vec![],
                 requires: vec![],
                 help: "Include commands with hidden: true",
+                ..Default::default()
             },
         ],
         ..Default::default()
@@ -213,6 +230,7 @@ fn completion_spec() -> CommandSpec {
             conflicts_with: vec![],
             requires: vec![],
             help: "Target shell: bash, zsh, fish, powershell, or pwsh",
+            ..Default::default()
         }],
         hidden_aliases: vec!["completions"],
         ..Default::default()

@@ -1,10 +1,17 @@
 //! Command parser for parsing command syntax (:command arg=value)
 
-use crate::command::CommandArgs;
 use std::collections::HashMap;
 
-/// Parse a command string (e.g., ":restart service=api env=prod")
-pub fn parse_command(input: &str) -> Option<(String, CommandArgs)> {
+/// A parsed chat-style command (`:command arg=value`).
+pub struct ParsedCommand {
+    pub name: String,
+    pub positional: Vec<String>,
+    pub named: HashMap<String, String>,
+}
+
+/// Parse a command string (e.g., ":restart service=api env=prod").
+/// Returns `None` if input doesn't start with `:`.
+pub fn parse_command(input: &str) -> Option<ParsedCommand> {
     let input = input.trim();
     if !input.starts_with(':') {
         return None;
@@ -15,7 +22,7 @@ pub fn parse_command(input: &str) -> Option<(String, CommandArgs)> {
         return None;
     }
 
-    let command_name = parts[0].to_string();
+    let name = parts[0].to_string();
     let mut positional = Vec::new();
     let mut named = HashMap::new();
 
@@ -27,14 +34,11 @@ pub fn parse_command(input: &str) -> Option<(String, CommandArgs)> {
         }
     }
 
-    Some((
-        command_name,
-        CommandArgs {
-            positional,
-            named,
-            ..Default::default()
-        },
-    ))
+    Some(ParsedCommand {
+        name,
+        positional,
+        named,
+    })
 }
 
 #[cfg(test)]
@@ -45,19 +49,19 @@ mod tests {
     fn test_parse_simple_command() {
         let result = parse_command(":restart");
         assert!(result.is_some());
-        let (name, args) = result.unwrap();
-        assert_eq!(name, "restart");
-        assert!(args.positional.is_empty());
-        assert!(args.named.is_empty());
+        let cmd = result.unwrap();
+        assert_eq!(cmd.name, "restart");
+        assert!(cmd.positional.is_empty());
+        assert!(cmd.named.is_empty());
     }
 
     #[test]
     fn test_parse_command_with_args() {
         let result = parse_command(":restart service=api env=prod");
         assert!(result.is_some());
-        let (name, args) = result.unwrap();
-        assert_eq!(name, "restart");
-        assert_eq!(args.named.get("service"), Some(&"api".to_string()));
-        assert_eq!(args.named.get("env"), Some(&"prod".to_string()));
+        let cmd = result.unwrap();
+        assert_eq!(cmd.name, "restart");
+        assert_eq!(cmd.named.get("service"), Some(&"api".to_string()));
+        assert_eq!(cmd.named.get("env"), Some(&"prod".to_string()));
     }
 }

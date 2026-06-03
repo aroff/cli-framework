@@ -3,13 +3,13 @@ use crate::app::context::AppContext;
 use crate::app::module::Module;
 use crate::app::AppMeta;
 use crate::cli_output::HelpRenderer;
-use crate::command::{Command, CommandRegistry};
+use crate::command::{Command, CommandRegistry, TypedArgs};
 use crate::plugin::PluginRegistryManager;
+use crate::spec::arg_spec::ArgSpec;
 use crate::spec::command_tree::{CommandPath, GroupMetadata};
 use crate::spec::value::ArgValue;
 use anyhow::Result;
-use std::collections::BTreeSet;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -45,6 +45,7 @@ pub struct AppBuilder {
     app_git_sha_short: Option<&'static str>,
     risk_policy: crate::security::command_risk::CommandRiskPolicy,
     auto_register_completion: bool,
+    global_flags: Vec<ArgSpec>,
     #[cfg(feature = "doctor")]
     doctor_checks: Vec<Arc<dyn crate::doctor::check::DoctorCheck>>,
     #[cfg(feature = "mcp-server")]
@@ -66,6 +67,7 @@ impl AppBuilder {
             app_git_sha_short: None,
             risk_policy: crate::security::command_risk::CommandRiskPolicy::default(),
             auto_register_completion: true,
+            global_flags: Vec::new(),
             #[cfg(feature = "doctor")]
             doctor_checks: Vec::new(),
             #[cfg(feature = "mcp-server")]
@@ -78,6 +80,12 @@ impl AppBuilder {
     /// Disable auto-registration of the built-in `completion` command.
     pub fn without_completion(mut self) -> Self {
         self.auto_register_completion = false;
+        self
+    }
+
+    /// Add a global flag that applies to all commands.
+    pub fn global_flag(mut self, spec: ArgSpec) -> Self {
+        self.global_flags.push(spec);
         self
     }
 
@@ -110,18 +118,40 @@ impl AppBuilder {
         self
     }
 
+    /// Register a typed command using derive-generated `TypedArgs`.
+    ///
+    /// The spec is taken from `T::command_spec()` and the handler receives a
+    /// fully-validated, infallibly-extracted `T` instance.
+    pub fn register<T, F, Fut>(mut self, path: CommandPath, handler: F) -> Result<Self>
+    where
+        T: TypedArgs,
+        F: Fn(&mut dyn AppContext, T) -> Fut + Send + Sync + Clone + 'static,
+        Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
+    {
+        let spec = Arc::new(T::command_spec());
+        let id: Arc<str> = Arc::from(path.leaf().unwrap_or(""));
+        let handler = Arc::new(handler);
+        let command = Command {
+            id,
+            spec,
+            validator: None,
+            expose_mcp: true,
+            execute: Arc::new(move |ctx, args| {
+                let typed = T::from_arg_value_map(&args);
+                let h = Arc::clone(&handler);
+                Box::pin(async move { h(ctx, typed).await })
+            }),
+        };
+        self.command_registry
+            .register_at(&path, command)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        Ok(self)
+    }
+
     /// Register a root-level command. Returns `Err` if the command ID is already occupied
     /// or an alias conflicts with an existing registration.
     pub fn register_command(mut self, command: Command) -> Result<Self> {
-        #[cfg(feature = "strict-types")]
-        if command.spec.is_none() {
-            return Err(anyhow::anyhow!(
-                "strict-types: command '{}' must have a CommandSpec",
-                command.id
-            ));
-        }
-
-        let path = CommandPath::root_for(command.id);
+        let path = CommandPath::root_for(&command.id);
         self.command_registry
             .register_at(&path, command)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -130,14 +160,6 @@ impl AppBuilder {
 
     /// Register a command at an arbitrary `CommandPath`.
     pub fn register_command_at(mut self, path: &CommandPath, command: Command) -> Result<Self> {
-        #[cfg(feature = "strict-types")]
-        if command.spec.is_none() {
-            return Err(anyhow::anyhow!(
-                "strict-types: command at path '{}' must have a CommandSpec",
-                path.to_path_string()
-            ));
-        }
-
         self.command_registry
             .register_at(path, command)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -342,7 +364,7 @@ impl AppBuilder {
                 let install_cmd =
                     crate::mcp::commands::create_mcp_install_command(app_name_for_install);
                 let mut register_cmd = install_cmd.clone();
-                register_cmd.id = "register";
+                register_cmd.id = Arc::from("register");
                 self.command_registry
                     .register_at(&install_path, install_cmd)
                     .expect("mcp install auto-registration");
@@ -383,6 +405,7 @@ impl AppBuilder {
             app_version: self.app_version,
             app_git_sha_short: self.app_git_sha_short,
             clap_root,
+            global_flags: self.global_flags,
             #[cfg(feature = "testkit")]
             stdout_capture: None,
         })
@@ -405,6 +428,7 @@ pub struct App<C: AppContext> {
     app_version: &'static str,
     app_git_sha_short: Option<&'static str>,
     clap_root: clap::Command,
+    global_flags: Vec<ArgSpec>,
     /// Captures framework-level stdout output (version strings etc.) when testkit is active.
     #[cfg(feature = "testkit")]
     pub stdout_capture: Option<Arc<Mutex<Vec<u8>>>>,
@@ -444,7 +468,7 @@ impl<C: AppContext> App<C> {
     fn has_categories(&self) -> bool {
         self.command_registry
             .commands()
-            .any(|cmd| cmd.category.is_some())
+            .any(|cmd| cmd.category().is_some())
     }
 
     pub async fn run_with_args(&mut self, args: Vec<String>) -> Result<()> {
@@ -464,11 +488,7 @@ impl<C: AppContext> App<C> {
         let second_arg = args.get(1).cloned();
 
         match parse_with_clap(&self.clap_root, &self.command_registry, args) {
-            ParseOutcome::Parsed {
-                command_path,
-                args: cmd_args,
-                typed_args,
-            } => {
+            ParseOutcome::Parsed { command_path, args } => {
                 let cmd_id = command_path.leaf().unwrap_or("").to_string();
                 if cmd_id == "version" && self.command_registry.get("version").is_none() {
                     if self.app_name == "unknown" {
@@ -482,9 +502,15 @@ impl<C: AppContext> App<C> {
                     // Multi-segment path: use resolve() for dispatch.
                     match self.command_registry.resolve(&command_path) {
                         Some(cmd) => {
+                            let diags = crate::app::dispatch::validate_typed_args(cmd, &args);
+                            if !diags.is_empty() {
+                                DiagnosticReporter::report_all(&diags);
+                                return Err(anyhow::Error::new(UsageError(
+                                    "validation failed".to_string(),
+                                )));
+                            }
                             let cmd_clone = cmd.clone();
-                            self.execute_command_direct(cmd_clone, cmd_args, typed_args)
-                                .await
+                            self.execute_command_direct(cmd_clone, args).await
                         }
                         None => {
                             let msg = format!(
@@ -504,8 +530,7 @@ impl<C: AppContext> App<C> {
                         }
                     }
                 } else {
-                    self.execute_command_with_typed_args(&cmd_id, cmd_args, typed_args)
-                        .await
+                    self.execute_command(&cmd_id, args).await
                 }
             }
             ParseOutcome::HelpShown(text) => {
@@ -579,56 +604,28 @@ impl<C: AppContext> App<C> {
         emit_completion_script(app_name, shell, &cmds, out)
     }
 
+    /// Execute a root-level command by ID with a typed argument map.
     pub async fn execute_command(
         &mut self,
         command_id: &str,
-        args: crate::command::CommandArgs,
-    ) -> Result<()> {
-        self.execute_command_with_typed_args(command_id, args, None)
-            .await
-    }
-
-    pub async fn execute_command_with_typed_args(
-        &mut self,
-        command_id: &str,
-        args: crate::command::CommandArgs,
-        typed_args: Option<HashMap<String, ArgValue>>,
+        args: HashMap<String, ArgValue>,
     ) -> Result<()> {
         let command = self
             .command_registry
             .get(command_id)
             .ok_or_else(|| anyhow::anyhow!("Command '{}' not found", command_id))?
             .clone();
-        self.execute_command_direct(command, args, typed_args).await
+        self.execute_command_direct(command, args).await
     }
 
-    /// Execute an already-resolved `Command` with optional typed args.
-    /// Shared by both single-segment (`execute_command_with_typed_args`) and
+    /// Execute an already-resolved `Command` with a typed argument map.
+    /// Shared by both single-segment (`execute_command`) and
     /// multi-segment dispatch paths in `run_with_args`.
     async fn execute_command_direct(
         &mut self,
         command: Command,
-        args: crate::command::CommandArgs,
-        typed_args: Option<HashMap<String, ArgValue>>,
+        args: HashMap<String, ArgValue>,
     ) -> Result<()> {
-        // Stage 6: Validation Pipeline
-        if let Some(ref typed_args_map) = typed_args {
-            let diags = crate::app::dispatch::validate_typed_args(&command, typed_args_map);
-            if !diags.is_empty() {
-                use crate::app::diagnostic_reporter::DiagnosticReporter;
-                DiagnosticReporter::report_all(&diags);
-                return Err(anyhow::Error::new(UsageError(
-                    "validation failed".to_string(),
-                )));
-            }
-        }
-
-        let effective_args = if let Some(ref typed) = typed_args {
-            crate::app::dispatch::enrich_args(args, typed)
-        } else {
-            args
-        };
-
         let env = crate::app::dispatch::DispatchEnv {
             command_registry: self.command_registry.as_ref(),
             ailoop_client: &self.ailoop_client,
@@ -637,15 +634,18 @@ impl<C: AppContext> App<C> {
         };
         let mut ctx_wrapper = crate::app::dispatch::CliAppContextWrapper::new(&mut self.ctx, env);
 
-        // For spec-based commands, build CommandArgs from typed_args so execute closures
-        // can access parsed flag values via args.named
-        (command.execute)(&mut ctx_wrapper, effective_args).await?;
+        (command.execute)(&mut ctx_wrapper, args).await?;
         Ok(())
     }
 
     /// Return a reference to the command registry.
     pub fn command_registry(&self) -> &CommandRegistry {
         self.command_registry.as_ref()
+    }
+
+    /// Return the global flags registered on this app.
+    pub fn global_flags(&self) -> &[ArgSpec] {
+        &self.global_flags
     }
 
     pub fn ailoop_client(&self) -> Option<&AiloopClient> {
@@ -678,8 +678,7 @@ pub(crate) fn visible_top_level_commands(registry: &CommandRegistry) -> BTreeSet
     }
 
     for (path_str, cmd) in registry.all_tree_commands() {
-        let hidden = cmd.spec.as_ref().is_some_and(|s| s.hidden);
-        if hidden {
+        if cmd.spec.hidden {
             continue;
         }
         if let Some(root) = path_str.split('/').next().filter(|s| !s.is_empty()) {

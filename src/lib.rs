@@ -19,29 +19,15 @@
 //!
 //! ```no_run
 //! use cli_framework::prelude::*;
+//! use std::collections::HashMap;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
-//!     let mut builder = AppBuilder::new();
-//!     builder = builder
-//!         .register_command(Command {
-//!             id: "hello",
-//!             summary: "Say hello",
-//!             syntax: Some("hello --name <name>"),
-//!             category: Some("greetings"),
-//!             spec: None,
-//!             validator: None,
-//!             expose_mcp: false,
-//!             execute: std::sync::Arc::new(|_ctx, args| Box::pin(async move {
-//!                 let name = args
-//!                     .named
-//!                     .get("name")
-//!                     .map(String::as_str)
-//!                     .unwrap_or("World");
-//!                 println!("Hello, {}!", name);
-//!                 Ok(())
-//!             })),
-//!         }).unwrap();
+//!     let builder = AppBuilder::new()
+//!         .with_version("myapp", "1.0.0");
+//!
+//!     // Register typed commands via register::<T>()
+//!     // (requires implementing IntoCommandSpec + FromArgValueMap, or #[derive(CommandSpec)])
 //!
 //!     let mut app = builder.build(MyContext)?;
 //!     app.run().await?;
@@ -117,10 +103,14 @@ pub mod emulation;
 /// Re-export the exit-code marker for parse/usage errors (spec 012 §R5).
 pub use app::UsageError;
 
+/// Re-export the `#[derive(CommandSpec)]` macro when the `derive` feature is enabled.
+#[cfg(feature = "derive")]
+pub use cli_framework_macros::CommandSpec;
+
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::app::{AppBuilder, AppContext, AppMeta, UsageError};
-    pub use crate::command::{Command, CommandArgs};
+    pub use crate::command::{Command, FromArgValueMap, IntoCommandSpec, TypedArgs};
     pub use crate::message::{AppMessage, AppMessageKind};
     pub use crate::plugin::PluginRegistryManager;
     pub use crate::spec::{ArgSpec, ArgValue, CommandPath, CommandSpec};

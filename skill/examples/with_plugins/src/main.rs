@@ -5,6 +5,7 @@
 
 use cli_framework::plugin::manifest::{CommandExecution, PluginCommand};
 use cli_framework::prelude::*;
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::Arc;
 
@@ -17,19 +18,26 @@ impl AppContext for MyApp {}
 async fn main() -> anyhow::Result<()> {
     // Create a basic command
     let builtin_command = Command {
-        id: "builtin",
-        summary: "Execute a built-in command",
-        syntax: Some("builtin <message>"),
-        category: Some("builtins"),
-        spec: None,
+        id: Arc::from("builtin"),
+        spec: Arc::new(CommandSpec {
+            summary: "Execute a built-in command",
+            syntax: Some("builtin <message>"),
+            category: Some("builtins"),
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: Arc::new(|_ctx, args| {
             Box::pin(async move {
                 let message = args
-                    .positional
-                    .first()
-                    .map(String::as_str)
+                    .get("message")
+                    .and_then(|v| {
+                        if let ArgValue::Str(s) = v {
+                            Some(s.as_str())
+                        } else {
+                            None
+                        }
+                    })
                     .unwrap_or("Hello from built-in command!");
                 println!("🔧 Built-in: {}", message);
                 Ok(())
@@ -83,15 +91,10 @@ async fn main() -> anyhow::Result<()> {
         // Parse command (basic parsing for demo)
         let parts: Vec<&str> = input.split_whitespace().collect();
         if let Some(command_id) = parts.first() {
-            let args = if parts.len() > 1 {
-                CommandArgs {
-                    positional: parts[1..].iter().map(|s| s.to_string()).collect(),
-                    named: std::collections::HashMap::new(),
-                    ..Default::default()
-                }
-            } else {
-                CommandArgs::default()
-            };
+            let mut args: HashMap<String, ArgValue> = HashMap::new();
+            if parts.len() > 1 {
+                args.insert("message".to_string(), ArgValue::Str(parts[1..].join(" ")));
+            }
 
             match app.execute_command(command_id, args).await {
                 Ok(()) => {}

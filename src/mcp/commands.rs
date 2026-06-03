@@ -4,10 +4,11 @@ const MCP_DEFAULT_HOST: &str = "127.0.0.1";
 const MCP_DEFAULT_PORT: &str = "8080";
 const MCP_DEFAULT_PATH: &str = "/mcp";
 
-use crate::command::{Command, CommandArgs};
+use crate::command::Command;
 use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use crate::spec::command_tree::{CommandSpec, GroupMetadata};
 use crate::spec::value::ArgValue;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Returns the `GroupMetadata` for the top-level `mcp` group node.
@@ -28,12 +29,11 @@ pub fn create_mcp_serve_command_with_deps(
     gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
 ) -> Command {
     Command {
-        id: "serve",
-        summary: "Start the MCP server (http or stdio)",
-        syntax: Some("mcp serve [--transport http|stdio] [--host H] [--port P] [--path PATH]"),
-        category: Some("mcp"),
-        spec: Some(Arc::new(CommandSpec {
+        id: Arc::from("serve"),
+        spec: Arc::new(CommandSpec {
             summary: "Start the MCP server (http or stdio)",
+            syntax: Some("mcp serve [--transport http|stdio] [--host H] [--port P] [--path PATH]"),
+            category: Some("mcp"),
             args: vec![
                 ArgSpec {
                     name: "transport",
@@ -46,6 +46,7 @@ pub fn create_mcp_serve_command_with_deps(
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "Transport: http (Streamable HTTP) or stdio (stdin/stdout JSON-RPC)",
+                    ..Default::default()
                 },
                 ArgSpec {
                     name: "host",
@@ -58,6 +59,7 @@ pub fn create_mcp_serve_command_with_deps(
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "Bind address for the MCP server",
+                    ..Default::default()
                 },
                 ArgSpec {
                     name: "port",
@@ -70,6 +72,7 @@ pub fn create_mcp_serve_command_with_deps(
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "Bind port for the MCP server",
+                    ..Default::default()
                 },
                 ArgSpec {
                     name: "path",
@@ -82,22 +85,25 @@ pub fn create_mcp_serve_command_with_deps(
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "HTTP path prefix for MCP endpoints",
+                    ..Default::default()
                 },
             ],
             ..Default::default()
-        })),
+        }),
         validator: None,
         expose_mcp: false,
-        execute: Arc::new(move |_ctx, args: CommandArgs| {
+        execute: Arc::new(move |_ctx, args: HashMap<String, ArgValue>| {
             let registry = Arc::clone(&registry);
             let risk_policy = risk_policy.clone();
             let gate = gate.clone();
             Box::pin(async move {
                 // Defaults injected by spec: transport="http", host="127.0.0.1", port="8080", path="/mcp"
                 let transport = args
-                    .named
                     .get("transport")
-                    .map(|s| s.as_str())
+                    .and_then(|v| match v {
+                        ArgValue::Enum(s) | ArgValue::Str(s) => Some(s.as_str()),
+                        _ => None,
+                    })
                     .unwrap_or("http");
 
                 if transport == "stdio" {
@@ -105,16 +111,25 @@ pub fn create_mcp_serve_command_with_deps(
                     // After spec-default injection, these keys are always present; a value
                     // equal to the spec default means the user did not override it.
                     let host_overridden = args
-                        .named
                         .get("host")
+                        .and_then(|v| match v {
+                            ArgValue::Str(s) => Some(s.as_str()),
+                            _ => None,
+                        })
                         .is_some_and(|v| v != MCP_DEFAULT_HOST);
                     let port_overridden = args
-                        .named
                         .get("port")
+                        .and_then(|v| match v {
+                            ArgValue::Str(s) => Some(s.as_str()),
+                            _ => None,
+                        })
                         .is_some_and(|v| v != MCP_DEFAULT_PORT);
                     let path_overridden = args
-                        .named
                         .get("path")
+                        .and_then(|v| match v {
+                            ArgValue::Str(s) => Some(s.as_str()),
+                            _ => None,
+                        })
                         .is_some_and(|v| v != MCP_DEFAULT_PATH);
                     if host_overridden || port_overridden || path_overridden {
                         return Err(anyhow::anyhow!(
@@ -132,14 +147,18 @@ pub fn create_mcp_serve_command_with_deps(
                 }
 
                 let host = args
-                    .named
                     .get("host")
-                    .cloned()
+                    .and_then(|v| match v {
+                        ArgValue::Str(s) => Some(s.clone()),
+                        _ => None,
+                    })
                     .unwrap_or_else(|| MCP_DEFAULT_HOST.to_string());
                 let port_str = args
-                    .named
                     .get("port")
-                    .cloned()
+                    .and_then(|v| match v {
+                        ArgValue::Str(s) => Some(s.clone()),
+                        _ => None,
+                    })
                     .unwrap_or_else(|| MCP_DEFAULT_PORT.to_string());
                 let port = port_str.parse::<u16>().map_err(|_| {
                     anyhow::anyhow!(
@@ -148,9 +167,11 @@ pub fn create_mcp_serve_command_with_deps(
                     )
                 })?;
                 let path = args
-                    .named
                     .get("path")
-                    .cloned()
+                    .and_then(|v| match v {
+                        ArgValue::Str(s) => Some(s.clone()),
+                        _ => None,
+                    })
                     .unwrap_or_else(|| MCP_DEFAULT_PATH.to_string());
 
                 crate::mcp::serve_mcp_with_gate(
@@ -186,44 +207,43 @@ struct McpInstallArgs {
 }
 
 #[cfg(feature = "mcp-install")]
-fn parse_mcp_install_args(args: &CommandArgs, app_name: &str) -> anyhow::Result<McpInstallArgs> {
+fn parse_mcp_install_args(
+    args: &HashMap<String, ArgValue>,
+    app_name: &str,
+) -> anyhow::Result<McpInstallArgs> {
     use crate::parser::error_codes::E_MCP_INSTALL_WRITE_FAILED;
 
-    let dry_run = args
-        .named
-        .get("dry-run")
-        .map(|v| v == "true")
-        .unwrap_or(false);
-    let stdio_mode = args
-        .named
-        .get("stdio")
-        .map(|v| v == "true")
-        .unwrap_or(false);
+    let dry_run = matches!(args.get("dry-run"), Some(ArgValue::Bool(true)));
+    let stdio_mode = matches!(args.get("stdio"), Some(ArgValue::Bool(true)));
     let agent = args
-        .named
         .get("agent")
-        .cloned()
+        .and_then(|v| match v {
+            ArgValue::Str(s) => Some(s.clone()),
+            _ => None,
+        })
         .unwrap_or_else(|| "claude".to_string());
     let scope_str = args
-        .named
         .get("scope")
-        .cloned()
+        .and_then(|v| match v {
+            ArgValue::Enum(s) | ArgValue::Str(s) => Some(s.clone()),
+            _ => None,
+        })
         .unwrap_or_else(|| "project".to_string());
     let server_name = args
-        .named
         .get("name")
-        .cloned()
+        .and_then(|v| match v {
+            ArgValue::Str(s) => Some(s.clone()),
+            _ => None,
+        })
         .unwrap_or_else(|| app_name.to_string());
-    let overwrite = args
-        .named
-        .get("overwrite")
-        .map(|v| v == "true")
-        .unwrap_or(false);
+    let overwrite = matches!(args.get("overwrite"), Some(ArgValue::Bool(true)));
 
     let project_root = args
-        .named
         .get("project")
-        .map(std::path::PathBuf::from)
+        .and_then(|v| match v {
+            ArgValue::Str(s) => Some(std::path::PathBuf::from(s)),
+            _ => None,
+        })
         .unwrap_or_else(|| {
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
         });
@@ -236,27 +256,41 @@ fn parse_mcp_install_args(args: &CommandArgs, app_name: &str) -> anyhow::Result<
     };
 
     let host = args
-        .named
         .get("host")
-        .cloned()
+        .and_then(|v| match v {
+            ArgValue::Str(s) => Some(s.clone()),
+            _ => None,
+        })
         .unwrap_or_else(|| MCP_DEFAULT_HOST.to_string());
     let port = args
-        .named
         .get("port")
-        .cloned()
+        .and_then(|v| match v {
+            ArgValue::Str(s) => Some(s.clone()),
+            _ => None,
+        })
         .unwrap_or_else(|| MCP_DEFAULT_PORT.to_string());
     let path = args
-        .named
         .get("path")
-        .cloned()
+        .and_then(|v| match v {
+            ArgValue::Str(s) => Some(s.clone()),
+            _ => None,
+        })
         .unwrap_or_else(|| MCP_DEFAULT_PATH.to_string());
-    let url = args.named.get("url").cloned();
+    let url = args.get("url").and_then(|v| match v {
+        ArgValue::Str(s) => Some(s.clone()),
+        _ => None,
+    });
 
-    let header_pairs: Vec<String> = args
-        .get_list("header")
-        .into_iter()
-        .map(|v| v.to_string())
-        .collect();
+    let header_pairs: Vec<String> = match args.get("header") {
+        Some(ArgValue::List(items)) => items
+            .iter()
+            .filter_map(|v| match v {
+                ArgValue::Str(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => vec![],
+    };
     let headers = if header_pairs.is_empty() {
         None
     } else {
@@ -269,11 +303,16 @@ fn parse_mcp_install_args(args: &CommandArgs, app_name: &str) -> anyhow::Result<
         })?)
     };
 
-    let raw_exe_args: Vec<String> = args
-        .get_list("arg")
-        .into_iter()
-        .map(|v| v.to_string())
-        .collect();
+    let raw_exe_args: Vec<String> = match args.get("arg") {
+        Some(ArgValue::List(items)) => items
+            .iter()
+            .filter_map(|v| match v {
+                ArgValue::Str(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => vec![],
+    };
     let exe_args = if raw_exe_args.is_empty() {
         vec![
             "mcp".to_string(),
@@ -285,11 +324,16 @@ fn parse_mcp_install_args(args: &CommandArgs, app_name: &str) -> anyhow::Result<
         raw_exe_args
     };
 
-    let env_pairs: Vec<String> = args
-        .get_list("env")
-        .into_iter()
-        .map(|v| v.to_string())
-        .collect();
+    let env_pairs: Vec<String> = match args.get("env") {
+        Some(ArgValue::List(items)) => items
+            .iter()
+            .filter_map(|v| match v {
+                ArgValue::Str(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => vec![],
+    };
     let env_map = if env_pairs.is_empty() {
         None
     } else {
@@ -400,14 +444,13 @@ async fn run_mcp_install(parsed: McpInstallArgs) -> anyhow::Result<()> {
 #[cfg(feature = "mcp-install")]
 pub fn create_mcp_install_command(app_name: &'static str) -> Command {
     Command {
-        id: "install",
-        summary: "Install this app as an MCP server in an agent configuration",
-        syntax: Some(
-            "mcp install [--agent AGENT] [--scope SCOPE] [--name NAME] [--url URL | --stdio]",
-        ),
-        category: Some("mcp"),
-        spec: Some(Arc::new(CommandSpec {
+        id: Arc::from("install"),
+        spec: Arc::new(CommandSpec {
             summary: "Install this app as an MCP server in an agent configuration",
+            syntax: Some(
+                "mcp install [--agent AGENT] [--scope SCOPE] [--name NAME] [--url URL | --stdio]",
+            ),
+            category: Some("mcp"),
             args: vec![
                 ArgSpec {
                     name: "agent",
@@ -420,6 +463,7 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "Agent key (claude, cursor-agent, gemini, copilot, opencode, codex)",
+                    ..Default::default()
                 },
                 ArgSpec {
                     name: "scope",
@@ -432,6 +476,7 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "Configuration scope: project or global",
+                    ..Default::default()
                 },
                 ArgSpec {
                     name: "name",
@@ -444,6 +489,7 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "Server name in config (defaults to app name)",
+                    ..Default::default()
                 },
                 ArgSpec {
                     name: "project",
@@ -456,6 +502,7 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "Project root directory (default: current directory, for project scope)",
+                    ..Default::default()
                 },
                 ArgSpec {
                     name: "url",
@@ -468,6 +515,7 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                     conflicts_with: vec!["stdio"],
                     requires: vec![],
                     help: "HTTP MCP URL (defaults to http://127.0.0.1:8080/mcp)",
+                    ..Default::default()
                 },
                 ArgSpec {
                     name: "host",
@@ -480,6 +528,7 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "MCP server host (used when --url is not set)",
+                    ..Default::default()
                 },
                 ArgSpec {
                     name: "port",
@@ -492,6 +541,7 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "MCP server port (used when --url is not set)",
+                    ..Default::default()
                 },
                 ArgSpec {
                     name: "path",
@@ -504,6 +554,7 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "MCP HTTP path prefix (used when --url is not set)",
+                    ..Default::default()
                 },
                 ArgSpec {
                     name: "header",
@@ -516,6 +567,7 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                     conflicts_with: vec!["stdio"],
                     requires: vec![],
                     help: "HTTP header KEY=value (repeat for multiple; HTTP mode only)",
+                    ..Default::default()
                 },
                 ArgSpec {
                     name: "stdio",
@@ -528,6 +580,7 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                     conflicts_with: vec!["url"],
                     requires: vec![],
                     help: "Use stdio transport (current_exe as command)",
+                    ..Default::default()
                 },
                 ArgSpec {
                     name: "arg",
@@ -540,6 +593,7 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "Additional argv token for stdio command (repeat for multiple)",
+                    ..Default::default()
                 },
                 ArgSpec {
                     name: "env",
@@ -552,6 +606,7 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "Environment variable KEY=value for stdio (repeat for multiple)",
+                    ..Default::default()
                 },
                 ArgSpec {
                     name: "overwrite",
@@ -564,6 +619,7 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "Overwrite existing server entry in config",
+                    ..Default::default()
                 },
                 ArgSpec {
                     name: "dry-run",
@@ -576,13 +632,14 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "Print what would be done without writing",
+                    ..Default::default()
                 },
             ],
             ..Default::default()
-        })),
+        }),
         validator: None,
         expose_mcp: false,
-        execute: Arc::new(move |_ctx, args: CommandArgs| {
+        execute: Arc::new(move |_ctx, args: HashMap<String, ArgValue>| {
             Box::pin(async move {
                 let parsed = parse_mcp_install_args(&args, app_name)?;
                 if parsed.dry_run {
@@ -601,18 +658,17 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
 #[cfg(feature = "mcp-install")]
 pub fn create_mcp_list_command() -> Command {
     Command {
-        id: "list",
-        summary: "List supported agent targets for MCP installation",
-        syntax: Some("mcp list"),
-        category: Some("mcp"),
-        spec: Some(Arc::new(CommandSpec {
+        id: Arc::from("list"),
+        spec: Arc::new(CommandSpec {
             summary: "List supported agent targets for MCP installation",
+            syntax: Some("mcp list"),
+            category: Some("mcp"),
             args: vec![],
             ..Default::default()
-        })),
+        }),
         validator: None,
         expose_mcp: false,
-        execute: Arc::new(|_ctx, _args: CommandArgs| {
+        execute: Arc::new(|_ctx, _args: HashMap<String, ArgValue>| {
             Box::pin(async move {
                 let agents = aikit_sdk::mcp_supported_agents();
                 println!(

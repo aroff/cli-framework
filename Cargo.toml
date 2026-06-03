@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+members = [".", "cli-framework-macros"]
 
 [workspace.package]
 edition = "2021"
@@ -13,6 +14,9 @@ tokio = { version = "1.52", features = ["full"] }
 reqwest = { version = "0.12", features = ["json"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"
 
 [package]
 name = "cli-framework"
@@ -25,6 +29,7 @@ license = "Apache-2.0"
 repository = "https://github.com/aroff/cli-framework"
 
 [dependencies]
+cli-framework-macros = { path = "cli-framework-macros", optional = true }
 anyhow = "1.0"
 regex = "1"
 thiserror = "1.0"
@@ -97,12 +102,8 @@ observability = ["dep:tracing-subscriber"]
 # CLI output utilities optional features
 table-advanced = ["comfy-table"]
 progress = ["indicatif"]
-# Reject unknown flags on legacy (no-spec) commands
-strict-args = []
-# Reject registration of commands without a CommandSpec
-strict-types = []
-# Coerce bare "--flag" to Bool(true) on legacy path
-legacy-arg-coercion = []
+# Proc-macro derive support for #[derive(CommandSpec)]
+derive = ["dep:cli-framework-macros"]
 # Enable CliTestHarness (dev/test use only)
 testkit = []
 # MCP server — expose registered commands as MCP tools via Streamable HTTP

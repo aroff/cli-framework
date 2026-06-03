@@ -16,11 +16,11 @@ use std::sync::Arc;
 
 fn noop_cmd(id: &'static str) -> Command {
     Command {
-        id,
-        summary: "test",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from(id),
+        spec: Arc::new(CommandSpec {
+            summary: "test",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
@@ -39,6 +39,7 @@ fn str_arg(name: &'static str, cardinality: Cardinality) -> ArgSpec {
         conflicts_with: vec![],
         requires: vec![],
         help: "",
+        ..Default::default()
     }
 }
 
@@ -83,11 +84,8 @@ fn e002_unknown_arg_on_typed_command_produces_e002_diagnostic() {
     };
 
     let cmd = Command {
-        id: "typed",
-        summary: "typed cmd",
-        syntax: None,
-        category: None,
-        spec: Some(Arc::new(spec)),
+        id: Arc::from("typed"),
+        spec: Arc::new(spec),
         validator: None,
         expose_mcp: false,
         execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
@@ -185,6 +183,7 @@ fn e004_wrong_type_produces_diagnostic() {
             conflicts_with: vec![],
             requires: vec![],
             help: "",
+            ..Default::default()
         }],
         ..Default::default()
     };
@@ -213,6 +212,7 @@ fn e004_not_emitted_when_type_matches() {
             conflicts_with: vec![],
             requires: vec![],
             help: "",
+            ..Default::default()
         }],
         ..Default::default()
     };
@@ -244,6 +244,7 @@ fn e005_conflicting_args_produce_diagnostic() {
                 conflicts_with: vec!["text"],
                 requires: vec![],
                 help: "",
+                ..Default::default()
             },
             str_arg("text", Cardinality::Optional),
         ],
@@ -275,6 +276,7 @@ fn e005_not_emitted_when_only_one_present() {
                 conflicts_with: vec!["text"],
                 requires: vec![],
                 help: "",
+                ..Default::default()
             },
             str_arg("text", Cardinality::Optional),
         ],
@@ -308,6 +310,7 @@ fn e006_requires_missing_produces_diagnostic() {
                 conflicts_with: vec![],
                 requires: vec!["format"],
                 help: "",
+                ..Default::default()
             },
             str_arg("format", Cardinality::Optional),
         ],
@@ -338,6 +341,7 @@ fn e006_not_emitted_when_requires_satisfied() {
                 conflicts_with: vec![],
                 requires: vec!["format"],
                 help: "",
+                ..Default::default()
             },
             str_arg("format", Cardinality::Optional),
         ],
@@ -387,10 +391,10 @@ fn e008_alias_conflict_reports_full_nested_path() {
     registry.register_at(&path, noop_cmd("serve")).unwrap();
 
     let mut cmd = noop_cmd("other");
-    cmd.spec = Some(Arc::new(CmdSpec {
+    cmd.spec = Arc::new(CmdSpec {
         aliases: vec!["mcp/serve"],
         ..Default::default()
-    }));
+    });
 
     let err = registry
         .register_at(&CommandPath::root_for("other"), cmd)
@@ -417,10 +421,10 @@ fn e008_alias_conflict_produces_e008_code() {
     registry.register(noop_cmd("hello"));
 
     let mut cmd = noop_cmd("greet");
-    cmd.spec = Some(Arc::new(CmdSpec {
+    cmd.spec = Arc::new(CmdSpec {
         aliases: vec!["hello"],
         ..Default::default()
-    }));
+    });
 
     let err = registry
         .register_at(&CommandPath::root_for("greet"), cmd)

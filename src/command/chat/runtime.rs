@@ -19,8 +19,9 @@ pub(super) async fn execute_chat(
     risk_policy: CommandRiskPolicy,
     ailoop_client: Option<Arc<AiloopClient>>,
     app_name: &'static str,
-    args: CommandArgs,
+    args: std::collections::HashMap<String, crate::spec::value::ArgValue>,
 ) -> CommandResult {
+    use crate::spec::value::ArgValue;
     // MUST use the same frozen registry snapshot as the running `App<C>` when available (§4.3).
     let registry = ctx.opt_registry().unwrap_or(registry_fallback.as_ref());
 
@@ -33,14 +34,22 @@ pub(super) async fn execute_chat(
         .with_risk_policy(risk_policy),
     );
 
-    let prompt_flag = args.named.get("prompt").cloned();
-    let yolo = args.named.get("yolo").map(|v| v == "true").unwrap_or(false);
-    let stream = args
-        .named
-        .get("stream")
-        .map(|v| v == "true")
-        .unwrap_or(false);
-    let model = args.named.get("model").cloned();
+    let prompt_flag: Option<String> = args.get("prompt").and_then(|v| {
+        if let ArgValue::Str(s) = v {
+            Some(s.clone())
+        } else {
+            None
+        }
+    });
+    let yolo = matches!(args.get("yolo"), Some(ArgValue::Bool(true)));
+    let stream = matches!(args.get("stream"), Some(ArgValue::Bool(true)));
+    let model: Option<String> = args.get("model").and_then(|v| {
+        if let ArgValue::Str(s) = v {
+            Some(s.clone())
+        } else {
+            None
+        }
+    });
 
     let prompt_from_stdin = if prompt_flag.is_none() && !crate::cli_mode::is_stdin_tty() {
         Some(read_stdin_all().await?)
