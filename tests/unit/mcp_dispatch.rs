@@ -1,5 +1,5 @@
 use cli_framework::app::{AppBuilder, AppContext};
-use cli_framework::command::{Command, CommandArgs, CommandRegistry};
+use cli_framework::command::{Command, CommandRegistry};
 use cli_framework::mcp::{
     dispatch_tool_call, dispatch_tool_call_spawned, McpToolRegistry, McpTransportKind,
 };
@@ -7,6 +7,8 @@ use cli_framework::security::command_risk::CommandRiskTier;
 use cli_framework::security::gate::{ExecutionGate, GateError};
 use cli_framework::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use cli_framework::spec::command_tree::{CommandPath, CommandSpec};
+use cli_framework::spec::value::ArgValue;
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -31,7 +33,7 @@ fn mcp_serve_registered_after_build() {
 fn noop_execute() -> Arc<
     dyn for<'a> Fn(
             &'a mut dyn cli_framework::app::AppContext,
-            CommandArgs,
+            HashMap<String, ArgValue>,
         ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>
         + Send
         + Sync,
@@ -42,7 +44,7 @@ fn noop_execute() -> Arc<
 fn failing_execute() -> Arc<
     dyn for<'a> Fn(
             &'a mut dyn cli_framework::app::AppContext,
-            CommandArgs,
+            HashMap<String, ArgValue>,
         ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>
         + Send
         + Sync,
@@ -52,11 +54,11 @@ fn failing_execute() -> Arc<
 
 fn make_cmd(id: &'static str) -> Command {
     Command {
-        id,
-        summary: "test command",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from(id),
+        spec: Arc::new(CommandSpec {
+            summary: "test command",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_execute(),
@@ -115,15 +117,13 @@ async fn test_tool_call_arg_validation_failed() {
             conflicts_with: vec![],
             requires: vec![],
             help: "A required argument",
+            ..Default::default()
         }],
         ..Default::default()
     };
     let cmd = Command {
-        id: "test-cmd",
-        summary: "test command",
-        syntax: None,
-        category: None,
-        spec: Some(Arc::new(spec)),
+        id: Arc::from("test-cmd"),
+        spec: Arc::new(spec),
         validator: None,
         expose_mcp: false,
         execute: noop_execute(),
@@ -153,11 +153,11 @@ async fn test_tool_call_arg_validation_failed() {
 #[tokio::test]
 async fn test_tool_call_execution_failed() {
     let cmd = Command {
-        id: "fail-cmd",
-        summary: "failing command",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("fail-cmd"),
+        spec: Arc::new(CommandSpec {
+            summary: "failing command",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: failing_execute(),
@@ -187,14 +187,14 @@ async fn test_tool_call_internal_error() {
     // dispatch_tool_call_spawned runs the call in a tokio::spawn and maps
     // JoinError (panic) → MCP_INTERNAL_ERROR (AC-E-INTERNAL, §4.7).
     let panicking_cmd = Command {
-        id: "panic-cmd",
-        summary: "Panicking command",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("panic-cmd"),
+        spec: Arc::new(CommandSpec {
+            summary: "Panicking command",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
-        execute: Arc::new(|_ctx, _args| {
+        execute: Arc::new(|_ctx, _args: HashMap<String, ArgValue>| {
             Box::pin(async move {
                 panic!("intentional panic for MCP_INTERNAL_ERROR test");
                 #[allow(unreachable_code)]
@@ -231,7 +231,7 @@ impl ExecutionGate for DenyGate {
     async fn before_execute(
         &self,
         _cmd: &Command,
-        _args: &CommandArgs,
+        _args: &HashMap<String, ArgValue>,
         _tier: CommandRiskTier,
     ) -> Result<(), GateError> {
         Err(GateError::Denied {
@@ -248,7 +248,7 @@ impl ExecutionGate for FailGate {
     async fn before_execute(
         &self,
         _cmd: &Command,
-        _args: &CommandArgs,
+        _args: &HashMap<String, ArgValue>,
         _tier: CommandRiskTier,
     ) -> Result<(), GateError> {
         Err(GateError::Failed {

@@ -1,5 +1,5 @@
 use cli_framework::app::{AppBuilder, AppContext};
-use cli_framework::command::{Command, CommandArgs, CommandRegistry};
+use cli_framework::command::{Command, CommandRegistry};
 use cli_framework::mcp::{
     serve_mcp_with_gate, CliFrameworkHandler, McpServerArgs, McpToolExportPolicy, McpToolRegistry,
     McpTransportKind,
@@ -13,7 +13,7 @@ use std::sync::Arc;
 fn noop_execute() -> Arc<
     dyn for<'a> Fn(
             &'a mut dyn cli_framework::app::AppContext,
-            CommandArgs,
+            std::collections::HashMap<String, cli_framework::spec::value::ArgValue>,
         ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>
         + Send
         + Sync,
@@ -80,21 +80,21 @@ async fn test_tools_list_over_http() {
 
     let mut registry = CommandRegistry::new();
     registry.register(Command {
-        id: "hello",
-        summary: "Say hello",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("hello"),
+        spec: Arc::new(CommandSpec {
+            summary: "Say hello",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_execute(),
     });
     registry.register(Command {
-        id: "goodbye",
-        summary: "Say goodbye",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("goodbye"),
+        spec: Arc::new(CommandSpec {
+            summary: "Say goodbye",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_execute(),
@@ -190,11 +190,11 @@ async fn test_tool_call_success_over_http() {
 
     let mut registry = CommandRegistry::new();
     registry.register(Command {
-        id: "ping",
-        summary: "Ping command",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("ping"),
+        spec: Arc::new(CommandSpec {
+            summary: "Ping command",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_execute(),
@@ -298,14 +298,11 @@ async fn test_mcp_serve_subcommand_tools_list() {
             let mut app = AppBuilder::new()
                 .with_version("testapp", "0.1.0")
                 .register_command(Command {
-                    id: "widget",
-                    summary: "Widget command exposed via mcp serve subcommand",
-                    syntax: None,
-                    category: None,
-                    spec: Some(Arc::new(CommandSpec {
+                    id: Arc::from("widget"),
+                    spec: Arc::new(CommandSpec {
                         summary: "Widget command exposed via mcp serve subcommand",
                         ..Default::default()
-                    })),
+                    }),
                     validator: None,
                     expose_mcp: true,
                     execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
@@ -417,11 +414,11 @@ async fn test_tools_list_and_call_over_stdio_transport() {
 
     let mut registry = CommandRegistry::new();
     registry.register(Command {
-        id: "hello",
-        summary: "Say hello",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("hello"),
+        spec: Arc::new(CommandSpec {
+            summary: "Say hello",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_execute(),

@@ -20,54 +20,56 @@ use cli_framework::command::{Command, CommandRegistry};
 use cli_framework::mcp::{build_mcp_axum_router, McpToolExportPolicy};
 use cli_framework::prelude::*;
 use cli_framework::security::CommandRiskPolicy;
+use cli_framework::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
+use cli_framework::spec::value::ArgValue;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 struct MyApp;
 impl AppContext for MyApp {}
 
-fn build_registry() -> anyhow::Result<CommandRegistry> {
-    let mut registry = CommandRegistry::new();
-    registry.register(Command {
-        id: "hello",
-        summary: "Say hello to the world",
-        syntax: Some("hello"),
-        category: Some("greetings"),
-        spec: Some(Arc::new(CommandSpec {
+fn make_hello_command() -> Command {
+    Command {
+        id: Arc::from("hello"),
+        spec: Arc::new(CommandSpec {
             summary: "Say hello to the world",
+            syntax: Some("hello"),
+            category: Some("greetings"),
             args: vec![ArgSpec {
                 name: "name",
-                kind: cli_framework::spec::arg_spec::ArgKind::Option,
-                short: None,
-                long: None,
-                value_type: cli_framework::spec::arg_spec::ArgValueType::String,
-                cardinality: cli_framework::spec::arg_spec::Cardinality::Optional,
-                default: None,
-                conflicts_with: vec![],
-                requires: vec![],
+                kind: ArgKind::Option,
+                long: Some("name"),
+                value_type: ArgValueType::String,
+                cardinality: Cardinality::Optional,
                 help: "Name to greet",
+                ..Default::default()
             }],
             ..Default::default()
-        })),
+        }),
         validator: None,
         expose_mcp: true,
-        execute: Arc::new(|_ctx, args| {
+        execute: Arc::new(|_ctx, args: HashMap<String, ArgValue>| {
             Box::pin(async move {
-                let name = args
-                    .named
-                    .get("name")
-                    .map(String::as_str)
-                    .unwrap_or("World");
+                let name = match args.get("name") {
+                    Some(ArgValue::Str(s)) => s.as_str(),
+                    _ => "World",
+                };
                 println!("Hello, {}!", name);
                 Ok(())
             })
         }),
-    });
-    registry.register(Command {
-        id: "status",
-        summary: "Show application status",
-        syntax: Some("status"),
-        category: Some("info"),
-        spec: None,
+    }
+}
+
+fn make_status_command() -> Command {
+    Command {
+        id: Arc::from("status"),
+        spec: Arc::new(CommandSpec {
+            summary: "Show application status",
+            syntax: Some("status"),
+            category: Some("info"),
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: Arc::new(|_ctx, _args| {
@@ -76,7 +78,13 @@ fn build_registry() -> anyhow::Result<CommandRegistry> {
                 Ok(())
             })
         }),
-    });
+    }
+}
+
+fn build_registry() -> anyhow::Result<CommandRegistry> {
+    let mut registry = CommandRegistry::new();
+    registry.register(make_hello_command());
+    registry.register(make_status_command());
     Ok(registry)
 }
 
@@ -124,59 +132,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Standalone mode: use `mcp serve` subcommand to start MCP server.
-    let mut builder = AppBuilder::new();
-    builder = builder
+    let builder = AppBuilder::new()
         .with_version("my-mcp-app", "0.1.0")
-        .register_command(Command {
-            id: "hello",
-            summary: "Say hello to the world",
-            syntax: Some("hello"),
-            category: Some("greetings"),
-            spec: Some(Arc::new(CommandSpec {
-                summary: "Say hello to the world",
-                args: vec![ArgSpec {
-                    name: "name",
-                    kind: cli_framework::spec::arg_spec::ArgKind::Option,
-                    short: None,
-                    long: None,
-                    value_type: cli_framework::spec::arg_spec::ArgValueType::String,
-                    cardinality: cli_framework::spec::arg_spec::Cardinality::Optional,
-                    default: None,
-                    conflicts_with: vec![],
-                    requires: vec![],
-                    help: "Name to greet",
-                }],
-                ..Default::default()
-            })),
-            validator: None,
-            expose_mcp: true,
-            execute: Arc::new(|_ctx, args| {
-                Box::pin(async move {
-                    let name = args
-                        .named
-                        .get("name")
-                        .map(String::as_str)
-                        .unwrap_or("World");
-                    println!("Hello, {}!", name);
-                    Ok(())
-                })
-            }),
-        })?
-        .register_command(Command {
-            id: "status",
-            summary: "Show application status",
-            syntax: Some("status"),
-            category: Some("info"),
-            spec: None,
-            validator: None,
-            expose_mcp: false,
-            execute: Arc::new(|_ctx, _args| {
-                Box::pin(async move {
-                    println!("Status: OK");
-                    Ok(())
-                })
-            }),
-        })?;
+        .register_command(make_hello_command())?
+        .register_command(make_status_command())?;
 
     let mut app = builder.build(MyApp)?;
     app.run().await?;

@@ -1,9 +1,11 @@
 use axum::routing::get;
-use cli_framework::command::{Command, CommandArgs, CommandRegistry};
+use cli_framework::command::{Command, CommandRegistry};
 use cli_framework::mcp::{
     build_mcp_axum_router, transport_http::mcp_axum_router, McpToolExportPolicy, McpToolRegistry,
 };
 use cli_framework::security::CommandRiskPolicy;
+use cli_framework::spec::command_tree::CommandSpec;
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -11,12 +13,25 @@ use std::sync::Arc;
 fn noop_execute() -> Arc<
     dyn for<'a> Fn(
             &'a mut dyn cli_framework::app::AppContext,
-            CommandArgs,
+            HashMap<String, cli_framework::spec::value::ArgValue>,
         ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>
         + Send
         + Sync,
 > {
     Arc::new(|_ctx, _args| Box::pin(async { Ok(()) }))
+}
+
+fn make_command(id: &'static str, summary: &'static str, expose_mcp: bool) -> Command {
+    Command {
+        id: Arc::from(id),
+        spec: Arc::new(CommandSpec {
+            summary,
+            ..Default::default()
+        }),
+        validator: None,
+        expose_mcp,
+        execute: noop_execute(),
+    }
 }
 
 async fn wait_for_server(addr: &str) {
@@ -75,16 +90,7 @@ async fn test_mcp_and_health_on_same_listener() {
     let _ = env_logger::try_init();
 
     let mut registry = CommandRegistry::new();
-    registry.register(Command {
-        id: "hello",
-        summary: "Say hello",
-        syntax: None,
-        category: None,
-        spec: None,
-        validator: None,
-        expose_mcp: false,
-        execute: noop_execute(),
-    });
+    registry.register(make_command("hello", "Say hello", false));
 
     let tool_registry = Arc::new(McpToolRegistry::from_command_registry(&registry, "testapp"));
     let mcp_router = mcp_axum_router(tool_registry, "/mcp");
@@ -161,26 +167,8 @@ async fn test_build_mcp_axum_router_tool_count() {
     let _ = env_logger::try_init();
 
     let mut registry = CommandRegistry::new();
-    registry.register(Command {
-        id: "foo",
-        summary: "Foo command",
-        syntax: None,
-        category: None,
-        spec: None,
-        validator: None,
-        expose_mcp: false,
-        execute: noop_execute(),
-    });
-    registry.register(Command {
-        id: "bar",
-        summary: "Bar command",
-        syntax: None,
-        category: None,
-        spec: None,
-        validator: None,
-        expose_mcp: false,
-        execute: noop_execute(),
-    });
+    registry.register(make_command("foo", "Foo command", false));
+    registry.register(make_command("bar", "Bar command", false));
 
     let mcp_router = build_mcp_axum_router(
         &registry,
@@ -246,26 +234,8 @@ async fn test_expose_mcp_only_via_http_router() {
     let _ = env_logger::try_init();
 
     let mut registry = CommandRegistry::new();
-    registry.register(Command {
-        id: "visible",
-        summary: "Visible via MCP",
-        syntax: None,
-        category: None,
-        spec: None,
-        validator: None,
-        expose_mcp: true,
-        execute: noop_execute(),
-    });
-    registry.register(Command {
-        id: "hidden",
-        summary: "Hidden from MCP",
-        syntax: None,
-        category: None,
-        spec: None,
-        validator: None,
-        expose_mcp: false,
-        execute: noop_execute(),
-    });
+    registry.register(make_command("visible", "Visible via MCP", true));
+    registry.register(make_command("hidden", "Hidden from MCP", false));
 
     let mcp_router = build_mcp_axum_router(
         &registry,

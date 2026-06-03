@@ -1,8 +1,10 @@
-use cli_framework::command::{Command, CommandArgs, CommandRegistry};
+use cli_framework::command::{Command, CommandRegistry};
 use cli_framework::mcp::{McpToolExportPolicy, McpToolRegistry};
 use cli_framework::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use cli_framework::spec::command_tree::{CommandPath, CommandSpec};
+use cli_framework::spec::value::ArgValue;
 use insta;
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -10,7 +12,7 @@ use std::sync::Arc;
 fn noop_execute() -> Arc<
     dyn for<'a> Fn(
             &'a mut dyn cli_framework::app::AppContext,
-            CommandArgs,
+            HashMap<String, ArgValue>,
         ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>
         + Send
         + Sync,
@@ -20,11 +22,11 @@ fn noop_execute() -> Arc<
 
 fn make_cmd(id: &'static str, summary: &'static str) -> Command {
     Command {
-        id,
-        summary,
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from(id),
+        spec: Arc::new(CommandSpec {
+            summary,
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_execute(),
@@ -33,11 +35,8 @@ fn make_cmd(id: &'static str, summary: &'static str) -> Command {
 
 fn make_cmd_with_spec(id: &'static str, summary: &'static str, spec: CommandSpec) -> Command {
     Command {
-        id,
-        summary,
-        syntax: None,
-        category: None,
-        spec: Some(Arc::new(spec)),
+        id: Arc::from(id),
+        spec: Arc::new(CommandSpec { summary, ..spec }),
         validator: None,
         expose_mcp: false,
         execute: noop_execute(),
@@ -108,6 +107,7 @@ fn test_required_arg_in_schema_required_array() {
             conflicts_with: vec![],
             requires: vec![],
             help: "Environment",
+            ..Default::default()
         }],
         ..Default::default()
     };
@@ -139,6 +139,7 @@ fn test_optional_arg_not_in_required_array() {
             conflicts_with: vec![],
             requires: vec![],
             help: "Verbose mode",
+            ..Default::default()
         }],
         ..Default::default()
     };
@@ -155,7 +156,7 @@ fn test_optional_arg_not_in_required_array() {
 }
 
 #[test]
-fn test_spec_less_command_permissive_schema() {
+fn test_no_args_command_object_schema() {
     let mut registry = CommandRegistry::new();
     registry.register(make_cmd("hello", "Say hello"));
 
@@ -164,7 +165,9 @@ fn test_spec_less_command_permissive_schema() {
     let schema = &tools[0].input_schema;
 
     assert_eq!(schema["type"].as_str(), Some("object"));
-    assert_eq!(schema["additionalProperties"].as_bool(), Some(true));
+    // Commands with no declared args produce an empty properties object (no additionalProperties).
+    assert!(schema["properties"].is_object());
+    assert!(schema.get("additionalProperties").is_none());
 }
 
 #[test]
@@ -209,6 +212,7 @@ fn test_tool_descriptor_snapshot() {
             conflicts_with: vec![],
             requires: vec![],
             help: "Deployment target",
+            ..Default::default()
         }],
         ..Default::default()
     };
@@ -238,21 +242,21 @@ fn test_tool_descriptor_snapshot() {
 fn test_expose_mcp_only_filters_commands() {
     let mut registry = CommandRegistry::new();
     registry.register(Command {
-        id: "included",
-        summary: "Included command",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("included"),
+        spec: Arc::new(CommandSpec {
+            summary: "Included command",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: true,
         execute: noop_execute(),
     });
     registry.register(Command {
-        id: "excluded",
-        summary: "Excluded command",
-        syntax: None,
-        category: None,
-        spec: None,
+        id: Arc::from("excluded"),
+        spec: Arc::new(CommandSpec {
+            summary: "Excluded command",
+            ..Default::default()
+        }),
         validator: None,
         expose_mcp: false,
         execute: noop_execute(),
