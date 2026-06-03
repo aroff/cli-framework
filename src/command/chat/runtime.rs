@@ -211,10 +211,53 @@ pub(crate) fn turns_from_events(prompt: &str, events: &[AgentInternalEvent]) -> 
     let mut turns = Vec::new();
     turns.push(Turn::user(prompt));
 
-    let mut tool_uses: Vec<(String, String, serde_json::Value)> = Vec::new(); // (call_id, name, args)
-    let mut tool_results: std::collections::HashMap<String, String> =
+    // Per-step accumulators — flushed on each StepFinish.
+    let mut step_tool_uses: Vec<(String, String, serde_json::Value)> = Vec::new();
+    let mut step_tool_results: std::collections::HashMap<String, (String, bool)> =
         std::collections::HashMap::new();
-    let mut text_final: Option<String> = None;
+    let mut step_text: Option<String> = None;
+
+    let flush = |turns: &mut Vec<Turn>,
+                 uses: &mut Vec<(String, String, serde_json::Value)>,
+                 results: &mut std::collections::HashMap<String, (String, bool)>,
+                 text: &mut Option<String>| {
+        if !uses.is_empty() {
+            let calls: Vec<ContextToolCall> = uses
+                .iter()
+                .map(|(id, name, args)| ContextToolCall {
+                    id: id.clone(),
+                    name: name.clone(),
+                    arguments: args.to_string(),
+                })
+                .collect();
+            // Tool-dispatch turn: content is empty; the model's closing text
+            // arrives in a separate later step and becomes its own assistant turn.
+            turns.push(Turn::assistant_with_tool_calls(String::new(), calls));
+            // All results for this step bundled into one turn (matches aikit-agent).
+            let bundled: Vec<ContextToolResult> = uses
+                .iter()
+                .map(|(id, _, _)| {
+                    let (output, is_error) = results.remove(id).unwrap_or_else(|| {
+                        (
+                            format!("ERROR: no result received for tool call {}", id),
+                            true,
+                        )
+                    });
+                    ContextToolResult {
+                        call_id: id.clone(),
+                        output,
+                        is_error,
+                    }
+                })
+                .collect();
+            turns.push(Turn::tool_result(bundled));
+            uses.clear();
+            results.clear();
+        } else if let Some(content) = text.take() {
+            turns.push(Turn::assistant(content));
+        }
+        *text = None;
+    };
 
     for event in events {
         match event {
@@ -223,47 +266,37 @@ pub(crate) fn turns_from_events(prompt: &str, events: &[AgentInternalEvent]) -> 
                 tool_input,
                 call_id,
             } => {
-                tool_uses.push((call_id.clone(), tool_name.clone(), tool_input.clone()));
+                step_tool_uses.push((call_id.clone(), tool_name.clone(), tool_input.clone()));
             }
             AgentInternalEvent::ToolResult {
-                call_id, output, ..
+                call_id,
+                output,
+                is_error,
             } => {
-                tool_results.insert(call_id.clone(), output.clone());
+                step_tool_results.insert(call_id.clone(), (output.clone(), *is_error));
             }
             AgentInternalEvent::TextFinal { content, .. } => {
-                text_final = Some(content.clone());
+                step_text = Some(content.clone());
+            }
+            AgentInternalEvent::StepFinish { .. } => {
+                flush(
+                    &mut turns,
+                    &mut step_tool_uses,
+                    &mut step_tool_results,
+                    &mut step_text,
+                );
             }
             _ => {}
         }
     }
 
-    if !tool_uses.is_empty() {
-        let calls: Vec<ContextToolCall> = tool_uses
-            .iter()
-            .map(|(call_id, name, args)| ContextToolCall {
-                id: call_id.clone(),
-                name: name.clone(),
-                arguments: args.to_string(),
-            })
-            .collect();
-
-        let assistant_content = text_final.unwrap_or_default();
-        turns.push(Turn::assistant_with_tool_calls(assistant_content, calls));
-
-        for (call_id, _, _) in &tool_uses {
-            let output = tool_results
-                .get(call_id)
-                .cloned()
-                .unwrap_or_else(|| format!("ERROR: no result received for tool call {}", call_id));
-            turns.push(Turn::tool_result(vec![ContextToolResult {
-                call_id: call_id.clone(),
-                output,
-                is_error: false,
-            }]));
-        }
-    } else if let Some(content) = text_final {
-        turns.push(Turn::assistant(content));
-    }
+    // Flush any remaining state when there is no trailing StepFinish.
+    flush(
+        &mut turns,
+        &mut step_tool_uses,
+        &mut step_tool_results,
+        &mut step_text,
+    );
 
     turns
 }
@@ -334,5 +367,170 @@ mod tests {
         let result = &turns[2].tool_results.as_ref().unwrap()[0];
         assert_eq!(result.call_id, "c1");
         assert!(result.output.contains("ERROR"));
+    }
+
+    /// Finding 4: is_error from ToolResult must reach the reconstructed
+    /// ContextToolResult — not be hardcoded false.
+    #[test]
+    fn turns_from_events_is_error_propagated() {
+        let events = vec![
+            AgentInternalEvent::ToolUse {
+                call_id: "c1".to_string(),
+                tool_name: "read".to_string(),
+                tool_input: serde_json::json!({}),
+            },
+            AgentInternalEvent::ToolResult {
+                call_id: "c1".to_string(),
+                output: "permission denied".to_string(),
+                is_error: true,
+            },
+            AgentInternalEvent::StepFinish {
+                iteration: 0,
+                finish_reason: "tool_calls".to_string(),
+            },
+        ];
+        let turns = turns_from_events("read the file", &events);
+        assert_eq!(turns.len(), 3);
+        let result = &turns[2].tool_results.as_ref().unwrap()[0];
+        assert!(
+            result.is_error,
+            "is_error must be true for a failed tool call"
+        );
+        assert_eq!(result.output, "permission denied");
+    }
+
+    /// Finding 2: two sequential iterations separated by StepFinish must
+    /// produce two distinct assistant_with_tool_calls turns, not one combined.
+    #[test]
+    fn turns_from_events_sequential_steps_emit_separate_turns() {
+        let events = vec![
+            AgentInternalEvent::ToolUse {
+                call_id: "c1".to_string(),
+                tool_name: "list".to_string(),
+                tool_input: serde_json::json!({}),
+            },
+            AgentInternalEvent::ToolResult {
+                call_id: "c1".to_string(),
+                output: "[a,b,c]".to_string(),
+                is_error: false,
+            },
+            AgentInternalEvent::StepFinish {
+                iteration: 0,
+                finish_reason: "tool_calls".to_string(),
+            },
+            AgentInternalEvent::ToolUse {
+                call_id: "c2".to_string(),
+                tool_name: "get".to_string(),
+                tool_input: serde_json::json!({}),
+            },
+            AgentInternalEvent::ToolResult {
+                call_id: "c2".to_string(),
+                output: "details".to_string(),
+                is_error: false,
+            },
+            AgentInternalEvent::StepFinish {
+                iteration: 1,
+                finish_reason: "tool_calls".to_string(),
+            },
+            AgentInternalEvent::TextFinal {
+                content: "Here are the details".to_string(),
+                turn_id: None,
+            },
+            AgentInternalEvent::StepFinish {
+                iteration: 2,
+                finish_reason: "stop".to_string(),
+            },
+        ];
+        let turns = turns_from_events("list then get", &events);
+        // user + (asst[c1] + result[c1]) + (asst[c2] + result[c2]) + asst(text)
+        assert_eq!(turns.len(), 6, "got {}: {turns:#?}", turns.len());
+        let step1 = turns[1].tool_calls.as_ref().unwrap();
+        assert_eq!(step1.len(), 1);
+        assert_eq!(step1[0].name, "list");
+        let step2 = turns[3].tool_calls.as_ref().unwrap();
+        assert_eq!(step2.len(), 1);
+        assert_eq!(step2[0].name, "get");
+        assert_eq!(turns[5].content, "Here are the details");
+        assert!(turns[5].tool_calls.is_none());
+    }
+
+    /// Finding 3: TextFinal after a tool step must be a separate trailing
+    /// Turn::assistant — not embedded as the body of the tool-dispatch turn.
+    #[test]
+    fn turns_from_events_text_final_is_trailing_turn_not_dispatch_body() {
+        let events = vec![
+            AgentInternalEvent::ToolUse {
+                call_id: "c1".to_string(),
+                tool_name: "search".to_string(),
+                tool_input: serde_json::json!({}),
+            },
+            AgentInternalEvent::ToolResult {
+                call_id: "c1".to_string(),
+                output: "results".to_string(),
+                is_error: false,
+            },
+            AgentInternalEvent::StepFinish {
+                iteration: 0,
+                finish_reason: "tool_calls".to_string(),
+            },
+            AgentInternalEvent::TextFinal {
+                content: "The answer is 42".to_string(),
+                turn_id: None,
+            },
+            AgentInternalEvent::StepFinish {
+                iteration: 1,
+                finish_reason: "stop".to_string(),
+            },
+        ];
+        let turns = turns_from_events("search and answer", &events);
+        // user + asst_with_tool_calls + tool_result + asst(text)
+        assert_eq!(turns.len(), 4, "got {}: {turns:#?}", turns.len());
+        assert!(
+            turns[1].content.is_empty(),
+            "tool-dispatch body must be empty, got: {:?}",
+            turns[1].content
+        );
+        assert!(turns[1].tool_calls.is_some());
+        assert_eq!(turns[3].content, "The answer is 42");
+        assert!(turns[3].tool_calls.is_none());
+    }
+
+    /// Multiple parallel tool calls in one step must be bundled into a single
+    /// tool_result turn (matching aikit-agent's internal behaviour).
+    #[test]
+    fn turns_from_events_parallel_calls_bundled_in_one_result_turn() {
+        let events = vec![
+            AgentInternalEvent::ToolUse {
+                call_id: "c1".to_string(),
+                tool_name: "tool_a".to_string(),
+                tool_input: serde_json::json!({}),
+            },
+            AgentInternalEvent::ToolUse {
+                call_id: "c2".to_string(),
+                tool_name: "tool_b".to_string(),
+                tool_input: serde_json::json!({}),
+            },
+            AgentInternalEvent::ToolResult {
+                call_id: "c1".to_string(),
+                output: "out_a".to_string(),
+                is_error: false,
+            },
+            AgentInternalEvent::ToolResult {
+                call_id: "c2".to_string(),
+                output: "out_b".to_string(),
+                is_error: false,
+            },
+            AgentInternalEvent::StepFinish {
+                iteration: 0,
+                finish_reason: "tool_calls".to_string(),
+            },
+        ];
+        let turns = turns_from_events("run both", &events);
+        // user + asst_with_tool_calls([c1,c2]) + one bundled tool_result
+        assert_eq!(turns.len(), 3, "got {}: {turns:#?}", turns.len());
+        let results = turns[2].tool_results.as_ref().unwrap();
+        assert_eq!(results.len(), 2, "both results must be in one turn");
+        assert_eq!(results[0].call_id, "c1");
+        assert_eq!(results[1].call_id, "c2");
     }
 }

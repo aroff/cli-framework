@@ -45,6 +45,17 @@ impl<'a> AppContext for CliAppContextWrapper<'a> {
         let mut stdout = std::io::stdout();
         let _ = writeln!(stdout, "{}", s);
     }
+
+    #[cfg(feature = "testkit")]
+    fn drain_output(&self) -> String {
+        if let Some(ref buf) = self.env.stdout_capture {
+            let mut lock = buf.lock().unwrap();
+            let data = std::mem::take(&mut *lock);
+            String::from_utf8_lossy(&data).into_owned()
+        } else {
+            String::new()
+        }
+    }
 }
 
 impl<'a> crate::app::context::CommandRegistryContext for CliAppContextWrapper<'a> {
@@ -78,6 +89,41 @@ impl<'a> crate::app::context::CommandRegistryContext for CliAppContextWrapper<'a
 impl<'a> crate::ailoop::AiloopContext for CliAppContextWrapper<'a> {
     fn ailoop_client(&self) -> Option<&AiloopClient> {
         self.env.ailoop_client.as_ref()
+    }
+}
+
+#[cfg(all(test, feature = "testkit"))]
+mod tests {
+    use super::*;
+    use crate::app::context::AppContext;
+    use crate::command::CommandRegistry;
+
+    struct DummyCtx;
+    impl AppContext for DummyCtx {}
+
+    /// Finding 5: CliAppContextWrapper must override drain_output so that
+    /// content written via framework_println is returned, not silently lost.
+    #[test]
+    fn cli_app_context_wrapper_drain_output_returns_captured_content() {
+        let registry = CommandRegistry::new();
+        let ailoop_client: Option<AiloopClient> = None;
+        let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let env = DispatchEnv {
+            command_registry: &registry,
+            ailoop_client: &ailoop_client,
+            stdout_capture: Some(buf.clone()),
+        };
+        let mut inner = DummyCtx;
+        let wrapper = CliAppContextWrapper::new(&mut inner, env);
+
+        wrapper.framework_println("hello world");
+        wrapper.framework_println("line two");
+
+        let output = wrapper.drain_output();
+        assert_eq!(output, "hello world\nline two\n");
+
+        // Second drain must be empty — buffer was consumed.
+        assert!(wrapper.drain_output().is_empty());
     }
 }
 
