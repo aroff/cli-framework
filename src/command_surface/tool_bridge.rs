@@ -129,7 +129,7 @@ impl CommandAsToolBridge {
         &self,
         ctx: &mut dyn AppContext,
         invocation: BridgeInvocation<'_>,
-    ) -> Result<(), BridgeError> {
+    ) -> Result<String, BridgeError> {
         match invocation.mode {
             BridgeMode::Interactive => self.invoke_interactive(ctx, invocation).await,
             BridgeMode::Mcp => self.invoke_mcp(ctx, invocation).await,
@@ -140,7 +140,7 @@ impl CommandAsToolBridge {
         &self,
         ctx: &mut dyn AppContext,
         invocation: BridgeInvocation<'_>,
-    ) -> Result<(), BridgeError> {
+    ) -> Result<String, BridgeError> {
         let cmd = invocation.command;
         let parsed = self.parse_args(cmd, invocation.input)?;
 
@@ -199,7 +199,7 @@ impl CommandAsToolBridge {
         &self,
         ctx: &mut dyn AppContext,
         invocation: BridgeInvocation<'_>,
-    ) -> Result<(), BridgeError> {
+    ) -> Result<String, BridgeError> {
         let cmd = invocation.command;
         let parsed = self.parse_args(cmd, invocation.input)?;
 
@@ -224,7 +224,7 @@ impl CommandAsToolBridge {
         cmd: &Command,
         parsed: ParsedArgs,
         tier: CommandRiskTier,
-    ) -> Result<(), BridgeError> {
+    ) -> Result<String, BridgeError> {
         if let Some(ref gate) = self.gate {
             gate.before_execute(cmd, &parsed.args, tier)
                 .await
@@ -242,7 +242,8 @@ impl CommandAsToolBridge {
         (cmd.execute)(ctx, effective_args)
             .await
             .map_err(BridgeError::Execution)?;
-        Ok(())
+
+        Ok(ctx.drain_output())
     }
 }
 

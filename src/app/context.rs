@@ -30,6 +30,14 @@ pub trait AppContext: Send + Sync {
         let mut stdout = std::io::stdout();
         let _ = writeln!(stdout, "{}", s);
     }
+
+    /// Drain and return any output captured since the last call.
+    ///
+    /// Contexts that capture `framework_println` output override this to return
+    /// and clear the internal buffer. The default returns an empty string.
+    fn drain_output(&self) -> String {
+        String::new()
+    }
 }
 
 /// Extension trait for AppContext to provide command registry access

@@ -1,7 +1,7 @@
-use cli_framework::app::AppContext;
+use cli_framework::command::chat::host_tool_adapter::McpHostToolAdapter;
 use cli_framework::command::chat::{
-    ChatToolCallOptions, HostToolExecutor, CHAT_ARG_VALIDATION_FAILED,
-    CHAT_COMMAND_EXECUTION_FAILED, CHAT_TOOL_NOT_FOUND,
+    ChatToolCallOptions, CHAT_ARG_VALIDATION_FAILED, CHAT_COMMAND_EXECUTION_FAILED,
+    CHAT_TOOL_NOT_FOUND,
 };
 use cli_framework::command::{Command, CommandRegistry};
 use cli_framework::mcp::{McpToolExportPolicy, McpToolRegistry};
@@ -12,11 +12,6 @@ use cli_framework::spec::command_tree::CommandSpec;
 use cli_framework::spec::value::ArgValue;
 use std::collections::HashMap;
 use std::sync::Arc;
-
-#[derive(Default)]
-struct Ctx;
-
-impl AppContext for Ctx {}
 
 fn make_spec_command(id: &'static str) -> Command {
     Command {
@@ -72,6 +67,18 @@ fn make_registry_executor(registry: &CommandRegistry) -> McpToolRegistry {
         McpToolExportPolicy::AllCommands,
     )
     .with_risk_policy(CommandRiskPolicy::default())
+}
+
+fn default_opts() -> ChatToolCallOptions {
+    ChatToolCallOptions {
+        yolo: true,
+        interactive: false,
+        ailoop_client: None,
+    }
+}
+
+fn make_adapter(exec: Arc<McpToolRegistry>) -> Arc<McpHostToolAdapter> {
+    Arc::new(McpHostToolAdapter::new(exec, default_opts()))
 }
 
 #[tokio::test]
@@ -159,22 +166,15 @@ async fn expose_mcp_only_policy_filters_commands() {
 #[tokio::test]
 async fn unknown_tool_returns_chat_tool_not_found() {
     let registry = CommandRegistry::new();
-    let exec = make_registry_executor(&registry);
-    let mut ctx = Ctx::default();
+    let exec = Arc::new(make_registry_executor(&registry));
+    let adapter = make_adapter(exec);
 
-    let err = exec
-        .call_tool(
-            "myapp_missing",
-            serde_json::json!({}),
-            &mut ctx,
-            &ChatToolCallOptions {
-                yolo: true,
-                interactive: false,
-                ailoop_client: None,
-            },
-        )
-        .await
-        .unwrap_err();
+    let err = tokio::task::spawn_blocking(move || {
+        adapter.call_tool("myapp_missing", serde_json::json!({}))
+    })
+    .await
+    .unwrap()
+    .unwrap_err();
     assert!(err.to_string().contains(CHAT_TOOL_NOT_FOUND));
 }
 
@@ -183,22 +183,14 @@ async fn invalid_typed_args_returns_chat_arg_validation_failed() {
     let mut registry = CommandRegistry::new();
     registry.register(make_spec_command("do"));
 
-    let exec = make_registry_executor(&registry);
-    let mut ctx = Ctx::default();
+    let exec = Arc::new(make_registry_executor(&registry));
+    let adapter = make_adapter(exec);
 
-    let err = exec
-        .call_tool(
-            "myapp_do",
-            serde_json::json!({}),
-            &mut ctx,
-            &ChatToolCallOptions {
-                yolo: true,
-                interactive: false,
-                ailoop_client: None,
-            },
-        )
-        .await
-        .unwrap_err();
+    let err =
+        tokio::task::spawn_blocking(move || adapter.call_tool("myapp_do", serde_json::json!({})))
+            .await
+            .unwrap()
+            .unwrap_err();
     assert!(err.to_string().contains(CHAT_ARG_VALIDATION_FAILED));
 }
 
@@ -216,21 +208,70 @@ async fn command_execution_error_surfaces_chat_command_execution_failed() {
         execute: Arc::new(|_ctx, _args| Box::pin(async { Err(anyhow::anyhow!("nope")) })),
     });
 
-    let exec = make_registry_executor(&registry);
-    let mut ctx = Ctx::default();
+    let exec = Arc::new(make_registry_executor(&registry));
+    let adapter = make_adapter(exec);
 
-    let err = exec
-        .call_tool(
-            "myapp_boom",
-            serde_json::json!({}),
-            &mut ctx,
-            &ChatToolCallOptions {
-                yolo: true,
-                interactive: false,
-                ailoop_client: None,
-            },
-        )
-        .await
-        .unwrap_err();
+    let err =
+        tokio::task::spawn_blocking(move || adapter.call_tool("myapp_boom", serde_json::json!({})))
+            .await
+            .unwrap()
+            .unwrap_err();
     assert!(err.to_string().contains(CHAT_COMMAND_EXECUTION_FAILED));
+}
+
+/// U1: call_tool for a command that outputs via framework_println captures the output.
+#[tokio::test]
+async fn call_tool_captures_framework_println_output() {
+    let mut registry = CommandRegistry::new();
+    registry.register(Command {
+        id: "greet",
+        summary: "greet",
+        syntax: None,
+        category: None,
+        spec: None,
+        validator: None,
+        expose_mcp: false,
+        execute: Arc::new(|ctx, _args| {
+            Box::pin(async move {
+                ctx.framework_println("json-output");
+                Ok(())
+            })
+        }),
+    });
+
+    let exec = Arc::new(make_registry_executor(&registry));
+    let adapter = make_adapter(exec);
+
+    let output = tokio::task::spawn_blocking(move || {
+        adapter.call_tool("myapp_greet", serde_json::json!({}))
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(output.contains("json-output"));
+}
+
+/// U7: list_tools returns descriptors with underscore-separated names.
+#[tokio::test]
+async fn list_tools_returns_underscore_separated_names_and_parameters() {
+    let mut registry = CommandRegistry::new();
+    registry.register(make_spec_command("deploy"));
+
+    let exec = Arc::new(make_registry_executor(&registry));
+    let adapter = McpHostToolAdapter::new(Arc::clone(&exec), default_opts());
+
+    let tools = adapter.list_tools();
+    assert!(!tools.is_empty());
+    for tool in &tools {
+        assert!(
+            !tool.name.contains('/'),
+            "tool name must use underscores, got: {}",
+            tool.name
+        );
+        // parameters field must be populated (JSON Schema object)
+        assert!(
+            tool.parameters.is_object(),
+            "parameters must be a JSON object"
+        );
+    }
 }

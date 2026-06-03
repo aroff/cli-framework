@@ -6,7 +6,6 @@ pub mod transport_http;
 #[cfg(feature = "mcp-server")]
 pub mod transport_stdio;
 
-use crate::command::chat::{ChatToolCallOptions, HostToolExecutor};
 use crate::command::registry::CommandRegistry;
 use crate::command::Command;
 use crate::command::CommandArgs;
@@ -147,102 +146,9 @@ impl McpToolRegistry {
     pub fn app_name(&self) -> &str {
         &self.app_name
     }
-}
 
-#[async_trait::async_trait]
-impl HostToolExecutor for McpToolRegistry {
-    fn list_tools(&self) -> Vec<McpToolDescriptor> {
-        self.tools
-            .iter()
-            .map(|(name, cmd)| command_to_tool_descriptor(name, cmd.summary, cmd.spec.as_deref()))
-            .collect()
-    }
-
-    async fn call_tool(
-        &self,
-        tool_name: &str,
-        arguments: serde_json::Value,
-        ctx: &mut dyn crate::app::context::AppContext,
-        opts: &ChatToolCallOptions,
-    ) -> anyhow::Result<()> {
-        use crate::command::chat::{
-            CHAT_ARG_VALIDATION_FAILED, CHAT_COMMAND_EXECUTION_FAILED, CHAT_DESTRUCTIVE_BLOCKED,
-            CHAT_RISK_REQUIRES_CONFIRMATION, CHAT_TOOL_NOT_FOUND,
-        };
-        use crate::command_surface::tool_bridge::{
-            BlockReason, BridgeError, BridgeInput, BridgeInvocation, BridgeMode,
-            CommandAsToolBridge, ConfirmationMode,
-        };
-
-        let cmd = self.resolve_tool(tool_name).ok_or_else(|| {
-            anyhow::anyhow!(
-                "{}: tool '{}' not registered",
-                CHAT_TOOL_NOT_FOUND,
-                tool_name
-            )
-        })?;
-
-        let confirmation = if opts.yolo {
-            ConfirmationMode::AssumeYes
-        } else if let Some(ref client) = opts.ailoop_client {
-            ConfirmationMode::Ailoop(std::sync::Arc::clone(client))
-        } else if opts.interactive {
-            ConfirmationMode::InteractiveStdin
-        } else {
-            ConfirmationMode::NonInteractive
-        };
-
-        let bridge = CommandAsToolBridge::new(self.risk_enforcer.policy().clone());
-        let res = bridge
-            .invoke(
-                ctx,
-                BridgeInvocation {
-                    command: cmd,
-                    input: BridgeInput::Json(arguments),
-                    confirmation,
-                    mode: BridgeMode::Interactive,
-                },
-            )
-            .await;
-
-        match res {
-            Ok(()) => Ok(()),
-            Err(BridgeError::ArgValidation(msg)) => {
-                Err(anyhow::anyhow!("{}: {}", CHAT_ARG_VALIDATION_FAILED, msg))
-            }
-            Err(BridgeError::SensitiveRequiresConfirmation(cmd_id, reason)) => match reason {
-                BlockReason::UserDeclined => Err(anyhow::anyhow!(
-                    "{}: user declined confirmation for '{}'",
-                    CHAT_RISK_REQUIRES_CONFIRMATION,
-                    cmd_id
-                )),
-                _ => Err(anyhow::anyhow!(
-                    "{}: command '{}' is sensitive and requires confirmation",
-                    CHAT_RISK_REQUIRES_CONFIRMATION,
-                    cmd_id
-                )),
-            },
-            Err(BridgeError::DestructiveBlocked(cmd_id, reason)) => match reason {
-                BlockReason::UserDeclined => Err(anyhow::anyhow!(
-                    "{}: user declined confirmation for '{}'",
-                    CHAT_DESTRUCTIVE_BLOCKED,
-                    cmd_id
-                )),
-                _ => Err(anyhow::anyhow!(
-                    "{}: command '{}' is destructive; gated by ALLOW_DESTRUCTIVE_COMMANDS",
-                    CHAT_DESTRUCTIVE_BLOCKED,
-                    cmd_id
-                )),
-            },
-            Err(BridgeError::Execution(e)) => {
-                Err(anyhow::anyhow!("{}: {}", CHAT_COMMAND_EXECUTION_FAILED, e))
-            }
-            Err(other) => Err(anyhow::anyhow!(
-                "{}: {}",
-                CHAT_COMMAND_EXECUTION_FAILED,
-                other
-            )),
-        }
+    pub fn risk_policy(&self) -> &crate::security::CommandRiskPolicy {
+        self.risk_enforcer.policy()
     }
 }
 
@@ -473,7 +379,9 @@ pub async fn dispatch_tool_call(
         .await;
 
     match res {
-        Ok(()) => Ok(CallToolResult::success(vec![Content::text("OK")])),
+        Ok(output) => Ok(CallToolResult::success(vec![Content::text(
+            if output.is_empty() { "OK" } else { &output },
+        )])),
         Err(BridgeError::ArgValidation(msg)) => Err(mcp_error(
             -32002,
             format!("MCP_ARG_VALIDATION_FAILED: {}", msg),

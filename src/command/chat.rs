@@ -1,13 +1,11 @@
 use crate::ailoop::AiloopClient;
-use crate::app::context::AppContext;
 use crate::command::{Command, CommandArgs, CommandRegistry, CommandResult};
 use crate::security::command_risk::CommandRiskPolicy;
 use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use crate::spec::command_tree::{CommandSpec, EnvVarEntry, ExitCodeEntry};
-use async_trait::async_trait;
-use serde_json::Value;
 use std::sync::Arc;
 
+pub mod host_tool_adapter;
 mod runtime;
 
 pub const CHAT_FEATURE_DISABLED: &str = "CHAT_FEATURE_DISABLED";
@@ -18,19 +16,6 @@ pub const CHAT_COMMAND_EXECUTION_FAILED: &str = "CHAT_COMMAND_EXECUTION_FAILED";
 pub const CHAT_RISK_REQUIRES_CONFIRMATION: &str = "CHAT_RISK_REQUIRES_CONFIRMATION";
 pub const CHAT_DESTRUCTIVE_BLOCKED: &str = "CHAT_DESTRUCTIVE_BLOCKED";
 pub const CHAT_TOOL_REGISTRY_COLLISION: &str = "CHAT_TOOL_REGISTRY_COLLISION";
-
-#[async_trait]
-pub trait HostToolExecutor: Send + Sync {
-    fn list_tools(&self) -> Vec<crate::mcp::schema::McpToolDescriptor>;
-
-    async fn call_tool(
-        &self,
-        tool_name: &str,
-        arguments: Value,
-        ctx: &mut dyn AppContext,
-        opts: &ChatToolCallOptions,
-    ) -> anyhow::Result<()>;
-}
 
 #[derive(Debug, Clone)]
 pub struct ChatToolCallOptions {
@@ -184,7 +169,7 @@ Notes:\n\
 }
 
 async fn execute_chat(
-    ctx: &mut dyn AppContext,
+    ctx: &mut dyn crate::app::context::AppContext,
     registry_fallback: Arc<CommandRegistry>,
     risk_policy: CommandRiskPolicy,
     ailoop_client: Option<Arc<AiloopClient>>,
