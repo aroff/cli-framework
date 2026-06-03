@@ -152,7 +152,7 @@ struct DummyCtx;
 impl AppContext for DummyCtx {}
 
 // AC-1: run_with_args(["app", "--help"]) with ≥2 distinct categories → HelpRenderer grouped output
-#[cfg(all(feature = "testkit", not(feature = "strict-types")))]
+#[cfg(feature = "testkit")]
 #[tokio::test]
 async fn t9_run_with_args_help_flag_routes_through_help_renderer_when_categories_present() {
     use cli_framework::testkit::CliTestHarness;
@@ -220,7 +220,7 @@ async fn t9_run_with_args_help_flag_routes_through_help_renderer_when_categories
 }
 
 // AC-2: run_with_args(["app"]) (no subcommand) with categories → same grouped output
-#[cfg(all(feature = "testkit", not(feature = "strict-types")))]
+#[cfg(feature = "testkit")]
 #[tokio::test]
 async fn t10_run_with_args_no_subcommand_routes_through_help_renderer_when_categories_present() {
     use cli_framework::testkit::CliTestHarness;
@@ -270,7 +270,7 @@ async fn t10_run_with_args_no_subcommand_routes_through_help_renderer_when_categ
 }
 
 // AC-4: run_with_args(["app", "--help"]) with all category: None → clap flat output (no category headings)
-#[cfg(all(feature = "testkit", not(feature = "strict-types")))]
+#[cfg(feature = "testkit")]
 #[tokio::test]
 async fn t11_run_with_args_help_flag_uses_clap_when_no_categories() {
     use cli_framework::testkit::CliTestHarness;
@@ -319,7 +319,7 @@ async fn t11_run_with_args_help_flag_uses_clap_when_no_categories() {
 }
 
 // AC-5: render_help() must not contain the spurious version prefix line
-#[cfg(not(feature = "strict-types"))]
+
 #[test]
 fn t12_render_help_does_not_contain_spurious_version_line() {
     let app = AppBuilder::new()

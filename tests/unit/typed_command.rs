@@ -502,16 +502,15 @@ fn constraint_string_pattern_appears_in_json_schema() {
 
 #[test]
 fn mcp_schema_globals_absent() {
-    use cli_framework::app::AppBuilder;
     use cli_framework::command::Command;
     use cli_framework::mcp::McpToolRegistry;
     use cli_framework::spec::arg_spec::ArgSpec;
     use cli_framework::spec::command_tree::CommandSpec;
-    use std::collections::HashMap;
     use std::sync::Arc;
 
-    // Register a global flag
-    let global_verbose = ArgSpec {
+    // Global flag is intentionally not registered here — test verifies
+    // that even without a registered global, the tool schema is clean.
+    let _global_verbose = ArgSpec {
         name: "verbose",
         kind: ArgKind::Flag,
         value_type: ArgValueType::Bool,
@@ -538,7 +537,6 @@ fn mcp_schema_globals_absent() {
 
     let registry = {
         use cli_framework::command::CommandRegistry;
-        use cli_framework::spec::command_tree::CommandPath;
         let mut reg = CommandRegistry::new();
         reg.register(Command {
             id: Arc::from("hello"),

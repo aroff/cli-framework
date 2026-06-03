@@ -255,7 +255,7 @@ fn build_clap_root_no_version_subcommand_when_user_registers_version() {
 }
 
 #[test]
-#[cfg(not(feature = "strict-args"))]
+
 fn parse_with_clap_key_value() {
     let registry = make_registry_with(vec![Command {
         id: Arc::from("hello"),
@@ -298,7 +298,7 @@ fn parse_with_clap_key_value() {
 }
 
 #[test]
-#[cfg(not(feature = "strict-args"))]
+
 fn parse_with_clap_key_equals_value() {
     let registry = make_registry_with(vec![Command {
         id: Arc::from("hello"),
@@ -340,7 +340,7 @@ fn parse_with_clap_key_equals_value() {
 }
 
 #[test]
-#[cfg(not(feature = "strict-args"))]
+
 fn parse_with_clap_positional_after_double_dash() {
     let registry = make_registry_with(vec![Command {
         id: Arc::from("hello"),
@@ -391,7 +391,7 @@ fn parse_with_clap_positional_after_double_dash() {
 }
 
 #[test]
-#[cfg(not(feature = "strict-args"))]
+
 fn parse_with_clap_legacy_leaf_trailing_help_flag_returns_help_shown() {
     let registry = make_registry_with(vec![Command {
         id: Arc::from("hello"),
@@ -437,7 +437,7 @@ fn parse_with_clap_legacy_leaf_trailing_help_flag_returns_help_shown() {
 }
 
 #[test]
-#[cfg(not(feature = "strict-args"))]
+
 fn parse_with_clap_legacy_leaf_trailing_h_flag_returns_help_shown() {
     let registry = make_registry_with(vec![Command {
         id: Arc::from("hello"),
@@ -702,7 +702,7 @@ fn emit_completion_powershell_contains_register_argument_completer() {
 }
 
 #[test]
-#[cfg(not(feature = "strict-args"))]
+
 fn parse_with_clap_mixed_positional_and_named() {
     let registry = make_registry_with(vec![Command {
         id: Arc::from("hello"),
@@ -1075,7 +1075,7 @@ fn parse_unknown_nested_subcommand_returns_e012() {
 
 // Verify that --key value and --key=value produce identical CommandArgs (AC-G1.2).
 #[test]
-#[cfg(not(feature = "strict-args"))]
+
 fn parse_with_clap_key_value_and_equals_value_parity() {
     let registry = make_registry_with(vec![Command {
         id: Arc::from("hello"),

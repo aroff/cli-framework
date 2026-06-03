@@ -232,7 +232,6 @@ fn nested_subcommand_help_renders_typed_args() {
 #[test]
 fn root_help_options_block_lists_global_flags() {
     use cli_framework::app::{AppBuilder, AppContext};
-    use cli_framework::cli_output::HelpRenderer;
 
     // Build an app with one global flag
     struct Ctx;
