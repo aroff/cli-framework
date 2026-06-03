@@ -299,6 +299,7 @@ impl AppBuilder {
                 self.app_name,
                 self.app_version,
                 self.app_git_sha_short,
+                &self.global_flags,
             );
             let clap_root_arc = Arc::new(temp_clap_root);
             let completion_cmd = crate::command_surface::command::create_completion_command(
@@ -391,6 +392,7 @@ impl AppBuilder {
             self.app_name,
             self.app_version,
             self.app_git_sha_short,
+            &self.global_flags,
         );
 
         let registry_arc = Arc::new(self.command_registry);
@@ -461,6 +463,7 @@ impl<C: AppContext> App<C> {
             self.app_name,
             self.app_version,
             self.app_git_sha_short,
+            &self.global_flags,
         );
     }
 
@@ -487,8 +490,17 @@ impl<C: AppContext> App<C> {
         #[cfg(not(feature = "chat"))]
         let second_arg = args.get(1).cloned();
 
-        match parse_with_clap(&self.clap_root, &self.command_registry, args) {
-            ParseOutcome::Parsed { command_path, args } => {
+        match parse_with_clap(
+            &self.clap_root,
+            &self.command_registry,
+            args,
+            &self.global_flags,
+        ) {
+            ParseOutcome::Parsed {
+                command_path,
+                args,
+                global_args,
+            } => {
                 let cmd_id = command_path.leaf().unwrap_or("").to_string();
                 if cmd_id == "version" && self.command_registry.get("version").is_none() {
                     if self.app_name == "unknown" {
@@ -510,7 +522,8 @@ impl<C: AppContext> App<C> {
                                 )));
                             }
                             let cmd_clone = cmd.clone();
-                            self.execute_command_direct(cmd_clone, args).await
+                            self.execute_command_direct(cmd_clone, args, global_args)
+                                .await
                         }
                         None => {
                             let msg = format!(
@@ -530,7 +543,8 @@ impl<C: AppContext> App<C> {
                         }
                     }
                 } else {
-                    self.execute_command(&cmd_id, args).await
+                    self.execute_command_with_globals(&cmd_id, args, global_args)
+                        .await
                 }
             }
             ParseOutcome::HelpShown(text) => {
@@ -579,12 +593,14 @@ impl<C: AppContext> App<C> {
     pub fn show_help(&self) {
         HelpRenderer::new(self.meta.as_ref(), self.command_registry.as_ref())
             .with_version_string(self.version_string())
+            .with_global_flags(&self.global_flags)
             .print();
     }
 
     pub fn render_help(&self) -> String {
         HelpRenderer::new(self.meta.as_ref(), self.command_registry.as_ref())
             .with_version_string(self.version_string())
+            .with_global_flags(&self.global_flags)
             .render()
     }
 
@@ -615,20 +631,38 @@ impl<C: AppContext> App<C> {
             .get(command_id)
             .ok_or_else(|| anyhow::anyhow!("Command '{}' not found", command_id))?
             .clone();
-        self.execute_command_direct(command, args).await
+        self.execute_command_direct(command, args, HashMap::new())
+            .await
     }
 
-    /// Execute an already-resolved `Command` with a typed argument map.
-    /// Shared by both single-segment (`execute_command`) and
-    /// multi-segment dispatch paths in `run_with_args`.
+    /// Execute a root-level command by ID with typed argument map and global args.
+    async fn execute_command_with_globals(
+        &mut self,
+        command_id: &str,
+        args: HashMap<String, ArgValue>,
+        global_args: HashMap<String, ArgValue>,
+    ) -> Result<()> {
+        let command = self
+            .command_registry
+            .get(command_id)
+            .ok_or_else(|| anyhow::anyhow!("Command '{}' not found", command_id))?
+            .clone();
+        self.execute_command_direct(command, args, global_args)
+            .await
+    }
+
+    /// Execute an already-resolved `Command` with a typed argument map and global args.
+    /// Shared by both single-segment and multi-segment dispatch paths in `run_with_args`.
     async fn execute_command_direct(
         &mut self,
         command: Command,
         args: HashMap<String, ArgValue>,
+        global_args: HashMap<String, ArgValue>,
     ) -> Result<()> {
         let env = crate::app::dispatch::DispatchEnv {
             command_registry: self.command_registry.as_ref(),
             ailoop_client: &self.ailoop_client,
+            global_args: &global_args,
             #[cfg(feature = "testkit")]
             stdout_capture: self.stdout_capture.clone(),
         };

@@ -56,6 +56,7 @@ pub fn build_clap_root(
     app_name: &'static str,
     app_version: &'static str,
     app_git_sha_short: Option<&'static str>,
+    global_flags: &[crate::spec::arg_spec::ArgSpec],
 ) -> clap::Command {
     let name = meta.map(|m| m.name).unwrap_or(app_name);
     let version = meta.map(|m| m.version).unwrap_or(app_version);
@@ -86,6 +87,11 @@ pub fn build_clap_root(
     for (path_str, _) in registry.groups() {
         let segments: Vec<&str> = path_str.split('/').filter(|s| !s.is_empty()).collect();
         tree.insert_group(&segments);
+    }
+
+    use crate::parser::clap_mapper::build_clap_arg;
+    for flag_spec in global_flags {
+        root = root.arg(build_clap_arg(flag_spec).global(true));
     }
 
     for (segment, node) in &tree.children {
@@ -187,6 +193,7 @@ pub fn parse_with_clap(
     root: &clap::Command,
     registry: &CommandRegistry,
     args: Vec<String>,
+    global_flags: &[crate::spec::arg_spec::ArgSpec],
 ) -> ParseOutcome {
     match root.clone().try_get_matches_from(&args) {
         Ok(matches) => {
@@ -209,7 +216,22 @@ pub fn parse_with_clap(
                 HashMap::new()
             };
 
-            ParseOutcome::Parsed { command_path, args }
+            // Extract global args from leaf_matches (globals propagate via .global(true))
+            let global_args = if global_flags.is_empty() {
+                HashMap::new()
+            } else {
+                let global_spec = crate::spec::command_tree::CommandSpec {
+                    args: global_flags.to_vec(),
+                    ..Default::default()
+                };
+                map_matches_to_typed_args(&global_spec, leaf_matches).unwrap_or_default()
+            };
+
+            ParseOutcome::Parsed {
+                command_path,
+                args,
+                global_args,
+            }
         }
         Err(e) => {
             use clap::error::ErrorKind;

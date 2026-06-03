@@ -97,7 +97,7 @@ pub fn map_matches_to_typed_args(
     Ok(result)
 }
 
-fn build_clap_arg(arg_spec: &ArgSpec) -> clap::Arg {
+pub(crate) fn build_clap_arg(arg_spec: &ArgSpec) -> clap::Arg {
     let mut arg = clap::Arg::new(arg_spec.name).help(arg_spec.help);
 
     if let Some(short) = arg_spec.short {

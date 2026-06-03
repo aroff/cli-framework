@@ -208,6 +208,14 @@ name = "unit_clap_adapter"
 path = "tests/unit/clap_adapter.rs"
 
 [[test]]
+name = "unit_typed_command"
+path = "tests/unit/typed_command.rs"
+
+[[test]]
+name = "unit_help_golden"
+path = "tests/unit/help_golden.rs"
+
+[[test]]
 name = "unit_parser_diagnostics"
 path = "tests/unit/parser_diagnostics.rs"
 

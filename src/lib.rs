@@ -107,11 +107,29 @@ pub use app::UsageError;
 #[cfg(feature = "derive")]
 pub use cli_framework_macros::CommandSpec;
 
+/// Construct a `CommandPath` from string literals.
+///
+/// ```rust
+/// use cli_framework::path;
+/// let p = path!["skillopt", "run"];
+/// assert_eq!(p.to_path_string(), "skillopt/run");
+/// ```
+///
+/// Panics at runtime if any segment contains `'/'` (an invalid segment).
+#[macro_export]
+macro_rules! path {
+    [$($seg:expr),+ $(,)?] => {
+        $crate::spec::command_tree::CommandPath::new(&[$($seg),+])
+            .expect("path! segments must not contain '/'")
+    };
+}
+
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::app::{AppBuilder, AppContext, AppMeta, UsageError};
     pub use crate::command::{Command, FromArgValueMap, IntoCommandSpec, TypedArgs};
     pub use crate::message::{AppMessage, AppMessageKind};
+    pub use crate::path;
     pub use crate::plugin::PluginRegistryManager;
     pub use crate::spec::{ArgSpec, ArgValue, CommandPath, CommandSpec};
 

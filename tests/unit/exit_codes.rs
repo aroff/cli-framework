@@ -110,12 +110,13 @@ async fn r2_known_command_missing_required_arg_returns_e003_parse_error() {
         )
         .unwrap();
 
-    let root = build_clap_root(None, &registry, "testapp", "0.1.0", None);
+    let root = build_clap_root(None, &registry, "testapp", "0.1.0", None, &[]);
     // Invoke `review` without the required `--template` arg.
     let outcome = parse_with_clap(
         &root,
         &registry,
         vec!["testapp".to_string(), "review".to_string()],
+        &[],
     );
 
     match outcome {
@@ -181,7 +182,7 @@ async fn r3_r4a_completion_invalid_shell_is_usage_error_single_parse_error() {
         .unwrap();
     let registry = full_app.command_registry().clone();
 
-    let root = build_clap_root(None, &registry, "testapp", "0.1.0", None);
+    let root = build_clap_root(None, &registry, "testapp", "0.1.0", None, &[]);
     let outcome = parse_with_clap(
         &root,
         &registry,
@@ -190,6 +191,7 @@ async fn r3_r4a_completion_invalid_shell_is_usage_error_single_parse_error() {
             "completion".to_string(),
             "zzz".to_string(),
         ],
+        &[],
     );
 
     // R4a: invalid Enum value must be caught at parse time as a single E004 error.
@@ -325,7 +327,7 @@ async fn r4a_enum_invalid_value_error_lists_allowed() {
         )
         .unwrap();
 
-    let root = build_clap_root(None, &registry, "testapp", "0.1.0", None);
+    let root = build_clap_root(None, &registry, "testapp", "0.1.0", None, &[]);
     let outcome = parse_with_clap(
         &root,
         &registry,
@@ -335,6 +337,7 @@ async fn r4a_enum_invalid_value_error_lists_allowed() {
             "--focus".to_string(),
             "zzz".to_string(),
         ],
+        &[],
     );
 
     match outcome {

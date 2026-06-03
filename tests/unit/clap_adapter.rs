@@ -115,7 +115,12 @@ fn build_clap_root_subcommand_count_matches_registry() {
     ]);
 
     let root = cli_framework::app::clap_adapter::build_clap_root(
-        None, &registry, "testapp", "0.1.0", None,
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
     );
 
     let matches = root
@@ -135,6 +140,7 @@ fn build_clap_root_version_propagation() {
         "myapp",
         "2.0.0",
         None,
+        &[],
     );
 
     let err = root
@@ -161,6 +167,7 @@ fn build_clap_root_override_usage_from_meta() {
         "myapp",
         "1.0.0",
         None,
+        &[],
     );
 
     let err = root
@@ -186,6 +193,7 @@ fn build_clap_root_description_from_meta() {
         "myapp",
         "1.0.0",
         None,
+        &[],
     );
 
     let err = root
@@ -204,6 +212,7 @@ fn build_clap_root_adds_version_subcommand_when_not_registered() {
         "testapp",
         "0.1.0",
         None,
+        &[],
     );
 
     let matches = root
@@ -228,7 +237,12 @@ fn build_clap_root_no_version_subcommand_when_user_registers_version() {
     }]);
 
     let root = cli_framework::app::clap_adapter::build_clap_root(
-        None, &registry, "testapp", "0.1.0", None,
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
     );
 
     let matches = root
@@ -252,7 +266,12 @@ fn parse_with_clap_key_value() {
     }]);
 
     let root = cli_framework::app::clap_adapter::build_clap_root(
-        None, &registry, "testapp", "0.1.0", None,
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
     );
 
     let outcome = cli_framework::app::clap_adapter::parse_with_clap(
@@ -264,6 +283,7 @@ fn parse_with_clap_key_value() {
             "--name".to_string(),
             "Alice".to_string(),
         ],
+        &[],
     );
 
     match outcome {
@@ -289,7 +309,12 @@ fn parse_with_clap_key_equals_value() {
     }]);
 
     let root = cli_framework::app::clap_adapter::build_clap_root(
-        None, &registry, "testapp", "0.1.0", None,
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
     );
 
     let outcome = cli_framework::app::clap_adapter::parse_with_clap(
@@ -300,6 +325,7 @@ fn parse_with_clap_key_equals_value() {
             "hello".to_string(),
             "--name=Alice".to_string(),
         ],
+        &[],
     );
 
     match outcome {
@@ -329,7 +355,12 @@ fn parse_with_clap_positional_after_double_dash() {
     }]);
 
     let root = cli_framework::app::clap_adapter::build_clap_root(
-        None, &registry, "testapp", "0.1.0", None,
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
     );
 
     let outcome = cli_framework::app::clap_adapter::parse_with_clap(
@@ -341,6 +372,7 @@ fn parse_with_clap_positional_after_double_dash() {
             "--".to_string(),
             "positional".to_string(),
         ],
+        &[],
     );
 
     match outcome {
@@ -374,7 +406,12 @@ fn parse_with_clap_legacy_leaf_trailing_help_flag_returns_help_shown() {
     }]);
 
     let root = cli_framework::app::clap_adapter::build_clap_root(
-        None, &registry, "testapp", "0.1.0", None,
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
     );
 
     let outcome = cli_framework::app::clap_adapter::parse_with_clap(
@@ -385,6 +422,7 @@ fn parse_with_clap_legacy_leaf_trailing_help_flag_returns_help_shown() {
             "hello".to_string(),
             "--help".to_string(),
         ],
+        &[],
     );
 
     match outcome {
@@ -413,13 +451,19 @@ fn parse_with_clap_legacy_leaf_trailing_h_flag_returns_help_shown() {
     }]);
 
     let root = cli_framework::app::clap_adapter::build_clap_root(
-        None, &registry, "testapp", "0.1.0", None,
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
     );
 
     let outcome = cli_framework::app::clap_adapter::parse_with_clap(
         &root,
         &registry,
         vec!["testapp".to_string(), "hello".to_string(), "-h".to_string()],
+        &[],
     );
 
     assert!(
@@ -446,7 +490,12 @@ fn parse_with_clap_legacy_leaf_help_after_terminator_strict_rejects() {
     }]);
 
     let root = cli_framework::app::clap_adapter::build_clap_root(
-        None, &registry, "testapp", "0.1.0", None,
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
     );
 
     let outcome = cli_framework::app::clap_adapter::parse_with_clap(
@@ -458,6 +507,7 @@ fn parse_with_clap_legacy_leaf_help_after_terminator_strict_rejects() {
             "--".to_string(),
             "--help".to_string(),
         ],
+        &[],
     );
 
     // Strict mode: unknown positional args are rejected
@@ -472,13 +522,19 @@ fn parse_with_clap_legacy_leaf_help_after_terminator_strict_rejects() {
 fn parse_with_clap_help_returns_help_shown() {
     let registry = CommandRegistry::new();
     let root = cli_framework::app::clap_adapter::build_clap_root(
-        None, &registry, "testapp", "0.1.0", None,
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
     );
 
     let outcome = cli_framework::app::clap_adapter::parse_with_clap(
         &root,
         &registry,
         vec!["testapp".to_string(), "--help".to_string()],
+        &[],
     );
 
     assert!(
@@ -492,13 +548,19 @@ fn parse_with_clap_help_returns_help_shown() {
 fn parse_with_clap_version_flag_returns_version_shown() {
     let registry = CommandRegistry::new();
     let root = cli_framework::app::clap_adapter::build_clap_root(
-        None, &registry, "testapp", "0.1.0", None,
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
     );
 
     let outcome = cli_framework::app::clap_adapter::parse_with_clap(
         &root,
         &registry,
         vec!["testapp".to_string(), "--version".to_string()],
+        &[],
     );
 
     assert!(
@@ -512,13 +574,19 @@ fn parse_with_clap_version_flag_returns_version_shown() {
 fn parse_with_clap_unknown_command_returns_parse_error() {
     let registry = CommandRegistry::new();
     let root = cli_framework::app::clap_adapter::build_clap_root(
-        None, &registry, "testapp", "0.1.0", None,
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
     );
 
     let outcome = cli_framework::app::clap_adapter::parse_with_clap(
         &root,
         &registry,
         vec!["testapp".to_string(), "nonexistent".to_string()],
+        &[],
     );
 
     assert!(
@@ -532,13 +600,19 @@ fn parse_with_clap_unknown_command_returns_parse_error() {
 fn parse_with_clap_version_subcommand_returns_parsed() {
     let registry = CommandRegistry::new();
     let root = cli_framework::app::clap_adapter::build_clap_root(
-        None, &registry, "testapp", "0.1.0", None,
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
     );
 
     let outcome = cli_framework::app::clap_adapter::parse_with_clap(
         &root,
         &registry,
         vec!["testapp".to_string(), "version".to_string()],
+        &[],
     );
 
     match outcome {
@@ -643,7 +717,12 @@ fn parse_with_clap_mixed_positional_and_named() {
     }]);
 
     let root = cli_framework::app::clap_adapter::build_clap_root(
-        None, &registry, "testapp", "0.1.0", None,
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
     );
 
     let outcome = cli_framework::app::clap_adapter::parse_with_clap(
@@ -656,6 +735,7 @@ fn parse_with_clap_mixed_positional_and_named() {
             "--name".to_string(),
             "Alice".to_string(),
         ],
+        &[],
     );
 
     match outcome {
@@ -686,7 +766,12 @@ fn parse_with_clap_unknown_flag_is_rejected_strict() {
     }]);
 
     let root = cli_framework::app::clap_adapter::build_clap_root(
-        None, &registry, "testapp", "0.1.0", None,
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
     );
 
     let outcome = cli_framework::app::clap_adapter::parse_with_clap(
@@ -697,6 +782,7 @@ fn parse_with_clap_unknown_flag_is_rejected_strict() {
             "hello".to_string(),
             "--verbose".to_string(),
         ],
+        &[],
     );
 
     // With strict-by-default design, unknown flags are always rejected.
@@ -716,6 +802,7 @@ fn test_mcp_flags_absent_with_feature() {
         "testapp",
         "0.1.0",
         None,
+        &[],
     );
     let arg_longs: Vec<&str> = root.get_arguments().filter_map(|a| a.get_long()).collect();
     assert!(
@@ -749,6 +836,7 @@ fn test_mcp_flags_absent_without_feature() {
         "testapp",
         "0.1.0",
         None,
+        &[],
     );
     // Collect long arg names from root-level args
     let arg_longs: Vec<&str> = root.get_arguments().filter_map(|a| a.get_long()).collect();
@@ -797,7 +885,12 @@ fn parse_nested_argv_yields_multi_segment_path() {
         .unwrap();
 
     let root = cli_framework::app::clap_adapter::build_clap_root(
-        None, &registry, "testapp", "0.1.0", None,
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
     );
     let outcome = cli_framework::app::clap_adapter::parse_with_clap(
         &root,
@@ -807,6 +900,7 @@ fn parse_nested_argv_yields_multi_segment_path() {
             "cluster".to_string(),
             "get".to_string(),
         ],
+        &[],
     );
 
     match outcome {
@@ -844,7 +938,12 @@ fn parse_deep_nested_argv_uses_registered_path_segments() {
         .unwrap();
 
     let root = cli_framework::app::clap_adapter::build_clap_root(
-        None, &registry, "testapp", "0.1.0", None,
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
     );
     let outcome = cli_framework::app::clap_adapter::parse_with_clap(
         &root,
@@ -855,6 +954,7 @@ fn parse_deep_nested_argv_uses_registered_path_segments() {
             "node".to_string(),
             "get".to_string(),
         ],
+        &[],
     );
 
     match outcome {
@@ -890,7 +990,12 @@ fn parse_nested_group_help_returns_help_shown() {
         .unwrap();
 
     let root = cli_framework::app::clap_adapter::build_clap_root(
-        None, &registry, "testapp", "0.1.0", None,
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
     );
     let outcome = cli_framework::app::clap_adapter::parse_with_clap(
         &root,
@@ -900,6 +1005,7 @@ fn parse_nested_group_help_returns_help_shown() {
             "cluster".to_string(),
             "--help".to_string(),
         ],
+        &[],
     );
 
     assert!(
@@ -935,7 +1041,12 @@ fn parse_unknown_nested_subcommand_returns_e012() {
         .unwrap();
 
     let root = cli_framework::app::clap_adapter::build_clap_root(
-        None, &registry, "testapp", "0.1.0", None,
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
     );
     // Invoke a non-existent nested command
     let outcome = cli_framework::app::clap_adapter::parse_with_clap(
@@ -946,6 +1057,7 @@ fn parse_unknown_nested_subcommand_returns_e012() {
             "cluster".to_string(),
             "nonexistent".to_string(),
         ],
+        &[],
     );
 
     match &outcome {
@@ -974,7 +1086,12 @@ fn parse_with_clap_key_value_and_equals_value_parity() {
     }]);
 
     let root = cli_framework::app::clap_adapter::build_clap_root(
-        None, &registry, "testapp", "0.1.0", None,
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
     );
 
     let outcome_space = cli_framework::app::clap_adapter::parse_with_clap(
@@ -986,6 +1103,7 @@ fn parse_with_clap_key_value_and_equals_value_parity() {
             "--name".to_string(),
             "Alice".to_string(),
         ],
+        &[],
     );
 
     let outcome_eq = cli_framework::app::clap_adapter::parse_with_clap(
@@ -996,6 +1114,7 @@ fn parse_with_clap_key_value_and_equals_value_parity() {
             "hello".to_string(),
             "--name=Alice".to_string(),
         ],
+        &[],
     );
 
     match (outcome_space, outcome_eq) {

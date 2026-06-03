@@ -38,6 +38,16 @@ pub trait AppContext: Send + Sync {
     fn drain_output(&self) -> String {
         String::new()
     }
+
+    /// Return the global args parsed for the current invocation, if available.
+    ///
+    /// Returns `None` for contexts that do not carry global args (e.g., user-defined
+    /// contexts outside the dispatch path). The dispatch wrapper always provides `Some`.
+    fn opt_global_args(
+        &self,
+    ) -> Option<&std::collections::HashMap<String, crate::spec::value::ArgValue>> {
+        None
+    }
 }
 
 /// Extension trait for AppContext to provide command registry access

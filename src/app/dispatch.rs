@@ -12,6 +12,7 @@ use std::sync::Mutex;
 pub(crate) struct DispatchEnv<'a> {
     pub(crate) command_registry: &'a crate::command::CommandRegistry,
     pub(crate) ailoop_client: &'a Option<AiloopClient>,
+    pub(crate) global_args: &'a HashMap<String, ArgValue>,
     #[cfg(feature = "testkit")]
     pub(crate) stdout_capture: Option<Arc<Mutex<Vec<u8>>>>,
 }
@@ -30,6 +31,10 @@ impl<'a> CliAppContextWrapper<'a> {
 impl<'a> AppContext for CliAppContextWrapper<'a> {
     fn opt_registry(&self) -> Option<&crate::command::CommandRegistry> {
         Some(self.env.command_registry)
+    }
+
+    fn opt_global_args(&self) -> Option<&HashMap<String, ArgValue>> {
+        Some(self.env.global_args)
     }
 
     fn framework_println(&self, s: &str) {
@@ -109,9 +114,11 @@ mod tests {
         let registry = CommandRegistry::new();
         let ailoop_client: Option<AiloopClient> = None;
         let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let global_args_map: HashMap<String, ArgValue> = HashMap::new();
         let env = DispatchEnv {
             command_registry: &registry,
             ailoop_client: &ailoop_client,
+            global_args: &global_args_map,
             stdout_capture: Some(buf.clone()),
         };
         let mut inner = DummyCtx;
