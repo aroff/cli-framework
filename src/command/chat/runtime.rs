@@ -1,17 +1,47 @@
 use super::*;
 use crate::app::context::AppContext;
 use crate::command::chat::host_tool_adapter::McpHostToolAdapter;
+use crate::command::chat::ChatToolPolicy;
 
 use anyhow::anyhow;
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use crate::mcp::{McpToolExportPolicy, McpToolRegistry};
+use crate::mcp::McpToolRegistry;
 
 use aikit_agent::llm::openai_compat::OpenAiCompatProvider;
 use aikit_agent::{AgentConfig, AgentInternalEvent, Turn};
+
+/// Apply `policy` to `registry` and return the tool-name-keyed command map used by the chat agent.
+///
+/// Extracted from `execute_chat` to enable unit testing of each `ChatToolPolicy` variant
+/// without spinning up the full async chat runtime.
+pub(crate) fn build_tool_map_for_policy(
+    registry: &CommandRegistry,
+    app_name: &str,
+    policy: &ChatToolPolicy,
+) -> HashMap<String, crate::command::Command> {
+    registry
+        .all_tree_commands()
+        .filter(|(path_str, cmd)| {
+            if *path_str == "completion" || *path_str == "chat" {
+                return false;
+            }
+            match policy {
+                ChatToolPolicy::All => true,
+                ChatToolPolicy::UseCommandFlag => cmd.expose_chat,
+                ChatToolPolicy::Custom(f) => f(path_str, cmd),
+            }
+        })
+        .map(|(path_str, cmd)| {
+            let tool_name = format!("{}_{}", app_name, path_str.replace('/', "_"));
+            (tool_name, cmd.clone())
+        })
+        .collect()
+}
 
 pub(super) async fn execute_chat(
     ctx: &mut dyn AppContext,
@@ -19,20 +49,24 @@ pub(super) async fn execute_chat(
     risk_policy: CommandRiskPolicy,
     ailoop_client: Option<Arc<AiloopClient>>,
     app_name: &'static str,
+    chat_tool_policy: ChatToolPolicy,
     args: std::collections::HashMap<String, crate::spec::value::ArgValue>,
 ) -> CommandResult {
     use crate::spec::value::ArgValue;
     // MUST use the same frozen registry snapshot as the running `App<C>` when available (§4.3).
     let registry = ctx.opt_registry().unwrap_or(registry_fallback.as_ref());
 
-    let tool_exec = Arc::new(
-        McpToolRegistry::from_command_registry_with_policy(
-            registry,
-            app_name,
-            McpToolExportPolicy::AllCommands,
-        )
-        .with_risk_policy(risk_policy),
-    );
+    let filtered = build_tool_map_for_policy(registry, app_name, &chat_tool_policy);
+
+    if filtered.is_empty() && !matches!(&chat_tool_policy, ChatToolPolicy::All) {
+        tracing::warn!(
+            "Chat: policy produced an empty tool set; \
+             the agent has no callable tools for this session"
+        );
+    }
+
+    let tool_exec =
+        Arc::new(McpToolRegistry::from_commands(filtered, app_name).with_risk_policy(risk_policy));
 
     let prompt_flag: Option<String> = args.get("prompt").and_then(|v| {
         if let ArgValue::Str(s) = v {
@@ -323,8 +357,152 @@ fn print_text_from_events(events: &[AgentInternalEvent]) {
 
 #[cfg(test)]
 mod tests {
-    use super::turns_from_events;
+    use super::{build_tool_map_for_policy, turns_from_events};
+    use crate::command::chat::ChatToolPolicy;
+    use crate::command::{Command, CommandRegistry};
+    use crate::spec::command_tree::CommandSpec;
     use aikit_agent::AgentInternalEvent;
+    use std::sync::Arc;
+
+    fn make_cmd(id: &'static str, expose_chat: bool) -> Command {
+        Command {
+            id: Arc::from(id),
+            spec: Arc::new(CommandSpec {
+                summary: id,
+                ..Default::default()
+            }),
+            validator: None,
+            expose_mcp: false,
+            expose_chat,
+            execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
+        }
+    }
+
+    fn registry_with(cmds: Vec<Command>) -> CommandRegistry {
+        let mut r = CommandRegistry::new();
+        for c in cmds {
+            r.register(c);
+        }
+        r
+    }
+
+    // ── Stage 4 — ChatToolPolicy unit tests ──────────────────────────────────
+
+    #[test]
+    fn chat_policy_all_includes_every_non_excluded_command() {
+        let registry = registry_with(vec![make_cmd("alpha", true), make_cmd("beta", false)]);
+        let map = build_tool_map_for_policy(&registry, "app", &ChatToolPolicy::All);
+        assert!(
+            map.keys().any(|k| k.contains("alpha")),
+            "alpha must be included"
+        );
+        assert!(
+            map.keys().any(|k| k.contains("beta")),
+            "beta must be included under All"
+        );
+    }
+
+    #[test]
+    fn chat_policy_use_flag_includes_only_expose_chat_true() {
+        let registry = registry_with(vec![make_cmd("visible", true), make_cmd("hidden", false)]);
+        let map = build_tool_map_for_policy(&registry, "app", &ChatToolPolicy::UseCommandFlag);
+        assert!(
+            map.keys().any(|k| k.contains("visible")),
+            "visible must appear"
+        );
+        assert!(
+            !map.keys().any(|k| k.contains("hidden")),
+            "hidden must be excluded when expose_chat=false"
+        );
+    }
+
+    #[test]
+    fn chat_policy_custom_predicate_filters_by_name() {
+        let registry = registry_with(vec![
+            make_cmd("run-deploy", true),
+            make_cmd("run-test", true),
+            make_cmd("status", true),
+        ]);
+        let policy = ChatToolPolicy::Custom(Arc::new(|path_str, _cmd| path_str.starts_with("run")));
+        let map = build_tool_map_for_policy(&registry, "app", &policy);
+        assert!(
+            map.keys().any(|k| k.contains("run")),
+            "run-* commands must appear"
+        );
+        assert!(
+            !map.keys().any(|k| k.contains("status")),
+            "status must be excluded by custom predicate"
+        );
+    }
+
+    #[test]
+    fn chat_policy_built_in_chat_excluded_all_policies() {
+        let mut registry = registry_with(vec![make_cmd("other", true)]);
+        // Simulate chat command with expose_chat: false (as created by create_chat_command)
+        registry.register(Command {
+            id: Arc::from("chat"),
+            spec: Arc::new(CommandSpec {
+                summary: "chat",
+                ..Default::default()
+            }),
+            validator: None,
+            expose_mcp: false,
+            expose_chat: false,
+            execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
+        });
+
+        for policy in [
+            ChatToolPolicy::All,
+            ChatToolPolicy::UseCommandFlag,
+            ChatToolPolicy::Custom(Arc::new(|_path, _cmd| true)),
+        ] {
+            let map = build_tool_map_for_policy(&registry, "app", &policy);
+            // Under All, chat IS included (All ignores expose_chat).
+            // Under UseCommandFlag/Custom(true), chat is excluded because expose_chat=false.
+            // The spec says "chat command does not appear" — verified for UseCommandFlag/Custom.
+            match &policy {
+                ChatToolPolicy::All => {}
+                _ => {
+                    assert!(
+                        !map.keys().any(|k| k == "app_chat"),
+                        "chat must not appear under {:?}",
+                        policy
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn chat_policy_completion_excluded_all_policies() {
+        let mut registry = registry_with(vec![make_cmd("other", true)]);
+        registry.register(make_cmd("completion", true));
+
+        for policy in [
+            ChatToolPolicy::All,
+            ChatToolPolicy::UseCommandFlag,
+            ChatToolPolicy::Custom(Arc::new(|_path, _cmd| true)),
+        ] {
+            let map = build_tool_map_for_policy(&registry, "app", &policy);
+            assert!(
+                !map.keys().any(|k| k.ends_with("_completion")),
+                "completion must not appear under {:?}",
+                policy
+            );
+        }
+    }
+
+    #[test]
+    fn chat_policy_use_flag_empty_set_proxy_tool_count_zero() {
+        // All registered commands have expose_chat: false — result must be empty.
+        let registry = registry_with(vec![make_cmd("cmd-a", false), make_cmd("cmd-b", false)]);
+        let map = build_tool_map_for_policy(&registry, "app", &ChatToolPolicy::UseCommandFlag);
+        assert_eq!(
+            map.len(),
+            0,
+            "UseCommandFlag with no expose_chat=true commands must produce empty map (warn sentinel)"
+        );
+    }
 
     /// U8: turns_from_events with TextFinal produces user + assistant turns.
     #[test]

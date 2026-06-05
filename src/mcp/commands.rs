@@ -92,6 +92,7 @@ pub fn create_mcp_serve_command_with_deps(
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: false,
         execute: Arc::new(move |_ctx, args: HashMap<String, ArgValue>| {
             let registry = Arc::clone(&registry);
             let risk_policy = risk_policy.clone();
@@ -639,6 +640,7 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: false,
         execute: Arc::new(move |_ctx, args: HashMap<String, ArgValue>| {
             Box::pin(async move {
                 let parsed = parse_mcp_install_args(&args, app_name)?;
@@ -668,6 +670,7 @@ pub fn create_mcp_list_command() -> Command {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: false,
         execute: Arc::new(|_ctx, _args: HashMap<String, ArgValue>| {
             Box::pin(async move {
                 let agents = aikit_sdk::mcp_supported_agents();

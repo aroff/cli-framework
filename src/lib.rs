@@ -133,6 +133,9 @@ pub mod prelude {
     pub use crate::plugin::PluginRegistryManager;
     pub use crate::spec::{ArgSpec, ArgValue, CommandPath, CommandSpec};
 
+    #[cfg(feature = "chat")]
+    pub use crate::command::chat::ChatToolPolicy;
+
     #[cfg(feature = "doctor")]
     pub use crate::doctor::{
         CheckSeverity, DoctorCheck, DoctorFinding, DoctorModule, DoctorReport,

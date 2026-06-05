@@ -81,6 +81,7 @@ fn make_cmd_with_hidden(id: &'static str, hidden: bool) -> Command {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: noop_execute(),
     }
 }
@@ -100,6 +101,7 @@ fn build_clap_root_subcommand_count_matches_registry() {
             }),
             validator: None,
             expose_mcp: false,
+            expose_chat: true,
             execute: noop_execute(),
         },
         Command {
@@ -110,6 +112,7 @@ fn build_clap_root_subcommand_count_matches_registry() {
             }),
             validator: None,
             expose_mcp: false,
+            expose_chat: true,
             execute: noop_execute(),
         },
     ]);
@@ -233,6 +236,7 @@ fn build_clap_root_no_version_subcommand_when_user_registers_version() {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: noop_execute(),
     }]);
 
@@ -262,6 +266,7 @@ fn parse_with_clap_key_value() {
         spec: Arc::new(hello_spec_with_name()),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: noop_execute(),
     }]);
 
@@ -305,6 +310,7 @@ fn parse_with_clap_key_equals_value() {
         spec: Arc::new(hello_spec_with_name()),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: noop_execute(),
     }]);
 
@@ -351,6 +357,7 @@ fn parse_with_clap_positional_after_double_dash() {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: noop_execute(),
     }]);
 
@@ -402,6 +409,7 @@ fn parse_with_clap_legacy_leaf_trailing_help_flag_returns_help_shown() {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: noop_execute(),
     }]);
 
@@ -447,6 +455,7 @@ fn parse_with_clap_legacy_leaf_trailing_h_flag_returns_help_shown() {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: noop_execute(),
     }]);
 
@@ -486,6 +495,7 @@ fn parse_with_clap_legacy_leaf_help_after_terminator_strict_rejects() {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: noop_execute(),
     }]);
 
@@ -713,6 +723,7 @@ fn parse_with_clap_mixed_positional_and_named() {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: noop_execute(),
     }]);
 
@@ -762,6 +773,7 @@ fn parse_with_clap_unknown_flag_is_rejected_strict() {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: noop_execute(),
     }]);
 
@@ -879,6 +891,7 @@ fn parse_nested_argv_yields_multi_segment_path() {
                 }),
                 validator: None,
                 expose_mcp: false,
+                expose_chat: true,
                 execute: noop_execute(),
             },
         )
@@ -932,6 +945,7 @@ fn parse_deep_nested_argv_uses_registered_path_segments() {
                 }),
                 validator: None,
                 expose_mcp: false,
+                expose_chat: true,
                 execute: noop_execute(),
             },
         )
@@ -984,6 +998,7 @@ fn parse_nested_group_help_returns_help_shown() {
                 }),
                 validator: None,
                 expose_mcp: false,
+                expose_chat: true,
                 execute: noop_execute(),
             },
         )
@@ -1035,6 +1050,7 @@ fn parse_unknown_nested_subcommand_returns_e012() {
                 }),
                 validator: None,
                 expose_mcp: false,
+                expose_chat: true,
                 execute: noop_execute(),
             },
         )
@@ -1082,6 +1098,7 @@ fn parse_with_clap_key_value_and_equals_value_parity() {
         spec: Arc::new(hello_spec_with_name()),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: noop_execute(),
     }]);
 

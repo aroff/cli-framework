@@ -48,6 +48,7 @@ fn make_spec_command(id: &'static str) -> Command {
             vec![]
         })),
         expose_mcp: false,
+        expose_chat: true,
         execute: Arc::new(|_ctx, args| {
             Box::pin(async move {
                 let name = args
@@ -113,6 +114,7 @@ async fn completion_command_not_exposed_as_tool() {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
     });
     registry.register(make_spec_command("deploy"));
@@ -138,6 +140,7 @@ async fn expose_mcp_only_policy_filters_commands() {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
     });
     registry.register(Command {
@@ -148,6 +151,7 @@ async fn expose_mcp_only_policy_filters_commands() {
         }),
         validator: None,
         expose_mcp: true,
+        expose_chat: true,
         execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
     });
 
@@ -212,6 +216,7 @@ async fn command_execution_error_surfaces_chat_command_execution_failed() {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: Arc::new(|_ctx, _args| Box::pin(async { Err(anyhow::anyhow!("nope")) })),
     });
 
@@ -238,6 +243,7 @@ async fn call_tool_captures_framework_println_output() {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: Arc::new(|ctx, _args| {
             Box::pin(async move {
                 ctx.framework_println("json-output");

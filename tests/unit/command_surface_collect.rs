@@ -26,6 +26,7 @@ fn make_cmd(id: &'static str, summary: &'static str) -> Command {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: noop_execute(),
     }
 }
@@ -36,6 +37,7 @@ fn make_cmd_with_spec(id: &'static str, summary: &'static str, spec: CommandSpec
         spec: Arc::new(CommandSpec { summary, ..spec }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: noop_execute(),
     }
 }

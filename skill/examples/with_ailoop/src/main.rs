@@ -26,6 +26,7 @@ async fn main() -> anyhow::Result<()> {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: Arc::new(|_ctx, args| {
             Box::pin(async move {
                 let env = args
@@ -74,6 +75,7 @@ async fn main() -> anyhow::Result<()> {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: Arc::new(|_ctx, _args| {
             Box::pin(async move {
                 println!("⚙️  Configuring application...");

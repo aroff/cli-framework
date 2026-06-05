@@ -7,6 +7,34 @@ use crate::spec::value::ArgValue;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Controls which commands the in-process chat agent may call as tools.
+///
+/// Set via [`crate::app::AppBuilder::with_chat_tool_policy`]. Default: [`ChatToolPolicy::All`].
+#[allow(clippy::type_complexity)]
+#[derive(Clone, Default)]
+pub enum ChatToolPolicy {
+    /// Expose every command regardless of `expose_chat` (backward-compatible default).
+    /// Produces a tool list identical to today's hardcoded `AllCommands` behavior.
+    #[default]
+    All,
+    /// Expose only commands where `Command::expose_chat == true`.
+    UseCommandFlag,
+    /// Caller-supplied predicate for full control at build time.
+    /// Arguments: (`path_str`: slash-joined registry key, `command`: resolved `Command`).
+    /// Return `true` to include the command in the tool list.
+    Custom(Arc<dyn Fn(&str, &Command) -> bool + Send + Sync>),
+}
+
+impl std::fmt::Debug for ChatToolPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::All => write!(f, "All"),
+            Self::UseCommandFlag => write!(f, "UseCommandFlag"),
+            Self::Custom(_) => write!(f, "Custom(<fn>)"),
+        }
+    }
+}
+
 pub mod host_tool_adapter;
 mod runtime;
 
@@ -31,18 +59,21 @@ pub fn create_chat_command(
     risk_policy: CommandRiskPolicy,
     ailoop_client: Option<Arc<AiloopClient>>,
     app_name: &'static str,
+    chat_tool_policy: ChatToolPolicy,
 ) -> Command {
     Command {
         id: Arc::from("chat"),
         spec: Arc::new(chat_spec()),
         validator: None,
         expose_mcp: false,
+        expose_chat: false,
         execute: Arc::new(move |ctx, args| {
             let client = ailoop_client.clone();
             let registry = Arc::clone(&registry);
             let risk_policy = risk_policy.clone();
+            let policy = chat_tool_policy.clone();
             Box::pin(async move {
-                execute_chat(ctx, registry, risk_policy, client, app_name, args).await
+                execute_chat(ctx, registry, risk_policy, client, app_name, policy, args).await
             })
         }),
     }
@@ -180,6 +211,7 @@ async fn execute_chat(
     risk_policy: CommandRiskPolicy,
     ailoop_client: Option<Arc<AiloopClient>>,
     app_name: &'static str,
+    chat_tool_policy: ChatToolPolicy,
     args: HashMap<String, ArgValue>,
 ) -> CommandResult {
     runtime::execute_chat(
@@ -188,6 +220,7 @@ async fn execute_chat(
         risk_policy,
         ailoop_client,
         app_name,
+        chat_tool_policy,
         args,
     )
     .await

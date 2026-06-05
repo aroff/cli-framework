@@ -23,6 +23,7 @@ pub fn create_doctor_command(checks: Vec<Arc<dyn DoctorCheck>>) -> Command {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: false,
         execute: Arc::new(move |ctx, args| {
             let is_json = matches!(args.get("json"), Some(ArgValue::Bool(true)));
             let filter_id: Option<String> = args.get("check").and_then(|v| {
