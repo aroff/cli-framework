@@ -51,6 +51,11 @@ pub struct Command {
     >,
     /// Whether this command is eligible for MCP tool export.
     pub expose_mcp: bool,
+    /// Whether this command appears in the chat agent's tool list.
+    ///
+    /// Default: `true` (opt-out model — commands are visible unless explicitly excluded).
+    /// Set to `false` on framework-internal commands that should never be called by an LLM.
+    pub expose_chat: bool,
 }
 
 impl Command {
@@ -78,6 +83,13 @@ impl Command {
     /// Set whether this command appears in MCP tool listings.
     pub fn with_expose_mcp(mut self, enabled: bool) -> Self {
         self.expose_mcp = enabled;
+        self
+    }
+
+    /// Set whether this command appears in the chat agent's tool list.
+    /// Default: `true` (opt-out model; commands are visible unless explicitly excluded).
+    pub fn with_expose_chat(mut self, enabled: bool) -> Self {
+        self.expose_chat = enabled;
         self
     }
 }

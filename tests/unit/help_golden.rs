@@ -18,6 +18,7 @@ fn make_typed_cmd(id: &'static str, spec: CommandSpec) -> Command {
         spec: Arc::new(spec),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
     }
 }

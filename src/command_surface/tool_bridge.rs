@@ -348,6 +348,7 @@ mod tests {
             spec: Arc::new(spec),
             validator: None,
             expose_mcp: false,
+            expose_chat: true,
             execute: noop_execute(),
         }
     }
@@ -444,6 +445,7 @@ mod tests {
             }),
             validator: None,
             expose_mcp: false,
+            expose_chat: true,
             execute: Arc::new(move |_ctx, _args| {
                 let calls_for_exec = Arc::clone(&calls_for_exec);
                 Box::pin(async move {

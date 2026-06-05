@@ -218,16 +218,14 @@ fn pre_registered_doctor_command_not_overwritten() {
     use cli_framework::spec::command_tree::CommandSpec;
 
     let custom_doctor = Command {
-        id: "doctor",
-        summary: "Custom doctor",
-        syntax: None,
-        category: Some("ops"),
-        spec: Some(Arc::new(CommandSpec {
+        id: Arc::from("doctor"),
+        spec: Arc::new(CommandSpec {
             summary: "Custom doctor command",
             ..Default::default()
-        })),
+        }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
     };
 

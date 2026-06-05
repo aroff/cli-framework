@@ -52,6 +52,8 @@ pub struct AppBuilder {
     mcp_export_policy: crate::mcp::McpToolExportPolicy,
     #[cfg(feature = "mcp-server")]
     mcp_tool_gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
+    #[cfg(feature = "chat")]
+    chat_tool_policy: crate::command::chat::ChatToolPolicy,
 }
 
 impl AppBuilder {
@@ -74,6 +76,8 @@ impl AppBuilder {
             mcp_export_policy: crate::mcp::McpToolExportPolicy::default(),
             #[cfg(feature = "mcp-server")]
             mcp_tool_gate: None,
+            #[cfg(feature = "chat")]
+            chat_tool_policy: crate::command::chat::ChatToolPolicy::default(),
         }
     }
 
@@ -94,6 +98,16 @@ impl AppBuilder {
     #[cfg(feature = "mcp-server")]
     pub fn with_mcp_export_policy(mut self, policy: crate::mcp::McpToolExportPolicy) -> Self {
         self.mcp_export_policy = policy;
+        self
+    }
+
+    /// Set the tool-exposure policy for the built-in chat agent.
+    ///
+    /// Default: [`crate::command::chat::ChatToolPolicy::All`] (all commands exposed — backward compatible).
+    /// Use [`crate::command::chat::ChatToolPolicy::UseCommandFlag`] to honor per-command `expose_chat` flags.
+    #[cfg(feature = "chat")]
+    pub fn with_chat_tool_policy(mut self, policy: crate::command::chat::ChatToolPolicy) -> Self {
+        self.chat_tool_policy = policy;
         self
     }
 
@@ -136,6 +150,7 @@ impl AppBuilder {
             spec,
             validator: None,
             expose_mcp: true,
+            expose_chat: true,
             execute: Arc::new(move |ctx, args| {
                 let typed = T::from_arg_value_map(&args);
                 let h = Arc::clone(&handler);
@@ -255,6 +270,7 @@ impl AppBuilder {
                     self.risk_policy.clone(),
                     ailoop_client.clone().map(Arc::new),
                     self.app_name,
+                    self.chat_tool_policy.clone(),
                 );
                 self.command_registry.register(chat_command);
             } else {
@@ -647,6 +663,14 @@ impl<C: AppContext> App<C> {
             .get(command_id)
             .ok_or_else(|| anyhow::anyhow!("Command '{}' not found", command_id))?
             .clone();
+        let diags = crate::app::dispatch::validate_typed_args(&command, &args);
+        if !diags.is_empty() {
+            use crate::app::diagnostic_reporter::DiagnosticReporter;
+            DiagnosticReporter::report_all(&diags);
+            return Err(anyhow::Error::new(UsageError(
+                "validation failed".to_string(),
+            )));
+        }
         self.execute_command_direct(command, args, global_args)
             .await
     }

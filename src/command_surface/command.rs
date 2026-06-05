@@ -13,6 +13,7 @@ pub fn create_spec_command(app_name: &'static str, app_version: &'static str) ->
         spec: Arc::new(spec_spec()),
         validator: None,
         expose_mcp: false,
+        expose_chat: false,
         execute: Arc::new(move |ctx, args| {
             let format_str = args
                 .get("format")
@@ -119,6 +120,7 @@ pub fn create_completion_command(
         spec: Arc::new(completion_spec()),
         validator: None,
         expose_mcp: false,
+        expose_chat: false,
         execute: Arc::new(move |ctx, args| {
             let _clap_root = std::sync::Arc::clone(&clap_root);
             Box::pin(async move {

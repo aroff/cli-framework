@@ -29,6 +29,7 @@ fn create_async_command(id: &'static str, summary: &'static str) -> Command {
         spec: None,
         validator: None,
         expose_mcp: false,
+            expose_chat: true,
         execute: Arc::new(|_ctx: &mut dyn AppContext, _args: CommandArgs| {
             Box::pin(async move {
                 sleep(Duration::from_millis(10)).await;
@@ -66,6 +67,7 @@ async fn test_async_command_handles_errors() {
         spec: None,
         validator: None,
         expose_mcp: false,
+            expose_chat: true,
         execute: Arc::new(|_ctx: &mut dyn AppContext, _args: CommandArgs| {
             Box::pin(async move {
                 sleep(Duration::from_millis(5)).await;
@@ -100,6 +102,7 @@ async fn test_async_command_can_access_args() {
         spec: None,
         validator: None,
         expose_mcp: false,
+            expose_chat: true,
         execute: Arc::new(|_ctx: &mut dyn AppContext, args: CommandArgs| {
             Box::pin(async move {
                 assert_eq!(args.positional.len(), 2);

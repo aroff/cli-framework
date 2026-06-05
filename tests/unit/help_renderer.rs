@@ -45,6 +45,7 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: noop_arc_execute(),
     });
     registry.register(Command {
@@ -56,6 +57,7 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: noop_arc_execute(),
     });
     registry.register(Command {
@@ -67,6 +69,7 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: noop_arc_execute(),
     });
 
@@ -80,6 +83,7 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: noop_arc_execute(),
     });
     registry.register(Command {
@@ -90,6 +94,7 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: noop_arc_execute(),
     });
 
@@ -121,6 +126,7 @@ fn t8_renders_fixed_width_id_column_per_group() {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: noop_arc_execute(),
     });
     registry.register(Command {
@@ -131,6 +137,7 @@ fn t8_renders_fixed_width_id_column_per_group() {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: noop_arc_execute(),
     });
 
@@ -168,6 +175,7 @@ async fn t9_run_with_args_help_flag_routes_through_help_renderer_when_categories
             }),
             validator: None,
             expose_mcp: false,
+            expose_chat: true,
             execute: noop_arc_execute(),
         })
         .unwrap()
@@ -180,6 +188,7 @@ async fn t9_run_with_args_help_flag_routes_through_help_renderer_when_categories
             }),
             validator: None,
             expose_mcp: false,
+            expose_chat: true,
             execute: noop_arc_execute(),
         })
         .unwrap()
@@ -192,6 +201,7 @@ async fn t9_run_with_args_help_flag_routes_through_help_renderer_when_categories
             }),
             validator: None,
             expose_mcp: false,
+            expose_chat: true,
             execute: noop_arc_execute(),
         })
         .unwrap()
@@ -214,8 +224,8 @@ async fn t9_run_with_args_help_flag_routes_through_help_renderer_when_categories
     let dep_pos = out.stdout().find("Deployment:").unwrap();
     let obs_pos = out.stdout().find("Observability:").unwrap();
     assert!(
-        obs_pos < dep_pos,
-        "Observability heading should appear before Deployment (alphabetical)"
+        dep_pos < obs_pos,
+        "Deployment heading should appear before Observability (alphabetical: D < O)"
     );
 }
 
@@ -236,6 +246,7 @@ async fn t10_run_with_args_no_subcommand_routes_through_help_renderer_when_categ
             }),
             validator: None,
             expose_mcp: false,
+            expose_chat: true,
             execute: noop_arc_execute(),
         })
         .unwrap()
@@ -248,6 +259,7 @@ async fn t10_run_with_args_no_subcommand_routes_through_help_renderer_when_categ
             }),
             validator: None,
             expose_mcp: false,
+            expose_chat: true,
             execute: noop_arc_execute(),
         })
         .unwrap()
@@ -285,6 +297,7 @@ async fn t11_run_with_args_help_flag_uses_clap_when_no_categories() {
             }),
             validator: None,
             expose_mcp: false,
+            expose_chat: true,
             execute: noop_arc_execute(),
         })
         .unwrap()
@@ -296,6 +309,7 @@ async fn t11_run_with_args_help_flag_uses_clap_when_no_categories() {
             }),
             validator: None,
             expose_mcp: false,
+            expose_chat: true,
             execute: noop_arc_execute(),
         })
         .unwrap()
@@ -333,6 +347,7 @@ fn t12_render_help_does_not_contain_spurious_version_line() {
             }),
             validator: None,
             expose_mcp: false,
+            expose_chat: true,
             execute: noop_arc_execute(),
         })
         .unwrap()

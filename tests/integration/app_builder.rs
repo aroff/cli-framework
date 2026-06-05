@@ -146,6 +146,7 @@ fn show_help_version_appears_before_registered_commands() {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
     };
 
@@ -284,6 +285,7 @@ mod clap_dispatch_tests {
             }),
             validator: None,
             expose_mcp: false,
+            expose_chat: true,
             execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
         }
     }
@@ -359,6 +361,7 @@ mod clap_dispatch_tests {
             }),
             validator: None,
             expose_mcp: false,
+            expose_chat: true,
             execute: Arc::new(move |_ctx, args| {
                 let captured = captured_clone.clone();
                 Box::pin(async move {
@@ -508,6 +511,7 @@ mod clap_dispatch_tests {
             }),
             validator: None,
             expose_mcp: false,
+            expose_chat: true,
             execute: Arc::new(move |_ctx, args| {
                 let captured = captured_clone.clone();
                 Box::pin(async move {
@@ -562,6 +566,7 @@ fn make_hidden_cmd(id: &'static str, hidden: bool) -> cli_framework::command::Co
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
     }
 }
@@ -806,6 +811,7 @@ async fn without_completion_disables_builtin_and_allows_user_completion() {
         }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: Arc::new(|ctx, _args| {
             Box::pin(async move {
                 ctx.framework_println("user");

@@ -6,10 +6,11 @@
 //!   - Success              → `Ok(())`, exits 0.
 
 use cli_framework::app::{AppBuilder, AppContext, UsageError};
-use cli_framework::command::{Command, CommandArgs};
+use cli_framework::command::Command;
 use cli_framework::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use cli_framework::spec::command_tree::CommandSpec;
 use cli_framework::spec::value::ArgValue;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 struct DummyCtx;
@@ -19,7 +20,7 @@ impl AppContext for DummyCtx {}
 fn noop_execute() -> Arc<
     dyn for<'a> Fn(
             &'a mut dyn AppContext,
-            CommandArgs,
+            HashMap<String, ArgValue>,
         ) -> std::pin::Pin<
             Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>,
         > + Send
@@ -30,17 +31,15 @@ fn noop_execute() -> Arc<
 
 fn typed_cmd(id: &'static str, args: Vec<ArgSpec>) -> Command {
     Command {
-        id,
-        summary: id,
-        syntax: None,
-        category: None,
-        spec: Some(Arc::new(CommandSpec {
+        id: Arc::from(id),
+        spec: Arc::new(CommandSpec {
             summary: id,
             args,
             ..Default::default()
-        })),
+        }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: noop_execute(),
     }
 }
@@ -105,6 +104,7 @@ async fn r2_known_command_missing_required_arg_returns_e003_parse_error() {
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "Template name",
+                    ..Default::default()
                 }],
             ),
         )
@@ -266,6 +266,7 @@ async fn r4a_enum_invalid_value_rejected_as_usage_error() {
                 conflicts_with: vec![],
                 requires: vec![],
                 help: "Review focus area",
+                ..Default::default()
             }],
         ))
         .unwrap()
@@ -322,6 +323,7 @@ async fn r4a_enum_invalid_value_error_lists_allowed() {
                     conflicts_with: vec![],
                     requires: vec![],
                     help: "",
+                    ..Default::default()
                 }],
             ),
         )
@@ -364,15 +366,12 @@ async fn r4a_enum_invalid_value_error_lists_allowed() {
 async fn r4a_enum_valid_value_passes_to_handler() {
     use std::sync::Mutex;
 
-    let received: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let received: Arc<Mutex<Option<ArgValue>>> = Arc::new(Mutex::new(None));
     let received_clone = received.clone();
 
     let cmd = Command {
-        id: "review",
-        summary: "review",
-        syntax: None,
-        category: None,
-        spec: Some(Arc::new(CommandSpec {
+        id: Arc::from("review"),
+        spec: Arc::new(CommandSpec {
             summary: "review",
             args: vec![ArgSpec {
                 name: "focus",
@@ -385,13 +384,15 @@ async fn r4a_enum_valid_value_passes_to_handler() {
                 conflicts_with: vec![],
                 requires: vec![],
                 help: "",
+                ..Default::default()
             }],
             ..Default::default()
-        })),
+        }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: Arc::new(move |_ctx, args| {
-            let val = args.named.get("focus").cloned();
+            let val = args.get("focus").cloned();
             let r = received_clone.clone();
             Box::pin(async move {
                 *r.lock().unwrap() = val;
@@ -422,8 +423,8 @@ async fn r4a_enum_valid_value_passes_to_handler() {
         result
     );
     assert_eq!(
-        received.lock().unwrap().as_deref(),
-        Some("security"),
+        received.lock().unwrap().as_ref(),
+        Some(&ArgValue::Enum("security".to_string())),
         "handler must receive the valid Enum value"
     );
 }
@@ -438,11 +439,8 @@ async fn r4b_repeated_enum_arg_delivers_all_values() {
     let received_clone = received.clone();
 
     let cmd = Command {
-        id: "review",
-        summary: "review",
-        syntax: None,
-        category: None,
-        spec: Some(Arc::new(CommandSpec {
+        id: Arc::from("review"),
+        spec: Arc::new(CommandSpec {
             summary: "review",
             args: vec![ArgSpec {
                 name: "focus",
@@ -455,13 +453,18 @@ async fn r4b_repeated_enum_arg_delivers_all_values() {
                 conflicts_with: vec![],
                 requires: vec![],
                 help: "",
+                ..Default::default()
             }],
             ..Default::default()
-        })),
+        }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: Arc::new(move |_ctx, args| {
-            let vals = args.get_list("focus");
+            let vals = match args.get("focus") {
+                Some(ArgValue::List(v)) => v.clone(),
+                _ => vec![],
+            };
             let r = received_clone.clone();
             Box::pin(async move {
                 *r.lock().unwrap() = vals;
@@ -519,6 +522,7 @@ async fn r4b_repeated_enum_invalid_value_rejected() {
                 conflicts_with: vec![],
                 requires: vec![],
                 help: "",
+                ..Default::default()
             }],
         ))
         .unwrap()
@@ -551,16 +555,14 @@ async fn r4b_repeated_enum_invalid_value_rejected() {
 #[tokio::test]
 async fn r5_runtime_error_is_not_usage_error() {
     let cmd = Command {
-        id: "failing",
-        summary: "always fails",
-        syntax: None,
-        category: None,
-        spec: Some(Arc::new(CommandSpec {
-            summary: "failing",
+        id: Arc::from("failing"),
+        spec: Arc::new(CommandSpec {
+            summary: "always fails",
             ..Default::default()
-        })),
+        }),
         validator: None,
         expose_mcp: false,
+        expose_chat: true,
         execute: Arc::new(|_ctx, _args| {
             Box::pin(async { Err(anyhow::anyhow!("runtime failure")) })
         }),
@@ -602,6 +604,7 @@ async fn r5_validation_conflict_is_usage_error() {
                 conflicts_with: vec!["b"],
                 requires: vec![],
                 help: "",
+                ..Default::default()
             },
             ArgSpec {
                 name: "b",
@@ -614,6 +617,7 @@ async fn r5_validation_conflict_is_usage_error() {
                 conflicts_with: vec![],
                 requires: vec![],
                 help: "",
+                ..Default::default()
             },
         ],
     );

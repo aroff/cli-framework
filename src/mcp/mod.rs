@@ -110,6 +110,19 @@ impl McpToolRegistry {
         }
     }
 
+    /// Build an `McpToolRegistry` directly from a pre-filtered command map.
+    /// Keys MUST follow the `{app_name}_{path_underscored}` naming convention.
+    /// No additional filtering is applied; caller is responsible for all exclusions.
+    pub fn from_commands(commands: HashMap<String, Command>, app_name: &str) -> Self {
+        Self {
+            tools: commands,
+            app_name: app_name.to_string(),
+            risk_enforcer: RiskEnforcer::new(crate::security::CommandRiskPolicy::default()),
+            #[cfg(feature = "mcp-server")]
+            gate: None,
+        }
+    }
+
     pub fn with_risk_policy(mut self, policy: crate::security::CommandRiskPolicy) -> Self {
         self.risk_enforcer = RiskEnforcer::new(policy);
         self

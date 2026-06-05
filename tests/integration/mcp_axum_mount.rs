@@ -30,6 +30,7 @@ fn make_command(id: &'static str, summary: &'static str, expose_mcp: bool) -> Co
         }),
         validator: None,
         expose_mcp,
+        expose_chat: true,
         execute: noop_execute(),
     }
 }
