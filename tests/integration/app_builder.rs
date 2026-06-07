@@ -3,7 +3,7 @@
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 
-use cli_framework::app::{AppBuilder, AppContext};
+use cli_framework::app::{App, AppBuilder, AppContext};
 use cli_framework::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use cli_framework::spec::command_tree::{CommandPath, CommandSpec, GroupMetadata};
 
@@ -14,12 +14,26 @@ use cli_framework::testkit::CliTestHarness;
 
 #[path = "../stdio_capture.rs"]
 mod stdio_capture;
-use stdio_capture::strip_test_harness_noise;
 use stdio_capture::StderrCapture;
 use stdio_capture::StdoutCapture;
 
 struct DummyCtx;
 impl AppContext for DummyCtx {}
+
+/// Run `app` to completion, capturing everything written via `framework_println`
+/// into the app's per-instance stdout buffer. Deterministic and isolated: unlike
+/// the process-global `dup2` `StdoutCapture`, it never races with parallel tests
+/// or with libtest's own per-test status writes.
+async fn run_capture<C: AppContext>(app: &mut App<C>, args: &[&str]) -> String {
+    let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+    app.stdout_capture = Some(buf.clone());
+    app.run_with_args(args.iter().map(|s| s.to_string()).collect())
+        .await
+        .unwrap();
+    app.stdout_capture = None;
+    let bytes = buf.lock().unwrap().clone();
+    String::from_utf8(bytes).unwrap()
+}
 
 struct LogCollector {
     records: Arc<Mutex<Vec<String>>>,
@@ -31,9 +45,12 @@ impl log::Log for LogCollector {
     }
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
+            // Recover from a poisoned lock: an assertion failure in one logger
+            // test must not cascade into spurious panics here for every other
+            // warn-emitting test running concurrently in the same process.
             self.records
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .push(format!("{}", record.args()));
         }
     }
@@ -168,20 +185,24 @@ fn show_help_version_appears_before_registered_commands() {
 #[test]
 fn warn_log_emitted_when_version_not_configured() {
     let records = install_test_logger();
-    records.lock().unwrap().clear();
 
     let mut app = AppBuilder::new().build(DummyCtx).unwrap();
 
-    let cap = StdoutCapture::new();
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(app.run_with_args(vec!["myapp".to_string(), "version".to_string()]))
         .unwrap();
-    let _output = cap.finish();
 
-    let msgs = records.lock().unwrap();
-    assert!(msgs
+    // The global logger appends to one shared Vec across all parallel tests, so
+    // we assert presence (not exact contents) and never clear it — this test
+    // emits the warning synchronously during the run above, so it is always
+    // present by now regardless of other tests. Snapshot and drop the guard
+    // before asserting so a failure can't poison the lock for other tests.
+    let found = records
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
         .iter()
-        .any(|m| m.contains("with_version() was not configured")));
+        .any(|m| m.contains("with_version() was not configured"));
+    assert!(found);
 }
 
 #[tokio::test]
@@ -230,7 +251,6 @@ async fn version_flags_omit_git_sha_when_unset() {
 #[cfg(feature = "testkit")]
 async fn invalid_git_sha_is_omitted_and_warns() {
     let records = install_test_logger();
-    records.lock().unwrap().clear();
 
     let app = AppBuilder::new()
         .with_version("myapp", "1.2.3")
@@ -243,8 +263,14 @@ async fn invalid_git_sha_is_omitted_and_warns() {
     out.assert_exit_code(0);
     assert_eq!(out.stdout.trim_end(), "myapp 1.2.3");
 
-    let msgs = records.lock().unwrap();
-    assert!(msgs.iter().any(|m| m.contains("ERR_VERSION_SHA_001")));
+    // Assert presence without clearing; snapshot and drop the guard before the
+    // assert so a failure can't poison the shared lock (see warn_log test).
+    let found = records
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|m| m.contains("ERR_VERSION_SHA_001"));
+    assert!(found);
 }
 
 #[tokio::test]
@@ -585,19 +611,7 @@ async fn completion_bash_stub_shape_and_candidates_are_sorted_and_filtered() {
         .build(DummyCtx)
         .unwrap();
 
-    let cap = StdoutCapture::new();
-    app.run_with_args(vec![
-        "myapp".to_string(),
-        "completion".to_string(),
-        "bash".to_string(),
-    ])
-    .await
-    .unwrap();
-    let out = cap.finish();
-    // When stdout is globally redirected via dup2, the Rust test harness may write
-    // progress markers and per-test status lines (from other parallel tests) into
-    // the same stream. Filter that noise out before asserting.
-    let out = strip_test_harness_noise(&out);
+    let out = run_capture(&mut app, &["myapp", "completion", "bash"]).await;
     let out = out.as_str();
 
     let first_non_blank = out.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
@@ -647,16 +661,7 @@ async fn completion_zsh_stub_starts_with_compdef() {
         .build(DummyCtx)
         .unwrap();
 
-    let cap = StdoutCapture::new();
-    app.run_with_args(vec![
-        "myapp".to_string(),
-        "completion".to_string(),
-        "zsh".to_string(),
-    ])
-    .await
-    .unwrap();
-    let out = cap.finish();
-    let out = strip_test_harness_noise(&out);
+    let out = run_capture(&mut app, &["myapp", "completion", "zsh"]).await;
 
     let first_non_blank = out.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
     assert_eq!(first_non_blank, "#compdef myapp");
@@ -672,15 +677,7 @@ async fn completion_fish_stub_contains_one_line_per_candidate() {
         .build(DummyCtx)
         .unwrap();
 
-    let cap = StdoutCapture::new();
-    app.run_with_args(vec![
-        "myapp".to_string(),
-        "completion".to_string(),
-        "fish".to_string(),
-    ])
-    .await
-    .unwrap();
-    let out = cap.finish();
+    let out = run_capture(&mut app, &["myapp", "completion", "fish"]).await;
 
     assert!(out.contains("complete -c myapp -f"));
     for cmd in ["completion", "extra", "spec"] {
@@ -703,15 +700,7 @@ async fn completion_powershell_stub_contains_register_argument_completer() {
         .build(DummyCtx)
         .unwrap();
 
-    let cap = StdoutCapture::new();
-    app.run_with_args(vec![
-        "myapp".to_string(),
-        "completion".to_string(),
-        "powershell".to_string(),
-    ])
-    .await
-    .unwrap();
-    let out = cap.finish();
+    let out = run_capture(&mut app, &["myapp", "completion", "powershell"]).await;
 
     assert!(out.contains("Register-ArgumentCompleter -Native -CommandName myapp"));
 }
@@ -724,23 +713,11 @@ async fn completions_hidden_alias_routes_but_does_not_appear_in_help() {
         .unwrap();
 
     // Alias routes
-    let cap = StdoutCapture::new();
-    app.run_with_args(vec![
-        "myapp".to_string(),
-        "completions".to_string(),
-        "bash".to_string(),
-    ])
-    .await
-    .unwrap();
-    let out = cap.finish();
+    let out = run_capture(&mut app, &["myapp", "completions", "bash"]).await;
     assert!(out.contains("complete -F _myapp myapp"));
 
     // Alias hidden from help
-    let cap = StdoutCapture::new();
-    app.run_with_args(vec!["myapp".to_string(), "--help".to_string()])
-        .await
-        .unwrap();
-    let help = cap.finish();
+    let help = run_capture(&mut app, &["myapp", "--help"]).await;
     assert!(help.contains("completion"));
     assert!(!help.contains("completions"));
 }
@@ -773,17 +750,19 @@ async fn completion_invalid_shell_emits_single_diagnostic_and_returns_usage_erro
         err
     );
 
-    // R3: exactly one diagnostic line, mentions the invalid value.
-    let diag_lines: Vec<&str> = stderr.lines().filter(|l| l.contains("error[")).collect();
+    // R3: this diagnostic is emitted exactly once (no double-print from the E013
+    // path). Scope the count to lines naming the invalid value: `StderrCapture`
+    // dup2-redirects the process-global fd 2, so diagnostics from other parallel
+    // tests can land in the same buffer — filtering on the value isolates ours
+    // while still catching a genuine double-print of it.
+    let diag_lines: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.contains("error[") && l.contains("invalidshell"))
+        .collect();
     assert_eq!(
         diag_lines.len(),
         1,
-        "expected exactly one error diagnostic line, got:\n{}",
-        stderr
-    );
-    assert!(
-        stderr.contains("invalidshell"),
-        "diagnostic should name the invalid value, got:\n{}",
+        "expected exactly one error diagnostic line naming the invalid value, got:\n{}",
         stderr
     );
 }
@@ -828,11 +807,7 @@ async fn without_completion_disables_builtin_and_allows_user_completion() {
         .build(DummyCtx)
         .unwrap();
 
-    let cap = StdoutCapture::new();
-    app.run_with_args(vec!["myapp".to_string(), "completion".to_string()])
-        .await
-        .unwrap();
-    let out = cap.finish();
+    let out = run_capture(&mut app, &["myapp", "completion"]).await;
     assert!(out.contains("user"));
 }
 
@@ -855,15 +830,7 @@ async fn completion_includes_root_segment_from_visible_leaf_even_when_group_hidd
         .unwrap();
 
     let mut app = builder.build(DummyCtx).unwrap();
-    let cap = StdoutCapture::new();
-    app.run_with_args(vec![
-        "myapp".to_string(),
-        "completion".to_string(),
-        "bash".to_string(),
-    ])
-    .await
-    .unwrap();
-    let out = cap.finish();
+    let out = run_capture(&mut app, &["myapp", "completion", "bash"]).await;
     let candidates = out
         .lines()
         .find_map(|l| {
