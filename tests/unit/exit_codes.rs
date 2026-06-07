@@ -117,6 +117,7 @@ async fn r2_known_command_missing_required_arg_returns_e003_parse_error() {
         &registry,
         vec!["testapp".to_string(), "review".to_string()],
         &[],
+        true,
     );
 
     match outcome {
@@ -192,6 +193,7 @@ async fn r3_r4a_completion_invalid_shell_is_usage_error_single_parse_error() {
             "zzz".to_string(),
         ],
         &[],
+        true,
     );
 
     // R4a: invalid Enum value must be caught at parse time as a single E004 error.
@@ -340,6 +342,7 @@ async fn r4a_enum_invalid_value_error_lists_allowed() {
             "zzz".to_string(),
         ],
         &[],
+        true,
     );
 
     match outcome {

@@ -189,11 +189,39 @@ fn walk_subcommands<'a>(
 /// - `HelpShown` / `VersionShown`: clap wrote to stdout; caller should return `Ok(())`.
 /// - `ParseError(d)`: a structured diagnostic; caller should report it and return `Ok(())`.
 /// - `Parsed { .. }`: a matched command; caller should dispatch execution.
+fn extract_clap_suggestion(e: &clap::Error, kind: clap::error::ContextKind) -> Option<String> {
+    use clap::error::ContextValue;
+    e.context().find_map(|(k, v)| {
+        if k == kind {
+            match v {
+                ContextValue::String(s) => Some(s.clone()),
+                ContextValue::Strings(ss) => ss.first().cloned(),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    })
+}
+
+fn format_subcommand_suggestion(candidate: &str) -> String {
+    format!("Did you mean '{}'?", candidate)
+}
+
+fn format_flag_suggestion(candidate: &str) -> String {
+    if candidate.starts_with("--") {
+        format!("Did you mean '{}'?", candidate)
+    } else {
+        format!("Did you mean '--{}'?", candidate)
+    }
+}
+
 pub fn parse_with_clap(
     root: &clap::Command,
     registry: &CommandRegistry,
     args: Vec<String>,
     global_flags: &[crate::spec::arg_spec::ArgSpec],
+    suggest_corrections: bool,
 ) -> ParseOutcome {
     match root.clone().try_get_matches_from(&args) {
         Ok(matches) => {
@@ -253,13 +281,25 @@ pub fn parse_with_clap(
                     }
                     ParseOutcome::VersionShown(text)
                 }
-                ErrorKind::UnknownArgument => ParseOutcome::ParseError(Diagnostic {
-                    code: E_UNKNOWN_FLAG,
-                    category: DiagnosticCategory::Parse,
-                    message: "unknown argument".to_string(),
-                    suggestion: Some("Use --help to see available arguments".to_string()),
-                    span: None,
-                }),
+                ErrorKind::UnknownArgument => {
+                    use clap::error::ContextKind;
+                    let (suggestion, span) = if suggest_corrections {
+                        let span = extract_clap_suggestion(&e, ContextKind::InvalidArg);
+                        let suggestion = extract_clap_suggestion(&e, ContextKind::SuggestedArg)
+                            .map(|s| format_flag_suggestion(&s))
+                            .unwrap_or_else(|| "Use --help to see available arguments".to_string());
+                        (suggestion, span)
+                    } else {
+                        ("Use --help to see available arguments".to_string(), None)
+                    };
+                    ParseOutcome::ParseError(Diagnostic {
+                        code: E_UNKNOWN_FLAG,
+                        category: DiagnosticCategory::Parse,
+                        message: "unknown argument".to_string(),
+                        suggestion: Some(suggestion),
+                        span,
+                    })
+                }
                 ErrorKind::MissingRequiredArgument => {
                     // Extract missing argument names from clap's error context.
                     use clap::error::ContextKind;
@@ -300,19 +340,39 @@ pub fn parse_with_clap(
                             .cloned()
                             .collect::<Vec<_>>()
                             .join(" ");
+                        let suggestion = if suggest_corrections {
+                            use clap::error::ContextKind;
+                            extract_clap_suggestion(&e, ContextKind::SuggestedSubcommand)
+                                .map(|s| format_subcommand_suggestion(&s))
+                                .unwrap_or_else(|| {
+                                    "Use --help to see available commands".to_string()
+                                })
+                        } else {
+                            "Use --help to see available commands".to_string()
+                        };
                         ParseOutcome::ParseError(Diagnostic {
                             code: E_NESTED_COMMAND_NOT_FOUND,
                             category: DiagnosticCategory::Parse,
                             message: format!("nested command path '{}' not found", path_str),
-                            suggestion: Some("Use --help to see available commands".to_string()),
+                            suggestion: Some(suggestion),
                             span: Some(cmd_arg),
                         })
                     } else {
+                        let suggestion = if suggest_corrections {
+                            use clap::error::ContextKind;
+                            extract_clap_suggestion(&e, ContextKind::SuggestedSubcommand)
+                                .map(|s| format_subcommand_suggestion(&s))
+                                .unwrap_or_else(|| {
+                                    "Use --help to see available commands".to_string()
+                                })
+                        } else {
+                            "Use --help to see available commands".to_string()
+                        };
                         ParseOutcome::ParseError(Diagnostic {
                             code: E_UNKNOWN_COMMAND,
                             category: DiagnosticCategory::Parse,
                             message: format!("unrecognized subcommand '{}'", cmd_arg),
-                            suggestion: Some("Use --help to see available commands".to_string()),
+                            suggestion: Some(suggestion),
                             span: Some(cmd_arg),
                         })
                     }
