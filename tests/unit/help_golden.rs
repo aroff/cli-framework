@@ -66,6 +66,7 @@ fn flat_command_help_renders_typed_spec_args() {
         &registry,
         vec!["testapp".into(), "hello".into(), "--help".into()],
         &[],
+        true,
     );
 
     let help_text = match outcome {
@@ -120,6 +121,7 @@ fn flat_command_help_shows_short_flag() {
         &registry,
         vec!["testapp".into(), "hello".into(), "--help".into()],
         &[],
+        true,
     );
 
     if let ParseOutcome::HelpShown(text) = outcome {
@@ -158,6 +160,7 @@ fn nested_group_help_renders_subcommands() {
         &registry,
         vec!["testapp".into(), "greet".into(), "--help".into()],
         &[],
+        true,
     );
 
     let help_text = match outcome {
@@ -205,6 +208,7 @@ fn nested_subcommand_help_renders_typed_args() {
             "--help".into(),
         ],
         &[],
+        true,
     );
 
     let help_text = match outcome {

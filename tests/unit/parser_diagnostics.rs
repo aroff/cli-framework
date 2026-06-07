@@ -63,6 +63,7 @@ fn e001_unknown_subcommand_produces_e001_diagnostic() {
         &registry,
         vec!["testapp".to_string(), "totally-unknown".to_string()],
         &[],
+        true,
     );
 
     match outcome {
@@ -120,6 +121,7 @@ fn e002_unknown_arg_on_typed_command_produces_e002_diagnostic() {
             "--totally-unknown-flag".to_string(),
         ],
         &[],
+        true,
     );
 
     match outcome {

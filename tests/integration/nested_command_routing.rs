@@ -100,6 +100,7 @@ fn unknown_nested_command_parse_error_e012() {
             "sub".to_string(),
         ],
         &[],
+        true,
     );
 
     match outcome {

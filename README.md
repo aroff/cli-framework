@@ -162,8 +162,9 @@ If your app already defines a root-level `completion` command, call `AppBuilder:
 
 **Exit 2 (usage error)** covers any error where the user supplied invalid or missing input before the command handler ran:
 
-- Unrecognized subcommand (E001)
-- Unknown flag (E002)
+- Unrecognized subcommand (E001) — `hint:` output is `"Did you mean '<x>'?"` when clap identifies a near match; falls back to `"Use --help to see available commands"` otherwise
+- Unknown flag (E002) — `hint:` output is `"Did you mean '--<flag>'?"` when clap identifies a near match; falls back to `"Use --help to see available arguments"` otherwise
+- Nested subcommand not found (E012) — `hint:` output is `"Did you mean '<x>'?"` when clap identifies a near match; falls back to `"Use --help to see available commands"` otherwise
 - Missing required argument (E003)
 - Invalid value type or out-of-set Enum value (E004)
 - Conflicting arguments (E005)
@@ -314,6 +315,19 @@ fn main() {
     }
 }
 ```
+
+## AppBuilder method reference
+
+| Method | Description | Default |
+|--------|-------------|---------|
+| `register_command(cmd)` | Register a command in the command registry | — |
+| `with_version(name, version)` | Enable the built-in `version` subcommand and `--version` flag | disabled |
+| `with_git_sha_short(sha)` | Append a short git SHA to version output | `None` |
+| `without_completion()` | Opt out of auto-registered `completion` subcommand | enabled |
+| `suggest_corrections(bool)` | Enable or disable `"Did you mean?"` suggestions for unknown subcommands and flags (E001, E002, E012). When `true`, the `hint:` line shows the closest match clap identified; when `false`, the generic `"Use --help"` hint is always used. | `true` |
+| `with_ailoop_channel(channel)` | Configure the ailoop channel name for HITL interactions | — |
+| `with_ailoop_config(config)` | Configure ailoop with a full `AiloopConfig` | — |
+| `with_risk_policy(policy)` | Override the default command risk tier policy | — |
 
 ## Chat Command (default feature)
 

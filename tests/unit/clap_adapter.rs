@@ -289,6 +289,7 @@ fn parse_with_clap_key_value() {
             "Alice".to_string(),
         ],
         &[],
+        true,
     );
 
     match outcome {
@@ -332,6 +333,7 @@ fn parse_with_clap_key_equals_value() {
             "--name=Alice".to_string(),
         ],
         &[],
+        true,
     );
 
     match outcome {
@@ -380,6 +382,7 @@ fn parse_with_clap_positional_after_double_dash() {
             "positional".to_string(),
         ],
         &[],
+        true,
     );
 
     match outcome {
@@ -431,6 +434,7 @@ fn parse_with_clap_legacy_leaf_trailing_help_flag_returns_help_shown() {
             "--help".to_string(),
         ],
         &[],
+        true,
     );
 
     match outcome {
@@ -473,6 +477,7 @@ fn parse_with_clap_legacy_leaf_trailing_h_flag_returns_help_shown() {
         &registry,
         vec!["testapp".to_string(), "hello".to_string(), "-h".to_string()],
         &[],
+        true,
     );
 
     assert!(
@@ -518,6 +523,7 @@ fn parse_with_clap_legacy_leaf_help_after_terminator_strict_rejects() {
             "--help".to_string(),
         ],
         &[],
+        true,
     );
 
     // Strict mode: unknown positional args are rejected
@@ -545,6 +551,7 @@ fn parse_with_clap_help_returns_help_shown() {
         &registry,
         vec!["testapp".to_string(), "--help".to_string()],
         &[],
+        true,
     );
 
     assert!(
@@ -571,6 +578,7 @@ fn parse_with_clap_version_flag_returns_version_shown() {
         &registry,
         vec!["testapp".to_string(), "--version".to_string()],
         &[],
+        true,
     );
 
     assert!(
@@ -597,6 +605,7 @@ fn parse_with_clap_unknown_command_returns_parse_error() {
         &registry,
         vec!["testapp".to_string(), "nonexistent".to_string()],
         &[],
+        true,
     );
 
     assert!(
@@ -623,6 +632,7 @@ fn parse_with_clap_version_subcommand_returns_parsed() {
         &registry,
         vec!["testapp".to_string(), "version".to_string()],
         &[],
+        true,
     );
 
     match outcome {
@@ -747,6 +757,7 @@ fn parse_with_clap_mixed_positional_and_named() {
             "Alice".to_string(),
         ],
         &[],
+        true,
     );
 
     match outcome {
@@ -795,6 +806,7 @@ fn parse_with_clap_unknown_flag_is_rejected_strict() {
             "--verbose".to_string(),
         ],
         &[],
+        true,
     );
 
     // With strict-by-default design, unknown flags are always rejected.
@@ -914,6 +926,7 @@ fn parse_nested_argv_yields_multi_segment_path() {
             "get".to_string(),
         ],
         &[],
+        true,
     );
 
     match outcome {
@@ -969,6 +982,7 @@ fn parse_deep_nested_argv_uses_registered_path_segments() {
             "get".to_string(),
         ],
         &[],
+        true,
     );
 
     match outcome {
@@ -1021,6 +1035,7 @@ fn parse_nested_group_help_returns_help_shown() {
             "--help".to_string(),
         ],
         &[],
+        true,
     );
 
     assert!(
@@ -1074,6 +1089,7 @@ fn parse_unknown_nested_subcommand_returns_e012() {
             "nonexistent".to_string(),
         ],
         &[],
+        true,
     );
 
     match &outcome {
@@ -1121,6 +1137,7 @@ fn parse_with_clap_key_value_and_equals_value_parity() {
             "Alice".to_string(),
         ],
         &[],
+        true,
     );
 
     let outcome_eq = cli_framework::app::clap_adapter::parse_with_clap(
@@ -1132,6 +1149,7 @@ fn parse_with_clap_key_value_and_equals_value_parity() {
             "--name=Alice".to_string(),
         ],
         &[],
+        true,
     );
 
     match (outcome_space, outcome_eq) {
@@ -1151,5 +1169,297 @@ fn parse_with_clap_key_value_and_equals_value_parity() {
             assert_eq!(a1, a2);
         }
         other => panic!("expected both Parsed, got {:?}", other),
+    }
+}
+
+// ── "Did you mean?" suggestion tests (G1–G5, G7) ────────────────────────────
+
+#[test]
+fn suggest_corrections_e001_close_match_emits_did_you_mean() {
+    let registry = make_registry_with(vec![Command {
+        id: Arc::from("check"),
+        spec: Arc::new(CommandSpec {
+            summary: "Run check",
+            ..Default::default()
+        }),
+        validator: None,
+        expose_mcp: false,
+        expose_chat: true,
+        execute: noop_execute(),
+    }]);
+
+    let root = cli_framework::app::clap_adapter::build_clap_root(
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
+    );
+
+    // "chek" is close enough to "check" for clap's strsim threshold to fire
+    let outcome = cli_framework::app::clap_adapter::parse_with_clap(
+        &root,
+        &registry,
+        vec!["testapp".to_string(), "chek".to_string()],
+        &[],
+        true,
+    );
+
+    match outcome {
+        ParseOutcome::ParseError(d) => {
+            assert_eq!(d.code, "E001");
+            let suggestion = d.suggestion.expect("suggestion should be present");
+            assert!(
+                suggestion.contains("Did you mean 'check'"),
+                "expected 'Did you mean' suggestion, got: {}",
+                suggestion
+            );
+        }
+        other => panic!("expected ParseError(E001), got {:?}", other),
+    }
+}
+
+#[test]
+fn suggest_corrections_e001_no_match_falls_back_to_generic() {
+    let registry = make_registry_with(vec![Command {
+        id: Arc::from("serve"),
+        spec: Arc::new(CommandSpec {
+            summary: "Start server",
+            ..Default::default()
+        }),
+        validator: None,
+        expose_mcp: false,
+        expose_chat: true,
+        execute: noop_execute(),
+    }]);
+
+    let root = cli_framework::app::clap_adapter::build_clap_root(
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
+    );
+
+    let outcome = cli_framework::app::clap_adapter::parse_with_clap(
+        &root,
+        &registry,
+        vec!["testapp".to_string(), "xyz".to_string()],
+        &[],
+        true,
+    );
+
+    match outcome {
+        ParseOutcome::ParseError(d) => {
+            assert_eq!(d.code, "E001");
+            let suggestion = d.suggestion.expect("suggestion should be present");
+            assert!(
+                suggestion.contains("Use --help"),
+                "expected generic fallback hint, got: {}",
+                suggestion
+            );
+        }
+        other => panic!("expected ParseError(E001), got {:?}", other),
+    }
+}
+
+#[test]
+fn suggest_corrections_e002_close_match_emits_did_you_mean() {
+    let registry = make_registry_with(vec![Command {
+        id: Arc::from("cmd"),
+        spec: Arc::new(CommandSpec {
+            summary: "A command",
+            args: vec![ArgSpec {
+                name: "remote-control",
+                kind: ArgKind::Option,
+                value_type: ArgValueType::String,
+                cardinality: Cardinality::Optional,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        validator: None,
+        expose_mcp: false,
+        expose_chat: true,
+        execute: noop_execute(),
+    }]);
+
+    let root = cli_framework::app::clap_adapter::build_clap_root(
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
+    );
+
+    let outcome = cli_framework::app::clap_adapter::parse_with_clap(
+        &root,
+        &registry,
+        vec![
+            "testapp".to_string(),
+            "cmd".to_string(),
+            "--remotecontrol".to_string(),
+        ],
+        &[],
+        true,
+    );
+
+    match outcome {
+        ParseOutcome::ParseError(d) => {
+            assert_eq!(d.code, "E002");
+            let suggestion = d.suggestion.expect("suggestion should be present");
+            assert!(
+                suggestion.contains("Did you mean '--remote-control'"),
+                "expected 'Did you mean' suggestion for flag, got: {}",
+                suggestion
+            );
+            assert!(
+                d.span.is_some(),
+                "span should be populated for E002 with close match"
+            );
+        }
+        other => panic!("expected ParseError(E002), got {:?}", other),
+    }
+}
+
+#[test]
+fn suggest_corrections_e002_no_match_falls_back_to_generic() {
+    let registry = make_registry_with(vec![Command {
+        id: Arc::from("cmd"),
+        spec: Arc::new(CommandSpec {
+            summary: "A command",
+            args: vec![ArgSpec {
+                name: "port",
+                kind: ArgKind::Option,
+                value_type: ArgValueType::String,
+                cardinality: Cardinality::Optional,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        validator: None,
+        expose_mcp: false,
+        expose_chat: true,
+        execute: noop_execute(),
+    }]);
+
+    let root = cli_framework::app::clap_adapter::build_clap_root(
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
+    );
+
+    let outcome = cli_framework::app::clap_adapter::parse_with_clap(
+        &root,
+        &registry,
+        vec![
+            "testapp".to_string(),
+            "cmd".to_string(),
+            "--xyz-totally-unknown".to_string(),
+        ],
+        &[],
+        true,
+    );
+
+    match outcome {
+        ParseOutcome::ParseError(d) => {
+            assert_eq!(d.code, "E002");
+            let suggestion = d.suggestion.expect("suggestion should be present");
+            assert!(
+                suggestion.contains("Use --help"),
+                "expected generic fallback hint, got: {}",
+                suggestion
+            );
+        }
+        other => panic!("expected ParseError(E002), got {:?}", other),
+    }
+}
+
+#[test]
+fn suggest_corrections_disabled_emits_generic_hint() {
+    use cli_framework::app::AppBuilder;
+
+    struct DummyContext;
+    impl cli_framework::app::AppContext for DummyContext {}
+
+    let mut app = AppBuilder::new()
+        .with_version("testapp", "0.1.0")
+        .suggest_corrections(false)
+        .register_command(Command {
+            id: Arc::from("check"),
+            spec: Arc::new(CommandSpec {
+                summary: "Run check",
+                ..Default::default()
+            }),
+            validator: None,
+            expose_mcp: false,
+            expose_chat: true,
+            execute: noop_execute(),
+        })
+        .unwrap()
+        .build(DummyContext)
+        .unwrap();
+
+    let result = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(app.run_with_args(vec!["testapp".to_string(), "chek".to_string()]));
+
+    // run_with_args returns Err(UsageError) for parse errors; the diagnostic was already printed.
+    // We just verify the call completed (the suggestion check is on DiagnosticReporter output,
+    // which this test verifies indirectly via the parse path with suggest_corrections=false).
+    assert!(result.is_err(), "expected UsageError for unknown command");
+
+    // Verify via parse_with_clap directly with suggest_corrections=false
+    let registry = make_registry_with(vec![Command {
+        id: Arc::from("check"),
+        spec: Arc::new(CommandSpec {
+            summary: "Run check",
+            ..Default::default()
+        }),
+        validator: None,
+        expose_mcp: false,
+        expose_chat: true,
+        execute: noop_execute(),
+    }]);
+
+    let root = cli_framework::app::clap_adapter::build_clap_root(
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
+    );
+
+    let outcome = cli_framework::app::clap_adapter::parse_with_clap(
+        &root,
+        &registry,
+        vec!["testapp".to_string(), "chek".to_string()],
+        &[],
+        false,
+    );
+
+    match outcome {
+        ParseOutcome::ParseError(d) => {
+            assert_eq!(d.code, "E001");
+            let suggestion = d.suggestion.expect("suggestion should be present");
+            assert!(
+                suggestion.contains("Use --help"),
+                "with suggest_corrections=false, expected generic hint, got: {}",
+                suggestion
+            );
+            assert!(
+                !suggestion.contains("Did you mean"),
+                "with suggest_corrections=false, should NOT contain 'Did you mean', got: {}",
+                suggestion
+            );
+        }
+        other => panic!("expected ParseError(E001), got {:?}", other),
     }
 }

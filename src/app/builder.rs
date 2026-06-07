@@ -53,6 +53,7 @@ pub struct AppBuilder {
     mcp_tool_gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
     #[cfg(feature = "chat")]
     chat_tool_policy: crate::command::chat::ChatToolPolicy,
+    suggest_corrections: bool,
 }
 
 impl AppBuilder {
@@ -77,7 +78,15 @@ impl AppBuilder {
             mcp_tool_gate: None,
             #[cfg(feature = "chat")]
             chat_tool_policy: crate::command::chat::ChatToolPolicy::default(),
+            suggest_corrections: true,
         }
+    }
+
+    /// Enable or disable "Did you mean?" suggestions for unknown subcommands
+    /// and flags. Default: `true`.
+    pub fn suggest_corrections(mut self, enabled: bool) -> Self {
+        self.suggest_corrections = enabled;
+        self
     }
 
     /// Disable auto-registration of the built-in `completion` command.
@@ -424,6 +433,7 @@ impl AppBuilder {
             clap_root,
             global_flags: self.global_flags,
             stdout_capture: None,
+            suggest_corrections: self.suggest_corrections,
         })
     }
 }
@@ -450,6 +460,7 @@ pub struct App<C: AppContext> {
     /// buffer instead of being written to fd 1. Used by testkit and by embedders
     /// (API hosts) that need to intercept output; `None` writes to real stdout.
     pub stdout_capture: Option<Arc<Mutex<Vec<u8>>>>,
+    suggest_corrections: bool,
 }
 
 impl<C: AppContext> App<C> {
@@ -511,6 +522,7 @@ impl<C: AppContext> App<C> {
             &self.command_registry,
             args,
             &self.global_flags,
+            self.suggest_corrections,
         ) {
             ParseOutcome::Parsed {
                 command_path,
