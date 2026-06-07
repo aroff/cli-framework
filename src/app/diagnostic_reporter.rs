@@ -5,20 +5,26 @@ use crate::parser::diagnostic::Diagnostic;
 use std::io::Write;
 
 #[cfg(feature = "testkit")]
-use std::sync::{Mutex, OnceLock};
+use std::cell::RefCell;
 
 /// Writes structured diagnostics to stderr (or to an in-process capture buffer
 /// when the `testkit` feature is active).
 pub struct DiagnosticReporter;
 
 // ── optional in-process stderr capture (testkit only) ─────────────────────────
+//
+// The buffer is **thread-local**, not a process-global. `cargo test` runs test
+// functions concurrently across threads, and each `CliTestHarness::run()` wraps
+// its dispatch in `begin_capture()` / `take_capture()`. A shared global buffer
+// would let parallel tests clobber each other's captures (one test resetting the
+// buffer mid-flight, another's diagnostic landing in the wrong buffer), producing
+// flaky empty-stderr reads. Default `#[tokio::test]` runs on a current-thread
+// runtime, so all of a single test's work — including diagnostic reporting during
+// dispatch — stays on the same thread, making thread-local isolation correct.
 
 #[cfg(feature = "testkit")]
-static STDERR_CAPTURE: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
-
-#[cfg(feature = "testkit")]
-fn stderr_capture_buf() -> &'static Mutex<Option<Vec<u8>>> {
-    STDERR_CAPTURE.get_or_init(|| Mutex::new(None))
+thread_local! {
+    static STDERR_CAPTURE: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
 }
 
 impl DiagnosticReporter {
@@ -32,9 +38,15 @@ impl DiagnosticReporter {
 
         #[cfg(feature = "testkit")]
         {
-            let mut buf = stderr_capture_buf().lock().unwrap();
-            if let Some(ref mut v) = *buf {
-                v.extend_from_slice(msg.as_bytes());
+            let captured = STDERR_CAPTURE.with(|cell| {
+                if let Some(ref mut v) = *cell.borrow_mut() {
+                    v.extend_from_slice(msg.as_bytes());
+                    true
+                } else {
+                    false
+                }
+            });
+            if captured {
                 return;
             }
         }
@@ -54,16 +66,14 @@ impl DiagnosticReporter {
     /// Only available with the `testkit` feature.
     #[cfg(feature = "testkit")]
     pub(crate) fn begin_capture() {
-        let mut buf = stderr_capture_buf().lock().unwrap();
-        *buf = Some(Vec::new());
+        STDERR_CAPTURE.with(|cell| *cell.borrow_mut() = Some(Vec::new()));
     }
 
     /// Consume and return the captured stderr output.
     /// Clears the capture buffer.
     #[cfg(feature = "testkit")]
     pub(crate) fn take_capture() -> String {
-        let mut buf = stderr_capture_buf().lock().unwrap();
-        let data = buf.take().unwrap_or_default();
+        let data = STDERR_CAPTURE.with(|cell| cell.borrow_mut().take().unwrap_or_default());
         String::from_utf8(data).unwrap_or_default()
     }
 }
