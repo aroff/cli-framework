@@ -191,7 +191,6 @@ pub fn create_mcp_serve_command_with_deps(
 
 #[cfg(feature = "mcp-install")]
 struct McpInstallArgs {
-    dry_run: bool,
     stdio_mode: bool,
     agent: String,
     scope: aikit_sdk::McpScope,
@@ -214,7 +213,6 @@ fn parse_mcp_install_args(
 ) -> anyhow::Result<McpInstallArgs> {
     use crate::parser::error_codes::E_MCP_INSTALL_WRITE_FAILED;
 
-    let dry_run = matches!(args.get("dry-run"), Some(ArgValue::Bool(true)));
     let stdio_mode = matches!(args.get("stdio"), Some(ArgValue::Bool(true)));
     let agent = args
         .get("agent")
@@ -348,7 +346,6 @@ fn parse_mcp_install_args(
     };
 
     Ok(McpInstallArgs {
-        dry_run,
         stdio_mode,
         agent,
         scope,
@@ -641,13 +638,34 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
         validator: None,
         expose_mcp: false,
         expose_chat: false,
-        execute: Arc::new(move |_ctx, args: HashMap<String, ArgValue>| {
+        execute: Arc::new(move |ctx, args: HashMap<String, ArgValue>| {
+            let dry_run = matches!(
+                args.get("dry-run"),
+                Some(crate::spec::value::ArgValue::Bool(true))
+            );
+            if dry_run {
+                match parse_mcp_install_args(&args, app_name) {
+                    Ok(parsed) => {
+                        let normalized =
+                            aikit_sdk::normalize_mcp_agent_key(&parsed.agent).to_string();
+                        if !aikit_sdk::MCP_SUPPORTED_AGENT_KEYS.contains(&normalized.as_str()) {
+                            let err_msg = format!(
+                                "unknown agent key '{}'; supported: {}",
+                                normalized,
+                                aikit_sdk::MCP_SUPPORTED_AGENT_KEYS.join(", ")
+                            );
+                            return Box::pin(async move { Err(anyhow::anyhow!("{}", err_msg)) });
+                        }
+                        ctx.framework_println(&dry_run_message(&parsed));
+                        return Box::pin(async move { Ok(()) });
+                    }
+                    Err(e) => {
+                        return Box::pin(async move { Err(e) });
+                    }
+                }
+            }
             Box::pin(async move {
                 let parsed = parse_mcp_install_args(&args, app_name)?;
-                if parsed.dry_run {
-                    println!("{}", dry_run_message(&parsed));
-                    return Ok(());
-                }
                 run_mcp_install(parsed).await
             })
         }),
@@ -671,24 +689,29 @@ pub fn create_mcp_list_command() -> Command {
         validator: None,
         expose_mcp: false,
         expose_chat: false,
-        execute: Arc::new(|_ctx, _args: HashMap<String, ArgValue>| {
-            Box::pin(async move {
-                let agents = aikit_sdk::mcp_supported_agents();
-                println!(
-                    "{:<15} {:<25} {:<45} GLOBAL PATH",
-                    "AGENT", "NAME", "PROJECT PATH"
-                );
-                for row in &agents {
-                    println!(
+        execute: Arc::new(|ctx, _args: HashMap<String, ArgValue>| {
+            let agents = aikit_sdk::mcp_supported_agents();
+            let header = format!(
+                "{:<15} {:<25} {:<45} GLOBAL PATH",
+                "AGENT", "NAME", "PROJECT PATH"
+            );
+            ctx.framework_println(&header);
+            let rows: Vec<String> = agents
+                .iter()
+                .map(|row| {
+                    format!(
                         "{:<15} {:<25} {:<45} {}",
                         row.agent_key,
                         row.display_name,
                         row.project_config_path,
                         row.global_config_path
-                    );
-                }
-                Ok(())
-            })
+                    )
+                })
+                .collect();
+            for row in &rows {
+                ctx.framework_println(row);
+            }
+            Box::pin(async move { Ok(()) })
         }),
     }
 }
