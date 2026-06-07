@@ -31,7 +31,6 @@ use std::sync::Arc;
 #[error("{0}")]
 pub struct UsageError(pub String);
 
-#[cfg(feature = "testkit")]
 use std::sync::Mutex;
 
 pub struct AppBuilder {
@@ -424,7 +423,6 @@ impl AppBuilder {
             app_git_sha_short: self.app_git_sha_short,
             clap_root,
             global_flags: self.global_flags,
-            #[cfg(feature = "testkit")]
             stdout_capture: None,
         })
     }
@@ -447,8 +445,10 @@ pub struct App<C: AppContext> {
     app_git_sha_short: Option<&'static str>,
     clap_root: clap::Command,
     global_flags: Vec<ArgSpec>,
-    /// Captures framework-level stdout output (version strings etc.) when testkit is active.
-    #[cfg(feature = "testkit")]
+    /// When set, framework-level stdout (`framework_println`: version strings,
+    /// help, completion scripts, the command surface, etc.) is captured into this
+    /// buffer instead of being written to fd 1. Used by testkit and by embedders
+    /// (API hosts) that need to intercept output; `None` writes to real stdout.
     pub stdout_capture: Option<Arc<Mutex<Vec<u8>>>>,
 }
 
@@ -594,9 +594,8 @@ impl<C: AppContext> App<C> {
     fn framework_println(&self, s: &str) {
         use std::io::Write;
 
-        #[cfg(feature = "testkit")]
         if let Some(ref buf) = self.stdout_capture {
-            let mut lock = buf.lock().unwrap();
+            let mut lock = buf.lock().unwrap_or_else(|e| e.into_inner());
             lock.extend_from_slice(s.as_bytes());
             lock.push(b'\n');
             return;
@@ -687,7 +686,6 @@ impl<C: AppContext> App<C> {
             command_registry: self.command_registry.as_ref(),
             ailoop_client: &self.ailoop_client,
             global_args: &global_args,
-            #[cfg(feature = "testkit")]
             stdout_capture: self.stdout_capture.clone(),
         };
         let mut ctx_wrapper = crate::app::dispatch::CliAppContextWrapper::new(&mut self.ctx, env);

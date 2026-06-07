@@ -127,7 +127,6 @@ pub fn create_completion_command(
                 use crate::app::builder::{
                     emit_completion_script, visible_top_level_commands, Shell,
                 };
-                use std::io::Write;
 
                 // R4a (Enum validation) rejects invalid shell values at parse time,
                 // so shell_token is always a valid value when this closure runs.
@@ -161,9 +160,16 @@ pub fn create_completion_command(
                     std::collections::BTreeSet::new()
                 };
 
-                let mut stdout = std::io::stdout();
-                emit_completion_script(app_name, shell, &cmds, &mut stdout)?;
-                stdout.flush().ok();
+                // Render to an in-memory buffer and emit via framework_println so
+                // the script is captured by the app's per-instance stdout buffer
+                // (testkit / API hosts) rather than written straight to fd 1. Writing
+                // to fd 1 forced tests into process-global dup2 capture, which races
+                // with libtest's own status writes under parallel execution.
+                let mut buf: Vec<u8> = Vec::new();
+                emit_completion_script(app_name, shell, &cmds, &mut buf)?;
+                let script = String::from_utf8(buf)
+                    .map_err(|e| anyhow::anyhow!("completion script not valid UTF-8: {}", e))?;
+                ctx.framework_println(script.trim_end());
                 Ok(())
             })
         }),

@@ -4,16 +4,13 @@ use crate::command::Command;
 use crate::parser::diagnostic::Diagnostic;
 use crate::spec::value::ArgValue;
 use std::collections::HashMap;
-#[cfg(feature = "testkit")]
 use std::sync::Arc;
-#[cfg(feature = "testkit")]
 use std::sync::Mutex;
 
 pub(crate) struct DispatchEnv<'a> {
     pub(crate) command_registry: &'a crate::command::CommandRegistry,
     pub(crate) ailoop_client: &'a Option<AiloopClient>,
     pub(crate) global_args: &'a HashMap<String, ArgValue>,
-    #[cfg(feature = "testkit")]
     pub(crate) stdout_capture: Option<Arc<Mutex<Vec<u8>>>>,
 }
 
@@ -40,9 +37,8 @@ impl<'a> AppContext for CliAppContextWrapper<'a> {
     fn framework_println(&self, s: &str) {
         use std::io::Write;
 
-        #[cfg(feature = "testkit")]
         if let Some(ref buf) = self.env.stdout_capture {
-            let mut lock = buf.lock().unwrap();
+            let mut lock = buf.lock().unwrap_or_else(|e| e.into_inner());
             lock.extend_from_slice(s.as_bytes());
             lock.push(b'\n');
             return;
