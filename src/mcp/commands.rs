@@ -93,10 +93,12 @@ pub fn create_mcp_serve_command_with_deps(
         validator: None,
         expose_mcp: false,
         expose_chat: false,
-        execute: Arc::new(move |_ctx, args: HashMap<String, ArgValue>| {
+        execute: Arc::new(move |ctx, args: HashMap<String, ArgValue>| {
             let registry = Arc::clone(&registry);
             let risk_policy = risk_policy.clone();
             let gate = gate.clone();
+            // Resolve banner settings up front (ctx is not 'static, can't cross await).
+            let banner = crate::mcp::BannerSettings::resolve(ctx.opt_global_args(), &args);
             Box::pin(async move {
                 // Defaults injected by spec: transport="http", host="127.0.0.1", port="8080", path="/mcp"
                 let transport = args
@@ -137,12 +139,13 @@ pub fn create_mcp_serve_command_with_deps(
                             "[E004] invalid usage: '--host', '--port', and '--path' are only valid when --transport=http"
                         ));
                     }
-                    return crate::mcp::serve_mcp_stdio(
+                    return crate::mcp::serve_mcp_stdio_opts(
                         registry,
                         app_name,
                         risk_policy,
                         export_policy,
                         gate,
+                        banner,
                     )
                     .await;
                 }
@@ -175,13 +178,14 @@ pub fn create_mcp_serve_command_with_deps(
                     })
                     .unwrap_or_else(|| MCP_DEFAULT_PATH.to_string());
 
-                crate::mcp::serve_mcp_with_gate(
+                crate::mcp::serve_mcp_with_gate_opts(
                     registry,
                     app_name,
                     crate::mcp::McpServerArgs { host, port, path },
                     risk_policy,
                     export_policy,
                     gate,
+                    banner,
                 )
                 .await
             })

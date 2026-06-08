@@ -1,3 +1,4 @@
+use crate::mcp::banner::{emit_banner, BannerData, BannerSettings};
 use crate::mcp::{CliFrameworkHandler, McpServerArgs, McpToolRegistry, McpTransportKind};
 use anyhow::Result;
 use rmcp::transport::streamable_http_server::{
@@ -40,6 +41,7 @@ pub fn mcp_axum_router(tool_registry: Arc<McpToolRegistry>, path: &str) -> axum:
 pub async fn start_streamable_http(
     tool_registry: Arc<McpToolRegistry>,
     args: &McpServerArgs,
+    banner: BannerSettings,
 ) -> Result<()> {
     let addr = format!("{}:{}", args.host, args.port);
     let listener = tokio::net::TcpListener::bind(&addr).await.map_err(|e| {
@@ -58,6 +60,10 @@ pub async fn start_streamable_http(
         args.path
     );
     tracing::info!("MCP: exported {} tools", tool_registry.tool_count());
+
+    // Bind succeeded — print the startup banner (URL + tool list) to stdout.
+    let data = BannerData::http(&args.host, args.port, &args.path, &tool_registry);
+    emit_banner(&data, banner);
 
     let router = mcp_axum_router(tool_registry, &args.path);
 

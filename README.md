@@ -56,6 +56,37 @@ my-app mcp serve --port 9000 --path /mcp
 my-app mcp serve --transport stdio
 ```
 
+### Startup banner
+
+On startup, `mcp serve` prints a banner showing the connectable URL (HTTP) or
+transport mode (stdio) plus the list of registered MCP tools:
+
+```text
+┌─ MCP server running ───────────────────────────────────┐
+
+  URL        http://127.0.0.1:9000/mcp
+  transport  http (Streamable HTTP)
+
+  Tools (3)
+    • myapp_search       Search the catalog
+    • myapp_get_item     Fetch an item by id
+    • myapp_create_item  Create a new item
+
+  Press Ctrl-C to stop.
+└────────────────────────────────────────────────────────┘
+```
+
+The tool list is derived from the actually-registered tools at runtime. For
+stdio the banner is written to **stderr** (stdout carries the JSON-RPC stream).
+The Unicode box degrades to plain ASCII when output is not a TTY or color is
+disabled. Output conventions are respected: `QUIET` suppresses the banner, and
+`OUTPUT_FORMAT=json` (or an app's `--quiet` / `--json` global flags) emits a
+single machine-readable object instead:
+
+```json
+{"event":"mcp_started","url":"http://127.0.0.1:9000/mcp","transport":"http","tools":["myapp_search","myapp_get_item","myapp_create_item"]}
+```
+
 ### Tool naming convention
 
 Each registered command is exported as `<app_name>_<command_id>`. Hierarchical commands (e.g. `cluster/get`) use underscores: `myapp_cluster_get`. Underscores (rather than dots) keep tool names within OpenAI's `^[a-zA-Z0-9_-]+$` constraint.
