@@ -1,3 +1,4 @@
+pub mod banner;
 #[cfg(feature = "mcp-server")]
 pub mod commands;
 pub mod schema;
@@ -12,6 +13,7 @@ use crate::security::RiskEnforcer;
 use crate::spec::value::ArgValue;
 #[cfg(feature = "mcp-server")]
 use anyhow::Result;
+pub use banner::BannerSettings;
 #[cfg(feature = "mcp-server")]
 use rmcp::{
     model::{
@@ -437,6 +439,31 @@ pub async fn serve_mcp_with_gate(
     export_policy: McpToolExportPolicy,
     gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
 ) -> Result<()> {
+    serve_mcp_with_gate_opts(
+        registry,
+        app_name,
+        args,
+        risk_policy,
+        export_policy,
+        gate,
+        BannerSettings::from_env(),
+    )
+    .await
+}
+
+/// Like [`serve_mcp_with_gate`], but with explicit startup-banner settings
+/// (resolved from `--quiet` / `--json` conventions by the `mcp serve` command).
+#[cfg(feature = "mcp-server")]
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_mcp_with_gate_opts(
+    registry: Arc<CommandRegistry>,
+    app_name: &str,
+    args: McpServerArgs,
+    risk_policy: crate::security::CommandRiskPolicy,
+    export_policy: McpToolExportPolicy,
+    gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
+    banner: BannerSettings,
+) -> Result<()> {
     let mut tool_registry =
         McpToolRegistry::from_command_registry_with_policy(&registry, app_name, export_policy)
             .with_risk_policy(risk_policy);
@@ -445,7 +472,7 @@ pub async fn serve_mcp_with_gate(
     }
     let tool_registry = Arc::new(tool_registry);
 
-    transport_http::start_streamable_http(tool_registry, &args).await
+    transport_http::start_streamable_http(tool_registry, &args, banner).await
 }
 
 #[cfg(feature = "mcp-server")]
@@ -456,6 +483,27 @@ pub async fn serve_mcp_stdio(
     export_policy: McpToolExportPolicy,
     gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
 ) -> anyhow::Result<()> {
+    serve_mcp_stdio_opts(
+        registry,
+        app_name,
+        risk_policy,
+        export_policy,
+        gate,
+        BannerSettings::from_env(),
+    )
+    .await
+}
+
+/// Like [`serve_mcp_stdio`], but with explicit startup-banner settings.
+#[cfg(feature = "mcp-server")]
+pub async fn serve_mcp_stdio_opts(
+    registry: Arc<CommandRegistry>,
+    app_name: &str,
+    risk_policy: crate::security::CommandRiskPolicy,
+    export_policy: McpToolExportPolicy,
+    gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
+    banner: BannerSettings,
+) -> anyhow::Result<()> {
     let mut tool_registry =
         McpToolRegistry::from_command_registry_with_policy(&registry, app_name, export_policy)
             .with_risk_policy(risk_policy);
@@ -463,5 +511,5 @@ pub async fn serve_mcp_stdio(
         tool_registry = tool_registry.with_gate(gate);
     }
     let tool_registry = Arc::new(tool_registry);
-    transport_stdio::start_stdio(tool_registry).await
+    transport_stdio::start_stdio(tool_registry, banner).await
 }
