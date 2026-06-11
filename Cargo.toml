@@ -48,7 +48,7 @@ toml = "0.8"
 dirs = "5.0"
 uuid.workspace = true
 crossterm = "0.28"
-ailoop-core = { git = "https://github.com/goailoop/ailoop.git", rev = "dd186c055dbfcbf5c32c8e58b251eaf0bf07343b", default-features = false }
+ailoop-core = { git = "https://github.com/goailoop/ailoop.git", rev = "c9b70bcc0bd659823dc8ddf71d8571a8e011113b", default-features = false }
 
 # Optional dependencies for CLI output utilities
 comfy-table = { version = "7.0", optional = true }
