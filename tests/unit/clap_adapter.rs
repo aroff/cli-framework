@@ -82,6 +82,8 @@ fn make_cmd_with_hidden(id: &'static str, hidden: bool) -> Command {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     }
 }
@@ -102,6 +104,8 @@ fn build_clap_root_subcommand_count_matches_registry() {
             validator: None,
             expose_mcp: false,
             expose_chat: true,
+            ui: None,
+            visibility: None,
             execute: noop_execute(),
         },
         Command {
@@ -113,6 +117,8 @@ fn build_clap_root_subcommand_count_matches_registry() {
             validator: None,
             expose_mcp: false,
             expose_chat: true,
+            ui: None,
+            visibility: None,
             execute: noop_execute(),
         },
     ]);
@@ -237,6 +243,8 @@ fn build_clap_root_no_version_subcommand_when_user_registers_version() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     }]);
 
@@ -267,6 +275,8 @@ fn parse_with_clap_key_value() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     }]);
 
@@ -312,6 +322,8 @@ fn parse_with_clap_key_equals_value() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     }]);
 
@@ -360,6 +372,8 @@ fn parse_with_clap_positional_after_double_dash() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     }]);
 
@@ -413,6 +427,8 @@ fn parse_with_clap_legacy_leaf_trailing_help_flag_returns_help_shown() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     }]);
 
@@ -460,6 +476,8 @@ fn parse_with_clap_legacy_leaf_trailing_h_flag_returns_help_shown() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     }]);
 
@@ -501,6 +519,8 @@ fn parse_with_clap_legacy_leaf_help_after_terminator_strict_rejects() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     }]);
 
@@ -734,6 +754,8 @@ fn parse_with_clap_mixed_positional_and_named() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     }]);
 
@@ -785,6 +807,8 @@ fn parse_with_clap_unknown_flag_is_rejected_strict() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     }]);
 
@@ -904,6 +928,8 @@ fn parse_nested_argv_yields_multi_segment_path() {
                 validator: None,
                 expose_mcp: false,
                 expose_chat: true,
+                ui: None,
+                visibility: None,
                 execute: noop_execute(),
             },
         )
@@ -959,6 +985,8 @@ fn parse_deep_nested_argv_uses_registered_path_segments() {
                 validator: None,
                 expose_mcp: false,
                 expose_chat: true,
+                ui: None,
+                visibility: None,
                 execute: noop_execute(),
             },
         )
@@ -1013,6 +1041,8 @@ fn parse_nested_group_help_returns_help_shown() {
                 validator: None,
                 expose_mcp: false,
                 expose_chat: true,
+                ui: None,
+                visibility: None,
                 execute: noop_execute(),
             },
         )
@@ -1066,6 +1096,8 @@ fn parse_unknown_nested_subcommand_returns_e012() {
                 validator: None,
                 expose_mcp: false,
                 expose_chat: true,
+                ui: None,
+                visibility: None,
                 execute: noop_execute(),
             },
         )
@@ -1115,6 +1147,8 @@ fn parse_with_clap_key_value_and_equals_value_parity() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     }]);
 
@@ -1185,6 +1219,8 @@ fn suggest_corrections_e001_close_match_emits_did_you_mean() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     }]);
 
@@ -1231,6 +1267,8 @@ fn suggest_corrections_e001_no_match_falls_back_to_generic() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     }]);
 
@@ -1283,6 +1321,8 @@ fn suggest_corrections_e002_close_match_emits_did_you_mean() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     }]);
 
@@ -1343,6 +1383,8 @@ fn suggest_corrections_e002_no_match_falls_back_to_generic() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     }]);
 
@@ -1400,6 +1442,8 @@ fn suggest_corrections_disabled_emits_generic_hint() {
             validator: None,
             expose_mcp: false,
             expose_chat: true,
+            ui: None,
+            visibility: None,
             execute: noop_execute(),
         })
         .unwrap()
@@ -1425,6 +1469,8 @@ fn suggest_corrections_disabled_emits_generic_hint() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     }]);
 

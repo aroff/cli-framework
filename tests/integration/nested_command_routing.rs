@@ -18,6 +18,8 @@ fn make_tracking_cmd(id: &'static str, executed: Arc<Mutex<bool>>) -> Command {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: Arc::new(move |_ctx, _args| {
             let executed = Arc::clone(&executed);
             Box::pin(async move {

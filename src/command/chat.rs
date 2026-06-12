@@ -67,6 +67,8 @@ pub fn create_chat_command(
         validator: None,
         expose_mcp: false,
         expose_chat: false,
+        ui: None,
+        visibility: None,
         execute: Arc::new(move |ctx, args| {
             let client = ailoop_client.clone();
             let registry = Arc::clone(&registry);

@@ -374,6 +374,8 @@ mod tests {
             validator: None,
             expose_mcp: false,
             expose_chat,
+            ui: None,
+            visibility: None,
             execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
         }
     }
@@ -448,6 +450,8 @@ mod tests {
             validator: None,
             expose_mcp: false,
             expose_chat: false,
+            ui: None,
+            visibility: None,
             execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
         });
 

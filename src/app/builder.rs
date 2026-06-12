@@ -159,6 +159,8 @@ impl AppBuilder {
             validator: None,
             expose_mcp: true,
             expose_chat: true,
+            ui: None,
+            visibility: None,
             execute: Arc::new(move |ctx, args| {
                 let typed = T::from_arg_value_map(&args);
                 let h = Arc::clone(&handler);

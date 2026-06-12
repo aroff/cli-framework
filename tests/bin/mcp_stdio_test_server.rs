@@ -24,6 +24,8 @@ async fn main() -> anyhow::Result<()> {
             validator: None,
             expose_mcp: true,
             expose_chat: true,
+            ui: None,
+            visibility: None,
             execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
         })?;
 

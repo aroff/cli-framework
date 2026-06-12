@@ -35,6 +35,8 @@ fn noop_command(id: &'static str) -> Command {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
     }
 }
@@ -50,6 +52,8 @@ fn hidden_command() -> Command {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
     }
 }
@@ -332,6 +336,8 @@ fn user_spec_command_not_overwritten() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
     };
 

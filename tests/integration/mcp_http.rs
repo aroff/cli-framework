@@ -88,6 +88,8 @@ async fn test_tools_list_over_http() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     });
     registry.register(Command {
@@ -99,6 +101,8 @@ async fn test_tools_list_over_http() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     });
 
@@ -200,6 +204,8 @@ async fn test_tool_call_success_over_http() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     });
 
@@ -309,6 +315,8 @@ async fn test_mcp_serve_subcommand_tools_list() {
                     validator: None,
                     expose_mcp: true,
                     expose_chat: true,
+                    ui: None,
+                    visibility: None,
                     execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
                 })
                 .unwrap()
@@ -426,6 +434,8 @@ async fn test_tools_list_and_call_over_stdio_transport() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     });
     let registry = Arc::new(registry);

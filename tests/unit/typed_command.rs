@@ -544,6 +544,8 @@ fn mcp_schema_globals_absent() {
             validator: None,
             expose_mcp: true,
             expose_chat: true,
+            ui: None,
+            visibility: None,
             execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
         });
         Arc::new(reg)

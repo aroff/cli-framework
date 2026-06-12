@@ -235,6 +235,11 @@ path = "tests/unit/mcp_dispatch.rs"
 required-features = ["mcp-server"]
 
 [[test]]
+name = "unit_mcp_apps"
+path = "tests/unit/mcp_apps.rs"
+required-features = ["mcp-server"]
+
+[[test]]
 name = "integration_mcp_http"
 path = "tests/integration/mcp_http.rs"
 required-features = ["mcp-server"]

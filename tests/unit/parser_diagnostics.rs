@@ -24,6 +24,8 @@ fn noop_cmd(id: &'static str) -> Command {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
     }
 }
@@ -97,6 +99,8 @@ fn e002_unknown_arg_on_typed_command_produces_e002_diagnostic() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
     };
 

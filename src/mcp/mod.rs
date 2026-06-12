@@ -1,6 +1,8 @@
 pub mod banner;
 #[cfg(feature = "mcp-server")]
 pub mod commands;
+#[cfg(feature = "mcp-server")]
+pub mod resources;
 pub mod schema;
 #[cfg(feature = "mcp-server")]
 pub mod transport_http;
@@ -17,13 +19,14 @@ pub use banner::BannerSettings;
 #[cfg(feature = "mcp-server")]
 use rmcp::{
     model::{
-        CallToolRequestParams, CallToolResult, Content, ErrorData, JsonObject, ListToolsResult,
-        PaginatedRequestParams, ServerInfo, Tool,
+        CallToolRequestParams, CallToolResult, Content, ErrorData, JsonObject, ListResourcesResult,
+        ListToolsResult, Meta, PaginatedRequestParams, RawResource, ReadResourceRequestParams,
+        ReadResourceResult, Resource, ResourceContents, ServerCapabilities, ServerInfo, Tool,
     },
     service::RequestContext,
     RoleServer, ServerHandler,
 };
-use schema::{command_to_tool_descriptor, McpToolDescriptor};
+use schema::{command_to_tool_descriptor_full, McpToolDescriptor};
 use serde_json::Value;
 #[cfg(feature = "mcp-server")]
 use std::borrow::Cow;
@@ -143,7 +146,7 @@ impl McpToolRegistry {
     pub fn list_tools(&self) -> Vec<McpToolDescriptor> {
         self.tools
             .iter()
-            .map(|(name, cmd)| command_to_tool_descriptor(name, cmd.summary(), Some(&cmd.spec)))
+            .map(|(name, cmd)| command_to_tool_descriptor_full(name, cmd))
             .collect()
     }
 
@@ -234,17 +237,77 @@ fn make_rmcp_tool(desc: &McpToolDescriptor) -> Tool {
         Value::Object(m) => m.clone(),
         _ => serde_json::Map::new(),
     };
-    Tool::new(
+    let mut tool = Tool::new(
         Cow::<'static, str>::Owned(desc.name.clone()),
         Cow::<'static, str>::Owned(desc.description.clone()),
         Arc::new(input_schema),
-    )
+    );
+
+    // rmcp 1.6 `Tool` carries a per-tool `_meta` passthrough (`Tool::meta`,
+    // serialized as `_meta`) but has NO `visibility` field. We therefore emit
+    // the MCP-Apps `ui` block AND the `visibility` tags inside `_meta` so both
+    // survive on the wire (see R1). The model-visible JSON shape contract
+    // (`_meta.ui.resourceUri`, top-level `visibility`) is asserted against
+    // `McpToolDescriptor`, which has dedicated fields for both.
+    let mut meta = Meta::new();
+    if let Some(Value::Object(m)) = &desc.meta {
+        for (k, v) in m {
+            meta.insert(k.clone(), v.clone());
+        }
+    }
+    if let Some(visibility) = &desc.visibility {
+        meta.insert(
+            "visibility".to_string(),
+            Value::Array(
+                visibility
+                    .iter()
+                    .map(|s| Value::String(s.clone()))
+                    .collect(),
+            ),
+        );
+    }
+    if !meta.is_empty() {
+        tool.meta = Some(meta);
+    }
+
+    tool
+}
+
+/// Convert a [`resources::UiResource`] into an rmcp `ResourceContents`,
+/// placing any per-resource CSP in `_meta.ui.csp` (MCP-Apps spec).
+#[cfg(feature = "mcp-server")]
+fn ui_resource_to_contents(uri: &str, resource: resources::UiResource) -> ResourceContents {
+    use resources::UiResourceBody;
+
+    let mut base = match resource.body {
+        UiResourceBody::Text(text) => ResourceContents::TextResourceContents {
+            uri: uri.to_string(),
+            mime_type: Some(resource.mime_type),
+            text,
+            meta: None,
+        },
+        UiResourceBody::Blob(blob) => ResourceContents::BlobResourceContents {
+            uri: uri.to_string(),
+            mime_type: Some(resource.mime_type),
+            blob,
+            meta: None,
+        },
+    };
+
+    if let Some(csp) = resource.csp {
+        let mut meta = Meta::new();
+        meta.insert("ui".to_string(), serde_json::json!({ "csp": csp }));
+        base = base.with_meta(meta);
+    }
+
+    base
 }
 
 #[cfg(feature = "mcp-server")]
 #[derive(Clone)]
 pub struct CliFrameworkHandler {
     tool_registry: Arc<McpToolRegistry>,
+    resource_registry: Arc<resources::ResourceRegistry>,
     transport: McpTransportKind,
     stdio_serialize: Option<Arc<Mutex<()>>>,
 }
@@ -254,21 +317,103 @@ impl CliFrameworkHandler {
     pub fn new(tool_registry: Arc<McpToolRegistry>, transport: McpTransportKind) -> Self {
         Self {
             tool_registry,
+            resource_registry: Arc::new(resources::ResourceRegistry::new()),
             transport,
             stdio_serialize: None,
         }
+    }
+
+    /// Attach a resource registry so this handler serves `resources/list` and
+    /// `resources/read` for the registered `ui://…` URIs (CF-2).
+    pub fn with_resource_registry(
+        mut self,
+        resource_registry: Arc<resources::ResourceRegistry>,
+    ) -> Self {
+        self.resource_registry = resource_registry;
+        self
     }
 
     pub fn with_stdio_serialization(mut self, lock: Arc<Mutex<()>>) -> Self {
         self.stdio_serialize = Some(lock);
         self
     }
+
+    /// Build the `resources/list` result from the resource registry.
+    ///
+    /// Transport-independent seam used by the [`ServerHandler::list_resources`]
+    /// impl and by in-process tests (CF-2).
+    pub fn list_resources_result(&self) -> ListResourcesResult {
+        let resources: Vec<Resource> = self
+            .resource_registry
+            .listings()
+            .into_iter()
+            .map(|listing| {
+                let mut raw = RawResource::new(listing.uri, listing.name);
+                raw.description = listing.description;
+                raw.mime_type = listing.mime_type;
+                Resource::new(raw, None)
+            })
+            .collect();
+        ListResourcesResult {
+            resources,
+            next_cursor: None,
+            meta: Default::default(),
+        }
+    }
+
+    /// Read a single resource by URI, building the `resources/read` result.
+    ///
+    /// Transport-independent seam used by the [`ServerHandler::read_resource`]
+    /// impl and by in-process tests (CF-2). Returns `MCP_RESOURCE_NOT_FOUND`
+    /// when the URI is not registered (or its provider yields nothing).
+    pub fn read_resource_uri(&self, uri: &str) -> Result<ReadResourceResult, ErrorData> {
+        match self.resource_registry.read(uri) {
+            Some(resource) => {
+                let contents = ui_resource_to_contents(uri, resource);
+                Ok(ReadResourceResult::new(vec![contents]))
+            }
+            None => Err(mcp_error(
+                -32002,
+                format!("MCP_RESOURCE_NOT_FOUND: resource '{}' not registered", uri),
+            )),
+        }
+    }
 }
 
 #[cfg(feature = "mcp-server")]
 impl ServerHandler for CliFrameworkHandler {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::default()
+        // Advertise tools always; advertise resources only when some are
+        // registered, so hosts without an MCP-Apps registry see a tools-only
+        // server (backward compatible). The capabilities builder is type-state
+        // encoded, so the two cases are built on separate paths.
+        let capabilities = if self.resource_registry.is_empty() {
+            ServerCapabilities::builder().enable_tools().build()
+        } else {
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build()
+        };
+        let mut info = ServerInfo::default();
+        info.capabilities = capabilities;
+        info
+    }
+
+    fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl std::future::Future<Output = Result<ListResourcesResult, ErrorData>> + Send + '_ {
+        std::future::ready(Ok(self.list_resources_result()))
+    }
+
+    fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> impl std::future::Future<Output = Result<ReadResourceResult, ErrorData>> + Send + '_ {
+        std::future::ready(self.read_resource_uri(&request.uri))
     }
 
     fn list_tools(
@@ -512,4 +657,44 @@ pub async fn serve_mcp_stdio_opts(
     }
     let tool_registry = Arc::new(tool_registry);
     transport_stdio::start_stdio(tool_registry, banner).await
+}
+
+#[cfg(all(test, feature = "mcp-server"))]
+mod rmcp_tool_meta_tests {
+    use super::*;
+    use crate::mcp::schema::McpToolDescriptor;
+
+    // R1: confirm the live `rmcp::model::Tool` carries the MCP-Apps `_meta`
+    // passthrough (`ui`) AND the `visibility` tags (which have no native
+    // `Tool` field) when serialized to the wire.
+    #[test]
+    fn make_rmcp_tool_serializes_meta_ui_and_visibility() {
+        let desc = McpToolDescriptor {
+            name: "es_detail".to_string(),
+            description: "Open detail".to_string(),
+            input_schema: serde_json::json!({ "type": "object" }),
+            meta: Some(serde_json::json!({
+                "ui": { "resourceUri": "ui://es/person/detail" }
+            })),
+            visibility: Some(vec!["app".to_string()]),
+        };
+        let tool = make_rmcp_tool(&desc);
+        let json = serde_json::to_value(&tool).unwrap();
+        assert_eq!(json["_meta"]["ui"]["resourceUri"], "ui://es/person/detail");
+        assert_eq!(json["_meta"]["visibility"], serde_json::json!(["app"]));
+    }
+
+    #[test]
+    fn make_rmcp_tool_without_meta_omits_meta_key() {
+        let desc = McpToolDescriptor {
+            name: "es_plain".to_string(),
+            description: "Plain".to_string(),
+            input_schema: serde_json::json!({ "type": "object" }),
+            meta: None,
+            visibility: None,
+        };
+        let tool = make_rmcp_tool(&desc);
+        let json = serde_json::to_value(&tool).unwrap();
+        assert!(json.get("_meta").is_none(), "got: {json}");
+    }
 }

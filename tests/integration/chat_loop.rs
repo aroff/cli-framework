@@ -205,6 +205,8 @@ async fn i4_tool_call_result_forwarded_in_events() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: Arc::new(|ctx, _args| {
             Box::pin(async move {
                 ctx.framework_println("tool-output");
@@ -303,6 +305,8 @@ fn n3_tool_name_convention_appname_group_cmd() {
                 validator: None,
                 expose_mcp: false,
                 expose_chat: true,
+                ui: None,
+                visibility: None,
                 execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
             },
         )

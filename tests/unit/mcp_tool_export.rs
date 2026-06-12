@@ -30,6 +30,8 @@ fn make_cmd(id: &'static str, summary: &'static str) -> Command {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     }
 }
@@ -41,6 +43,8 @@ fn make_cmd_with_spec(id: &'static str, summary: &'static str, spec: CommandSpec
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     }
 }
@@ -252,6 +256,8 @@ fn test_expose_mcp_only_filters_commands() {
         validator: None,
         expose_mcp: true,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     });
     registry.register(Command {
@@ -263,6 +269,8 @@ fn test_expose_mcp_only_filters_commands() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
+        ui: None,
+        visibility: None,
         execute: noop_execute(),
     });
 
