@@ -26,7 +26,7 @@ async fn main() -> anyhow::Result<()> {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: Arc::new(move |_ctx, _args| {
             let counter = Arc::clone(&counter_for_inc);
@@ -47,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: Arc::new(|_ctx, _args| {
             Box::pin(async move {

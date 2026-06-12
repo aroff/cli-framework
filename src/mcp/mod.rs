@@ -244,11 +244,10 @@ fn make_rmcp_tool(desc: &McpToolDescriptor) -> Tool {
     );
 
     // rmcp 1.6 `Tool` carries a per-tool `_meta` passthrough (`Tool::meta`,
-    // serialized as `_meta`) but has NO `visibility` field. We therefore emit
-    // the MCP-Apps `ui` block AND the `visibility` tags inside `_meta` so both
-    // survive on the wire (see R1). The model-visible JSON shape contract
-    // (`_meta.ui.resourceUri`, top-level `visibility`) is asserted against
-    // `McpToolDescriptor`, which has dedicated fields for both.
+    // serialized as `_meta`) but has NO `visibility` field. We therefore merge
+    // the command's opaque `_meta` value AND the `visibility` tags into a single
+    // `_meta` object so both survive on the wire (see R1). The opaque `_meta`
+    // contents are owned by the consumer; `visibility` rides in `_meta.visibility`.
     let mut meta = Meta::new();
     if let Some(Value::Object(m)) = &desc.meta {
         for (k, v) in m {
@@ -274,7 +273,10 @@ fn make_rmcp_tool(desc: &McpToolDescriptor) -> Tool {
 }
 
 /// Convert a [`resources::UiResource`] into an rmcp `ResourceContents`,
-/// placing any per-resource CSP in `_meta.ui.csp` (MCP-Apps spec).
+/// emitting any opaque per-resource `_meta` at `contents[]._meta`.
+///
+/// The `_meta` value is passed through verbatim; cli-framework does not
+/// interpret it (the consumer owns its shape).
 #[cfg(feature = "mcp-server")]
 fn ui_resource_to_contents(uri: &str, resource: resources::UiResource) -> ResourceContents {
     use resources::UiResourceBody;
@@ -294,10 +296,14 @@ fn ui_resource_to_contents(uri: &str, resource: resources::UiResource) -> Resour
         },
     };
 
-    if let Some(csp) = resource.csp {
+    if let Some(Value::Object(m)) = resource.meta {
         let mut meta = Meta::new();
-        meta.insert("ui".to_string(), serde_json::json!({ "csp": csp }));
-        base = base.with_meta(meta);
+        for (k, v) in m {
+            meta.insert(k, v);
+        }
+        if !meta.is_empty() {
+            base = base.with_meta(meta);
+        }
     }
 
     base
@@ -324,7 +330,7 @@ impl CliFrameworkHandler {
     }
 
     /// Attach a resource registry so this handler serves `resources/list` and
-    /// `resources/read` for the registered `ui://…` URIs (CF-2).
+    /// `resources/read` for the registered resource URIs.
     pub fn with_resource_registry(
         mut self,
         resource_registry: Arc<resources::ResourceRegistry>,
@@ -341,7 +347,7 @@ impl CliFrameworkHandler {
     /// Build the `resources/list` result from the resource registry.
     ///
     /// Transport-independent seam used by the [`ServerHandler::list_resources`]
-    /// impl and by in-process tests (CF-2).
+    /// impl and by in-process tests.
     pub fn list_resources_result(&self) -> ListResourcesResult {
         let resources: Vec<Resource> = self
             .resource_registry
@@ -364,7 +370,7 @@ impl CliFrameworkHandler {
     /// Read a single resource by URI, building the `resources/read` result.
     ///
     /// Transport-independent seam used by the [`ServerHandler::read_resource`]
-    /// impl and by in-process tests (CF-2). Returns `MCP_RESOURCE_NOT_FOUND`
+    /// impl and by in-process tests. Returns `MCP_RESOURCE_NOT_FOUND`
     /// when the URI is not registered (or its provider yields nothing).
     pub fn read_resource_uri(&self, uri: &str) -> Result<ReadResourceResult, ErrorData> {
         match self.resource_registry.read(uri) {
@@ -384,7 +390,7 @@ impl CliFrameworkHandler {
 impl ServerHandler for CliFrameworkHandler {
     fn get_info(&self) -> ServerInfo {
         // Advertise tools always; advertise resources only when some are
-        // registered, so hosts without an MCP-Apps registry see a tools-only
+        // registered, so hosts without a resource registry see a tools-only
         // server (backward compatible). The capabilities builder is type-state
         // encoded, so the two cases are built on separate paths.
         let capabilities = if self.resource_registry.is_empty() {
@@ -664,23 +670,24 @@ mod rmcp_tool_meta_tests {
     use super::*;
     use crate::mcp::schema::McpToolDescriptor;
 
-    // R1: confirm the live `rmcp::model::Tool` carries the MCP-Apps `_meta`
-    // passthrough (`ui`) AND the `visibility` tags (which have no native
-    // `Tool` field) when serialized to the wire.
+    // R1: confirm the live `rmcp::model::Tool` carries the opaque `_meta`
+    // passthrough AND the `visibility` tags (which have no native `Tool` field)
+    // when serialized to the wire. The `_meta` value is consumer-owned and
+    // passed through verbatim — here a neutral opaque object.
     #[test]
-    fn make_rmcp_tool_serializes_meta_ui_and_visibility() {
+    fn make_rmcp_tool_serializes_opaque_meta_and_visibility() {
         let desc = McpToolDescriptor {
             name: "es_detail".to_string(),
             description: "Open detail".to_string(),
             input_schema: serde_json::json!({ "type": "object" }),
             meta: Some(serde_json::json!({
-                "ui": { "resourceUri": "ui://es/person/detail" }
+                "x_consumer": { "key": "value" }
             })),
             visibility: Some(vec!["app".to_string()]),
         };
         let tool = make_rmcp_tool(&desc);
         let json = serde_json::to_value(&tool).unwrap();
-        assert_eq!(json["_meta"]["ui"]["resourceUri"], "ui://es/person/detail");
+        assert_eq!(json["_meta"]["x_consumer"]["key"], "value");
         assert_eq!(json["_meta"]["visibility"], serde_json::json!(["app"]));
     }
 

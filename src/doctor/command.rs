@@ -24,7 +24,7 @@ pub fn create_doctor_command(checks: Vec<Arc<dyn DoctorCheck>>) -> Command {
         validator: None,
         expose_mcp: false,
         expose_chat: false,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: Arc::new(move |ctx, args| {
             let is_json = matches!(args.get("json"), Some(ArgValue::Bool(true)));

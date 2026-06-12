@@ -50,7 +50,7 @@ chmod +x .git/hooks/pre-commit
 | `http_retry`, `retry` | HTTP retry, `secure_reqwest_client` |
 | `cli_output`, `cli_mode`, `message` | help, tables, JSON, modes |
 | `api` (feature `api-server`) | Built-in Axum host for versioned APIs (`/api/{version}/...`) plus `/healthz` + `/readyz`; `build()` may apply a root `fallback_service` (via `root_fallback()`) as its final composition step |
-| `mcp` (feature `mcp-server`) | rmcp `ServerHandler` (tools + resources). MCP-Apps extension: per-command `with_ui` / `with_visibility` → `tools/list` `_meta.ui` + `visibility`; `mcp::resources::ResourceRegistry` serves `ui://…` resources via `resources/list` / `resources/read` with `_meta.ui.csp` (ADR 0066) |
+| `mcp` (feature `mcp-server`) | rmcp `ServerHandler` (tools + resources). Generic, concept-free: per-command `with_meta` (opaque `serde_json::Value`) → `tools/list` top-level `_meta`; `with_visibility` (cli-framework acts on it) → `_meta.visibility`; `mcp::resources::ResourceRegistry` serves resources via `resources/list` / `resources/read` with opaque per-resource `with_meta` at `contents[]._meta`. All UI/MCP-Apps semantics live in the consumer (ADR 0066) |
 
 Also: `auth`, `data_source`; `observability`, `testkit` behind features.
 

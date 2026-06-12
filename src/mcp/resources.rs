@@ -1,13 +1,13 @@
-//! MCP resource serving for MCP-Apps (CF-2).
+//! Generic MCP resource serving.
 //!
-//! A [`ResourceRegistry`] maps a `ui://…` URI to a provider closure that
-//! produces the resource body on demand. Providers return a
-//! [`UiResource`] carrying the MIME type, a text or blob payload, and an
-//! optional per-resource [`UiCsp`]; the CSP is placed in the
-//! `contents[]._meta.ui.csp` slot of the `resources/read` response, per the
-//! MCP-Apps spec.
+//! A [`ResourceRegistry`] maps a resource URI to a provider closure that
+//! produces the resource body on demand. Providers return a [`UiResource`]
+//! carrying the MIME type, a text or blob payload, and an optional opaque
+//! per-resource `_meta` value; that value is placed verbatim in the
+//! `contents[]._meta` slot of the `resources/read` response. cli-framework
+//! does not interpret the `_meta` value — the consumer owns its shape.
 
-use crate::command::UiCsp;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -18,9 +18,10 @@ pub struct UiResource {
     pub mime_type: String,
     /// Either a UTF-8 text body or a base64-encoded blob.
     pub body: UiResourceBody,
-    /// Optional Content-Security-Policy advertised to the host iframe.
-    /// Surfaces as `contents[]._meta.ui.csp` in the `resources/read` reply.
-    pub csp: Option<UiCsp>,
+    /// Optional opaque per-resource `_meta` passthrough. Surfaces verbatim as
+    /// `contents[]._meta` in the `resources/read` reply. cli-framework does not
+    /// inspect it; the consumer owns its shape.
+    pub meta: Option<Value>,
 }
 
 /// Text vs. binary payload for a [`UiResource`].
@@ -33,12 +34,12 @@ pub enum UiResourceBody {
 }
 
 impl UiResource {
-    /// Construct a `text/html` resource with no CSP.
+    /// Construct a `text/html` resource with no `_meta`.
     pub fn html(body: impl Into<String>) -> Self {
         Self {
             mime_type: "text/html".to_string(),
             body: UiResourceBody::Text(body.into()),
-            csp: None,
+            meta: None,
         }
     }
 
@@ -47,7 +48,7 @@ impl UiResource {
         Self {
             mime_type: mime_type.into(),
             body: UiResourceBody::Text(body.into()),
-            csp: None,
+            meta: None,
         }
     }
 
@@ -56,13 +57,14 @@ impl UiResource {
         Self {
             mime_type: mime_type.into(),
             body: UiResourceBody::Blob(base64_body.into()),
-            csp: None,
+            meta: None,
         }
     }
 
-    /// Attach a Content-Security-Policy to this resource.
-    pub fn with_csp(mut self, csp: UiCsp) -> Self {
-        self.csp = Some(csp);
+    /// Attach an opaque `_meta` value to this resource. Emitted verbatim at
+    /// `contents[]._meta`; cli-framework never inspects it.
+    pub fn with_meta(mut self, meta: Value) -> Self {
+        self.meta = Some(meta);
         self
     }
 }
@@ -87,7 +89,7 @@ struct Entry {
     provider: ResourceProvider,
 }
 
-/// Registry of `ui://…` resources, held alongside the tool registry (CF-2).
+/// Registry of resources, held alongside the tool registry.
 #[derive(Default, Clone)]
 pub struct ResourceRegistry {
     entries: HashMap<String, Arc<Entry>>,

@@ -62,7 +62,7 @@ fn make_cmd(id: &'static str) -> Command {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: noop_execute(),
     }
@@ -130,7 +130,7 @@ async fn test_tool_call_arg_validation_failed() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: noop_execute(),
     };
@@ -167,7 +167,7 @@ async fn test_tool_call_execution_failed() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: failing_execute(),
     };
@@ -204,7 +204,7 @@ async fn test_tool_call_internal_error() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: Arc::new(|_ctx, _args: HashMap<String, ArgValue>| {
             Box::pin(async move {

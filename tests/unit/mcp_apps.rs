@@ -1,7 +1,11 @@
-//! Phase 0 (MCP-Apps extension) tests: per-command UI metadata (CF-1),
-//! resource serving with CSP (CF-2), and app-only visibility (CF-3).
+//! MCP generic-passthrough tests: opaque per-command `_meta` (CF-1), generic
+//! resource serving with opaque `_meta` (CF-2), and app-only visibility (CF-3).
+//!
+//! cli-framework treats `_meta` as opaque passthrough — the consumer
+//! (e.g. `entitystore-ui`) owns its shape. These tests therefore build
+//! consumer-shaped `_meta` values and assert they survive verbatim on the wire.
 
-use cli_framework::command::{Command, CommandRegistry, UiCsp, UiToolMeta};
+use cli_framework::command::{Command, CommandRegistry};
 use cli_framework::mcp::resources::{ResourceRegistry, UiResource};
 use cli_framework::mcp::{
     CliFrameworkHandler, McpToolExportPolicy, McpToolRegistry, McpTransportKind,
@@ -13,6 +17,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+#[allow(clippy::type_complexity)]
 fn noop_execute() -> Arc<
     dyn for<'a> Fn(
             &'a mut dyn cli_framework::app::AppContext,
@@ -34,22 +39,24 @@ fn base_cmd(id: &'static str, summary: &'static str) -> Command {
         validator: None,
         expose_mcp: true,
         expose_chat: true,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: noop_execute(),
     }
 }
 
-// ── CF-1 — per-command UI metadata ───────────────────────────────────────────
+// ── CF-1 — opaque per-command `_meta` passthrough ────────────────────────────
 
 #[test]
-fn cf1_tool_descriptor_carries_meta_ui_resource_uri() {
+fn cf1_tool_descriptor_passes_through_opaque_meta() {
     let mut registry = CommandRegistry::new();
-    registry.register(base_cmd("detail", "Open detail view").with_ui(UiToolMeta {
-        resource_uri: "ui://es/person/detail".to_string(),
-        csp: None,
-        prefer_app: true,
-    }));
+    // The consumer supplies the ENTIRE `_meta` value; cli-framework does not
+    // wrap or interpret it. Here a UI-shaped payload built by the consumer.
+    registry.register(
+        base_cmd("detail", "Open detail view").with_meta(serde_json::json!({
+            "ui": { "resourceUri": "ui://es/x/detail" }
+        })),
+    );
 
     let tool_registry = McpToolRegistry::from_command_registry(&registry, "es");
     let tools = tool_registry.list_tools();
@@ -58,19 +65,18 @@ fn cf1_tool_descriptor_carries_meta_ui_resource_uri() {
         .find(|t| t.name == "es_detail")
         .expect("es_detail tool present");
 
-    // Serialize the descriptor and assert the exact JSON shape (acceptance).
+    // Serialize the descriptor and assert the consumer's `_meta` survives verbatim.
     let json = serde_json::to_value(tool).unwrap();
     assert_eq!(
-        json["_meta"]["ui"]["resourceUri"], "ui://es/person/detail",
-        "expected _meta.ui.resourceUri, got: {json}"
+        json["_meta"]["ui"]["resourceUri"], "ui://es/x/detail",
+        "expected consumer _meta passed through verbatim, got: {json}"
     );
-    assert_eq!(json["_meta"]["ui"]["preferApp"], true);
 }
 
 #[test]
-fn cf1_descriptor_without_ui_omits_meta() {
+fn cf1_descriptor_without_meta_omits_meta() {
     let mut registry = CommandRegistry::new();
-    registry.register(base_cmd("plain", "No UI"));
+    registry.register(base_cmd("plain", "No meta"));
 
     let tool_registry = McpToolRegistry::from_command_registry(&registry, "es");
     let tools = tool_registry.list_tools();
@@ -84,29 +90,24 @@ fn cf1_descriptor_without_ui_omits_meta() {
 }
 
 #[test]
-fn cf1_csp_directives_serialize_kebab_case() {
+fn cf1_arbitrary_opaque_meta_is_preserved() {
     let mut registry = CommandRegistry::new();
-    registry.register(base_cmd("detail", "Open detail view").with_ui(UiToolMeta {
-        resource_uri: "ui://es/invoice/detail".to_string(),
-        csp: Some(UiCsp {
-            default_src: Some("'none'".to_string()),
-            style_src: Some("'unsafe-inline'".to_string()),
-            img_src: Some("data:".to_string()),
-            ..Default::default()
-        }),
-        prefer_app: false,
-    }));
+    // A non-UI, arbitrary consumer payload — proves cli-framework is concept-free.
+    registry.register(
+        base_cmd("detail", "Open detail view").with_meta(serde_json::json!({
+            "x_consumer": { "nested": [1, 2, 3], "flag": true }
+        })),
+    );
 
     let tool_registry = McpToolRegistry::from_command_registry(&registry, "es");
     let tools = tool_registry.list_tools();
     let tool = tools.iter().find(|t| t.name == "es_detail").unwrap();
     let json = serde_json::to_value(tool).unwrap();
-    let csp = &json["_meta"]["ui"]["csp"];
-    assert_eq!(csp["default-src"], "'none'");
-    assert_eq!(csp["style-src"], "'unsafe-inline'");
-    assert_eq!(csp["img-src"], "data:");
-    // Unset directives are omitted.
-    assert!(csp.get("script-src").is_none());
+    assert_eq!(
+        json["_meta"]["x_consumer"]["nested"],
+        serde_json::json!([1, 2, 3])
+    );
+    assert_eq!(json["_meta"]["x_consumer"]["flag"], true);
 }
 
 // ── CF-3 — app-only export policy ────────────────────────────────────────────
@@ -117,11 +118,9 @@ fn cf3_app_only_tool_is_listed_with_visibility_and_dispatchable() {
     registry.register(
         base_cmd("save", "Save record")
             .with_visibility(vec!["app".to_string()])
-            .with_ui(UiToolMeta {
-                resource_uri: "ui://es/person/form".to_string(),
-                csp: None,
-                prefer_app: false,
-            }),
+            .with_meta(serde_json::json!({
+                "ui": { "resourceUri": "ui://es/x/form" }
+            })),
     );
 
     let tool_registry = McpToolRegistry::from_command_registry_with_policy(
@@ -149,7 +148,7 @@ fn cf3_app_only_tool_is_listed_with_visibility_and_dispatchable() {
     );
 }
 
-// ── CF-2 — MCP resource serving (in-process handler) ─────────────────────────
+// ── CF-2 — generic MCP resource serving (in-process handler) ─────────────────
 
 fn handler_with_resources(reg: ResourceRegistry) -> CliFrameworkHandler {
     let cmd_registry = CommandRegistry::new();
@@ -159,32 +158,38 @@ fn handler_with_resources(reg: ResourceRegistry) -> CliFrameworkHandler {
 }
 
 #[test]
-fn cf2_read_resource_returns_html_with_csp_meta() {
+fn cf2_read_resource_returns_html_with_opaque_meta() {
     let mut reg = ResourceRegistry::new();
+    // The consumer attaches an opaque `_meta` carrying a UI-shaped object; the
+    // framework emits it verbatim at `contents[]._meta`.
     reg.register_static(
-        "ui://es/invoice/detail",
-        "Invoice detail",
-        UiResource::html("<!doctype html><article>invoice</article>").with_csp(UiCsp {
-            default_src: Some("'none'".to_string()),
-            style_src: Some("'unsafe-inline'".to_string()),
-            img_src: Some("data:".to_string()),
-            ..Default::default()
-        }),
+        "ui://es/x/detail",
+        "X detail",
+        UiResource::html("<!doctype html><article>x</article>").with_meta(serde_json::json!({
+            "ui": {
+                "csp": {
+                    "default-src": "'none'",
+                    "style-src": "'unsafe-inline'",
+                    "img-src": "data:"
+                }
+            }
+        })),
     );
     let handler = handler_with_resources(reg);
 
     let result = handler
-        .read_resource_uri("ui://es/invoice/detail")
+        .read_resource_uri("ui://es/x/detail")
         .expect("resource read ok");
     let json = serde_json::to_value(&result).unwrap();
     let content = &json["contents"][0];
 
-    assert_eq!(content["uri"], "ui://es/invoice/detail");
+    assert_eq!(content["uri"], "ui://es/x/detail");
     assert_eq!(content["mimeType"], "text/html");
     assert_eq!(
-        content["text"], "<!doctype html><article>invoice</article>",
+        content["text"], "<!doctype html><article>x</article>",
         "expected HTML body, got: {json}"
     );
+    // The opaque `_meta` lands verbatim at contents[]._meta.
     assert_eq!(content["_meta"]["ui"]["csp"]["default-src"], "'none'");
     assert_eq!(
         content["_meta"]["ui"]["csp"]["style-src"],
@@ -209,11 +214,7 @@ fn cf2_read_unregistered_resource_is_not_found() {
 #[test]
 fn cf2_list_resources_includes_registered_uri() {
     let mut reg = ResourceRegistry::new();
-    reg.register_static(
-        "ui://es/invoice/detail",
-        "Invoice detail",
-        UiResource::html("<x/>"),
-    );
+    reg.register_static("ui://es/x/detail", "X detail", UiResource::html("<x/>"));
     let handler = handler_with_resources(reg);
 
     let result = handler.list_resources_result();
@@ -225,7 +226,7 @@ fn cf2_list_resources_includes_registered_uri() {
         .map(|r| r["uri"].as_str().unwrap().to_string())
         .collect();
     assert!(
-        uris.contains(&"ui://es/invoice/detail".to_string()),
+        uris.contains(&"ui://es/x/detail".to_string()),
         "expected listed resource, got: {uris:?}"
     );
 }

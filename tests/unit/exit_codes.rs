@@ -40,7 +40,7 @@ fn typed_cmd(id: &'static str, args: Vec<ArgSpec>) -> Command {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: noop_execute(),
     }
@@ -396,7 +396,7 @@ async fn r4a_enum_valid_value_passes_to_handler() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: Arc::new(move |_ctx, args| {
             let val = args.get("focus").cloned();
@@ -467,7 +467,7 @@ async fn r4b_repeated_enum_arg_delivers_all_values() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: Arc::new(move |_ctx, args| {
             let vals = match args.get("focus") {
@@ -572,7 +572,7 @@ async fn r5_runtime_error_is_not_usage_error() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: Arc::new(|_ctx, _args| {
             Box::pin(async { Err(anyhow::anyhow!("runtime failure")) })

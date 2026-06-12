@@ -30,7 +30,7 @@ fn create_async_command(id: &'static str, summary: &'static str) -> Command {
         validator: None,
         expose_mcp: false,
             expose_chat: true,
-            ui: None,
+            meta: None,
             visibility: None,
         execute: Arc::new(|_ctx: &mut dyn AppContext, _args: CommandArgs| {
             Box::pin(async move {
@@ -70,7 +70,7 @@ async fn test_async_command_handles_errors() {
         validator: None,
         expose_mcp: false,
             expose_chat: true,
-            ui: None,
+            meta: None,
             visibility: None,
         execute: Arc::new(|_ctx: &mut dyn AppContext, _args: CommandArgs| {
             Box::pin(async move {
@@ -107,7 +107,7 @@ async fn test_async_command_can_access_args() {
         validator: None,
         expose_mcp: false,
             expose_chat: true,
-            ui: None,
+            meta: None,
             visibility: None,
         execute: Arc::new(|_ctx: &mut dyn AppContext, args: CommandArgs| {
             Box::pin(async move {

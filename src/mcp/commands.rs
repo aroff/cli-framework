@@ -93,7 +93,7 @@ pub fn create_mcp_serve_command_with_deps(
         validator: None,
         expose_mcp: false,
         expose_chat: false,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: Arc::new(move |ctx, args: HashMap<String, ArgValue>| {
             let registry = Arc::clone(&registry);
@@ -644,7 +644,7 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
         validator: None,
         expose_mcp: false,
         expose_chat: false,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: Arc::new(move |ctx, args: HashMap<String, ArgValue>| {
             let dry_run = matches!(
@@ -697,7 +697,7 @@ pub fn create_mcp_list_command() -> Command {
         validator: None,
         expose_mcp: false,
         expose_chat: false,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: Arc::new(|ctx, _args: HashMap<String, ArgValue>| {
             let agents = aikit_sdk::mcp_supported_agents();

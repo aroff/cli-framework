@@ -49,7 +49,7 @@ fn make_hello_command() -> Command {
         validator: None,
         expose_mcp: true,
         expose_chat: true,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: Arc::new(|_ctx, args: HashMap<String, ArgValue>| {
             Box::pin(async move {
@@ -76,7 +76,7 @@ fn make_status_command() -> Command {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: Arc::new(|_ctx, _args| {
             Box::pin(async move {

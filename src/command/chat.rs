@@ -67,7 +67,7 @@ pub fn create_chat_command(
         validator: None,
         expose_mcp: false,
         expose_chat: false,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: Arc::new(move |ctx, args| {
             let client = ailoop_client.clone();

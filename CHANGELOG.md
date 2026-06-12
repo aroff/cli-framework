@@ -1,9 +1,18 @@
 # Changelog
 
-## Unreleased
+## [0.5.0] — 2026-06-12
 
 ### Added
 
+- MCP generic per-tool `_meta` passthrough: `Command::with_meta(serde_json::Value)` attaches an
+  opaque value emitted verbatim as the tool's top-level `_meta` on `tools/list`. cli-framework does
+  not inspect it — the consumer owns the entire shape (e.g. UI metadata, but the framework stays
+  concept-free). `Command::with_visibility(Vec<String>)` continues to tag app-only tools (the one
+  field cli-framework acts on; rides in `_meta.visibility`).
+- MCP generic resource serving stays in-scope but concept-free: `UiResource::with_meta(
+  serde_json::Value)` attaches an opaque per-resource `_meta` emitted verbatim at
+  `contents[]._meta` in `resources/read`. The `ResourceRegistry` and `CliFrameworkHandler`
+  resource seams are unchanged.
 - Built-in `completion <shell>` command (bash/zsh/fish/powershell) auto-registered by `AppBuilder::build()`. Apps that already define `completion` can opt out via `AppBuilder::without_completion()`.
 - `api-server` feature: versioned Axum API hosting under `/api/{version}/...` with fixed `/healthz` + `/readyz` endpoints and graceful shutdown coordination.
 - `api-swagger` feature: runtime OpenAPI spec endpoint and embedded Swagger UI — serves each version's app-supplied document at `GET /api/{version}/openapi.json` (with `servers:` patch) and renders a version-switchable Swagger UI at `GET /api/docs` with no CDN dependency.
@@ -20,6 +29,14 @@
 
 ### Breaking
 
+- Removed the typed MCP-Apps UI vocabulary from the core command model. cli-framework is a generic
+  MCP transport and must not know UI concepts. Removed `command::UiToolMeta`, `command::UiCsp`, the
+  `Command::ui` field, `Command::with_ui`, and their prelude re-exports. Replaced by the opaque
+  `Command::meta: Option<serde_json::Value>` + `Command::with_meta` passthrough. Likewise
+  `UiResource::csp: Option<UiCsp>` / `UiResource::with_csp` are replaced by
+  `UiResource::meta: Option<serde_json::Value>` / `UiResource::with_meta`. Consumers that previously
+  built `with_ui(UiToolMeta { resource_uri, csp, prefer_app })` now pass the entire `_meta` value
+  themselves, e.g. `with_meta(json!({"ui":{"resourceUri":"…","csp":{…},"preferApp":true}}))`.
 - Removed `cli_framework::auth` and `cli_framework::data_source::DataSource` (and the prelude
   re-export). These modules were not integrated into command dispatch; consumers should implement
   auth and data-refresh concerns in their application layer.

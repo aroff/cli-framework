@@ -46,7 +46,7 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: noop_arc_execute(),
     });
@@ -60,7 +60,7 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: noop_arc_execute(),
     });
@@ -74,7 +74,7 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: noop_arc_execute(),
     });
@@ -90,7 +90,7 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: noop_arc_execute(),
     });
@@ -103,7 +103,7 @@ fn t7_renders_sorted_categories_and_sorted_commands_within_group() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: noop_arc_execute(),
     });
@@ -137,7 +137,7 @@ fn t8_renders_fixed_width_id_column_per_group() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: noop_arc_execute(),
     });
@@ -150,7 +150,7 @@ fn t8_renders_fixed_width_id_column_per_group() {
         validator: None,
         expose_mcp: false,
         expose_chat: true,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: noop_arc_execute(),
     });
@@ -190,7 +190,7 @@ async fn t9_run_with_args_help_flag_routes_through_help_renderer_when_categories
             validator: None,
             expose_mcp: false,
             expose_chat: true,
-            ui: None,
+            meta: None,
             visibility: None,
             execute: noop_arc_execute(),
         })
@@ -205,7 +205,7 @@ async fn t9_run_with_args_help_flag_routes_through_help_renderer_when_categories
             validator: None,
             expose_mcp: false,
             expose_chat: true,
-            ui: None,
+            meta: None,
             visibility: None,
             execute: noop_arc_execute(),
         })
@@ -220,7 +220,7 @@ async fn t9_run_with_args_help_flag_routes_through_help_renderer_when_categories
             validator: None,
             expose_mcp: false,
             expose_chat: true,
-            ui: None,
+            meta: None,
             visibility: None,
             execute: noop_arc_execute(),
         })
@@ -267,7 +267,7 @@ async fn t10_run_with_args_no_subcommand_routes_through_help_renderer_when_categ
             validator: None,
             expose_mcp: false,
             expose_chat: true,
-            ui: None,
+            meta: None,
             visibility: None,
             execute: noop_arc_execute(),
         })
@@ -282,7 +282,7 @@ async fn t10_run_with_args_no_subcommand_routes_through_help_renderer_when_categ
             validator: None,
             expose_mcp: false,
             expose_chat: true,
-            ui: None,
+            meta: None,
             visibility: None,
             execute: noop_arc_execute(),
         })
@@ -322,7 +322,7 @@ async fn t11_run_with_args_help_flag_uses_clap_when_no_categories() {
             validator: None,
             expose_mcp: false,
             expose_chat: true,
-            ui: None,
+            meta: None,
             visibility: None,
             execute: noop_arc_execute(),
         })
@@ -336,7 +336,7 @@ async fn t11_run_with_args_help_flag_uses_clap_when_no_categories() {
             validator: None,
             expose_mcp: false,
             expose_chat: true,
-            ui: None,
+            meta: None,
             visibility: None,
             execute: noop_arc_execute(),
         })
@@ -376,7 +376,7 @@ fn t12_render_help_does_not_contain_spurious_version_line() {
             validator: None,
             expose_mcp: false,
             expose_chat: true,
-            ui: None,
+            meta: None,
             visibility: None,
             execute: noop_arc_execute(),
         })

@@ -14,7 +14,7 @@ pub fn create_spec_command(app_name: &'static str, app_version: &'static str) ->
         validator: None,
         expose_mcp: false,
         expose_chat: false,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: Arc::new(move |ctx, args| {
             let format_str = args
@@ -123,7 +123,7 @@ pub fn create_completion_command(
         validator: None,
         expose_mcp: false,
         expose_chat: false,
-        ui: None,
+        meta: None,
         visibility: None,
         execute: Arc::new(move |ctx, args| {
             let _clap_root = std::sync::Arc::clone(&clap_root);
