@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.3] — 2026-06-13
+
+### Added
+
+- `ResourceRegistry` now supports **prefix providers** (`register_prefix`): a single provider
+  serves every URI under a base (e.g. `ui://es/invoice/detail/` serving `ui://es/invoice/detail/<id>`),
+  receiving the full requested URI so it can render per-record resources on demand. `read` resolves
+  an exact registration first, else the longest matching prefix (CF-6b). Additive; existing exact
+  registration is unchanged.
+
 ## [0.5.1] — 2026-06-13
 
 ### Added

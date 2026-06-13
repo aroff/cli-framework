@@ -90,9 +90,16 @@ struct Entry {
 }
 
 /// Registry of resources, held alongside the tool registry.
+///
+/// Two kinds of registration: **exact** (a fixed URI) and **prefix** (a provider
+/// that serves every URI under a base, e.g. `ui://es/invoice/detail/` serving
+/// `ui://es/invoice/detail/<id>`). On `read`, an exact match wins; otherwise the
+/// **longest** matching prefix provider is invoked with the full requested URI,
+/// so a single stateless provider can render per-record resources on demand.
 #[derive(Default, Clone)]
 pub struct ResourceRegistry {
     entries: HashMap<String, Arc<Entry>>,
+    prefixes: Vec<(String, Arc<Entry>)>,
 }
 
 impl ResourceRegistry {
@@ -147,24 +154,130 @@ impl ResourceRegistry {
         })
     }
 
-    /// All registered listings, for `resources/list`.
+    /// Register a **prefix** provider: it serves every URI that starts with
+    /// `prefix`, receiving the full requested URI so it can parse a trailing
+    /// segment (e.g. a record id) and render on demand. The `listing` advertises
+    /// the prefix itself as a template URI. Longest prefix wins on `read`.
+    pub fn register_prefix<F>(
+        &mut self,
+        prefix: impl Into<String>,
+        name: impl Into<String>,
+        description: Option<String>,
+        mime_type: Option<String>,
+        provider: F,
+    ) -> &mut Self
+    where
+        F: Fn(&str) -> Option<UiResource> + Send + Sync + 'static,
+    {
+        let prefix = prefix.into();
+        let listing = ResourceListing {
+            uri: prefix.clone(),
+            name: name.into(),
+            description,
+            mime_type,
+        };
+        let entry = Arc::new(Entry {
+            listing,
+            provider: Arc::new(provider),
+        });
+        // Replace an existing provider for the same prefix, else append.
+        if let Some(slot) = self.prefixes.iter_mut().find(|(p, _)| *p == prefix) {
+            slot.1 = entry;
+        } else {
+            self.prefixes.push((prefix, entry));
+        }
+        self
+    }
+
+    /// All registered listings (exact + prefix templates), for `resources/list`.
     pub fn listings(&self) -> Vec<ResourceListing> {
-        self.entries.values().map(|e| e.listing.clone()).collect()
+        self.entries
+            .values()
+            .map(|e| e.listing.clone())
+            .chain(self.prefixes.iter().map(|(_, e)| e.listing.clone()))
+            .collect()
     }
 
-    /// Resolve a URI to its current resource body, if registered and available.
+    /// Resolve a URI to its current resource body. An exact registration wins;
+    /// otherwise the longest matching prefix provider is invoked with `uri`.
     pub fn read(&self, uri: &str) -> Option<UiResource> {
-        let entry = self.entries.get(uri)?;
-        (entry.provider)(uri)
+        if let Some(entry) = self.entries.get(uri) {
+            return (entry.provider)(uri);
+        }
+        let best = self
+            .prefixes
+            .iter()
+            .filter(|(p, _)| uri.starts_with(p.as_str()))
+            .max_by_key(|(p, _)| p.len())?;
+        (best.1.provider)(uri)
     }
 
-    /// Whether any resource is registered.
+    /// Whether any resource (exact or prefix) is registered.
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.is_empty() && self.prefixes.is_empty()
     }
 
-    /// Number of registered resources.
+    /// Number of registered resources (exact + prefix).
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.entries.len() + self.prefixes.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefix_provider_serves_subpaths_with_full_uri() {
+        let mut r = ResourceRegistry::new();
+        r.register_prefix(
+            "ui://es/invoice/detail/",
+            "Invoice detail",
+            None,
+            Some("text/html".into()),
+            |uri| {
+                let id = uri.rsplit('/').next().unwrap_or_default().to_string();
+                Some(UiResource::html(format!(
+                    "<article data-id=\"{id}\"></article>"
+                )))
+            },
+        );
+
+        // a concrete id-bearing URI routes to the prefix provider, which sees the full URI
+        let res = r.read("ui://es/invoice/detail/abc-123").expect("served");
+        match res.body {
+            UiResourceBody::Text(html) => assert!(html.contains("abc-123")),
+            _ => panic!("expected text"),
+        }
+        // unrelated URI does not match
+        assert!(r.read("ui://es/customer/detail/x").is_none());
+    }
+
+    #[test]
+    fn exact_match_wins_over_prefix() {
+        let mut r = ResourceRegistry::new();
+        r.register_prefix("ui://es/", "catchall", None, None, |_| {
+            Some(UiResource::html("prefix"))
+        });
+        r.register_static("ui://es/exact", "exact", UiResource::html("exact"));
+        match r.read("ui://es/exact").unwrap().body {
+            UiResourceBody::Text(t) => assert_eq!(t, "exact"),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn longest_prefix_wins() {
+        let mut r = ResourceRegistry::new();
+        r.register_prefix("ui://es/", "short", None, None, |_| {
+            Some(UiResource::html("short"))
+        });
+        r.register_prefix("ui://es/invoice/", "long", None, None, |_| {
+            Some(UiResource::html("long"))
+        });
+        match r.read("ui://es/invoice/detail/1").unwrap().body {
+            UiResourceBody::Text(t) => assert_eq!(t, "long"),
+            _ => panic!(),
+        }
     }
 }

@@ -20,7 +20,7 @@ proc-macro2 = "1"
 
 [package]
 name = "cli-framework"
-version = "0.5.1"
+version = "0.5.3"
 edition.workspace = true
 rust-version.workspace = true
 authors = ["CLI Framework Team"]
