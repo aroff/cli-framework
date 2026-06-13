@@ -99,6 +99,33 @@ impl AppBuilder {
         self
     }
 
+    /// The configured application name (set by [`Self::with_version`]).
+    ///
+    /// MCP tool names are derived as `{app_name}_{command_path}`; embedders that
+    /// register commands which reference *other* tools by name (e.g. a UI shim
+    /// that calls an app-only bridge tool) read this to compute those names.
+    pub fn app_name(&self) -> &str {
+        self.app_name
+    }
+
+    /// Read-only access to the command registry accumulated so far.
+    ///
+    /// Useful to embedders that want to build an in-process
+    /// [`McpToolRegistry`](crate::mcp::McpToolRegistry) for testing tool dispatch
+    /// without standing up a transport.
+    pub fn command_registry(&self) -> &CommandRegistry {
+        &self.command_registry
+    }
+
+    /// Read-only access to the MCP resource registry supplied via
+    /// [`Self::with_mcp_resource_registry`], if any.
+    #[cfg(feature = "mcp-server")]
+    pub fn mcp_resource_registry(
+        &self,
+    ) -> Option<&std::sync::Arc<crate::mcp::resources::ResourceRegistry>> {
+        self.mcp_resource_registry.as_ref()
+    }
+
     /// Add a global flag that applies to all commands.
     pub fn global_flag(mut self, spec: ArgSpec) -> Self {
         self.global_flags.push(spec);

@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.4] — 2026-06-13
+
+### Added
+
+- MCP tool results can now carry **`structuredContent`** distinct from the model-facing
+  `content` text (CF-7). A command's `execute` attaches it via the new
+  `AppContext::framework_set_structured_content(serde_json::Value)`; the MCP dispatch maps it to
+  `CallToolResult.structured_content` while the text emitted via `framework_println` remains the
+  `content`. This lets a tool return a large payload (e.g. server-rendered HTML for an MCP-Apps
+  iframe) to the host without dumping it into the model's text context.
+  - New `tool_bridge::BridgeOutput { text, structured }` and
+    `CommandAsToolBridge::invoke_structured(...)`; the existing `invoke(...)` is unchanged
+    (returns text only) for chat callers.
+  - The MCP dispatch context now **captures** a command's `framework_println` output (previously it
+    went to the server's stdout and the tool reported only `"OK"`).
+
 ## [0.5.3] — 2026-06-13
 
 ### Added

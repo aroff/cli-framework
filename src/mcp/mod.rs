@@ -170,10 +170,49 @@ pub enum McpTransportKind {
     Stdio,
 }
 
+/// `AppContext` used for MCP tool dispatch.
+///
+/// Captures both the text a command emits via `framework_println` (returned as
+/// the tool result `content`) and any structured value it attaches via
+/// `framework_set_structured_content` (returned as the result
+/// `structuredContent`, CF-7). Without this capture an MCP tool would print to
+/// the server's stdout and report only `"OK"`.
 #[cfg(feature = "mcp-server")]
-struct McpAppContext;
+struct McpAppContext {
+    buffer: std::sync::Mutex<Vec<u8>>,
+    structured: std::sync::Mutex<Option<Value>>,
+}
 #[cfg(feature = "mcp-server")]
-impl crate::app::AppContext for McpAppContext {}
+impl McpAppContext {
+    fn new() -> Self {
+        Self {
+            buffer: std::sync::Mutex::new(Vec::new()),
+            structured: std::sync::Mutex::new(None),
+        }
+    }
+}
+#[cfg(feature = "mcp-server")]
+impl crate::app::AppContext for McpAppContext {
+    fn framework_println(&self, s: &str) {
+        use std::io::Write;
+        let mut buf = self.buffer.lock().unwrap();
+        let _ = writeln!(buf, "{}", s);
+    }
+
+    fn drain_output(&self) -> String {
+        let mut buf = self.buffer.lock().unwrap();
+        let data = std::mem::take(&mut *buf);
+        String::from_utf8_lossy(&data).into_owned()
+    }
+
+    fn framework_set_structured_content(&self, value: Value) {
+        *self.structured.lock().unwrap() = Some(value);
+    }
+
+    fn drain_structured_content(&self) -> Option<Value> {
+        self.structured.lock().unwrap().take()
+    }
+}
 
 #[cfg(feature = "mcp-server")]
 fn mcp_error(code: i32, message: String) -> ErrorData {
@@ -479,9 +518,9 @@ pub async fn dispatch_tool_call(
     let bridge = tool_registry.bridge_for_call(transport, tool_name);
 
     let arguments_value = arguments.map(Value::Object).unwrap_or(Value::Null);
-    let mut ctx = McpAppContext;
+    let mut ctx = McpAppContext::new();
     let res = bridge
-        .invoke(
+        .invoke_structured(
             &mut ctx,
             BridgeInvocation {
                 command: cmd,
@@ -493,9 +532,19 @@ pub async fn dispatch_tool_call(
         .await;
 
     match res {
-        Ok(output) => Ok(CallToolResult::success(vec![Content::text(
-            if output.is_empty() { "OK" } else { &output },
-        )])),
+        Ok(output) => {
+            let text = if output.text.is_empty() {
+                "OK"
+            } else {
+                &output.text
+            };
+            // CF-7: a command may attach a `structuredContent` value distinct
+            // from the `content` text (e.g. server-rendered View HTML), kept out
+            // of the model's text context.
+            let mut result = CallToolResult::success(vec![Content::text(text)]);
+            result.structured_content = output.structured;
+            Ok(result)
+        }
         Err(BridgeError::ArgValidation(msg)) => Err(mcp_error(
             -32002,
             format!("MCP_ARG_VALIDATION_FAILED: {}", msg),
@@ -814,5 +863,93 @@ mod rmcp_tool_meta_tests {
         let tool = make_rmcp_tool(&desc);
         let json = serde_json::to_value(&tool).unwrap();
         assert!(json.get("_meta").is_none(), "got: {json}");
+    }
+}
+
+#[cfg(all(test, feature = "mcp-server"))]
+mod cf7_structured_content_tests {
+    use super::*;
+    use crate::command::Command;
+    use crate::spec::command_tree::CommandSpec;
+    use std::collections::HashMap;
+
+    // CF-7: a command's execute can attach `structuredContent` distinct from the
+    // model-facing `content` text, and the MCP dispatch surfaces both.
+    #[tokio::test]
+    async fn dispatch_carries_structured_content_distinct_from_text() {
+        let cmd = Command {
+            id: Arc::from("view"),
+            spec: Arc::new(CommandSpec {
+                summary: "render a view",
+                ..Default::default()
+            }),
+            validator: None,
+            expose_mcp: true,
+            expose_chat: false,
+            meta: None,
+            visibility: None,
+            execute: Arc::new(|ctx, _args| {
+                Box::pin(async move {
+                    ctx.framework_println("text fallback for the model");
+                    ctx.framework_set_structured_content(
+                        serde_json::json!({ "html": "<article>hi</article>" }),
+                    );
+                    Ok(())
+                })
+            }),
+        };
+
+        let mut commands = HashMap::new();
+        commands.insert("app_view".to_string(), cmd);
+        let registry = McpToolRegistry::from_commands(commands, "app");
+
+        let result = dispatch_tool_call(&registry, "app_view", None, McpTransportKind::Stdio)
+            .await
+            .expect("dispatch ok");
+
+        // structuredContent carries the HTML; the model-facing text does not.
+        let structured = result.structured_content.expect("structured content set");
+        assert_eq!(structured["html"], "<article>hi</article>");
+        let text = match &result.content[0].raw {
+            rmcp::model::RawContent::Text(t) => t.text.clone(),
+            other => panic!("expected text content, got {other:?}"),
+        };
+        assert_eq!(text, "text fallback for the model\n");
+        assert!(
+            !text.contains("<article>"),
+            "HTML must not leak into content"
+        );
+    }
+
+    // A command that sets no structured content yields a None structured field
+    // (backward compatible).
+    #[tokio::test]
+    async fn dispatch_without_structured_content_is_none() {
+        let cmd = Command {
+            id: Arc::from("plain"),
+            spec: Arc::new(CommandSpec {
+                summary: "plain",
+                ..Default::default()
+            }),
+            validator: None,
+            expose_mcp: true,
+            expose_chat: false,
+            meta: None,
+            visibility: None,
+            execute: Arc::new(|ctx, _args| {
+                Box::pin(async move {
+                    ctx.framework_println("ok");
+                    Ok(())
+                })
+            }),
+        };
+        let mut commands = HashMap::new();
+        commands.insert("app_plain".to_string(), cmd);
+        let registry = McpToolRegistry::from_commands(commands, "app");
+
+        let result = dispatch_tool_call(&registry, "app_plain", None, McpTransportKind::Stdio)
+            .await
+            .expect("dispatch ok");
+        assert!(result.structured_content.is_none());
     }
 }

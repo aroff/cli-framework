@@ -39,6 +39,24 @@ pub trait AppContext: Send + Sync {
         String::new()
     }
 
+    /// Attach a structured-content value to the current command result.
+    ///
+    /// A command sets this to return machine-facing structured data (an MCP
+    /// `structuredContent` object) *separately* from the human/model-facing text
+    /// emitted via `framework_println`. The default is a no-op; only contexts
+    /// that participate in the MCP tool bridge capture it (see
+    /// `drain_structured_content`). Calling this on a non-capturing context is
+    /// harmless and simply discards the value.
+    fn framework_set_structured_content(&self, _value: serde_json::Value) {}
+
+    /// Drain and return any structured content set since the last call.
+    ///
+    /// Contexts that capture `framework_set_structured_content` override this to
+    /// return and clear the stored value. The default returns `None`.
+    fn drain_structured_content(&self) -> Option<serde_json::Value> {
+        None
+    }
+
     /// Return the global args parsed for the current invocation, if available.
     ///
     /// Returns `None` for contexts that do not carry global args (e.g., user-defined

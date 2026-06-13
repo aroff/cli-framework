@@ -52,6 +52,17 @@ pub struct BridgeInvocation<'a> {
     pub mode: BridgeMode,
 }
 
+/// The full outcome of a tool invocation: the captured text output plus any
+/// structured-content value the command attached via
+/// `AppContext::framework_set_structured_content` (CF-7). The MCP dispatch maps
+/// `text` to the result `content` and `structured` to `structuredContent`;
+/// callers that only need text (chat) use [`CommandAsToolBridge::invoke`].
+#[derive(Debug, Clone, Default)]
+pub struct BridgeOutput {
+    pub text: String,
+    pub structured: Option<serde_json::Value>,
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum BridgeError {
     #[error("TOOL_NOT_FOUND: {0}")]
@@ -119,11 +130,29 @@ impl CommandAsToolBridge {
         }
     }
 
+    /// Invoke a command and return its captured text output only.
+    ///
+    /// Backward-compatible entry point for callers (chat) that do not consume
+    /// structured content. For the full result including `structuredContent`
+    /// (CF-7), use [`Self::invoke_structured`].
     pub async fn invoke(
         &self,
         ctx: &mut dyn AppContext,
         invocation: BridgeInvocation<'_>,
     ) -> Result<String, BridgeError> {
+        self.invoke_structured(ctx, invocation)
+            .await
+            .map(|o| o.text)
+    }
+
+    /// Invoke a command and return its full [`BridgeOutput`] (text +
+    /// structured content). The MCP dispatch uses this so a command can return
+    /// `structuredContent` distinct from `content` (CF-7).
+    pub async fn invoke_structured(
+        &self,
+        ctx: &mut dyn AppContext,
+        invocation: BridgeInvocation<'_>,
+    ) -> Result<BridgeOutput, BridgeError> {
         match invocation.mode {
             BridgeMode::Interactive => self.invoke_interactive(ctx, invocation).await,
             BridgeMode::Mcp => self.invoke_mcp(ctx, invocation).await,
@@ -134,7 +163,7 @@ impl CommandAsToolBridge {
         &self,
         ctx: &mut dyn AppContext,
         invocation: BridgeInvocation<'_>,
-    ) -> Result<String, BridgeError> {
+    ) -> Result<BridgeOutput, BridgeError> {
         let cmd = invocation.command;
         let args = self.parse_args(cmd, invocation.input)?;
 
@@ -189,7 +218,7 @@ impl CommandAsToolBridge {
         &self,
         ctx: &mut dyn AppContext,
         invocation: BridgeInvocation<'_>,
-    ) -> Result<String, BridgeError> {
+    ) -> Result<BridgeOutput, BridgeError> {
         let cmd = invocation.command;
         let args = self.parse_args(cmd, invocation.input)?;
 
@@ -210,7 +239,7 @@ impl CommandAsToolBridge {
         cmd: &Command,
         args: HashMap<String, ArgValue>,
         tier: CommandRiskTier,
-    ) -> Result<String, BridgeError> {
+    ) -> Result<BridgeOutput, BridgeError> {
         if let Some(ref gate) = self.gate {
             gate.before_execute(cmd, &args, tier)
                 .await
@@ -224,7 +253,10 @@ impl CommandAsToolBridge {
             .await
             .map_err(BridgeError::Execution)?;
 
-        Ok(ctx.drain_output())
+        Ok(BridgeOutput {
+            text: ctx.drain_output(),
+            structured: ctx.drain_structured_content(),
+        })
     }
 }
 
