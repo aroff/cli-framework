@@ -574,11 +574,62 @@ pub fn build_mcp_axum_router(
     risk_policy: crate::security::CommandRiskPolicy,
     export_policy: McpToolExportPolicy,
 ) -> axum::Router {
+    build_mcp_axum_router_with_resources(
+        registry,
+        app_name,
+        path,
+        risk_policy,
+        export_policy,
+        Arc::new(resources::ResourceRegistry::new()),
+    )
+}
+
+/// Like [`build_mcp_axum_router`], but threads a populated
+/// [`resources::ResourceRegistry`] into the served handler so registered
+/// `ui://…` resources are served via `resources/list` and `resources/read`.
+///
+/// This is the HTTP-side seam for consumers (e.g. an MCP-Apps binding) that
+/// mount MCP into an existing Axum app via [`crate::api::ApiServer::mcp_router`].
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use cli_framework::mcp::build_mcp_axum_router_with_resources;
+/// # use cli_framework::mcp::McpToolExportPolicy;
+/// # use cli_framework::mcp::resources::{ResourceRegistry, UiResource};
+/// # use cli_framework::command::CommandRegistry;
+/// # use cli_framework::security::CommandRiskPolicy;
+/// # use std::sync::Arc;
+/// let registry = CommandRegistry::new();
+/// let mut resources = ResourceRegistry::new();
+/// resources.register_static(
+///     "ui://app/index.html",
+///     "App shell",
+///     UiResource::html("<!doctype html><title>App</title>"),
+/// );
+/// let router = build_mcp_axum_router_with_resources(
+///     &registry,
+///     "myapp",
+///     "/mcp",
+///     CommandRiskPolicy::default(),
+///     McpToolExportPolicy::default(),
+///     Arc::new(resources),
+/// );
+/// ```
+#[cfg(feature = "mcp-server")]
+pub fn build_mcp_axum_router_with_resources(
+    registry: &CommandRegistry,
+    app_name: &str,
+    path: &str,
+    risk_policy: crate::security::CommandRiskPolicy,
+    export_policy: McpToolExportPolicy,
+    resource_registry: Arc<resources::ResourceRegistry>,
+) -> axum::Router {
     let tool_registry = Arc::new(
         McpToolRegistry::from_command_registry_with_policy(registry, app_name, export_policy)
             .with_risk_policy(risk_policy),
     );
-    transport_http::mcp_axum_router(tool_registry, path)
+    transport_http::mcp_axum_router_with_resources(tool_registry, resource_registry, path)
 }
 
 #[cfg(feature = "mcp-server")]
@@ -615,6 +666,34 @@ pub async fn serve_mcp_with_gate_opts(
     gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
     banner: BannerSettings,
 ) -> Result<()> {
+    serve_mcp_with_gate_opts_with_resources(
+        registry,
+        app_name,
+        args,
+        risk_policy,
+        export_policy,
+        gate,
+        Arc::new(resources::ResourceRegistry::new()),
+        banner,
+    )
+    .await
+}
+
+/// Like [`serve_mcp_with_gate_opts`], but threads a populated
+/// [`resources::ResourceRegistry`] into the served handler so registered
+/// `ui://…` resources are served over the Streamable HTTP transport.
+#[cfg(feature = "mcp-server")]
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_mcp_with_gate_opts_with_resources(
+    registry: Arc<CommandRegistry>,
+    app_name: &str,
+    args: McpServerArgs,
+    risk_policy: crate::security::CommandRiskPolicy,
+    export_policy: McpToolExportPolicy,
+    gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
+    resource_registry: Arc<resources::ResourceRegistry>,
+    banner: BannerSettings,
+) -> Result<()> {
     let mut tool_registry =
         McpToolRegistry::from_command_registry_with_policy(&registry, app_name, export_policy)
             .with_risk_policy(risk_policy);
@@ -623,7 +702,13 @@ pub async fn serve_mcp_with_gate_opts(
     }
     let tool_registry = Arc::new(tool_registry);
 
-    transport_http::start_streamable_http(tool_registry, &args, banner).await
+    transport_http::start_streamable_http_with_resources(
+        tool_registry,
+        resource_registry,
+        &args,
+        banner,
+    )
+    .await
 }
 
 #[cfg(feature = "mcp-server")]
@@ -655,6 +740,32 @@ pub async fn serve_mcp_stdio_opts(
     gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
     banner: BannerSettings,
 ) -> anyhow::Result<()> {
+    serve_mcp_stdio_opts_with_resources(
+        registry,
+        app_name,
+        risk_policy,
+        export_policy,
+        gate,
+        Arc::new(resources::ResourceRegistry::new()),
+        banner,
+    )
+    .await
+}
+
+/// Like [`serve_mcp_stdio_opts`], but threads a populated
+/// [`resources::ResourceRegistry`] into the served handler so registered
+/// `ui://…` resources are served over the stdio transport.
+#[cfg(feature = "mcp-server")]
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_mcp_stdio_opts_with_resources(
+    registry: Arc<CommandRegistry>,
+    app_name: &str,
+    risk_policy: crate::security::CommandRiskPolicy,
+    export_policy: McpToolExportPolicy,
+    gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
+    resource_registry: Arc<resources::ResourceRegistry>,
+    banner: BannerSettings,
+) -> anyhow::Result<()> {
     let mut tool_registry =
         McpToolRegistry::from_command_registry_with_policy(&registry, app_name, export_policy)
             .with_risk_policy(risk_policy);
@@ -662,7 +773,7 @@ pub async fn serve_mcp_stdio_opts(
         tool_registry = tool_registry.with_gate(gate);
     }
     let tool_registry = Arc::new(tool_registry);
-    transport_stdio::start_stdio(tool_registry, banner).await
+    transport_stdio::start_stdio_with_resources(tool_registry, resource_registry, banner).await
 }
 
 #[cfg(all(test, feature = "mcp-server"))]

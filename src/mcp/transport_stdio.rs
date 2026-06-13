@@ -1,4 +1,5 @@
 use crate::mcp::banner::{emit_banner, BannerData, BannerSettings};
+use crate::mcp::resources::ResourceRegistry;
 use crate::mcp::{CliFrameworkHandler, McpToolRegistry, McpTransportKind};
 use anyhow::Result;
 use rmcp::{serve_server, transport::stdio};
@@ -14,8 +15,20 @@ pub async fn start_stdio(
     tool_registry: Arc<McpToolRegistry>,
     banner: BannerSettings,
 ) -> Result<()> {
+    start_stdio_with_resources(tool_registry, Arc::new(ResourceRegistry::new()), banner).await
+}
+
+/// Like [`start_stdio`], but threads a populated [`ResourceRegistry`] into the
+/// served handler so registered `ui://…` resources are served via
+/// `resources/list` and `resources/read`.
+pub async fn start_stdio_with_resources(
+    tool_registry: Arc<McpToolRegistry>,
+    resource_registry: Arc<ResourceRegistry>,
+    banner: BannerSettings,
+) -> Result<()> {
     tracing::info!("MCP stdio server starting (stdin/stdout)");
     tracing::info!("MCP: exported {} tools", tool_registry.tool_count());
+    tracing::info!("MCP: exported {} resources", resource_registry.len());
 
     // Banner goes to stderr — stdout is the JSON-RPC channel.
     let data = BannerData::stdio(&tool_registry);
@@ -23,6 +36,7 @@ pub async fn start_stdio(
 
     let serialize = Arc::new(Mutex::new(()));
     let handler = CliFrameworkHandler::new(Arc::clone(&tool_registry), McpTransportKind::Stdio)
+        .with_resource_registry(resource_registry)
         .with_stdio_serialization(serialize);
 
     let running = serve_server(handler, stdio())

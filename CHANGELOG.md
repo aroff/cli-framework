@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.5.1] — 2026-06-13
+
+### Added
+
+- MCP serve path now threads a populated `ResourceRegistry` end-to-end, so registered `ui://…`
+  resources are actually served (CF-6). Previously `ResourceRegistry` and
+  `CliFrameworkHandler::with_resource_registry` existed but no public serve entry point ever called
+  `with_resource_registry`, so a populated registry had no route to the served handler.
+  - New consumer-facing slot: `AppBuilder::with_mcp_resource_registry(Arc<ResourceRegistry>)`. The
+    auto-registered `mcp serve` command now serves those resources over **both** stdio and HTTP
+    transports (`resources/list` + `resources/read`).
+  - New HTTP-side seam for apps that mount MCP into their own Axum router:
+    `mcp::build_mcp_axum_router_with_resources(...)` (the existing `build_mcp_axum_router` delegates
+    to it with an empty registry).
+  - New lower-level serve variants that accept an `Arc<ResourceRegistry>`:
+    `serve_mcp_stdio_opts_with_resources`, `serve_mcp_with_gate_opts_with_resources`,
+    `transport_stdio::start_stdio_with_resources`,
+    `transport_http::start_streamable_http_with_resources`,
+    `transport_http::mcp_axum_router_with_resources`.
+  - All changes are additive and backward compatible: existing serve signatures are unchanged and
+    default to an empty registry (a tools-only server, exactly as before).
+
 ## [0.5.0] — 2026-06-12
 
 ### Added

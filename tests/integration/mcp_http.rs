@@ -591,6 +591,115 @@ async fn test_tools_list_and_call_via_mcp_serve_stdio_subcommand() {
     let _ = child.kill().await;
 }
 
+/// CF-6: a populated `ResourceRegistry`, handed to the serve path via
+/// `AppBuilder::with_mcp_resource_registry`, is actually served end-to-end over
+/// the stdio handler path. Drives the real `mcp serve --transport stdio`
+/// subprocess and asserts `resources/list` lists the `ui://…` resource and
+/// `resources/read` returns its body. This is the regression that the prior
+/// wiring (serve entry points never calling `with_resource_registry`) failed.
+#[tokio::test]
+async fn test_resources_list_and_read_via_mcp_serve_stdio_subcommand() {
+    let _ = env_logger::try_init();
+
+    use std::process::Stdio;
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+    use tokio::process::Command as TokioCommand;
+
+    struct ChildTransport {
+        reader: tokio::process::ChildStdout,
+        writer: tokio::process::ChildStdin,
+    }
+
+    impl AsyncRead for ChildTransport {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.reader).poll_read(cx, buf)
+        }
+    }
+
+    impl AsyncWrite for ChildTransport {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            data: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::pin::Pin::new(&mut self.writer).poll_write(cx, data)
+        }
+
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.writer).poll_flush(cx)
+        }
+
+        fn poll_shutdown(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.writer).poll_shutdown(cx)
+        }
+    }
+
+    let server_exe = env!("CARGO_BIN_EXE_cfw_mcp_stdio_test_server");
+    let mut child = TokioCommand::new(server_exe)
+        .args(["mcp", "serve", "--transport", "stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn mcp stdio server");
+
+    let child_stdin = child.stdin.take().expect("child stdin");
+    let child_stdout = child.stdout.take().expect("child stdout");
+    let transport = ChildTransport {
+        reader: child_stdout,
+        writer: child_stdin,
+    };
+
+    let client = rmcp::serve_client((), transport)
+        .await
+        .expect("serve_client failed");
+
+    // resources/list must include the registered ui:// resource.
+    let listed = client
+        .peer()
+        .list_resources(Default::default())
+        .await
+        .expect("resources/list failed");
+    assert!(
+        listed
+            .resources
+            .iter()
+            .any(|r| r.uri == "ui://cfw-test/index.html"),
+        "expected ui://cfw-test/index.html in resources: {:?}",
+        listed.resources
+    );
+
+    // resources/read must return the registered body.
+    let read = client
+        .peer()
+        .read_resource(rmcp::model::ReadResourceRequestParams::new(
+            "ui://cfw-test/index.html",
+        ))
+        .await
+        .expect("resources/read failed");
+    let json = serde_json::to_value(&read).unwrap();
+    let content = &json["contents"][0];
+    assert_eq!(content["uri"], "ui://cfw-test/index.html");
+    assert_eq!(content["mimeType"], "text/html");
+    assert_eq!(
+        content["text"], "<!doctype html><title>cfw-test</title><main>hi</main>",
+        "expected served HTML body, got: {json}"
+    );
+
+    let _ = client.cancel().await;
+    let _ = child.kill().await;
+}
+
 #[tokio::test]
 async fn test_mcp_serve_stdio_rejects_http_flags() {
     struct Ctx;

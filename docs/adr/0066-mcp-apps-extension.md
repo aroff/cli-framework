@@ -68,6 +68,25 @@ tools and resources.
   ResourceListing}` with `UiResource::with_meta`; `CliFrameworkHandler::{with_resource_registry,
   list_resources_result, read_resource_uri}`. **Removed:** `command::{UiToolMeta, UiCsp}` and the
   `Command::with_ui` / `UiResource::with_csp` builders.
-- The transport entry points (`serve_mcp_*`, `build_mcp_axum_router`) are unchanged; wiring a
-  populated `ResourceRegistry` into them is deferred to the consumer — the handler seam is exposed
-  and exercised in-process by `tests/unit/mcp_apps.rs`.
+- The transport entry points (`serve_mcp_*`, `build_mcp_axum_router`) are unchanged; the handler
+  seam is exposed and exercised in-process by `tests/unit/mcp_apps.rs`.
+- **CF-6 — populated `ResourceRegistry` is now served end-to-end.** The original CF-2 wiring left a
+  gap: no serve entry point ever called `with_resource_registry`, so a populated registry had no
+  route to the served handler. CF-6 closes this **additively** (signatures unchanged; default is an
+  empty registry → a tools-only server, as before):
+  - Consumer slot: `AppBuilder::with_mcp_resource_registry(Arc<ResourceRegistry>)`. The
+    auto-registered `mcp serve` command threads it into the handler via `with_resource_registry`
+    for **both** stdio and HTTP transports.
+  - HTTP-mount seam: `mcp::build_mcp_axum_router_with_resources(...)` (the existing
+    `build_mcp_axum_router` delegates with an empty registry). Pair with
+    `ApiServer::mcp_router(...)` to mount under `/mcp`.
+  - Lower-level variants taking `Arc<ResourceRegistry>`: `serve_mcp_stdio_opts_with_resources`,
+    `serve_mcp_with_gate_opts_with_resources`, `transport_stdio::start_stdio_with_resources`,
+    `transport_http::{start_streamable_http_with_resources, mcp_axum_router_with_resources}`.
+  - The binding crate (entitystore-mcp-apps) builds a `ResourceRegistry`, calls
+    `register`/`register_static` to attach `ui://…` providers, wraps it in `Arc`, and hands it to
+    `AppBuilder::with_mcp_resource_registry` (stdio + the auto-registered HTTP serve) or to
+    `build_mcp_axum_router_with_resources` (custom Axum mount).
+  - End-to-end coverage: `tests/integration/mcp_http.rs::test_resources_list_and_read_via_mcp_serve_stdio_subcommand`
+    drives the real `mcp serve --transport stdio` subprocess and asserts `resources/list` +
+    `resources/read` return the registered `ui://` resource.

@@ -1,4 +1,5 @@
 use crate::mcp::banner::{emit_banner, BannerData, BannerSettings};
+use crate::mcp::resources::ResourceRegistry;
 use crate::mcp::{CliFrameworkHandler, McpServerArgs, McpToolRegistry, McpTransportKind};
 use anyhow::Result;
 use rmcp::transport::streamable_http_server::{
@@ -18,16 +19,28 @@ use std::sync::Arc;
 /// The returned router carries no middleware. TLS, auth, and rate-limiting are
 /// the responsibility of the host application's outer router.
 pub fn mcp_axum_router(tool_registry: Arc<McpToolRegistry>, path: &str) -> axum::Router {
+    mcp_axum_router_with_resources(tool_registry, Arc::new(ResourceRegistry::new()), path)
+}
+
+/// Like [`mcp_axum_router`], but threads a populated [`ResourceRegistry`] into
+/// the per-session handler so registered `ui://…` resources are served via
+/// `resources/list` and `resources/read`.
+pub fn mcp_axum_router_with_resources(
+    tool_registry: Arc<McpToolRegistry>,
+    resource_registry: Arc<ResourceRegistry>,
+    path: &str,
+) -> axum::Router {
     let session_manager = Arc::new(LocalSessionManager::default());
     let config = StreamableHttpServerConfig::default();
     let service = StreamableHttpService::new(
         {
             let tool_registry = Arc::clone(&tool_registry);
+            let resource_registry = Arc::clone(&resource_registry);
             move || {
-                Ok(CliFrameworkHandler::new(
-                    Arc::clone(&tool_registry),
-                    McpTransportKind::Http,
-                ))
+                Ok(
+                    CliFrameworkHandler::new(Arc::clone(&tool_registry), McpTransportKind::Http)
+                        .with_resource_registry(Arc::clone(&resource_registry)),
+                )
             }
         },
         session_manager,
@@ -40,6 +53,23 @@ pub fn mcp_axum_router(tool_registry: Arc<McpToolRegistry>, path: &str) -> axum:
 /// Signature and observable behavior are UNCHANGED.
 pub async fn start_streamable_http(
     tool_registry: Arc<McpToolRegistry>,
+    args: &McpServerArgs,
+    banner: BannerSettings,
+) -> Result<()> {
+    start_streamable_http_with_resources(
+        tool_registry,
+        Arc::new(ResourceRegistry::new()),
+        args,
+        banner,
+    )
+    .await
+}
+
+/// Like [`start_streamable_http`], but threads a populated [`ResourceRegistry`]
+/// into the served handler so registered `ui://…` resources are served.
+pub async fn start_streamable_http_with_resources(
+    tool_registry: Arc<McpToolRegistry>,
+    resource_registry: Arc<ResourceRegistry>,
     args: &McpServerArgs,
     banner: BannerSettings,
 ) -> Result<()> {
@@ -60,12 +90,13 @@ pub async fn start_streamable_http(
         args.path
     );
     tracing::info!("MCP: exported {} tools", tool_registry.tool_count());
+    tracing::info!("MCP: exported {} resources", resource_registry.len());
 
     // Bind succeeded — print the startup banner (URL + tool list) to stdout.
     let data = BannerData::http(&args.host, args.port, &args.path, &tool_registry);
     emit_banner(&data, banner);
 
-    let router = mcp_axum_router(tool_registry, &args.path);
+    let router = mcp_axum_router_with_resources(tool_registry, resource_registry, &args.path);
 
     axum::serve(listener, router)
         .await

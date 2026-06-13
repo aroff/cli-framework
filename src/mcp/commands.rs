@@ -21,12 +21,14 @@ pub fn mcp_group_metadata() -> GroupMetadata {
 
 /// Returns the `mcp serve` leaf command (requires `mcp-server` feature).
 #[cfg(feature = "mcp-server")]
+#[allow(clippy::too_many_arguments)]
 pub fn create_mcp_serve_command_with_deps(
     registry: Arc<crate::command::CommandRegistry>,
     app_name: &'static str,
     risk_policy: crate::security::command_risk::CommandRiskPolicy,
     export_policy: crate::mcp::McpToolExportPolicy,
     gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
+    resource_registry: Arc<crate::mcp::resources::ResourceRegistry>,
 ) -> Command {
     Command {
         id: Arc::from("serve"),
@@ -99,6 +101,7 @@ pub fn create_mcp_serve_command_with_deps(
             let registry = Arc::clone(&registry);
             let risk_policy = risk_policy.clone();
             let gate = gate.clone();
+            let resource_registry = Arc::clone(&resource_registry);
             // Resolve banner settings up front (ctx is not 'static, can't cross await).
             let banner = crate::mcp::BannerSettings::resolve(ctx.opt_global_args(), &args);
             Box::pin(async move {
@@ -141,12 +144,13 @@ pub fn create_mcp_serve_command_with_deps(
                             "[E004] invalid usage: '--host', '--port', and '--path' are only valid when --transport=http"
                         ));
                     }
-                    return crate::mcp::serve_mcp_stdio_opts(
+                    return crate::mcp::serve_mcp_stdio_opts_with_resources(
                         registry,
                         app_name,
                         risk_policy,
                         export_policy,
                         gate,
+                        resource_registry,
                         banner,
                     )
                     .await;
@@ -180,13 +184,14 @@ pub fn create_mcp_serve_command_with_deps(
                     })
                     .unwrap_or_else(|| MCP_DEFAULT_PATH.to_string());
 
-                crate::mcp::serve_mcp_with_gate_opts(
+                crate::mcp::serve_mcp_with_gate_opts_with_resources(
                     registry,
                     app_name,
                     crate::mcp::McpServerArgs { host, port, path },
                     risk_policy,
                     export_policy,
                     gate,
+                    resource_registry,
                     banner,
                 )
                 .await

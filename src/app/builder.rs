@@ -51,6 +51,8 @@ pub struct AppBuilder {
     mcp_export_policy: crate::mcp::McpToolExportPolicy,
     #[cfg(feature = "mcp-server")]
     mcp_tool_gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
+    #[cfg(feature = "mcp-server")]
+    mcp_resource_registry: Option<std::sync::Arc<crate::mcp::resources::ResourceRegistry>>,
     #[cfg(feature = "chat")]
     chat_tool_policy: crate::command::chat::ChatToolPolicy,
     suggest_corrections: bool,
@@ -76,6 +78,8 @@ impl AppBuilder {
             mcp_export_policy: crate::mcp::McpToolExportPolicy::default(),
             #[cfg(feature = "mcp-server")]
             mcp_tool_gate: None,
+            #[cfg(feature = "mcp-server")]
+            mcp_resource_registry: None,
             #[cfg(feature = "chat")]
             chat_tool_policy: crate::command::chat::ChatToolPolicy::default(),
             suggest_corrections: true,
@@ -128,6 +132,38 @@ impl AppBuilder {
         gate: std::sync::Arc<dyn crate::security::ExecutionGate>,
     ) -> Self {
         self.mcp_tool_gate = Some(gate);
+        self
+    }
+
+    /// Supply a populated [`crate::mcp::resources::ResourceRegistry`] whose
+    /// `ui://…` resources the auto-registered `mcp serve` command will serve
+    /// (over both the stdio and HTTP transports) via `resources/list` and
+    /// `resources/read`.
+    ///
+    /// When unset, MCP serves a tools-only server (backward compatible).
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use cli_framework::app::AppBuilder;
+    /// # use cli_framework::mcp::resources::{ResourceRegistry, UiResource};
+    /// # use std::sync::Arc;
+    /// let mut resources = ResourceRegistry::new();
+    /// resources.register_static(
+    ///     "ui://app/index.html",
+    ///     "App shell",
+    ///     UiResource::html("<!doctype html><title>App</title>"),
+    /// );
+    /// let app = AppBuilder::new()
+    ///     .with_version("myapp", "0.1.0")
+    ///     .with_mcp_resource_registry(Arc::new(resources));
+    /// ```
+    #[cfg(feature = "mcp-server")]
+    pub fn with_mcp_resource_registry(
+        mut self,
+        resource_registry: std::sync::Arc<crate::mcp::resources::ResourceRegistry>,
+    ) -> Self {
+        self.mcp_resource_registry = Some(resource_registry);
         self
     }
 
@@ -361,6 +397,10 @@ impl AppBuilder {
                 let export_policy_for_serve = self.mcp_export_policy;
                 let app_name_for_serve = self.app_name;
                 let gate_for_serve = self.mcp_tool_gate.clone();
+                let resource_registry_for_serve = self
+                    .mcp_resource_registry
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(crate::mcp::resources::ResourceRegistry::new()));
 
                 let serve_cmd = crate::mcp::commands::create_mcp_serve_command_with_deps(
                     registry_arc_for_serve,
@@ -368,6 +408,7 @@ impl AppBuilder {
                     risk_policy_for_serve,
                     export_policy_for_serve,
                     gate_for_serve,
+                    resource_registry_for_serve,
                 );
                 self.command_registry
                     .register_at(&mcp_serve_path, serve_cmd)

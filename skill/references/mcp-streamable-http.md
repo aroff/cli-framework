@@ -119,6 +119,40 @@ serve_mcp(registry, "my-app", args, risk_policy, McpToolExportPolicy::ExposeMcpO
 
 Pass `McpToolExportPolicy::AllCommands` to preserve existing behavior.
 
+### Serving `ui://` resources (MCP-Apps)
+
+To serve registered `ui://…` resources alongside tools, build a `ResourceRegistry`, register
+providers, wrap it in `Arc`, and hand it to the serve path. The auto-registered `mcp serve` command
+serves them over **both** stdio and HTTP:
+
+```rust
+use cli_framework::mcp::resources::{ResourceRegistry, UiResource};
+use std::sync::Arc;
+
+let mut resources = ResourceRegistry::new();
+resources.register_static(
+    "ui://my-app/index.html",
+    "App shell",
+    UiResource::html("<!doctype html><title>App</title>"),
+);
+
+let app = AppBuilder::new()
+    .with_version("my-app", "1.0.0")
+    .with_mcp_resource_registry(Arc::new(resources)) // CF-6: served end-to-end
+    .build(MyCtx)?;
+```
+
+For a custom Axum mount (e.g. via `ApiServer::mcp_router`), use the resource-aware router builder:
+
+```rust
+let router = cli_framework::mcp::build_mcp_axum_router_with_resources(
+    &registry, "my-app", "/mcp", risk_policy, McpToolExportPolicy::AllCommands, Arc::new(resources),
+);
+```
+
+When no registry is supplied, MCP serves a tools-only server (backward compatible) and advertises the
+`resources` capability only once at least one resource is registered.
+
 ### Empty tool set
 
 When `ExposeMcpOnly` is active and no commands have `expose_mcp: true`, the server starts normally with zero tools and emits a `log::warn!`. This is a valid operational state — the warning helps diagnose accidental misconfiguration.
