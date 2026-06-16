@@ -650,12 +650,11 @@ fn route_with_cors_auth(
             .route_service(exact_path, svc.clone())
             .route_service(wildcard_path, svc);
     } else {
-        // nest() the flat MCP router at the declared prefix. The subrouter
-        // returned by mcp_axum_router_with_resources has routes at "/" and
-        // "/*path" (no prefix baked in), so nesting at exact_path is correct.
-        // Router::merge was unreliable when fallback_service was also present
-        // (the fallback won the match race in axum 0.8).
-        root = root.nest(exact_path, subrouter);
+        // Use nest_service (same pattern as nest_with_cors_auth / admin mount).
+        // Router::nest() and Router::merge() are both beaten by fallback_service
+        // in axum 0.8 when the nested router contains a route_service("/", ...).
+        // nest_service() registers a proper route entry that wins over the fallback.
+        root = root.nest_service(exact_path, subrouter.into_service::<axum::body::Body>());
     }
     root
 }
