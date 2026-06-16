@@ -7,15 +7,19 @@ use rmcp::transport::streamable_http_server::{
 };
 use std::sync::Arc;
 
-/// Returns an `axum::Router` fragment that serves the MCP Streamable HTTP protocol
-/// under `path`. Does NOT bind any port; the caller owns the `TcpListener` and
-/// must call `axum::serve` themselves.
+/// Returns an `axum::Router` fragment with the MCP service mounted at the root
+/// (`"/"` and `"/*path"`). The `path` parameter is **not** baked into the
+/// returned router; it is kept for API compatibility and used by
+/// [`start_streamable_http`] to nest the router at the correct URL prefix.
 ///
-/// # Path prefix
-/// `path` is forwarded verbatim to `nest_service`. The conventional value is `"/mcp"`.
-/// The caller is responsible for preventing prefix collisions with other routes.
+/// When using this with [`crate::api::ApiServerBuilder::mcp_router`], the
+/// builder nests the returned router at `/mcp` automatically — callers should
+/// pass any non-conflicting string (e.g. `"/mcp"`) and the builder handles
+/// placement.
 ///
-/// # Middleware
+/// For standalone serving (not via `ApiServerBuilder`), use
+/// [`start_streamable_http`] which wraps the router in the correct `nest`.
+///
 /// The returned router carries no middleware. TLS, auth, and rate-limiting are
 /// the responsibility of the host application's outer router.
 pub fn mcp_axum_router(tool_registry: Arc<McpToolRegistry>, path: &str) -> axum::Router {
@@ -25,10 +29,12 @@ pub fn mcp_axum_router(tool_registry: Arc<McpToolRegistry>, path: &str) -> axum:
 /// Like [`mcp_axum_router`], but threads a populated [`ResourceRegistry`] into
 /// the per-session handler so registered `ui://…` resources are served via
 /// `resources/list` and `resources/read`.
+///
+/// See [`mcp_axum_router`] for path-prefix semantics.
 pub fn mcp_axum_router_with_resources(
     tool_registry: Arc<McpToolRegistry>,
     resource_registry: Arc<ResourceRegistry>,
-    path: &str,
+    _path: &str,
 ) -> axum::Router {
     let session_manager = Arc::new(LocalSessionManager::default());
     let config = StreamableHttpServerConfig::default();
@@ -46,7 +52,11 @@ pub fn mcp_axum_router_with_resources(
         session_manager,
         config,
     );
-    axum::Router::new().nest_service(path, service)
+    // Flat routes — no prefix baked in. Callers (ApiServerBuilder::mcp_router)
+    // nest this at the desired path. StreamableHttpService is Clone.
+    axum::Router::new()
+        .route_service("/", service.clone())
+        .route_service("/{*path}", service)
 }
 
 /// Refactored — delegates router construction to `mcp_axum_router`.
@@ -96,7 +106,10 @@ pub async fn start_streamable_http_with_resources(
     let data = BannerData::http(&args.host, args.port, &args.path, &tool_registry);
     emit_banner(&data, banner);
 
-    let router = mcp_axum_router_with_resources(tool_registry, resource_registry, &args.path);
+    // mcp_axum_router_with_resources returns a flat router (service at "/" and
+    // "/*path"). Wrap it at the declared path prefix for standalone serving.
+    let inner = mcp_axum_router_with_resources(tool_registry, resource_registry, &args.path);
+    let router = axum::Router::new().nest(&args.path, inner);
 
     axum::serve(listener, router)
         .await
