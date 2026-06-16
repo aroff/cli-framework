@@ -53,6 +53,8 @@ pub struct AppBuilder {
     mcp_tool_gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
     #[cfg(feature = "mcp-server")]
     mcp_resource_registry: Option<std::sync::Arc<crate::mcp::resources::ResourceRegistry>>,
+    #[cfg(feature = "mcp-server")]
+    auto_register_mcp: bool,
     #[cfg(feature = "chat")]
     chat_tool_policy: crate::command::chat::ChatToolPolicy,
     suggest_corrections: bool,
@@ -80,6 +82,8 @@ impl AppBuilder {
             mcp_tool_gate: None,
             #[cfg(feature = "mcp-server")]
             mcp_resource_registry: None,
+            #[cfg(feature = "mcp-server")]
+            auto_register_mcp: true,
             #[cfg(feature = "chat")]
             chat_tool_policy: crate::command::chat::ChatToolPolicy::default(),
             suggest_corrections: true,
@@ -96,6 +100,18 @@ impl AppBuilder {
     /// Disable auto-registration of the built-in `completion` command.
     pub fn without_completion(mut self) -> Self {
         self.auto_register_completion = false;
+        self
+    }
+
+    /// Suppress the built-in `mcp` command group (i.e. `mcp serve`).
+    ///
+    /// Use this when the binary exposes its MCP surface through a different
+    /// mechanism (for example, a mounted router on an existing HTTP server via
+    /// `build_mcp_axum_router`) and the standalone `mcp serve` subcommand would
+    /// be confusing or redundant.
+    #[cfg(feature = "mcp-server")]
+    pub fn without_mcp(mut self) -> Self {
+        self.auto_register_mcp = false;
         self
     }
 
@@ -410,7 +426,7 @@ impl AppBuilder {
             let mcp_serve_path = CommandPath::new(&["mcp", "serve"]).unwrap();
             let mcp_serve_exists = self.command_registry.resolve(&mcp_serve_path).is_some();
 
-            if !mcp_is_root_cmd && !mcp_serve_exists {
+            if self.auto_register_mcp && !mcp_is_root_cmd && !mcp_serve_exists {
                 // Register the mcp group node.
                 let _ = self.command_registry.register_group(
                     &CommandPath::root_for("mcp"),
