@@ -78,7 +78,7 @@ impl ArgSpec {
             return (prop_name, schema_value);
         }
 
-        let schema_value = match &self.value_type {
+        let mut schema_value = match &self.value_type {
             ArgValueType::Bool => json!({ "type": "boolean" }),
             ArgValueType::String => {
                 let mut obj = serde_json::Map::new();
@@ -115,6 +115,11 @@ impl ArgSpec {
                 "enum": variants,
             }),
         };
+        if !self.help.is_empty() {
+            if let Some(obj) = schema_value.as_object_mut() {
+                obj.insert("description".to_string(), json!(self.help));
+            }
+        }
         (prop_name, schema_value)
     }
 }
