@@ -9,3 +9,10 @@ cli-framework = { path = "../../..", features = ["auth"] }
 async-trait = "0.1"
 anyhow = "1.0"
 tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1.0"
+
+# Uncomment to use the real OidcClient with Keycloak:
+# cli-framework-oidc = { path = "../../../cli-framework-oidc", features = ["client"] }
+# dirs = "5.0"
+# secrecy = "0.8"

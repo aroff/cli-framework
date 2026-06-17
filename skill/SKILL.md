@@ -355,7 +355,57 @@ CI pipelines can rely on this: `myapp doctor --json | jq '.summary.errors'`.
 cargo run --example with_doctor --features doctor
 ```
 
-## 16. Pointers to `references/` and `skill/examples/`
+## 16. Authentication (`auth` feature)
+
+Enable with `features = ["auth"]` in `cli-framework`. Pair with `cli-framework-oidc` (feature `client`) for OIDC flows.
+
+```toml
+[dependencies]
+cli-framework = { git = "...", features = ["auth"] }
+cli-framework-oidc = { path = "../cli-framework-oidc", features = ["client"] }
+dirs = "5"
+```
+
+Wire an `OidcClient` and the four `auth` commands register automatically:
+
+```rust
+use cli_framework_oidc::client::{OidcClient, OidcFlow};
+use std::sync::Arc;
+
+let cache_dir = dirs::cache_dir().unwrap().join("my-app");
+
+let oidc = Arc::new(
+    OidcClient::builder()
+        .issuer_url("https://keycloak.example.com/realms/my-realm")
+        .client_id("my-cli")
+        .flow(OidcFlow::DeviceCode)   // or AuthCodePkce / ClientCredentials
+        .cache_dir(cache_dir)
+        .build()?
+);
+
+let app = AppBuilder::new()
+    .with_version("my-app", "1.0.0")
+    .with_token_provider(oidc.clone())   // registers: auth login/logout/status/token
+    .build(ctx)?;
+```
+
+Commands that call protected APIs use `AuthenticatedHttpClient`:
+
+```rust
+use cli_framework::auth::AuthenticatedHttpClient;
+use cli_framework::http_retry::RetryableHttpClient;
+
+let api = AuthenticatedHttpClient::new(
+    RetryableHttpClient::new(reqwest::Client::new()),
+    oidc.clone(),
+);
+// Bearer header injected automatically; 401 → invalidate + refresh + retry once
+let resp = api.get("https://api.example.com/things").await?;
+```
+
+Full detail — Keycloak client config, all three flows, cache file schema, runtime caching logic, JWT server validation, testing with stubs — in `skill/references/auth-and-oidc.md`. Runnable example: `skill/examples/with_auth`.
+
+## 17. Pointers to `references/` and `skill/examples/`
 
 ### Reference files
 
@@ -364,7 +414,8 @@ cargo run --example with_doctor --features doctor
 | `skill/references/architecture-and-sources.md` | Module map, source locations |
 | `skill/references/command-registration-and-context.md` | `AppBuilder`, `AppContext`, dispatch flow |
 | `skill/references/command-spec-and-validation.md` | `CommandSpec`, `ArgSpec`, `SpecValidator` |
-| `skill/references/features-and-cargo-flags.md` | All 9 features, defaults, TOML snippets |
+| `skill/references/features-and-cargo-flags.md` | All features + `cli-framework-oidc`, defaults, TOML snippets |
+| `skill/references/auth-and-oidc.md` | `TokenProvider`, `OidcClient`, Keycloak setup, cache schema, `AuthenticatedHttpClient`, JWT server layer, testing |
 | `skill/references/mcp-streamable-http.md` | Full MCP reference: flags, error codes, concurrency |
 | `skill/references/plugins-and-ailoop.md` | Plugin manifests, ailoop confirmations |
 | `skill/references/http-retry.md` | `RetryableHttpClient`, circuit breaker |
@@ -380,4 +431,5 @@ cargo run --example with_doctor --features doctor
 | `skill/examples/with_ailoop` | `cargo run --example with_ailoop` | none |
 | `skill/examples/with_mcp` | `cargo run --example with_mcp --features mcp-server` | `mcp-server` |
 | `skill/examples/with_doctor` | `cargo run --example with_doctor --features doctor` | `doctor` |
+| `skill/examples/with_auth` | `cargo run --example with_auth --features auth` | `auth` |
 | `skill/examples/http_retry_demo` | `cargo run --example http_retry_demo` | none |

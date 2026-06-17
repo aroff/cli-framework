@@ -1,6 +1,6 @@
 # Features and Cargo flags
 
-All optional features for `cli-framework`. Default feature set includes `clap-dispatch` and `chat`.
+All optional features for `cli-framework`. Default feature set includes `chat`.
 
 ## Feature table
 
@@ -9,15 +9,35 @@ All optional features for `cli-framework`. Default feature set includes `clap-di
 | `chat` | **on** | Multi-turn agentic command resolution via `aikit-agent`; provides the `chat` command |
 | `mcp-server` | off | Expose registered commands as MCP tools via Streamable HTTP; pulls in `rmcp` and `axum` |
 | `api-server` | off | Versioned Axum API hosting under `/api/{version}/...` with health/readiness endpoints and graceful shutdown |
-| `api-swagger` | off | Runtime OpenAPI spec endpoint at `/api/{version}/openapi.json` + embedded Swagger UI at `/api/docs`; requires `api-server`; adds ~1–3 MB for embedded Swagger UI assets |
-| `clap-dispatch` | **on** | No-op since v0.4.0 (Clap dispatch is now always active); retained for compatibility, will be removed in v0.5.0 |
+| `api-swagger` | off | Runtime OpenAPI spec endpoint at `/api/{version}/openapi.json` + embedded Swagger UI at `/api/docs`; requires `api-server` |
+| `auth` | off | Generic `TokenProvider` trait + `AuthenticatedHttpClient` + four auto-registered `auth` subcommands; pair with `cli-framework-oidc` for OIDC flows |
+| `doctor` | off | Structured `DoctorCheck` trait, concurrent runner, and `doctor` CLI command with terminal/JSON output |
+| `project-config` | off | Project root discovery and TOML config loading |
 | `testkit` | off | Enable `CliTestHarness` for in-process CLI testing (dev/test use only) |
-| `strict-types` | off | Reject registration of commands without a `CommandSpec` |
-| `strict-args` | off | Reject unknown flags on legacy (no-spec) commands |
 | `table-advanced` | off | Enable `comfy-table` based advanced table rendering |
 | `progress` | off | Enable `indicatif` progress bars |
-| `legacy-arg-coercion` | off | Coerce bare `--flag` to `Bool(true)` on legacy (no-spec) path |
-| `observability` | off | Stub gate for future OpenTelemetry integration (no-op currently; see `Cargo.toml` comment) |
+| `observability` | off | Stub gate for future OpenTelemetry integration (no-op currently) |
+
+## `cli-framework-oidc` companion crate
+
+A separate crate that provides OIDC/OAuth2 flows. Two independent features — enable only what you need:
+
+| Feature | What it provides |
+|---------|-----------------|
+| `client` | `OidcClient` — three OAuth2 flows (Device Code, Auth Code PKCE, Client Credentials) + on-disk token cache; implements `TokenProvider` |
+| `server` | `oidc_validation_layer` — Tower/Axum JWT validation middleware + `OidcClaims` extractor; JWKS cache with TTL, single-flight, serve-stale-on-error |
+
+```toml
+# CLI that lets users log in
+[dependencies]
+cli-framework = { git = "...", features = ["auth"] }
+cli-framework-oidc = { path = "../cli-framework-oidc", features = ["client"] }
+
+# API server validating incoming JWTs (no login, no TokenProvider)
+[dependencies]
+cli-framework = { git = "...", features = ["api-server"] }
+cli-framework-oidc = { path = "../cli-framework-oidc", features = ["server"] }
+```
 
 ## Enabling combinations
 
