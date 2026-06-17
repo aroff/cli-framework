@@ -159,6 +159,11 @@ path = "skill/examples/with_plugins/src/main.rs"
 name = "with_ailoop"
 path = "skill/examples/with_ailoop/src/main.rs"
 
+[[example]]
+name = "with_auth"
+path = "skill/examples/with_auth/src/main.rs"
+required-features = ["auth"]
+
 [[test]]
 name = "integration_app_builder"
 path = "tests/integration/app_builder.rs"

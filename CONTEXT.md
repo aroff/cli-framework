@@ -2,8 +2,8 @@
 
 Domain glossary for the `cli-framework` Rust library: a CLI application
 framework with a central command registry, optional LLM-assisted resolution
-(`ask`, `chat`), ailoop-backed human-in-the-loop prompts, plugin loading, and
-optional MCP exposure.
+(`ask`, `chat`), ailoop-backed human-in-the-loop prompts, plugin loading,
+optional MCP exposure, and optional authentication.
 
 This file is a glossary, not a spec. Implementation details belong in
 `README.md`, `CONTRIBUTING.md`, `docs/`, and `specs/`.
@@ -117,11 +117,30 @@ lists are concatenated. "Validator" alone is ambiguous — always qualify
 The **user-supplied** trait carrying application state and services (API
 clients, config, …). The Command's `execute` callback receives it. Anything
 specific to the consuming binary lives here.
+Distinguish two things that both touch this trait: (1) **user-stored services**
+— fields a consumer puts in its own context impl; (2) **framework accessors** —
+defaulted methods on the trait that return `None`/a no-op and are *populated by
+the wrapper* (`opt_registry`, `opt_global_args` today; `opt_token_provider`
+[PLANNED — ADR 0069, `auth` feature]; the planned `opt_config` / `telemetry`).
+The latter are the only handle reachable through `&mut dyn
+AppContext`, so framework-owned services that handlers must reach are exposed
+this way — this is **not** the same as stuffing a service into user state.
+One deviation worth noting: `opt_registry` / `opt_global_args` return a
+borrowed `Option<&T>`, but `opt_token_provider` returns an owned
+`Option<Arc<dyn TokenProvider>>` — the cheap `Arc` clone lets a handler move
+the provider into a client that outlives the `&mut dyn AppContext` borrow.
+_Avoid_ extension traits on the wrapper (e.g. `AiloopContext`) as the handler
+access path: they are unreachable from `&dyn AppContext` (a handler must build
+its own client, as the `ailoop` example does).
 
 **DispatchEnv**:
 The **framework-internal** struct (`src/app/dispatch.rs`) carrying services
 the framework owns during a dispatch: the Command registry, ailoop client,
-stdout capture, etc. Combined with `AppContext` at Dispatch time inside a
+stdout capture, the **TokenProvider** when wired via
+`AppBuilder::with_token_provider` (`auth` feature), etc. The provider lives
+here, not in user `AppContext` state; the wrapper surfaces it through
+`opt_token_provider`, exactly as it surfaces the registry through
+`opt_registry`. Combined with `AppContext` at Dispatch time inside a
 wrapper context. Not part of the public API — but the user/framework split
 is a real architectural concept and the right mental model when reading the
 code.
@@ -177,6 +196,195 @@ Umbrella term for any user interaction routed through the paired
 authorization). The framework has no stdin fallback — ailoop is the HITL
 channel.
 
+**auth feature** _(ADR 0069; shipped in 0.5.8)_:
+The Cargo feature flag in `cli-framework` that enables the **TokenProvider**
+trait, **AccessToken**, **Auth commands**, the `AppContext::opt_token_provider()`
+accessor, and **AuthenticatedHttpClient**. Gated consistently with the existing
+optional capabilities (`api-server`, `doctor`, `mcp-server`, etc.). Consumers
+that never use auth pay no compile cost and get no extra subcommands.
+Note the asymmetry with `cli-framework-oidc`: only that crate's **client** half
+(`OidcClient`) depends on this feature. Its **server** half
+(`oidc_validation_layer` / `OidcClaims`) depends on `api-server` instead and
+needs neither `auth` nor a `TokenProvider` — a validate-only API server never
+touches this feature.
+_Avoid_: enabling auth behaviour without this flag — all auth types and
+accessors are only present when `auth` is enabled.
+
+**Interactive flow** / **Non-interactive acquisition**:
+The load-bearing axis the `token()` contract pivots on. An **interactive flow**
+needs a human to complete an authorization step in real time — **Device Code**
+and **Auth Code + PKCE** (browser/prompt). **Non-interactive acquisition** is a
+machine-to-machine token exchange with no human — a **refresh-token exchange**
+or the **Client Credentials** grant. The rule: `token()` MAY perform
+non-interactive acquisition on its own, but MUST NOT start an interactive flow;
+interactive flows happen only under an explicit `auth login`.
+_Avoid_: "automatic vs manual", "silent vs prompted" — the canonical axis is
+*interactive* (needs a human now) vs *non-interactive* (machine-to-machine).
+The test that decides it: does running the command pop a browser/prompt?
+
+**TokenProvider**:
+The generic trait in `cli-framework` that abstracts how an application
+acquires a bearer token. Declares `token()`, `login()`, `logout()`, and
+`invalidate()`. `token()` returns a currently-valid token, performing
+**non-interactive acquisition** when needed — a refresh-token exchange, or a
+client-credentials grant — but **never an interactive flow**. It returns
+`AuthError::NotAuthenticated` only when a valid token cannot be obtained
+non-interactively (i.e. the sole remaining path is an interactive login); for a
+client-credentials provider with nothing cached, `token()` therefore acquires
+directly rather than returning `NotAuthenticated`. Interactive login happens
+only through an explicit `auth login`. `login()` and `logout()` default to returning
+`AuthError::NotSupported` — a consumer using a static key or custom SSO is not
+forced to implement them. The default is an **error, not a silent no-op**:
+`auth login` against such a provider exits 1 (see **Auth commands**). When wired
+via `AppBuilder::with_token_provider`, the framework auto-registers the built-in
+**Auth commands**.
+_Avoid_: calling it "auth client", "credential provider", or "identity provider"
+(that's the external service, not this trait).
+
+**Logged in**:
+Canonically means **a usable or refreshable token is currently cached** — the
+sense reported by `TokenStatus.logged_in`, `peek()`, and `auth status
+--no-refresh`. Distinct from **"can obtain a token"**: a client-credentials
+provider can always obtain one (**non-interactive acquisition**) even when
+nothing is cached, so it is *not* "logged in" until it has acquired and cached.
+This is why `auth status` (which calls `token()`, so it answers "could I make an
+authenticated call right now?") may differ from `auth status --no-refresh`
+(which calls `peek()`, answering "is a token already in the cache?") for such a
+provider. The divergence is intentional.
+_Avoid_: using "logged in" to mean "has credentials configured" — a provider can
+be fully configured (client id + secret) and not logged in.
+
+**AccessToken**:
+The value returned by `TokenProvider::token()`. Carries the raw bearer string
+and an optional expiry instant — nothing more. Any refresh token is retained
+internally by the provider and **never appears in an AccessToken** (refresh is
+the provider's concern). Opaque to cli-framework — the framework only injects it
+as `Authorization: Bearer <raw>` and never inspects claims.
+_Avoid_: calling an `AccessToken` a "JWT" — on the client side it is an opaque
+bearer string the framework never parses. (The **server** side legitimately
+treats incoming bearer tokens as JWTs; see `OidcClaims` /
+`oidc_validation_layer()` — that qualification is intentional, not a conflict.)
+
+**AuthError**:
+The error type returned across the **TokenProvider** surface. Two variants are
+load-bearing in the design and named throughout this glossary:
+- `NotAuthenticated` — `token()` has no cached token and no usable refresh
+  token. Surfaced (not auto-recovered) by `auth status` / `auth token` and the
+  401-retry path; the cue to run `auth login`.
+- `NotSupported(&str)` — the default result of `login()` / `logout()` on a
+  provider that does not implement them (the `&str` names the operation, e.g.
+  `"login"`); drives the `auth login` / `auth logout` exit-1 behavior.
+Other variants (network, provider-specific) exist at the implementation level
+but are not part of the canonical language.
+_Avoid_: treating `NotAuthenticated` and `NotSupported` as interchangeable —
+the first means "no token yet", the second means "this provider can't do that".
+
+**Auth commands**:
+The built-in command group (`auth login`, `auth logout`, `auth status`,
+`auth token`) auto-registered by `AppBuilder` when a **TokenProvider** is
+wired in. Registered in `cli-framework`; the behavior of `login` / `logout`
+is delegated to the provider, and a provider returning `NotSupported` makes
+`auth login` / `auth logout` exit 1. `auth status` and `auth token` work for
+any provider and are **non-interactive** — they call `token()`, which MAY
+refresh or perform **non-interactive acquisition** (client-credentials) over the
+network and write the cache, but never triggers an interactive prompt or
+browser; they surface `NotAuthenticated` as "not logged in; run `auth login`"
+rather than launching a flow.
+_Avoid_: "auth module", "login commands"; and prefer **non-interactive** over
+"passive" — these commands are not necessarily side-effect-free (a refresh is a
+network call + cache write), they merely never prompt.
+
+**AuthenticatedHttpClient**:
+A thin wrapper around `RetryableHttpClient` in `cli-framework`. It fetches
+`TokenProvider::token()` **once per logical request** and injects the result as
+`Authorization: Bearer <raw>`; the inner `RetryableHttpClient` may then retry
+that same already-signed request up to its own transient budget (5xx / 429 /
+network — note 401 is **not** in that budget). The **401 retry is a distinct,
+single, auth-layer retry that wraps the inner client**: on a 401 the wrapper
+calls `TokenProvider::invalidate()`, re-fetches `token()`, and re-issues the
+request once. If `token()` then returns `NotAuthenticated` it surfaces that
+error rather than launching a login flow (the 401 path never pops an
+interactive prompt). Does not own a `TokenProvider` directly — the handler
+retrieves the provider via `AppContext::opt_token_provider()` and constructs the
+client itself. The framework does not pre-build or vend a shared instance.
+_Avoid_: "auth client" (overloaded with the OIDC client concept).
+
+**cli-framework-oidc**:
+A companion crate in the same workspace that provides a concrete
+**TokenProvider** implementation backed by OpenID Connect / OAuth 2.0. Works
+with any OIDC-compliant provider (Keycloak, Azure AD, …). Split into two
+Cargo features matching its two halves:
+- **`client`** — `OidcClient` and the three **OIDC flows**; depends on
+  `cli-framework/auth`.
+- **`server`** — `oidc_validation_layer()` + `OidcClaims`; depends on
+  `cli-framework/api-server`, not on `auth`.
+A consumer enables only the half it needs. Consumers that need no OIDC depend
+on neither.
+_Avoid_: "Keycloak crate" — the crate is provider-agnostic at the OIDC level;
+Keycloak is one backend.
+
+**Token cache**:
+The **client-side**, **on-disk** store where `cli-framework-oidc` (client half)
+persists access and refresh tokens between CLI invocations. Holds **tokens**.
+Owned entirely by the OIDC crate — not a concept in cli-framework core. Cache
+directory is supplied explicitly at `OidcClient` construction time (consumer
+knows their app name and XDG paths). When the config manager (ADR 0067) ships, a
+convenience helper will read the path from the config layer instead. Default
+format: JSON file at `<cache_dir>/oidc-token.json`, permissions 0600.
+_Avoid_: "credential store", "keychain" (those imply OS secret storage, which
+is not in scope for v1). _Distinguish from the **JWKS cache**_ — different side,
+different contents.
+
+**JWKS cache**:
+The **server-side**, **in-memory** store where the **server** half's
+`oidc_validation_layer` caches the provider's JSON Web Key Set (the public
+**verification keys**) to validate incoming bearer tokens. Holds **keys, not
+tokens**; 5-minute TTL, single-flight refresh, serve-stale-on-error. It
+**never reads the Token cache** — the two caches share nothing. This is the
+precise distinction that kills the "same binary shares one cached token"
+misreading: the human logs in once on the client side (Token cache); the server
+independently fetches verification keys (JWKS cache) to check *incoming* tokens.
+_Avoid_: implying tokens flow from the Token cache into validation — the server
+validates *received* tokens against keys, full stop.
+
+**OidcClaims**:
+The typed axum extractor provided by `cli-framework-oidc` (server half) that
+gives API handlers access to validated JWT claims from an incoming bearer
+token. Populated by `oidc_validation_layer()` into the axum request extension
+map. Entirely a `cli-framework-oidc` type — cli-framework core defines nothing
+for the server-side claims surface.
+
+**oidc_validation_layer()**:
+The function in `cli-framework-oidc` (server half) that **returns a**
+`tower::util::BoxCloneLayer<axum::Router>` — the exact type
+`ApiServerBuilder::auth()` accepts — built from an `OidcValidationConfig`
+(issuer, audience, JWKS TTL, …). The layer validates incoming
+`Authorization: Bearer` tokens against the provider's JWKS. Behavior: caches
+JWKS with a **5-minute TTL**; on JWT signature validation failure with cached
+keys, refetches JWKS once before returning 401 (handles key rotation without
+spurious rejections); a short debounce prevents thundering-herd refetches under
+concurrent load.
+_Avoid_: "auth middleware" — use the function name to be precise. It is a tower
+`Layer`, not a bare middleware service.
+
+**OIDC flow**:
+The OAuth 2.0 grant type used by `cli-framework-oidc` to acquire tokens.
+Three flows ship in v1:
+- **Device Code**: CLI prints a URL + code; user completes login on any
+  device. Works headless and over SSH. No local server or browser required.
+- **Auth Code + PKCE**: CLI opens a browser on the local machine; Keycloak
+  redirects to a short-lived loopback server (`localhost:<port>/callback`)
+  that captures the code. Standard workstation flow.
+- **Client Credentials**: No user interaction — `client_id` + `client_secret`
+  exchanged directly for a token. For CI pipelines and service accounts.
+
+All three flows produce the same result for the framework: an **AccessToken**.
+Each flow may also yield a refresh token, retained internally by `OidcClient`
+and never surfaced in the AccessToken. Flow selection is a construction-time
+decision on `OidcClient`, not runtime.
+_Avoid_: "OAuth flow", "grant type" in user-facing text — "flow" is the
+canonical term here.
+
 ## Relationships
 
 - A **Command** is registered exactly once with `AppBuilder`.
@@ -195,13 +403,27 @@ channel.
   `ask` (see ADR 0001).
 - A **Plugin** contributes **PluginCommand** metadata only — no Command is
   added to the registry and no Dispatch path exists (see ADR 0002).
+- A **TokenProvider** wired via `AppBuilder::with_token_provider` lives in
+  **DispatchEnv** and is reached by handlers through
+  `AppContext::opt_token_provider`, never from user `AppContext` state. Wiring
+  it auto-registers the **Auth commands**. (`auth` feature.)
+- `token()` refreshes silently when a refresh token is available but returns
+  `NotAuthenticated` when nothing is cached — it never auto-launches an **OIDC
+  flow**. Acquiring a token interactively is exclusively `auth login`'s job.
+- **AuthenticatedHttpClient** injects the `token()` result as a bearer header
+  and, on a 401, calls `invalidate()` then retries once; it never escalates to
+  an interactive login.
+- Token *acquisition* (client) and token *validation* (server) are independent
+  halves of **cli-framework-oidc**: the client half depends on the `auth`
+  feature, the server half (`oidc_validation_layer` / `OidcClaims`) depends on
+  `api-server`. A binary that is both client and server uses both.
 
 ## Example dialogue
 
 > **Dev:** "If a user types `myapp ask 'wipe staging'` and the LLM picks
 > the `deploy` command, what stops it from running?"
 >
-> **Domain expert:** "Ask resolution returns a `(Command, CommandArgs)`
+> **Domain expert:** "Ask resolution returns a `(Command, ArgValue map)`
 > pair like any other Resolution. But before Dispatch, the Risk gate looks
 > up `deploy` in the Risk policy — `deployment` is Destructive by default,
 > so the gate blocks unless `ALLOW_DESTRUCTIVE_COMMANDS=1`, and even then
@@ -220,6 +442,48 @@ channel.
 > **Domain expert:** "It can't be dispatched at all. Plugins are metadata
 > only today — Ask resolution can *see* a PluginCommand for discovery, but
 > there's no execution path. If the LLM picks one, Dispatch fails."
+
+---
+
+> **Dev:** "Our binary is both the CLI and the API server. A user runs
+> `myapp some-command`, which calls our own API, but they've never logged
+> in. What happens?"
+>
+> **Domain expert:** "The handler pulls the **TokenProvider** off the context
+> via `opt_token_provider`, builds an **AuthenticatedHttpClient**, and fires
+> the request. The client calls `token()` — but nothing's cached and there's
+> no refresh token, so `token()` returns `NotAuthenticated`. It does **not**
+> pop a browser; the command fails with a clear 'run `auth login`' message.
+> Interactive login is only ever `auth login`'s job."
+>
+> **Dev:** "So they run `myapp auth login`. That's the same binary — where
+> does the OIDC part come from?"
+>
+> **Domain expert:** "`cli-framework` only owns the `TokenProvider` trait and
+> the `auth` commands. The actual flow lives in `cli-framework-oidc`'s
+> **client** half — the consumer wired an `OidcClient` (say, **Auth Code +
+> PKCE**) as the provider. `auth login` opens the browser, the loopback server
+> catches the code, and the token lands in the **Token cache**. Now `token()`
+> returns it and the command works."
+>
+> **Dev:** "And on the server side of the same binary — what checks the token
+> that arrives in the `Authorization` header?"
+>
+> **Domain expert:** "That's the **server** half of `cli-framework-oidc`,
+> which depends on `api-server`, not `auth`. The consumer passed
+> `oidc_validation_layer()` to `ApiServerBuilder::auth()`. It validates the
+> JWT against Keycloak's JWKS — caching keys for 5 minutes, refetching once on
+> a signature miss so a key rotation doesn't cause spurious 401s — and exposes
+> the claims to handlers as `OidcClaims`. Note the asymmetry: the client half
+> treats the token as an opaque bearer string; the server half is the one that
+> actually parses it as a JWT."
+>
+> **Dev:** "What if a token expires mid-session and the API returns 401?"
+>
+> **Domain expert:** "The `AuthenticatedHttpClient` calls `invalidate()` and
+> retries once. If the provider can refresh silently, the retry succeeds. If
+> not, `token()` returns `NotAuthenticated` and the error surfaces — still no
+> surprise browser prompt. The 401 path never escalates to interactive login."
 
 ## Flagged ambiguities
 

@@ -30,6 +30,7 @@ A Rust library for building CLIs with optional AI-assisted command resolution (*
 | `api-swagger` | no | Runtime OpenAPI spec endpoint + embedded Swagger UI (requires `api-server`) |
 | `doctor` | no | Structured health-check framework with terminal/JSON output |
 | `project-config` | no | Project root discovery and TOML loading (`PC001`–`PC005` error codes) |
+| `auth` | no | Generic `TokenProvider` trait + `AuthenticatedHttpClient` + four `auth` subcommands; pair with `cli-framework-oidc` for OIDC flows |
 
 ## MCP Server Mode
 

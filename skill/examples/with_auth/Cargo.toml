@@ -1,0 +1,11 @@
+[package]
+name = "with_auth"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+cli-framework = { path = "../../..", features = ["auth"] }
+async-trait = "0.1"
+anyhow = "1.0"
+tokio = { version = "1", features = ["full"] }

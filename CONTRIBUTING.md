@@ -52,7 +52,7 @@ chmod +x .git/hooks/pre-commit
 | `api` (feature `api-server`) | Built-in Axum host for versioned APIs (`/api/{version}/...`) plus `/healthz` + `/readyz`; `build()` may apply a root `fallback_service` (via `root_fallback()`) as its final composition step |
 | `mcp` (feature `mcp-server`) | rmcp `ServerHandler` (tools + resources). Generic, concept-free: per-command `with_meta` (opaque `serde_json::Value`) → `tools/list` top-level `_meta`; `with_visibility` (cli-framework acts on it) → `_meta.visibility`; `mcp::resources::ResourceRegistry` serves resources via `resources/list` / `resources/read` with opaque per-resource `with_meta` at `contents[]._meta`. All UI/MCP-Apps semantics live in the consumer (ADR 0066) |
 
-Also: `auth`, `data_source`; `observability`, `testkit` behind features.
+Also: `auth` (feature `auth`) — `TokenProvider` trait, `AccessToken`, `AuthError`, `AuthenticatedHttpClient`, four auto-registered `auth` commands; companion crate `cli-framework-oidc` provides `OidcClient` (feature `client`) and `oidc_validation_layer` (feature `server`); `data_source`; `observability`, `testkit` behind features.
 
 **Flow:** `AppBuilder` registers commands → `run` resolves id + `CommandArgs` → `await` `execute` on `AppContext`. Tool surfaces (chat / MCP) adapt inputs into `command_surface::tool_bridge` for shared parsing/validation/gating/dispatch.
 
