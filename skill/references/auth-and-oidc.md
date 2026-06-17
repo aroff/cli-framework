@@ -307,6 +307,74 @@ async fn auth_token_not_authenticated_exits_1() {
 
 ---
 
+## Local development without a live Keycloak
+
+Three patterns — pick by need:
+
+### Env-var bypass (recommended)
+
+Wrap your `OidcClient` in a thin provider that checks an env var first. Zero new dependencies, no code branching, works in CI with a secret injected as `MY_APP_TOKEN`.
+
+```rust
+use cli_framework::auth::{AccessToken, AuthError, TokenProvider, TokenStatus};
+use cli_framework_oidc::client::OidcClient;
+
+pub struct KeycloakProvider {
+    oidc: OidcClient,
+}
+
+#[async_trait::async_trait]
+impl TokenProvider for KeycloakProvider {
+    async fn token(&self) -> Result<AccessToken, AuthError> {
+        // Set MY_APP_TOKEN=any-value to skip Keycloak entirely in local dev / CI.
+        if let Ok(t) = std::env::var("MY_APP_TOKEN") {
+            if !t.is_empty() {
+                return Ok(AccessToken::new(t, None));
+            }
+        }
+        self.oidc.token().await
+    }
+
+    async fn invalidate(&self) { self.oidc.invalidate().await }
+    async fn peek(&self) -> Option<TokenStatus> { self.oidc.peek().await }
+    async fn login(&self) -> Result<(), AuthError> { self.oidc.login().await }
+    async fn logout(&self) -> Result<(), AuthError> { self.oidc.logout().await }
+}
+```
+
+```bash
+MY_APP_TOKEN=fake-dev-token cargo run -- list-things
+```
+
+### Local Keycloak via Docker
+
+```bash
+docker run -p 8080:8080 \
+  -e KEYCLOAK_ADMIN=admin -e KEYCLOAK_ADMIN_PASSWORD=admin \
+  quay.io/keycloak/keycloak:latest start-dev
+```
+
+Point the `OidcClient` at `http://localhost:8080/realms/master`. The `normalize_issuer` function allows `http://` for loopback addresses, so TLS is not required locally.
+
+### Cargo feature flag
+
+For builds where you want no Keycloak dependency at all:
+
+```toml
+[features]
+dev-auth = []
+```
+
+```rust
+#[cfg(feature = "dev-auth")]
+let provider: Arc<dyn TokenProvider> = Arc::new(StaticTokenProvider("dev-token".into()));
+
+#[cfg(not(feature = "dev-auth"))]
+let provider: Arc<dyn TokenProvider> = Arc::new(KeycloakProvider::new(oidc_client));
+```
+
+---
+
 ## JWT validation on an API server (`server` feature)
 
 For Axum-based API servers that need to validate tokens issued by Keycloak:
