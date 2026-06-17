@@ -173,12 +173,85 @@ The framework then serves:
 
 Versions that set `openapi: None` get no spec endpoint and do not appear in the switcher. Auth gating follows the same `ApiServerBuilder::auth(...)` layer applied to all `/api/**` routes.
 
+## Authentication (`auth` feature)
+
+Enable the `auth` feature to get a generic `TokenProvider` trait, an `AuthenticatedHttpClient` that handles bearer injection and automatic 401-retry, and four auto-registered `auth` subcommands:
+
+```toml
+[dependencies]
+cli-framework = { version = "0.5", features = ["auth"] }
+```
+
+Implement `TokenProvider` (or use `cli-framework-oidc`) and pass it to the builder:
+
+```rust
+use cli_framework::auth::{AccessToken, AuthError, TokenProvider};
+use cli_framework::prelude::*;
+use std::sync::Arc;
+
+struct MyProvider;
+
+#[async_trait::async_trait]
+impl TokenProvider for MyProvider {
+    async fn token(&self) -> Result<AccessToken, AuthError> {
+        // Non-interactive only — refresh or client-credentials grant.
+        // Never launch an interactive flow here.
+        todo!()
+    }
+    async fn invalidate(&self) { /* clear cached token */ }
+}
+
+let app = AppBuilder::new()
+    .with_version("my-app", "1.0.0")
+    .with_token_provider(Arc::new(MyProvider))
+    .build(ctx)?;
+```
+
+Once `with_token_provider` is called, four commands are auto-registered:
+
+| Command | Behavior |
+|---------|----------|
+| `auth login` | Calls `TokenProvider::login()` — launches an interactive flow (e.g. Device Code) |
+| `auth logout` | Calls `TokenProvider::logout()` — clears cached tokens |
+| `auth status` | Queries token state; `--json` for machine-readable output; `--no-refresh` to skip a network round-trip |
+| `auth token` | Prints the raw bearer token to stdout; exits 1 if not authenticated |
+
+Auth commands are **never** exposed as MCP tools or chat tools regardless of the export policy.
+
+### Auth exit codes
+
+| Code | Meaning | Exit |
+|------|---------|------|
+| `AUTH001` | `login` / `logout` not supported by this provider | 1 |
+| `AUTH002` | Provider-level error during token acquisition or login | 1 |
+| `AUTH003` | `auth token` called but not authenticated — no token available | 1 |
+
+### OIDC flows
+
+`cli-framework-oidc` (companion crate) provides `OidcClient` with three flows (Device Code, Auth Code + PKCE, Client Credentials), an on-disk token cache, and an Axum JWT validation layer. See [`cli-framework-oidc/README.md`](cli-framework-oidc/README.md).
+
+### Using `AuthenticatedHttpClient`
+
+```rust
+use cli_framework::auth::AuthenticatedHttpClient;
+use cli_framework::http_retry::RetryableHttpClient;
+
+let client = AuthenticatedHttpClient::new(
+    RetryableHttpClient::new(reqwest::Client::new()),
+    provider.clone(),
+);
+
+// Bearer header is injected automatically; a 401 triggers one invalidate+retry.
+let resp = client.get("https://api.example.com/data").await?;
+```
+
 ## Built-in commands
 
 `cli-framework` auto-registers a small set of built-ins during `AppBuilder::build()`:
 
 - `spec`: exports the command surface as JSON/YAML/Markdown.
 - `completion <shell>`: emits a simple top-level subcommand completion stub for `bash`, `zsh`, `fish`, or `powershell` (alias: `pwsh`).
+- `auth login`, `auth logout`, `auth status`, `auth token`: registered only when `with_token_provider(...)` is called (requires `auth` feature).
 
 If your app already defines a root-level `completion` command, call `AppBuilder::without_completion()` to opt out of auto-registration and avoid a registration collision.
 
@@ -204,8 +277,12 @@ If your app already defines a root-level `completion` command, call `AppBuilder:
 - Unsupported `completion` shell (E013)
 - Unknown `spec --format` value (CS001)
 - Unknown `doctor --check` id (DR003)
+- `auth login` / `auth logout` called but provider doesn't support the operation (AUTH001) — exit 1
+- `auth token` called but not authenticated (AUTH003) — exit 1
 
-**Exit 1 (runtime error)** covers failures that occur *after* arguments are accepted: agent/IO failures, `doctor` reporting health problems (a successful diagnostic run that *found* errors is a runtime result, not a usage error).
+**Exit 1 (runtime error)** covers failures that occur *after* arguments are accepted: agent/IO failures, `doctor` reporting health problems (a successful diagnostic run that *found* errors is a runtime result, not a usage error), provider-level auth errors (AUTH002).
+
+`auth status` always exits 0 — it is a query, not a gated operation.
 
 These errors are signalled to the caller as `Err(UsageError)` from `App::run_with_args()` so test code can inspect the type directly:
 
@@ -360,6 +437,7 @@ fn main() {
 | `with_ailoop_channel(channel)` | Configure the ailoop channel name for HITL interactions | — |
 | `with_ailoop_config(config)` | Configure ailoop with a full `AiloopConfig` | — |
 | `with_risk_policy(policy)` | Override the default command risk tier policy | — |
+| `with_token_provider(provider)` | Supply a `TokenProvider`; auto-registers four `auth` commands (requires `auth` feature) | disabled |
 
 ## Chat Command (default feature)
 
@@ -487,6 +565,7 @@ Run the included examples to see the framework in action:
 - `cargo run --example with_plugins` — CLI with registry-based plugins
 - `cargo run --example with_ailoop` — ailoop confirmations and prompts
 - `cargo run --example http_retry_demo` — `http_retry` and secure client defaults
+- `cargo run --example with_auth --features auth` — `TokenProvider` + auto-registered `auth` commands
 
 Source for each lives under [`skill/examples/`](skill/examples/).
 

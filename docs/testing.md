@@ -94,3 +94,42 @@ let out = harness
 ```
 
 The variables are restored after the call.
+
+## Testing auth commands
+
+When your app uses `with_token_provider`, supply a stub `TokenProvider` in tests — no OIDC server needed:
+
+```rust
+use cli_framework::auth::{AccessToken, AuthError, TokenProvider};
+use cli_framework::testkit::CliTestHarness;
+use std::sync::Arc;
+
+struct AlwaysLoggedIn;
+
+#[async_trait::async_trait]
+impl TokenProvider for AlwaysLoggedIn {
+    async fn token(&self) -> Result<AccessToken, AuthError> {
+        Ok(AccessToken::new("test-bearer".to_string(), None))
+    }
+    async fn invalidate(&self) {}
+    async fn login(&self) -> Result<(), AuthError> { Ok(()) }
+    async fn logout(&self) -> Result<(), AuthError> { Ok(()) }
+}
+
+#[tokio::test]
+async fn auth_token_prints_bearer() {
+    let app = AppBuilder::new()
+        .with_version("myapp", "1.0")
+        .with_token_provider(Arc::new(AlwaysLoggedIn))
+        .build(MyCtx)
+        .unwrap();
+
+    let mut h = CliTestHarness::new(app);
+    let out = h.run(&["myapp", "auth", "token"]).await;
+
+    assert_eq!(out.exit_code(), 0);
+    assert_eq!(out.stdout().trim(), "test-bearer");
+}
+```
+
+Use `out.assert_diagnostic_code("AUTH003")` to assert that the not-authenticated error code is present when `token()` returns `AuthError::NotAuthenticated`.
