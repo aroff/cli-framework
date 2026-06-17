@@ -27,7 +27,11 @@ pub(crate) fn build_tool_map_for_policy(
     registry
         .all_tree_commands()
         .filter(|(path_str, cmd)| {
-            if *path_str == "completion" || *path_str == "chat" {
+            if *path_str == "completion"
+                || *path_str == "chat"
+                || path_str.starts_with("auth/")
+                || *path_str == "auth"
+            {
                 return false;
             }
             match policy {

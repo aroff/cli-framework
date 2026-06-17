@@ -100,6 +100,10 @@ pub mod project_config;
 #[cfg(feature = "emulation")]
 pub mod emulation;
 
+// Authentication — generic TokenProvider + AuthenticatedHttpClient + auth commands
+#[cfg(feature = "auth")]
+pub mod auth;
+
 /// Re-export the exit-code marker for parse/usage errors (spec 012 §R5).
 pub use app::UsageError;
 

@@ -66,6 +66,18 @@ pub trait AppContext: Send + Sync {
     ) -> Option<&std::collections::HashMap<String, crate::spec::value::ArgValue>> {
         None
     }
+
+    /// Return the [`TokenProvider`][crate::auth::TokenProvider] configured for this
+    /// app, if any.
+    ///
+    /// Commands that need to acquire bearer tokens call this instead of holding
+    /// a direct reference to the provider. Returns `None` when the `auth` feature
+    /// is disabled or when no provider was registered via
+    /// [`AppBuilder::with_token_provider`][crate::app::AppBuilder::with_token_provider].
+    #[cfg(feature = "auth")]
+    fn opt_token_provider(&self) -> Option<std::sync::Arc<dyn crate::auth::TokenProvider>> {
+        None
+    }
 }
 
 /// Extension trait for AppContext to provide command registry access

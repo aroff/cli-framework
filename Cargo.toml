@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "cli-framework-macros"]
+members = [".", "cli-framework-macros", "cli-framework-oidc"]
 
 [workspace.package]
 edition = "2021"
@@ -121,6 +121,8 @@ chat = ["dep:aikit-agent", "dep:tokio-util"]
 api-swagger = ["api-server", "dep:utoipa-swagger-ui"]
 # Emulation support — mock executors and test harnesses for testing CLI behavior
 emulation = ["dep:mockall"]
+# Authentication — generic TokenProvider + AuthenticatedHttpClient + auth commands
+auth = []
 
 [lib]
 name = "cli_framework"
@@ -338,3 +340,18 @@ required-features = ["mcp-install"]
 name = "integration_mcp_install"
 path = "tests/integration/mcp_install.rs"
 required-features = ["mcp-install"]
+
+[[test]]
+name = "unit_auth_provider"
+path = "tests/unit/auth_provider.rs"
+required-features = ["auth", "testkit"]
+
+[[test]]
+name = "integration_auth_commands"
+path = "tests/integration/auth_commands.rs"
+required-features = ["auth", "testkit"]
+
+[[test]]
+name = "contract_auth_registration"
+path = "tests/contract/auth_registration.rs"
+required-features = ["auth"]

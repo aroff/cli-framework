@@ -12,6 +12,8 @@ pub(crate) struct DispatchEnv<'a> {
     pub(crate) ailoop_client: &'a Option<AiloopClient>,
     pub(crate) global_args: &'a HashMap<String, ArgValue>,
     pub(crate) stdout_capture: Option<Arc<Mutex<Vec<u8>>>>,
+    #[cfg(feature = "auth")]
+    pub(crate) token_provider: Option<Arc<dyn crate::auth::TokenProvider>>,
 }
 
 pub(crate) struct CliAppContextWrapper<'a> {
@@ -58,6 +60,11 @@ impl<'a> AppContext for CliAppContextWrapper<'a> {
             String::new()
         }
     }
+
+    #[cfg(feature = "auth")]
+    fn opt_token_provider(&self) -> Option<Arc<dyn crate::auth::TokenProvider>> {
+        self.env.token_provider.clone()
+    }
 }
 
 impl<'a> crate::app::context::CommandRegistryContext for CliAppContextWrapper<'a> {
@@ -76,12 +83,26 @@ impl<'a> crate::app::context::CommandRegistryContext for CliAppContextWrapper<'a
             .ok_or_else(|| anyhow::anyhow!("Command '{}' not found", command_id))?
             .clone();
 
-        struct NoopContext;
-        impl AppContext for NoopContext {}
+        #[cfg(feature = "auth")]
+        let provider = self.env.token_provider.clone();
+
+        struct NestedContext {
+            #[cfg(feature = "auth")]
+            token_provider: Option<Arc<dyn crate::auth::TokenProvider>>,
+        }
+        impl AppContext for NestedContext {
+            #[cfg(feature = "auth")]
+            fn opt_token_provider(&self) -> Option<Arc<dyn crate::auth::TokenProvider>> {
+                self.token_provider.clone()
+            }
+        }
 
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
-                let mut ctx = NoopContext;
+                let mut ctx = NestedContext {
+                    #[cfg(feature = "auth")]
+                    token_provider: provider,
+                };
                 (command.execute)(&mut ctx, args).await
             })
         })
@@ -116,6 +137,8 @@ mod tests {
             ailoop_client: &ailoop_client,
             global_args: &global_args_map,
             stdout_capture: Some(buf.clone()),
+            #[cfg(feature = "auth")]
+            token_provider: None,
         };
         let mut inner = DummyCtx;
         let wrapper = CliAppContextWrapper::new(&mut inner, env);

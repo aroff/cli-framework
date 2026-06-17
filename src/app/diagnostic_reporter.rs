@@ -62,6 +62,29 @@ impl DiagnosticReporter {
         }
     }
 
+    /// Write a plain (non-diagnostic) informational line to stderr.
+    ///
+    /// Passes through the testkit capture buffer when active so tests can
+    /// assert informational messages alongside diagnostics.
+    pub fn write_plain(msg: &str) {
+        #[cfg(feature = "testkit")]
+        {
+            let captured = STDERR_CAPTURE.with(|cell| {
+                if let Some(ref mut v) = *cell.borrow_mut() {
+                    v.extend_from_slice(msg.as_bytes());
+                    true
+                } else {
+                    false
+                }
+            });
+            if captured {
+                return;
+            }
+        }
+
+        let _ = std::io::stderr().write_all(msg.as_bytes());
+    }
+
     /// Begin capturing stderr output into an internal buffer.
     /// Only available with the `testkit` feature.
     #[cfg(feature = "testkit")]

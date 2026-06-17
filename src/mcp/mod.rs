@@ -90,8 +90,8 @@ impl McpToolRegistry {
         }
         let mut tools = HashMap::new();
         for (path_str, cmd) in registry.all_tree_commands() {
-            // Built-in `completion` is never exported as an MCP tool, regardless of policy.
-            if path_str == "completion" {
+            // Built-in `completion` and `auth/*` are never exported as MCP tools.
+            if path_str == "completion" || path_str.starts_with("auth/") || path_str == "auth" {
                 continue;
             }
             if policy == McpToolExportPolicy::ExposeMcpOnly && !cmd.expose_mcp {

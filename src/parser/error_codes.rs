@@ -48,3 +48,10 @@ pub const E_API_SWAGGER_SERIALIZE: &str = "E022";
 pub const E_UNKNOWN_DOCTOR_CHECK: &str = "DR003";
 /// Returned when `spec --format <format>` specifies an unrecognized format value.
 pub const E_UNKNOWN_SPEC_FORMAT: &str = "CS001";
+
+/// Auth: operation not supported by provider (login/logout not implemented).
+pub const AUTH001: &str = "AUTH001";
+/// Auth: provider-level failure (token acquisition, flow failure, etc.).
+pub const AUTH002: &str = "AUTH002";
+/// Auth: not authenticated (used by `auth token` when no session exists).
+pub const AUTH003: &str = "AUTH003";

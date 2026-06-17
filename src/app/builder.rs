@@ -58,6 +58,8 @@ pub struct AppBuilder {
     #[cfg(feature = "chat")]
     chat_tool_policy: crate::command::chat::ChatToolPolicy,
     suggest_corrections: bool,
+    #[cfg(feature = "auth")]
+    token_provider: Option<Arc<dyn crate::auth::TokenProvider>>,
 }
 
 impl AppBuilder {
@@ -87,6 +89,8 @@ impl AppBuilder {
             #[cfg(feature = "chat")]
             chat_tool_policy: crate::command::chat::ChatToolPolicy::default(),
             suggest_corrections: true,
+            #[cfg(feature = "auth")]
+            token_provider: None,
         }
     }
 
@@ -94,6 +98,18 @@ impl AppBuilder {
     /// and flags. Default: `true`.
     pub fn suggest_corrections(mut self, enabled: bool) -> Self {
         self.suggest_corrections = enabled;
+        self
+    }
+
+    /// Register a [`TokenProvider`][crate::auth::TokenProvider] that will be
+    /// injected into every command dispatch via
+    /// [`AppContext::opt_token_provider`][crate::app::AppContext::opt_token_provider].
+    ///
+    /// When set, the built-in `auth` command group (`auth login`, `auth logout`,
+    /// `auth status`, `auth token`) is automatically registered.
+    #[cfg(feature = "auth")]
+    pub fn with_token_provider(mut self, provider: Arc<dyn crate::auth::TokenProvider>) -> Self {
+        self.token_provider = Some(provider);
         self
     }
 
@@ -383,6 +399,21 @@ impl AppBuilder {
             }
         }
 
+        // Auto-register `auth` command group when a provider is configured.
+        #[cfg(feature = "auth")]
+        if self.token_provider.is_some() {
+            if self.command_registry.get("auth").is_none() {
+                crate::auth::commands::register_auth_commands(
+                    &mut self.command_registry,
+                    self.app_name,
+                )?;
+            } else {
+                tracing::warn!(
+                    "'auth' command already registered; skipping built-in auth commands"
+                );
+            }
+        }
+
         // Auto-register built-in `spec` command (always-on, no feature gate)
         if self.command_registry.get("spec").is_none() {
             let spec_cmd = crate::command_surface::command::create_spec_command(
@@ -520,6 +551,8 @@ impl AppBuilder {
             global_flags: self.global_flags,
             stdout_capture: None,
             suggest_corrections: self.suggest_corrections,
+            #[cfg(feature = "auth")]
+            token_provider: self.token_provider,
         })
     }
 }
@@ -547,6 +580,8 @@ pub struct App<C: AppContext> {
     /// (API hosts) that need to intercept output; `None` writes to real stdout.
     pub stdout_capture: Option<Arc<Mutex<Vec<u8>>>>,
     suggest_corrections: bool,
+    #[cfg(feature = "auth")]
+    token_provider: Option<Arc<dyn crate::auth::TokenProvider>>,
 }
 
 impl<C: AppContext> App<C> {
@@ -785,6 +820,8 @@ impl<C: AppContext> App<C> {
             ailoop_client: &self.ailoop_client,
             global_args: &global_args,
             stdout_capture: self.stdout_capture.clone(),
+            #[cfg(feature = "auth")]
+            token_provider: self.token_provider.clone(),
         };
         let mut ctx_wrapper = crate::app::dispatch::CliAppContextWrapper::new(&mut self.ctx, env);
 
