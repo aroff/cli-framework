@@ -140,10 +140,10 @@ impl OidcClient {
 
         // Check if access token is still fresh
         if let Some(ref at) = access_token {
-            let is_fresh = expires_at.map_or(true, |exp| {
+            let is_fresh = expires_at.is_none_or(|exp| {
                 SystemTime::now()
                     .checked_add(refresh_skew)
-                    .map_or(false, |t| t < exp)
+                    .is_some_and(|t| t < exp)
             });
             if is_fresh {
                 return Ok(cli_framework::auth::AccessToken::new(
@@ -564,6 +564,7 @@ impl OidcClient {
             let lock_path = cache_dir.join("oidc-token.lock");
             let lock_file = std::fs::OpenOptions::new()
                 .create(true)
+                .truncate(false)
                 .write(true)
                 .open(&lock_path)
                 .unwrap();
@@ -587,6 +588,7 @@ impl OidcClient {
             if let Err(e) = write_cache(&cache_dir, &cache) {
                 tracing::warn!("oidc token cache: write failed: {e}");
             }
+            #[allow(clippy::incompatible_msrv)]
             lock_file.unlock().ok();
         })
         .await
@@ -616,6 +618,7 @@ impl cli_framework::auth::TokenProvider for OidcClient {
             let lock_path = cache_dir.join("oidc-token.lock");
             let lock_file = std::fs::OpenOptions::new()
                 .create(true)
+                .truncate(false)
                 .write(true)
                 .open(&lock_path)
                 .ok()?;
@@ -623,10 +626,12 @@ impl cli_framework::auth::TokenProvider for OidcClient {
             let mut cache = read_cache(&cache_dir);
             if let Some(entry) = cache.entries.get_mut(&key) {
                 entry.access_token = None;
+                entry.expires_at = None;
             }
             if let Err(e) = write_cache(&cache_dir, &cache) {
                 tracing::warn!("oidc token cache: invalidate write failed: {e}");
             }
+            #[allow(clippy::incompatible_msrv)]
             lock_file.unlock().ok();
             Some(())
         })
@@ -665,6 +670,7 @@ impl cli_framework::auth::TokenProvider for OidcClient {
             let lock_path = cache_dir.join("oidc-token.lock");
             let lock_file = std::fs::OpenOptions::new()
                 .create(true)
+                .truncate(false)
                 .write(true)
                 .open(&lock_path)
                 .map_err(|e| cli_framework::auth::AuthError::Provider {
@@ -677,6 +683,7 @@ impl cli_framework::auth::TokenProvider for OidcClient {
             if let Err(e) = write_cache(&cache_dir, &cache) {
                 tracing::warn!("oidc token cache: logout write failed: {e}");
             }
+            #[allow(clippy::incompatible_msrv)]
             lock_file.unlock().ok();
             Ok::<(), cli_framework::auth::AuthError>(())
         })

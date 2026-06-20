@@ -76,7 +76,7 @@ impl JwksCache {
     }
 
     fn is_fresh(&self, ttl: Duration) -> bool {
-        self.fetched_at.map_or(false, |t| t.elapsed() < ttl)
+        self.fetched_at.is_some_and(|t| t.elapsed() < ttl)
     }
 
     fn is_empty(&self) -> bool {
@@ -182,7 +182,13 @@ fn filter_keys(all: &[(Option<String>, DecodingKey)], kid: &Option<String>) -> K
             .filter(|(id, _)| id.as_deref() == Some(k.as_str()))
             .map(|(_, key)| key.clone())
             .collect(),
-        None => all.iter().map(|(_, key)| key.clone()).collect(),
+        None => {
+            if all.len() == 1 {
+                all.iter().map(|(_, key)| key.clone()).collect()
+            } else {
+                return KeyResult::UnknownKid;
+            }
+        }
     };
     if matching.is_empty() && kid.is_some() {
         // Unknown kid — could be stale cache; caller may force refetch
@@ -434,7 +440,14 @@ async fn validate_request(
     let keys = match state.get_decoding_keys(&header.kid).await {
         KeyResult::Keys(k) => k,
         KeyResult::Unavailable => {
-            return Err((StatusCode::SERVICE_UNAVAILABLE, "JWKS unavailable").into_response())
+            return Err(cli_framework::axum::http::Response::builder()
+                .status(StatusCode::SERVICE_UNAVAILABLE)
+                .header(
+                    "retry-after",
+                    state.cfg.min_refetch_interval.as_secs().to_string(),
+                )
+                .body(cli_framework::axum::body::Body::from("JWKS unavailable"))
+                .unwrap());
         }
         KeyResult::UnknownKid => {
             // Force a refetch once then try again
@@ -481,6 +494,7 @@ fn try_validate_jwt(
     issuer_url: &str,
 ) -> Result<OidcClaims, String> {
     let mut validation = Validation::new(cfg.algorithms[0]);
+    validation.algorithms = cfg.algorithms.clone();
     validation.set_issuer(&[issuer_url]);
     match &cfg.audience {
         AudiencePolicy::Require(aud) => {
@@ -515,22 +529,24 @@ fn try_validate_jwt(
     let preferred_username = claims["preferred_username"].as_str().map(String::from);
     let email = claims["email"].as_str().map(String::from);
 
-    let scopes: Vec<String> = claims["scope"]
-        .as_str()
-        .map(|s| s.split_whitespace().map(String::from).collect())
-        .unwrap_or_default();
-
-    let roles: Vec<String> = {
-        let mut r = vec![];
-        if let Some(arr) = claims["roles"].as_array() {
-            r.extend(arr.iter().filter_map(|v| v.as_str().map(String::from)));
-        }
-        // Also check realm_access.roles (Keycloak pattern)
-        if let Some(arr) = claims["realm_access"]["roles"].as_array() {
-            r.extend(arr.iter().filter_map(|v| v.as_str().map(String::from)));
-        }
-        r
+    let scopes: Vec<String> = if let Some(s) = claims["scope"].as_str() {
+        s.split_whitespace().map(String::from).collect()
+    } else if let Some(arr) = claims["scp"].as_array() {
+        arr.iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect()
+    } else {
+        vec![]
     };
+
+    let roles: Vec<String> = claims["realm_access"]["roles"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
 
     Ok(OidcClaims {
         sub,
