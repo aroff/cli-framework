@@ -1,8 +1,8 @@
 # ADR 0069: Auth layer — TokenProvider trait, auth feature, and cli-framework-oidc companion crate
 
 - Date: 2026-06-16
-- Status: Accepted
-- Relates to: ADR 0060 (revisits its premise; does not reverse it — see Context)
+- Status: Accepted (implemented & shipped in 0.5.8)
+- Relates to: ADR 0060 (revisits its premise; does not reverse it — see Context); extended by ADR 0070 (JWKS-refetch single-flight on the `server` feature)
 
 ## Context
 

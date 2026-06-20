@@ -120,8 +120,8 @@ specific to the consuming binary lives here.
 Distinguish two things that both touch this trait: (1) **user-stored services**
 — fields a consumer puts in its own context impl; (2) **framework accessors** —
 defaulted methods on the trait that return `None`/a no-op and are *populated by
-the wrapper* (`opt_registry`, `opt_global_args` today; `opt_token_provider`
-[PLANNED — ADR 0069, `auth` feature]; the planned `opt_config` / `telemetry`).
+the wrapper* (`opt_registry`, `opt_global_args`, and `opt_token_provider`
+[`auth` feature, ADR 0069] today; the planned `opt_config` / `telemetry`).
 The latter are the only handle reachable through `&mut dyn
 AppContext`, so framework-owned services that handlers must reach are exposed
 this way — this is **not** the same as stuffing a service into user state.
@@ -339,7 +339,11 @@ different contents.
 The **server-side**, **in-memory** store where the **server** half's
 `oidc_validation_layer` caches the provider's JSON Web Key Set (the public
 **verification keys**) to validate incoming bearer tokens. Holds **keys, not
-tokens**; 5-minute TTL, single-flight refresh, serve-stale-on-error. It
+tokens**; 5-minute TTL, serve-stale-on-error. An unknown `kid` forces one
+refetch (the cue for a rotated signing key), bounded on both axes — **single-flight**
+(≤1 fetch in flight) and a **min-refetch-interval** rate-limit — so an
+attacker-supplied, unsigned `kid` can't amplify into a fetch flood against the
+shared IdP (ADR 0070). It
 **never reads the Token cache** — the two caches share nothing. This is the
 precise distinction that kills the "same binary shares one cached token"
 misreading: the human logs in once on the client side (Token cache); the server
