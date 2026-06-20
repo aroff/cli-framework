@@ -106,6 +106,8 @@ Recommended: `dirs::cache_dir().unwrap().join("<app-name>")` → `~/.cache/<app-
 
 A sidecar `oidc-token.lock` is created next to it on first write and used for cross-process `flock` serialization — two concurrent CLI invocations won't corrupt the file.
 
+On unix the token file and its lock are created with mode `0600` (owner read/write only) under a `0700` parent directory, so other local users cannot read cached bearer/refresh tokens.
+
 ### File schema
 
 ```json
@@ -132,7 +134,7 @@ The cache key is `lowercase_hex(SHA-256("{issuer}\n{client_id}\n{flow_kind}\n{so
 `token()` runs this decision tree on every call — no network if the cache is fresh:
 
 ```
-cache hit + access_token + not near expiry (default 30s buffer)?
+cache hit + access_token + not near expiry (default 60s skew buffer)?
     → return cached token immediately
 
 refresh_token in cache?
@@ -401,4 +403,38 @@ async fn list_things(claims: OidcClaims) -> impl IntoResponse {
 }
 ```
 
-JWKS keys are fetched from `<issuer>/protocol/openid-connect/certs` (via discovery). The cache TTL is 300 s with serve-stale-on-error: the layer only returns 503 when it has never successfully fetched any keys.
+### Tuning the validation config
+
+`OidcValidationConfig::new(issuer, audience)` fills sane defaults; override fields before passing it to the layer:
+
+| Field | Default | Purpose |
+|-------|---------|---------|
+| `audience` | (required arg) | `AudiencePolicy::Require("<aud>")` enforces the `aud` claim; `AudiencePolicy::Unchecked` skips it and logs a WARN |
+| `algorithms` | `[RS256]` | Accepted JWT signing algorithms |
+| `jwks_uri` | `None` (discover) | Override to skip discovery and pin the JWKS endpoint |
+| `jwks_ttl` | 300 s | How long a fetched key set is considered fresh |
+| `clock_skew` | 60 s | Leeway applied to `exp`/`nbf`/`iat` |
+| `min_refetch_interval` | 60 s | Floor between forced (unknown-`kid`) refetches — the rate-limit half of the amplification defense |
+
+### JWKS fetching, key rotation, and amplification defense
+
+JWKS keys are fetched from `<issuer>/protocol/openid-connect/certs` (resolved via discovery). The cache is keys-only (never tokens) and **serve-stale-on-error**: the layer returns **503 + `Retry-After`** only when it has *never* successfully fetched any keys.
+
+The JWT header names the `kid` that signed the token. Keycloak rotates signing keys, so a token may legitimately carry a `kid` the cache hasn't seen yet:
+
+- On an **unknown `kid`**, the layer forces **one** refetch (picking up the rotated key) rather than rejecting the token — so a key rotation does not cause an outage.
+- Because the `kid` header is attacker-controlled and unsigned, that refetch is bounded on two axes so forged-`kid` tokens can't amplify into a fetch flood against the shared IdP (**ADR 0070**):
+  - **Single-flight** — at most one JWKS fetch is in flight at any instant; concurrent refetch-needing requests share its result. Fresh-cache validations never wait on it.
+  - **Rate-limit** (`min_refetch_interval`) — at most one forced refetch per interval; within the window an unknown `kid` is rejected immediately with 401 instead of fetching.
+
+Net effect: during a real rotation, a burst of requests carrying the new `kid` all succeed via one shared refetch (no spurious 401s); a flood of distinct random `kid`s costs at most one outbound fetch per interval.
+
+### 401 / `WWW-Authenticate` responses
+
+A rejected token returns 401 with an RFC 6750 header naming the reason, e.g.:
+
+```
+WWW-Authenticate: Bearer error="invalid_token", error_description="expired"
+```
+
+`error_description` is drawn from a closed set: `expired`, `not_yet_valid`, `invalid_signature`, `invalid_issuer`, `invalid_audience`, `unsupported_algorithm`, `unknown_key` (the `kid` was not found even after a forced refetch), and `malformed_token` (missing `kid`/`exp`/`sub` and other structural failures). Two cases carry no `error_description`: a missing/empty `Authorization` header returns a bare `Bearer` challenge, and a token whose header can't even be decoded returns a bare `error="invalid_token"`.

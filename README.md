@@ -226,9 +226,14 @@ Auth commands are **never** exposed as MCP tools or chat tools regardless of the
 | `AUTH002` | Provider-level error during token acquisition or login | 1 |
 | `AUTH003` | `auth token` called but not authenticated — no token available | 1 |
 
-### OIDC flows
+### OIDC flows (Keycloak and other OIDC providers)
 
-`cli-framework-oidc` (companion crate) provides `OidcClient` with three flows (Device Code, Auth Code + PKCE, Client Credentials), an on-disk token cache, and an Axum JWT validation layer. See [`cli-framework-oidc/README.md`](cli-framework-oidc/README.md).
+`cli-framework-oidc` (companion crate) works with any OIDC-compliant provider — Keycloak, Azure AD, etc. — and is split into two independent halves:
+
+- **`client`** — `OidcClient` (a `TokenProvider`) with three grant flows (Device Code, Auth Code + PKCE, Client Credentials), OIDC discovery, and an on-disk token cache (`0600`-permissioned).
+- **`server`** — an Axum JWT validation layer (`oidc_validation_layer` + `OidcClaims` extractor) that verifies incoming bearer tokens against the provider's JWKS. It handles signing-key rotation (forced refetch on an unknown `kid`) with single-flight + rate-limit bounds so an attacker-supplied `kid` cannot amplify into a fetch flood (ADR 0070).
+
+A consumer enables only the half it needs. See [`cli-framework-oidc/README.md`](cli-framework-oidc/README.md) and the [auth & OIDC skill reference](skill/references/auth-and-oidc.md).
 
 ### Using `AuthenticatedHttpClient`
 
