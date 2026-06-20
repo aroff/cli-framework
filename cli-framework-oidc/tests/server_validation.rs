@@ -5,7 +5,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::{response::IntoResponse, routing::get, Router};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use jsonwebtoken::Algorithm;
-use reqwest::Client as HttpClient;
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde_json::json;
 use tower::{Layer, ServiceExt};
@@ -1070,5 +1069,204 @@ async fn www_authenticate_has_space_after_comma_between_params() {
         www.contains(", error_description="),
         "WWW-Authenticate must have space after comma: got {:?}",
         www
+    );
+}
+
+// ── #9: JWKS refetch single-flight (ADR 0070) ────────────────────────────────
+//
+// When many requests hit a cold (or stale) cache at once, the layer must
+// coalesce their JWKS fetches into ONE outbound request — not one per inbound
+// request. This bounds outbound fetch concurrency to 1 regardless of inbound
+// load, the concurrency half of the forged-`kid` amplification defense.
+//
+// The JWKS endpoint responds slowly (set_delay) so the burst genuinely overlaps
+// inside the fetch window. Without single-flight, all N requests fetch
+// concurrently (N hits); with it, exactly one fetch occurs and the rest share it.
+
+#[tokio::test]
+async fn concurrent_cold_cache_requests_coalesce_into_single_jwks_fetch() {
+    let server = MockServer::start().await;
+    setup_mock_discovery(&server).await;
+    let kp = test_key_pair();
+
+    // Slow JWKS response so concurrent fetches overlap in the fetch window.
+    Mock::given(method("GET"))
+        .and(path("/jwks"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(300))
+                .set_body_json(json!({ "keys": [jwk_for_key(&kp)] })),
+        )
+        .mount(&server)
+        .await;
+
+    let cfg = make_cfg(&server);
+    let issuer = cfg.issuer_url.clone();
+    let layer = oidc_validation_layer(cfg).expect("layer");
+
+    async fn protected(claims: OidcClaims) -> impl IntoResponse {
+        axum::Json(json!({ "sub": claims.sub }))
+    }
+    let inner = Router::new().route("/protected", get(protected));
+    let app = Router::new().fallback_service(layer.layer(inner));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let base_url = format!("http://127.0.0.1:{}", port);
+
+    let now = now_secs();
+    let token = mint_jwt(
+        &kp,
+        json!({ "sub": "u", "iss": issuer, "exp": now + 3600i64 }),
+    );
+
+    // Fire N concurrent requests against the cold cache.
+    const N: usize = 10;
+    let mut handles = Vec::with_capacity(N);
+    for _ in 0..N {
+        let url = format!("{}/protected", base_url);
+        let bearer = format!("Bearer {}", token);
+        handles.push(tokio::spawn(async move {
+            reqwest::Client::new()
+                .get(url)
+                .header("authorization", bearer)
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        }));
+    }
+    for h in handles {
+        assert_eq!(
+            h.await.unwrap(),
+            200,
+            "every concurrent request must succeed"
+        );
+    }
+
+    let jwks_hits = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == "/jwks")
+        .count();
+    assert_eq!(
+        jwks_hits, 1,
+        "single-flight: {N} concurrent cold-cache requests must coalesce into exactly 1 JWKS fetch, got {jwks_hits}"
+    );
+}
+
+// During a real key rotation, a burst of requests carrying the freshly-rotated
+// (legitimate, resolvable) kid must all succeed via ONE shared forced refetch —
+// no thundering herd, and no spurious 401s while the single fetch is in flight.
+// This is the ADR 0070 headline guarantee for the unknown-kid path.
+
+#[tokio::test]
+async fn concurrent_rotation_requests_share_one_refetch_no_spurious_401() {
+    let server = MockServer::start().await;
+    setup_mock_discovery(&server).await;
+    let kp_old = test_key_pair();
+    let kp_new = TestKeyPair {
+        kid: "test-kid-2".to_string(),
+        ..test_key_pair()
+    };
+
+    // Fetch 1 (priming): only the old key.
+    Mock::given(method("GET"))
+        .and(path("/jwks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "keys": [jwk_for_key(&kp_old)]
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    // Fetch 2+ (post-rotation): both keys, served slowly so the burst overlaps.
+    Mock::given(method("GET"))
+        .and(path("/jwks"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(300))
+                .set_body_json(json!({ "keys": [jwk_for_key(&kp_old), jwk_for_key(&kp_new)] })),
+        )
+        .mount(&server)
+        .await;
+
+    // Rate-limit disabled so the rotation refetch is allowed; single-flight is
+    // then the only thing that can bound the burst to one fetch.
+    let cfg = OidcValidationConfig {
+        min_refetch_interval: std::time::Duration::from_secs(0),
+        ..make_cfg(&server)
+    };
+    let issuer = cfg.issuer_url.clone();
+    let layer = oidc_validation_layer(cfg).expect("layer");
+
+    async fn protected(claims: OidcClaims) -> impl IntoResponse {
+        axum::Json(json!({ "sub": claims.sub }))
+    }
+    let inner = Router::new().route("/protected", get(protected));
+    let app = Router::new().fallback_service(layer.layer(inner));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let base_url = format!("http://127.0.0.1:{}", port);
+    let now = now_secs();
+
+    // Prime the cache with kp_old (fetch 1).
+    let t_old = mint_jwt(
+        &kp_old,
+        json!({ "sub": "u", "iss": issuer, "exp": now + 3600i64 }),
+    );
+    let r0 = reqwest::Client::new()
+        .get(format!("{}/protected", base_url))
+        .header("authorization", format!("Bearer {}", t_old))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r0.status(), 200, "priming request must succeed");
+
+    // Burst: N concurrent requests carrying the rotated kid (unknown to cache).
+    const N: usize = 10;
+    let t_new = mint_jwt(
+        &kp_new,
+        json!({ "sub": "u", "iss": issuer, "exp": now + 3600i64 }),
+    );
+    let mut handles = Vec::with_capacity(N);
+    for _ in 0..N {
+        let url = format!("{}/protected", base_url);
+        let bearer = format!("Bearer {}", t_new);
+        handles.push(tokio::spawn(async move {
+            reqwest::Client::new()
+                .get(url)
+                .header("authorization", bearer)
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        }));
+    }
+    for h in handles {
+        assert_eq!(
+            h.await.unwrap(),
+            200,
+            "every rotated-kid request must succeed — no spurious 401 during the shared refetch"
+        );
+    }
+
+    let jwks_hits = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == "/jwks")
+        .count();
+    assert_eq!(
+        jwks_hits, 2,
+        "expected exactly 2 JWKS fetches (1 prime + 1 coalesced rotation refetch), got {jwks_hits}"
     );
 }

@@ -94,6 +94,11 @@ struct OidcLayerState {
     jwks_cache: Mutex<JwksCache>,
     discovery: tokio::sync::OnceCell<OidcDiscovery>,
     last_forced_refetch: Mutex<Option<Instant>>,
+    /// Single-flight gate (ADR 0070): only one task performs a JWKS refetch at a
+    /// time; concurrent refetch-needing requests wait here and share the result.
+    /// Held only by refetch-needing requests, never on the fresh-cache fast path,
+    /// so a slow fetch does not block validation of already-cached keys.
+    refetch_gate: Mutex<()>,
     http: reqwest::Client,
 }
 
@@ -111,11 +116,31 @@ impl OidcLayerState {
     }
 
     async fn get_decoding_keys(&self, kid: &Option<String>) -> KeyResult {
+        // Fast path: a fresh cache holding the requested kid needs no fetch and
+        // never touches the single-flight gate, so steady-state validation is
+        // unaffected by an in-flight refetch.
         {
             let cache = self.jwks_cache.lock().await;
             if cache.is_fresh(self.cfg.jwks_ttl) {
                 let result = filter_keys(&cache.keys, kid);
                 // On cache-hit with unknown kid, fall through to forced refetch below.
+                if !matches!(result, KeyResult::UnknownKid) {
+                    return result;
+                }
+            }
+        }
+
+        // Single-flight gate (ADR 0070): coalesce concurrent refetches into one.
+        // Only refetch-needing requests reach here; they queue on this gate so at
+        // most one JWKS fetch is in flight at any instant.
+        let _refetch_guard = self.refetch_gate.lock().await;
+
+        // Double-check after acquiring the gate: a prior holder may have already
+        // refreshed the cache while we waited, making our fetch unnecessary.
+        {
+            let cache = self.jwks_cache.lock().await;
+            if cache.is_fresh(self.cfg.jwks_ttl) {
+                let result = filter_keys(&cache.keys, kid);
                 if !matches!(result, KeyResult::UnknownKid) {
                     return result;
                 }
@@ -249,6 +274,7 @@ pub fn oidc_validation_layer(
         jwks_cache: Mutex::new(JwksCache::empty()),
         discovery: tokio::sync::OnceCell::new(),
         last_forced_refetch: Mutex::new(None),
+        refetch_gate: Mutex::new(()),
         http: reqwest::Client::builder()
             .user_agent(concat!("cli-framework-oidc/", env!("CARGO_PKG_VERSION")))
             .build()

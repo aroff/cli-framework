@@ -18,12 +18,6 @@ pub enum OidcConfigError {
     InvalidJwksUri(String),
 }
 
-/// Normalize and validate an OIDC issuer URL.
-///
-/// - Requires https (or http://127.0.0.1, http://localhost, http://[::1] for local dev).
-/// - Lowercases scheme and host.
-/// - Strips default ports (443 for https, 80 for http).
-/// - Strips trailing slash.
 /// Validate that a JWKS URI is secure: must be https, or http to loopback only.
 pub(crate) fn validate_jwks_uri(uri: &str) -> Result<(), OidcConfigError> {
     let url =
@@ -44,6 +38,12 @@ pub(crate) fn validate_jwks_uri(uri: &str) -> Result<(), OidcConfigError> {
     Ok(())
 }
 
+/// Normalize and validate an OIDC issuer URL.
+///
+/// - Requires https (or http://127.0.0.1, http://localhost, http://[::1] for local dev).
+/// - Lowercases scheme and host.
+/// - Strips default ports (443 for https, 80 for http).
+/// - Strips trailing slash.
 pub fn normalize_issuer(raw: &str) -> Result<String, OidcConfigError> {
     let url =
         url::Url::parse(raw).map_err(|e| OidcConfigError::InsecureIssuer(format!("{raw}: {e}")))?;

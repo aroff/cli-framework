@@ -5,7 +5,6 @@ use cli_framework_oidc::client::{OidcClient, OidcFlow, TokenAuthMethod};
 use secrecy::SecretString;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
