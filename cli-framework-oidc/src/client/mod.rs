@@ -562,12 +562,7 @@ impl OidcClient {
             use fs2::FileExt;
             std::fs::create_dir_all(&cache_dir).ok();
             let lock_path = cache_dir.join("oidc-token.lock");
-            let lock_file = std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .write(true)
-                .open(&lock_path)
-                .unwrap();
+            let lock_file = open_lock_file(&lock_path).unwrap();
             lock_file.lock_exclusive().ok();
 
             let mut cache = read_cache(&cache_dir);
@@ -616,12 +611,7 @@ impl cli_framework::auth::TokenProvider for OidcClient {
             use fs2::FileExt;
             std::fs::create_dir_all(&cache_dir).ok();
             let lock_path = cache_dir.join("oidc-token.lock");
-            let lock_file = std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .write(true)
-                .open(&lock_path)
-                .ok()?;
+            let lock_file = open_lock_file(&lock_path).ok()?;
             lock_file.lock_exclusive().ok()?;
             let mut cache = read_cache(&cache_dir);
             if let Some(entry) = cache.entries.get_mut(&key) {
@@ -668,15 +658,12 @@ impl cli_framework::auth::TokenProvider for OidcClient {
             use fs2::FileExt;
             std::fs::create_dir_all(&cache_dir).ok();
             let lock_path = cache_dir.join("oidc-token.lock");
-            let lock_file = std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .write(true)
-                .open(&lock_path)
-                .map_err(|e| cli_framework::auth::AuthError::Provider {
+            let lock_file = open_lock_file(&lock_path).map_err(|e| {
+                cli_framework::auth::AuthError::Provider {
                     message: e.to_string(),
                     source: None,
-                })?;
+                }
+            })?;
             lock_file.lock_exclusive().ok();
             let mut cache = read_cache(&cache_dir);
             cache.entries.remove(&key);
@@ -716,7 +703,7 @@ impl OidcClientBuilder {
             scopes: None,
             cache_dir: None,
             reporter: None,
-            refresh_skew: Duration::from_secs(30),
+            refresh_skew: Duration::from_secs(60),
         }
     }
 
@@ -787,6 +774,27 @@ impl OidcClientBuilder {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+fn open_lock_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path)
+    }
+}
 
 fn make_http_client() -> reqwest::Client {
     reqwest::Client::builder()

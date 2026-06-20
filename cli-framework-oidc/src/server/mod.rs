@@ -114,11 +114,15 @@ impl OidcLayerState {
         {
             let cache = self.jwks_cache.lock().await;
             if cache.is_fresh(self.cfg.jwks_ttl) {
-                return filter_keys(&cache.keys, kid);
+                let result = filter_keys(&cache.keys, kid);
+                // On cache-hit with unknown kid, fall through to forced refetch below.
+                if !matches!(result, KeyResult::UnknownKid) {
+                    return result;
+                }
             }
         }
 
-        // Try to refetch
+        // Try to refetch (TTL-expired or unknown-kid triggered).
         let jwks_uri = match self.get_jwks_uri().await {
             Ok(u) => u,
             Err(e) => {
@@ -131,7 +135,7 @@ impl OidcLayerState {
             }
         };
 
-        // Check min_refetch_interval
+        // Rate-limit forced refetches to min_refetch_interval.
         {
             let last = self.last_forced_refetch.lock().await;
             if let Some(t) = *last {
@@ -429,7 +433,7 @@ async fn validate_request(
             StatusCode::UNAUTHORIZED,
             [(
                 "www-authenticate",
-                "Bearer error=\"invalid_token\",error_description=\"unsupported_algorithm\"",
+                "Bearer error=\"invalid_token\", error_description=\"unsupported_algorithm\"",
             )],
             "",
         )
@@ -456,7 +460,7 @@ async fn validate_request(
                 StatusCode::UNAUTHORIZED,
                 [(
                     "www-authenticate",
-                    "Bearer error=\"invalid_token\",error_description=\"unknown_key\"",
+                    "Bearer error=\"invalid_token\", error_description=\"unknown_key\"",
                 )],
                 "",
             )
@@ -480,7 +484,7 @@ async fn validate_request(
         StatusCode::UNAUTHORIZED,
         [(
             "www-authenticate",
-            format!("Bearer error=\"invalid_token\",error_description=\"{reason}\""),
+            format!("Bearer error=\"invalid_token\", error_description=\"{reason}\""),
         )],
         "",
     )
@@ -506,12 +510,15 @@ fn try_validate_jwt(
     }
     validation.leeway = cfg.clock_skew.as_secs();
 
-    let token_data =
-        jsonwebtoken::decode::<JsonValue>(token, key, &validation).map_err(|e| e.to_string())?;
+    let token_data = jsonwebtoken::decode::<JsonValue>(token, key, &validation)
+        .map_err(|e| map_jwt_error(&e))?;
 
     let claims = &token_data.claims;
 
-    let sub = claims["sub"].as_str().unwrap_or("").to_string();
+    let sub = claims["sub"]
+        .as_str()
+        .ok_or_else(|| "malformed_token".to_string())?
+        .to_string();
     let iss = claims["iss"].as_str().unwrap_or("").to_string();
     let exp = claims["exp"].as_i64().unwrap_or(0);
     let iat = claims["iat"].as_i64();
@@ -572,11 +579,42 @@ async fn fetch_discovery_jwks(
     let url = format!("{}/.well-known/openid-configuration", issuer_url);
     let resp = http.get(&url).send().await.map_err(|e| e.to_string())?;
     let doc: JsonValue = resp.json().await.map_err(|e| e.to_string())?;
+
+    // Verify the discovery doc's issuer matches the configured issuer_url.
+    let discovered_issuer = doc["issuer"]
+        .as_str()
+        .ok_or_else(|| "missing issuer in discovery doc".to_string())?;
+    let normalized_configured = crate::normalize_issuer(issuer_url).map_err(|e| e.to_string())?;
+    let normalized_discovered =
+        crate::normalize_issuer(discovered_issuer).map_err(|e| e.to_string())?;
+    if normalized_configured != normalized_discovered {
+        return Err(format!(
+            "discovery issuer mismatch: expected {normalized_configured}, got {normalized_discovered}"
+        ));
+    }
+
     let jwks_uri = doc["jwks_uri"]
         .as_str()
         .ok_or_else(|| "missing jwks_uri in discovery doc".to_string())?
         .to_string();
+
+    // Reject discovered JWKS URIs that are insecure (non-loopback http).
+    crate::validate_jwks_uri(&jwks_uri).map_err(|e| e.to_string())?;
+
     Ok(OidcDiscovery { jwks_uri })
+}
+
+fn map_jwt_error(e: &jsonwebtoken::errors::Error) -> String {
+    use jsonwebtoken::errors::ErrorKind;
+    match e.kind() {
+        ErrorKind::ExpiredSignature => "expired".to_string(),
+        ErrorKind::ImmatureSignature => "not_yet_valid".to_string(),
+        ErrorKind::InvalidSignature => "invalid_signature".to_string(),
+        ErrorKind::InvalidIssuer => "invalid_issuer".to_string(),
+        ErrorKind::InvalidAudience => "invalid_audience".to_string(),
+        ErrorKind::InvalidAlgorithm => "unsupported_algorithm".to_string(),
+        _ => "malformed_token".to_string(),
+    }
 }
 
 async fn fetch_jwks(

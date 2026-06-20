@@ -81,6 +81,8 @@ cargo test -p cli-framework-oidc --features client,server --verbose
 cargo build -p cli-framework-oidc --no-default-features --verbose
 cargo test -p cli-framework --no-default-features --features auth,testkit --verbose
 cargo test -p cli-framework --features auth,testkit --verbose
+# Guard: verify that chat (and other unrelated default features) don't leak into the oidc crate.
+cargo tree -p cli-framework-oidc --features server -e features | grep -v "cli-framework-oidc" | grep "\bchat\b" && echo "ERROR: chat feature leaked into cli-framework-oidc --features server" && exit 1 || true
 set +x
 echo -e "${GREEN}✓ cli-framework-oidc tests passed${NC}"
 echo ""

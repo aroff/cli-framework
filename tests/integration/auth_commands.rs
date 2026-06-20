@@ -224,6 +224,64 @@ async fn auth_status_no_refresh_no_peek_emits_plain_stderr_exit_0() {
     );
 }
 
+// ── A3: --no-refresh with peek()=Some prints status ──────────────────────────
+
+#[tokio::test]
+async fn auth_status_no_refresh_with_peek_logged_in_prints_logged_in() {
+    let app = AppBuilder::new()
+        .with_version("myapp", "1.0")
+        .with_token_provider(Arc::new(LoggedInProvider { expires_at: None }))
+        .build(Ctx)
+        .unwrap();
+    let mut h = CliTestHarness::new(app);
+    let out = h.run(&["myapp", "auth", "status", "--no-refresh"]).await;
+
+    assert_eq!(out.exit_code(), 0);
+    assert!(
+        out.stdout().to_lowercase().contains("logged in"),
+        "--no-refresh with peek()=Some(logged_in=true) must print status; got stdout: {:?}",
+        out.stdout()
+    );
+}
+
+#[tokio::test]
+async fn auth_status_no_refresh_with_peek_logged_out_prints_not_logged_in() {
+    let app = AppBuilder::new()
+        .with_version("myapp", "1.0")
+        .with_token_provider(Arc::new(NotAuthProvider))
+        .build(Ctx)
+        .unwrap();
+    let mut h = CliTestHarness::new(app);
+    let out = h.run(&["myapp", "auth", "status", "--no-refresh"]).await;
+
+    assert_eq!(out.exit_code(), 0);
+    assert!(
+        out.stdout().to_lowercase().contains("not logged in"),
+        "--no-refresh with peek()=Some(logged_in=false) must print 'not logged in'; got: {:?}",
+        out.stdout()
+    );
+}
+
+// ── A2: expiry-unknown text ───────────────────────────────────────────────────
+
+#[tokio::test]
+async fn auth_status_logged_in_no_expiry_says_expiry_unknown() {
+    let app = AppBuilder::new()
+        .with_version("myapp", "1.0")
+        .with_token_provider(Arc::new(LoggedInProvider { expires_at: None }))
+        .build(Ctx)
+        .unwrap();
+    let mut h = CliTestHarness::new(app);
+    let out = h.run(&["myapp", "auth", "status"]).await;
+
+    assert_eq!(out.exit_code(), 0);
+    assert!(
+        out.stdout().contains("expiry unknown"),
+        "stdout must contain 'expiry unknown' when expires_at is None; got: {:?}",
+        out.stdout()
+    );
+}
+
 // ── auth login ────────────────────────────────────────────────────────────────
 
 #[tokio::test]

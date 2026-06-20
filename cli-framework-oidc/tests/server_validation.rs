@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::{response::IntoResponse, routing::get, Router};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use jsonwebtoken::Algorithm;
+use reqwest::Client as HttpClient;
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde_json::json;
 use tower::{Layer, ServiceExt};
@@ -598,4 +599,476 @@ async fn no_layer_returns_500() {
 
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+// ── C1: unknown-kid forced refetch ───────────────────────────────────────────
+//
+// When a JWT presents a kid that isn't in the cached JWKS, the layer must
+// attempt one forced refetch (outside min_refetch_interval). If the refetch
+// succeeds and the new JWKS contains the key, the request must succeed (200).
+// A second unknown-kid request within min_refetch_interval must NOT trigger
+// another fetch — it gets an immediate 401.
+
+#[tokio::test]
+async fn unknown_kid_triggers_refetch_and_succeeds_when_new_key_present() {
+    // Strategy: prime the cache with kp_old via request 1, then send request 2
+    // signed with kp_new. The layer must detect unknown kid, do a forced refetch
+    // (which now returns both keys), and return 200.
+    let mock = MockServer::start().await;
+    let kp_old = test_key_pair();
+    // kp_new needs a DISTINCT kid so filter_keys returns UnknownKid on the first pass.
+    let kp_new = TestKeyPair {
+        kid: "test-kid-2".to_string(),
+        ..test_key_pair()
+    };
+
+    // JWKS fetch 1: only old key (primes the cache)
+    Mock::given(method("GET"))
+        .and(path("/jwks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "keys": [jwk_for_key(&kp_old)]
+        })))
+        .up_to_n_times(1)
+        .mount(&mock)
+        .await;
+
+    // JWKS fetch 2+: both keys (returned on the kid-miss forced refetch)
+    Mock::given(method("GET"))
+        .and(path("/jwks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "keys": [jwk_for_key(&kp_old), jwk_for_key(&kp_new)]
+        })))
+        .mount(&mock)
+        .await;
+
+    let cfg = OidcValidationConfig {
+        min_refetch_interval: std::time::Duration::from_secs(0), // no rate-limit for test
+        ..make_cfg(&mock)
+    };
+    let issuer = cfg.issuer_url.clone();
+    let layer = oidc_validation_layer(cfg).expect("layer");
+
+    async fn protected(claims: OidcClaims) -> impl IntoResponse {
+        axum::Json(json!({"sub": claims.sub}))
+    }
+
+    let inner = Router::new().route("/protected", get(protected));
+    let protected_svc = layer.layer(inner);
+    let app = Router::new().fallback_service(protected_svc);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let base_url = format!("http://127.0.0.1:{}", port);
+    let client = reqwest::Client::new();
+    let now = now_secs();
+
+    // Request 1: old key → primes cache with kp_old only → 200
+    let t1 = mint_jwt(
+        &kp_old,
+        json!({ "sub": "u", "iss": issuer, "exp": now + 3600i64 }),
+    );
+    let r1 = client
+        .get(format!("{}/protected", base_url))
+        .header("authorization", format!("Bearer {}", t1))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r1.status(), 200, "request 1 with kp_old must succeed");
+
+    // Request 2: new key → unknown kid → forced refetch → kp_old+kp_new in JWKS → 200
+    let t2 = mint_jwt(
+        &kp_new,
+        json!({ "sub": "u", "iss": issuer, "exp": now + 3600i64 }),
+    );
+    let r2 = client
+        .get(format!("{}/protected", base_url))
+        .header("authorization", format!("Bearer {}", t2))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r2.status(),
+        200,
+        "request 2 with kp_new must succeed after forced kid-miss refetch"
+    );
+}
+
+// ── B5: discovered insecure JWKS URI → 503 ───────────────────────────────────
+
+#[tokio::test]
+async fn discovered_insecure_jwks_uri_returns_503() {
+    let mock = MockServer::start().await;
+    let base = mock.uri();
+
+    // Discovery doc has valid issuer but points JWKS at plain http (non-loopback)
+    Mock::given(method("GET"))
+        .and(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "issuer": base,
+            "jwks_uri": "http://public.example.com/jwks", // insecure non-loopback
+        })))
+        .mount(&mock)
+        .await;
+
+    let cfg = OidcValidationConfig {
+        issuer_url: base.clone(),
+        audience: AudiencePolicy::Unchecked,
+        jwks_uri: None, // force discovery path
+        algorithms: vec![Algorithm::RS256],
+        jwks_ttl: std::time::Duration::from_secs(300),
+        clock_skew: std::time::Duration::from_secs(0),
+        min_refetch_interval: std::time::Duration::from_secs(0),
+    };
+    let app = make_app(cfg).await;
+
+    let kp = test_key_pair();
+    let now = now_secs();
+    let claims = json!({ "sub": "u", "iss": base, "exp": now + 3600i64 });
+    let token = mint_jwt(&kp, claims);
+
+    let req = axum::http::Request::builder()
+        .uri("/protected")
+        .header("authorization", format!("Bearer {}", token))
+        .body(axum::body::Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        503,
+        "discovered insecure JWKS URI must return 503"
+    );
+}
+
+// ── B4: discovery issuer mismatch → 503 ──────────────────────────────────────
+
+#[tokio::test]
+async fn discovery_issuer_mismatch_returns_503() {
+    let mock = MockServer::start().await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&mock, &kp).await;
+
+    let base = mock.uri();
+    // Discovery doc claims a DIFFERENT issuer
+    Mock::given(method("GET"))
+        .and(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "issuer": "https://attacker.example.com/realm",
+            "jwks_uri": format!("{}/jwks", base),
+        })))
+        .mount(&mock)
+        .await;
+
+    // cfg.issuer_url = base (the mock URL); discovery doc says attacker's issuer → mismatch
+    let cfg = OidcValidationConfig {
+        issuer_url: base.clone(),
+        audience: AudiencePolicy::Unchecked,
+        jwks_uri: None, // force discovery path
+        algorithms: vec![Algorithm::RS256],
+        jwks_ttl: std::time::Duration::from_secs(300),
+        clock_skew: std::time::Duration::from_secs(0),
+        min_refetch_interval: std::time::Duration::from_secs(0),
+    };
+    let app = make_app(cfg).await;
+
+    let now = now_secs();
+    let claims = json!({ "sub": "u", "iss": base, "exp": now + 3600i64 });
+    let token = mint_jwt(&kp, claims);
+
+    let req = axum::http::Request::builder()
+        .uri("/protected")
+        .header("authorization", format!("Bearer {}", token))
+        .body(axum::body::Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        503,
+        "discovery issuer mismatch must return 503 (JWKS unavailable), not 401 or 200"
+    );
+}
+
+// ── B2/B3: missing required claims → malformed_token ─────────────────────────
+
+#[tokio::test]
+async fn missing_exp_returns_401_malformed_token() {
+    let mock = MockServer::start().await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&mock, &kp).await;
+
+    let cfg = make_cfg(&mock);
+    let issuer = cfg.issuer_url.clone();
+    let app = make_app(cfg).await;
+
+    // JWT without exp claim
+    let claims = json!({ "sub": "u", "iss": issuer });
+    let token = mint_jwt(&kp, claims);
+
+    let req = axum::http::Request::builder()
+        .uri("/protected")
+        .header("authorization", format!("Bearer {}", token))
+        .body(axum::body::Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 401);
+    let www = resp
+        .headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(
+        extract_error_description(www),
+        Some("malformed_token"),
+        "missing exp must produce malformed_token; got: {:?}",
+        www
+    );
+}
+
+#[tokio::test]
+async fn missing_sub_returns_401_malformed_token() {
+    let mock = MockServer::start().await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&mock, &kp).await;
+
+    let cfg = make_cfg(&mock);
+    let issuer = cfg.issuer_url.clone();
+    let app = make_app(cfg).await;
+
+    let now = now_secs();
+    // JWT without sub claim
+    let claims = json!({ "iss": issuer, "exp": now + 3600i64 });
+    let token = mint_jwt(&kp, claims);
+
+    let req = axum::http::Request::builder()
+        .uri("/protected")
+        .header("authorization", format!("Bearer {}", token))
+        .body(axum::body::Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 401);
+    let www = resp
+        .headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(
+        extract_error_description(www),
+        Some("malformed_token"),
+        "missing sub must produce malformed_token; got: {:?}",
+        www
+    );
+}
+
+// ── B1: error_description closed set ─────────────────────────────────────────
+
+fn extract_error_description(www: &str) -> Option<&str> {
+    // e.g. Bearer error="invalid_token", error_description="expired"
+    let prefix = "error_description=\"";
+    let start = www.find(prefix)? + prefix.len();
+    let end = www[start..].find('"')? + start;
+    Some(&www[start..end])
+}
+
+#[tokio::test]
+async fn error_description_expired_for_expired_token() {
+    let mock = MockServer::start().await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&mock, &kp).await;
+
+    let cfg = make_cfg(&mock);
+    let issuer = cfg.issuer_url.clone();
+    let app = make_app(cfg).await;
+
+    let now = now_secs();
+    let claims = json!({
+        "sub": "u", "iss": issuer,
+        "exp": now - 200i64, // expired, well outside clock_skew=60
+        "iat": now - 300i64,
+    });
+    let token = mint_jwt(&kp, claims);
+
+    let req = axum::http::Request::builder()
+        .uri("/protected")
+        .header("authorization", format!("Bearer {}", token))
+        .body(axum::body::Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 401);
+    let www = resp
+        .headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(
+        extract_error_description(www),
+        Some("expired"),
+        "expired token must produce error_description=expired; got www: {:?}",
+        www
+    );
+}
+
+#[tokio::test]
+async fn error_description_invalid_signature_for_wrong_key() {
+    let mock = MockServer::start().await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&mock, &kp).await;
+
+    let cfg = make_cfg(&mock);
+    let issuer = cfg.issuer_url.clone();
+    let app = make_app(cfg).await;
+
+    // Sign with a DIFFERENT key pair — verification must fail with invalid_signature
+    let other_kp = test_key_pair();
+    let now = now_secs();
+    let claims = json!({ "sub": "u", "iss": issuer, "exp": now + 3600i64 });
+    // mint_jwt uses kp but we need other_kp — mint manually
+    let other_token = mint_jwt_with_kid(&other_kp, claims, &kp.kid);
+
+    let req = axum::http::Request::builder()
+        .uri("/protected")
+        .header("authorization", format!("Bearer {}", other_token))
+        .body(axum::body::Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 401);
+    let www = resp
+        .headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(
+        extract_error_description(www),
+        Some("invalid_signature"),
+        "wrong-key token must produce error_description=invalid_signature; got: {:?}",
+        www
+    );
+}
+
+#[tokio::test]
+async fn error_description_invalid_issuer_for_wrong_iss() {
+    let mock = MockServer::start().await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&mock, &kp).await;
+
+    let cfg = make_cfg(&mock);
+    let app = make_app(cfg).await;
+
+    let now = now_secs();
+    let claims = json!({
+        "sub": "u",
+        "iss": "https://wrong.example.com/realm",
+        "exp": now + 3600i64,
+    });
+    let token = mint_jwt(&kp, claims);
+
+    let req = axum::http::Request::builder()
+        .uri("/protected")
+        .header("authorization", format!("Bearer {}", token))
+        .body(axum::body::Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 401);
+    let www = resp
+        .headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(
+        extract_error_description(www),
+        Some("invalid_issuer"),
+        "wrong issuer must produce error_description=invalid_issuer; got: {:?}",
+        www
+    );
+}
+
+#[tokio::test]
+async fn error_description_invalid_audience_for_wrong_aud() {
+    let mock = MockServer::start().await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&mock, &kp).await;
+
+    let mut cfg = make_cfg(&mock);
+    cfg.audience = AudiencePolicy::Require("my-api".to_string());
+    let issuer = cfg.issuer_url.clone();
+    let app = make_app(cfg).await;
+
+    let now = now_secs();
+    let claims = json!({
+        "sub": "u", "iss": issuer,
+        "aud": "wrong-api",
+        "exp": now + 3600i64,
+    });
+    let token = mint_jwt(&kp, claims);
+
+    let req = axum::http::Request::builder()
+        .uri("/protected")
+        .header("authorization", format!("Bearer {}", token))
+        .body(axum::body::Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 401);
+    let www = resp
+        .headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(
+        extract_error_description(www),
+        Some("invalid_audience"),
+        "wrong audience must produce error_description=invalid_audience; got: {:?}",
+        www
+    );
+}
+
+// ── A4: WWW-Authenticate space after comma ────────────────────────────────────
+
+#[tokio::test]
+async fn www_authenticate_has_space_after_comma_between_params() {
+    let mock = MockServer::start().await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&mock, &kp).await;
+
+    let cfg = make_cfg(&mock);
+    let issuer = cfg.issuer_url.clone();
+    let app = make_app(cfg).await;
+
+    // Send an expired token — triggers invalid_token + error_description
+    let claims = json!({
+        "sub": "u",
+        "iss": issuer,
+        "exp": 1000i64, // far in the past
+        "iat": 900i64,
+    });
+    let token = mint_jwt(&kp, claims);
+
+    let req = axum::http::Request::builder()
+        .uri("/protected")
+        .header("authorization", format!("Bearer {}", token))
+        .body(axum::body::Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 401);
+
+    let www = resp
+        .headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    // RFC 6750 §3: auth-params separated by ", " (comma + space)
+    assert!(
+        www.contains(", error_description="),
+        "WWW-Authenticate must have space after comma: got {:?}",
+        www
+    );
 }

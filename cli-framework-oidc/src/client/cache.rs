@@ -42,13 +42,43 @@ pub fn read_cache(cache_dir: &Path) -> CacheFile {
 }
 
 pub fn write_cache(cache_dir: &Path, cache: &CacheFile) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(cache_dir)?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(cache_dir)?;
+    }
+
     let data = serde_json::to_string_pretty(cache)?;
     let tmp_path = cache_dir.join(format!("oidc-token.json.tmp.{}", std::process::id()));
-    let mut f = std::fs::File::create(&tmp_path)?;
-    use std::io::Write;
-    f.write_all(data.as_bytes())?;
-    f.sync_all()?;
-    drop(f);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp_path)?;
+        use std::io::Write;
+        f.write_all(data.as_bytes())?;
+        f.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut f = std::fs::File::create(&tmp_path)?;
+        use std::io::Write;
+        f.write_all(data.as_bytes())?;
+        f.sync_all()?;
+    }
+
     std::fs::rename(&tmp_path, cache_dir.join("oidc-token.json"))?;
     Ok(())
 }

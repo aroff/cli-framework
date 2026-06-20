@@ -241,8 +241,15 @@ pub(crate) fn register_auth_commands(
                         }
                     } else {
                         match status {
-                            Some(_) => {
-                                // Have peek data but no-refresh mode
+                            Some(s) => {
+                                if s.logged_in {
+                                    let expiry_line = format_expiry_human(s.expires_at);
+                                    ctx.framework_println(&format!("Logged in{expiry_line}."));
+                                } else {
+                                    ctx.framework_println(&format!(
+                                        "Not logged in. Run `{app_name} auth login`."
+                                    ));
+                                }
                             }
                             None => {
                                 DiagnosticReporter::write_plain(
@@ -395,7 +402,7 @@ pub(crate) fn register_auth_commands(
 /// Format expiry as a human-readable suffix, e.g. ` (expires in 42m)`.
 fn format_expiry_human(expires_at: Option<std::time::SystemTime>) -> String {
     let Some(exp) = expires_at else {
-        return String::new();
+        return " (expiry unknown)".to_string();
     };
     match exp.duration_since(std::time::SystemTime::now()) {
         Ok(dur) => {
