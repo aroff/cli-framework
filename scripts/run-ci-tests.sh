@@ -72,6 +72,19 @@ set +x
 echo -e "${GREEN}✓ Feature-matrix tests passed${NC}"
 echo ""
 
+# Step 5b: cli-framework-oidc feature matrix
+echo -e "${YELLOW}[5b] Running cli-framework-oidc tests (feature matrix)...${NC}"
+set -x
+cargo test -p cli-framework-oidc --features client --verbose
+cargo test -p cli-framework-oidc --features server --verbose
+cargo test -p cli-framework-oidc --features client,server --verbose
+cargo build -p cli-framework-oidc --no-default-features --verbose
+cargo test -p cli-framework --no-default-features --features auth,testkit --verbose
+cargo test -p cli-framework --features auth,testkit --verbose
+set +x
+echo -e "${GREEN}✓ cli-framework-oidc tests passed${NC}"
+echo ""
+
 # Step 6: Run integration tests (ensure MCP server coverage)
 echo -e "${YELLOW}[6/6] Running integration tests (mcp-server)...${NC}"
 # NOTE: Avoid `--test '*'` here: explicitly selecting all test targets includes
