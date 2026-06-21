@@ -16,9 +16,12 @@ pub enum OidcConfigError {
     EmptyAlgorithms,
     #[error("invalid jwks_uri: {0}")]
     InvalidJwksUri(String),
+    #[error("invalid flow configuration: {0}")]
+    InvalidFlow(String),
 }
 
 /// Validate that a JWKS URI is secure: must be https, or http to loopback only.
+#[cfg(feature = "server")]
 pub(crate) fn validate_jwks_uri(uri: &str) -> Result<(), OidcConfigError> {
     let url =
         url::Url::parse(uri).map_err(|e| OidcConfigError::InvalidJwksUri(format!("{uri}: {e}")))?;

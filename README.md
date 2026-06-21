@@ -570,7 +570,7 @@ Run the included examples to see the framework in action:
 - `cargo run --example with_plugins` — CLI with registry-based plugins
 - `cargo run --example with_ailoop` — ailoop confirmations and prompts
 - `cargo run --example http_retry_demo` — `http_retry` and secure client defaults
-- `cargo run --example with_auth --features auth` — `TokenProvider` + auto-registered `auth` commands
+- `cargo run -p cli-framework-oidc --example keycloak_cli --features client` — real OIDC/Keycloak login (env-configured `OidcClient`, `auth` commands, `whoami` via userinfo)
 
 Source for each lives under [`skill/examples/`](skill/examples/).
 

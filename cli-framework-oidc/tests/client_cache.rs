@@ -26,6 +26,104 @@ fn build_client(issuer: &str, client_id: &str, cache_dir: PathBuf) -> OidcClient
         .expect("build client")
 }
 
+// ── A2: from_env builder ──────────────────────────────────────────────────────
+//
+// Apps shouldn't hand-wire issuer/client/secret. from_env(prefix) reads
+// {PREFIX}_ISSUER_URL / _CLIENT_ID / _CLIENT_SECRET / _FLOW / _SCOPES and
+// resolves a flow: explicit _FLOW wins; else secret present → ClientCredentials,
+// otherwise an interactive flow. Each test uses a unique prefix to stay isolated.
+
+use cli_framework_oidc::client::OidcClientBuilder;
+
+#[test]
+fn from_env_with_secret_defaults_to_client_credentials() {
+    std::env::set_var("CFA_ISSUER_URL", "https://auth.example.com/realms/r");
+    std::env::set_var("CFA_CLIENT_ID", "svc");
+    std::env::set_var("CFA_CLIENT_SECRET", "s3cr3t");
+    let client = OidcClientBuilder::from_env("CFA")
+        .expect("from_env")
+        .app_name("cfa")
+        .build()
+        .expect("build");
+    assert!(matches!(client.flow(), OidcFlow::ClientCredentials { .. }));
+    assert_eq!(client.client_id(), "svc");
+}
+
+#[test]
+fn from_env_without_secret_defaults_to_interactive() {
+    std::env::set_var("CFB_ISSUER_URL", "https://auth.example.com/realms/r");
+    std::env::set_var("CFB_CLIENT_ID", "cli");
+    let client = OidcClientBuilder::from_env("CFB")
+        .expect("from_env")
+        .app_name("cfb")
+        .build()
+        .expect("build");
+    // interactive = DeviceCode or AuthCodePkce, never ClientCredentials
+    assert!(!matches!(client.flow(), OidcFlow::ClientCredentials { .. }));
+}
+
+#[test]
+fn from_env_explicit_flow_device_wins() {
+    std::env::set_var("CFC_ISSUER_URL", "https://auth.example.com/realms/r");
+    std::env::set_var("CFC_CLIENT_ID", "cli");
+    std::env::set_var("CFC_FLOW", "device");
+    let client = OidcClientBuilder::from_env("CFC")
+        .expect("from_env")
+        .app_name("cfc")
+        .build()
+        .expect("build");
+    assert!(matches!(client.flow(), OidcFlow::DeviceCode));
+}
+
+#[test]
+fn from_env_missing_issuer_is_error() {
+    std::env::set_var("CFD_CLIENT_ID", "cli");
+    // no CFD_ISSUER_URL
+    assert!(OidcClientBuilder::from_env("CFD").is_err());
+}
+
+// ── A1: cache_dir is optional, defaults from app_name ────────────────────────
+//
+// An app should not have to compute a cache path. With no .cache_dir() but an
+// .app_name(), the client resolves a default under the OS cache dir:
+//   <os-cache>/cli-framework-oidc/<app-name>
+
+#[test]
+fn cache_dir_defaults_from_app_name_when_unset() {
+    let client = OidcClient::builder()
+        .issuer_url("https://auth.example.com")
+        .client_id("my-cli")
+        .flow(OidcFlow::DeviceCode)
+        .app_name("my-app")
+        // no .cache_dir()
+        .build()
+        .expect("build must succeed without an explicit cache_dir");
+
+    let dir = client.cache_dir();
+    assert!(
+        dir.is_absolute(),
+        "default cache dir must be absolute: {dir:?}"
+    );
+    assert!(
+        dir.ends_with("cli-framework-oidc/my-app"),
+        "default cache dir must be <os-cache>/cli-framework-oidc/my-app, got {dir:?}"
+    );
+}
+
+#[test]
+fn explicit_cache_dir_overrides_default() {
+    let tmp = TempDir::new().unwrap();
+    let client = OidcClient::builder()
+        .issuer_url("https://auth.example.com")
+        .client_id("my-cli")
+        .flow(OidcFlow::DeviceCode)
+        .app_name("my-app")
+        .cache_dir(tmp.path().to_path_buf())
+        .build()
+        .expect("build");
+    assert_eq!(client.cache_dir(), tmp.path());
+}
+
 #[test]
 fn cache_key_is_deterministic() {
     let dir = TempDir::new().unwrap();

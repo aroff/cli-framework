@@ -112,18 +112,20 @@ mod client_validation {
     }
 
     #[test]
-    fn builder_missing_cache_dir() {
-        let err = OidcClient::builder()
+    fn builder_without_cache_dir_uses_default() {
+        // cache_dir is optional (ADR: config ergonomics) — when unset, it
+        // defaults to <os-cache>/cli-framework-oidc/<app-name>.
+        let client = OidcClient::builder()
             .issuer_url("https://auth.example.com")
             .client_id("my-client")
             .flow(OidcFlow::ClientCredentials {
                 client_secret: make_secret("s3cr3t"),
                 token_auth: TokenAuthMethod::Post,
             })
+            .app_name("my-app")
             .build()
-            .err()
-            .expect("should fail");
-        assert!(matches!(err, OidcConfigError::MissingField("cache_dir")));
+            .expect("build should succeed without an explicit cache_dir");
+        assert!(client.cache_dir().ends_with("cli-framework-oidc/my-app"));
     }
 
     #[test]

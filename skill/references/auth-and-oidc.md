@@ -42,6 +42,13 @@ cli-framework-oidc = { path = "../cli-framework-oidc", features = ["server"] }
 
 ## `OidcClient` — Keycloak setup
 
+> **Runnable example.** A complete, copyable CLI lives at `cli-framework-oidc/examples/keycloak_cli.rs`. Point it at your realm via env vars and run:
+> ```bash
+> export KC_ISSUER_URL=https://keycloak.example.com/realms/my-realm KC_CLIENT_ID=my-cli
+> cargo run -p cli-framework-oidc --example keycloak_cli --features client -- auth login
+> cargo run -p cli-framework-oidc --example keycloak_cli --features client -- whoami
+> ```
+
 ### Keycloak client configuration
 
 | Scenario | Client type | Settings to enable |
@@ -58,19 +65,40 @@ For a public client with Device Code + PKCE:
 
 ```rust
 use cli_framework_oidc::client::{OidcClient, OidcFlow};
-use std::path::PathBuf;
-
-let cache_dir = dirs::cache_dir().unwrap().join("my-app");
 
 let client = OidcClient::builder()
     .issuer_url("https://keycloak.example.com/realms/my-realm")  // realm URL, no trailing slash
     .client_id("my-cli")
     .flow(OidcFlow::DeviceCode)
-    .cache_dir(cache_dir)
+    .app_name("my-app")   // default cache dir → <os-cache>/cli-framework-oidc/my-app
     .build()?;
 ```
 
 `issuer_url` is what Keycloak calls the **Realm URL** — it ends with `/realms/<realm-name>`. The client fetches `<issuer>/.well-known/openid-configuration` on first use (lazy, cached for the client's lifetime).
+
+**`cache_dir` is optional.** Set `.app_name("my-app")` and the cache defaults to `<os-cache>/cli-framework-oidc/my-app` — no `dirs` dependency or path-building in your app. Pass `.cache_dir(path)` only to override.
+
+### Config from environment
+
+Skip hand-wiring entirely — `from_env("PREFIX")` reads `{PREFIX}_ISSUER_URL`, `{PREFIX}_CLIENT_ID`, `{PREFIX}_CLIENT_SECRET` (optional), `{PREFIX}_FLOW` (optional), `{PREFIX}_SCOPES` (optional):
+
+```rust
+use cli_framework_oidc::client::OidcClientBuilder;
+
+let client = OidcClientBuilder::from_env("KC")?
+    .app_name("my-app")
+    .build()?;
+```
+
+Flow resolution: an explicit `KC_FLOW` (`device` | `pkce` | `client-credentials` | `auto`) wins; otherwise a present `KC_CLIENT_SECRET` selects Client Credentials, and its absence selects an interactive flow via `OidcFlow::auto_interactive()`.
+
+### Automatic flow selection
+
+`OidcFlow::auto_interactive()` picks **Auth Code + PKCE** when a local GUI/browser is available and **Device Code** over SSH or on a headless box (checks `SSH_CONNECTION`/`SSH_TTY` and `DISPLAY`/`WAYLAND_DISPLAY`). Use it instead of hard-coding one interactive flow:
+
+```rust
+.flow(OidcFlow::auto_interactive())
+```
 
 ### Available flows
 
@@ -403,13 +431,15 @@ async fn list_things(claims: OidcClaims) -> impl IntoResponse {
 }
 ```
 
+**Keycloak audience gotcha.** A Keycloak access token's `aud` does **not** include the client by default — it's often `["account"]`. So `AudiencePolicy::Require("my-api")` will reject otherwise-valid tokens until you either (a) add an **Audience mapper** (or audience client-scope) on the client so the token's `aud` contains `my-api`, then use `Require`/`RequireAny`; or (b) start with `AudiencePolicy::Unchecked` to prove the signature/issuer/JWKS path, then tighten. `RequireAny(vec!["my-api".into(), "account".into()])` is a pragmatic middle ground.
+
 ### Tuning the validation config
 
 `OidcValidationConfig::new(issuer, audience)` fills sane defaults; override fields before passing it to the layer:
 
 | Field | Default | Purpose |
 |-------|---------|---------|
-| `audience` | (required arg) | `AudiencePolicy::Require("<aud>")` enforces the `aud` claim; `AudiencePolicy::Unchecked` skips it and logs a WARN |
+| `audience` | (required arg) | `AudiencePolicy::Require("<aud>")` enforces an exact `aud`; `AudiencePolicy::RequireAny(vec![..])` accepts if **any** listed value is present (Keycloak's `aud` is an array, e.g. `["account", "my-api"]`); `AudiencePolicy::Unchecked` skips it and logs a WARN |
 | `algorithms` | `[RS256]` | Accepted JWT signing algorithms |
 | `jwks_uri` | `None` (discover) | Override to skip discovery and pin the JWKS endpoint |
 | `jwks_ttl` | 300 s | How long a fetched key set is considered fresh |

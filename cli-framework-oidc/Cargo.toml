@@ -19,6 +19,7 @@ client = [
     "dep:time",
     "dep:sha2",
     "dep:base64",
+    "dep:dirs",
 ]
 server = [
     "cli-framework/api-server",
@@ -49,10 +50,16 @@ open = { version = "5", optional = true }
 time = { version = "0.3", features = ["formatting", "parsing", "serde"], optional = true }
 sha2 = { version = "0.10", optional = true }
 base64 = { version = "0.22", optional = true }
+dirs = { version = "5", optional = true }
 
 # server feature deps
 jsonwebtoken = { version = "9", optional = true }
 tower = { version = "0.5", features = ["util"], optional = true }
+
+[[example]]
+name = "keycloak_cli"
+path = "examples/keycloak_cli.rs"
+required-features = ["client"]
 
 [[test]]
 name = "config_validation"

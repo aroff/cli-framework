@@ -26,7 +26,11 @@ pub struct OidcValidationConfig {
 
 #[derive(Clone, Debug)]
 pub enum AudiencePolicy {
+    /// Token is valid only if its `aud` contains this exact value.
     Require(String),
+    /// Token is valid if its `aud` contains **any** of these values. Useful with
+    /// Keycloak, whose access-token `aud` is an array (e.g. `["account", "my-api"]`).
+    RequireAny(Vec<String>),
     Unchecked,
 }
 
@@ -529,6 +533,9 @@ fn try_validate_jwt(
     match &cfg.audience {
         AudiencePolicy::Require(aud) => {
             validation.set_audience(&[aud]);
+        }
+        AudiencePolicy::RequireAny(auds) => {
+            validation.set_audience(auds);
         }
         AudiencePolicy::Unchecked => {
             validation.validate_aud = false;

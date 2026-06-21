@@ -24,6 +24,36 @@ pub enum OidcFlow {
     },
 }
 
+impl OidcFlow {
+    /// Pick an interactive flow based on the runtime environment:
+    /// **Auth Code + PKCE** when a local GUI/browser is available, **Device Code**
+    /// when running over SSH or on a headless box (no browser to open locally).
+    ///
+    /// Use this when an app should "just log the user in" without the developer
+    /// hard-coding which interactive flow fits the user's environment.
+    pub fn auto_interactive() -> OidcFlow {
+        let remote =
+            std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_TTY").is_some();
+        let gui = if cfg!(any(target_os = "macos", target_os = "windows")) {
+            true
+        } else {
+            std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some()
+        };
+        pick_interactive_flow(remote, gui)
+    }
+}
+
+/// Pure decision for [`OidcFlow::auto_interactive`] — separated for testability.
+fn pick_interactive_flow(remote_session: bool, gui_available: bool) -> OidcFlow {
+    if !remote_session && gui_available {
+        OidcFlow::AuthCodePkce {
+            redirect: RedirectConfig::default(),
+        }
+    } else {
+        OidcFlow::DeviceCode
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RedirectConfig {
     pub port: RedirectPort,
@@ -71,6 +101,27 @@ pub struct OidcClient {
 }
 
 impl OidcClient {
+    /// The on-disk directory holding this client's token cache (`oidc-token.json`).
+    /// Either the explicit `cache_dir` or the app-name-derived default.
+    pub fn cache_dir(&self) -> &std::path::Path {
+        &self.cache_dir
+    }
+
+    /// The normalized issuer URL this client authenticates against.
+    pub fn issuer_url(&self) -> &str {
+        &self.issuer_url
+    }
+
+    /// The OAuth client id.
+    pub fn client_id(&self) -> &str {
+        &self.client_id
+    }
+
+    /// The configured grant flow.
+    pub fn flow(&self) -> &OidcFlow {
+        &self.flow
+    }
+
     pub fn builder() -> OidcClientBuilder {
         OidcClientBuilder::new()
     }
@@ -690,6 +741,7 @@ pub struct OidcClientBuilder {
     flow: Option<OidcFlow>,
     scopes: Option<Vec<String>>,
     cache_dir: Option<PathBuf>,
+    app_name: Option<String>,
     reporter: Option<Arc<dyn cli_framework::auth::AuthFlowReporter>>,
     refresh_skew: Duration,
 }
@@ -702,9 +754,82 @@ impl OidcClientBuilder {
             flow: None,
             scopes: None,
             cache_dir: None,
+            app_name: None,
             reporter: None,
             refresh_skew: Duration::from_secs(60),
         }
+    }
+
+    /// Build from environment variables with a `{PREFIX}_` namespace:
+    ///
+    /// | Var | Required | Meaning |
+    /// |-----|----------|---------|
+    /// | `{PREFIX}_ISSUER_URL` | yes | OIDC issuer / Keycloak realm URL |
+    /// | `{PREFIX}_CLIENT_ID` | yes | OAuth client id |
+    /// | `{PREFIX}_CLIENT_SECRET` | no | Confidential-client secret (implies Client Credentials) |
+    /// | `{PREFIX}_FLOW` | no | `device` \| `pkce` \| `client-credentials` \| `auto` |
+    /// | `{PREFIX}_SCOPES` | no | Space- or comma-separated scopes |
+    ///
+    /// Flow resolution: an explicit `{PREFIX}_FLOW` wins; otherwise a present
+    /// secret selects Client Credentials, and its absence selects an interactive
+    /// flow via [`OidcFlow::auto_interactive`]. Returns the builder so callers can
+    /// still override (e.g. `.app_name(..)`) before [`build`](Self::build).
+    pub fn from_env(prefix: &str) -> Result<Self, OidcConfigError> {
+        let var = |k: &str| {
+            std::env::var(format!("{prefix}_{k}"))
+                .ok()
+                .filter(|v| !v.is_empty())
+        };
+
+        let issuer_url =
+            var("ISSUER_URL").ok_or(OidcConfigError::MissingField("ISSUER_URL (env)"))?;
+        let client_id = var("CLIENT_ID").ok_or(OidcConfigError::MissingField("CLIENT_ID (env)"))?;
+        let secret = var("CLIENT_SECRET");
+        let flow_kind = var("FLOW");
+
+        let flow = match flow_kind.as_deref() {
+            Some("device") => OidcFlow::DeviceCode,
+            Some("pkce") => OidcFlow::AuthCodePkce {
+                redirect: RedirectConfig::default(),
+            },
+            Some("client-credentials") | Some("cc") => OidcFlow::ClientCredentials {
+                client_secret: SecretString::new(secret.clone().ok_or_else(|| {
+                    OidcConfigError::InvalidFlow(
+                        "client-credentials flow requires CLIENT_SECRET".to_string(),
+                    )
+                })?),
+                token_auth: TokenAuthMethod::Post,
+            },
+            Some("auto") | None => match &secret {
+                Some(s) => OidcFlow::ClientCredentials {
+                    client_secret: SecretString::new(s.clone()),
+                    token_auth: TokenAuthMethod::Post,
+                },
+                None => OidcFlow::auto_interactive(),
+            },
+            Some(other) => {
+                return Err(OidcConfigError::InvalidFlow(format!(
+                    "unknown {prefix}_FLOW value: {other}"
+                )))
+            }
+        };
+
+        let mut builder = Self::new()
+            .issuer_url(issuer_url)
+            .client_id(client_id)
+            .flow(flow);
+        if let Some(raw) = var("SCOPES") {
+            let scopes: Vec<String> = raw
+                .split([',', ' '])
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+            if !scopes.is_empty() {
+                builder = builder.scopes(scopes);
+            }
+        }
+        Ok(builder)
     }
 
     pub fn issuer_url(mut self, url: impl Into<String>) -> Self {
@@ -732,6 +857,13 @@ impl OidcClientBuilder {
         self
     }
 
+    /// Application name used to derive a default cache directory when
+    /// [`cache_dir`](Self::cache_dir) is not set: `<os-cache>/cli-framework-oidc/<app-name>`.
+    pub fn app_name(mut self, name: impl Into<String>) -> Self {
+        self.app_name = Some(name.into());
+        self
+    }
+
     pub fn reporter(mut self, r: Arc<dyn cli_framework::auth::AuthFlowReporter>) -> Self {
         self.reporter = Some(r);
         self
@@ -752,9 +884,10 @@ impl OidcClientBuilder {
             .client_id
             .ok_or(OidcConfigError::MissingField("client_id"))?;
         let flow = self.flow.ok_or(OidcConfigError::MissingField("flow"))?;
-        let cache_dir = self
-            .cache_dir
-            .ok_or(OidcConfigError::MissingField("cache_dir"))?;
+        let cache_dir = match self.cache_dir {
+            Some(dir) => dir,
+            None => default_cache_dir(self.app_name.as_deref())?,
+        };
         let reporter = self
             .reporter
             .unwrap_or_else(|| Arc::new(cli_framework::auth::StderrAuthFlowReporter));
@@ -774,6 +907,15 @@ impl OidcClientBuilder {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Resolve the default token-cache directory: `<os-cache>/cli-framework-oidc/<app-name>`.
+/// `app_name` falls back to `"default"` when not supplied.
+fn default_cache_dir(app_name: Option<&str>) -> Result<PathBuf, OidcConfigError> {
+    let base = dirs::cache_dir().ok_or(OidcConfigError::MissingField("cache_dir"))?;
+    Ok(base
+        .join("cli-framework-oidc")
+        .join(app_name.unwrap_or("default")))
+}
 
 fn open_lock_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     #[cfg(unix)]
@@ -927,4 +1069,38 @@ fn decode_param(s: &str) -> String {
         .next()
         .map(|(_, v)| v.to_string())
         .unwrap_or_else(|| s.to_string())
+}
+
+#[cfg(test)]
+mod flow_selection_tests {
+    use super::*;
+
+    #[test]
+    fn remote_session_picks_device_code() {
+        // Over SSH the browser would open on the wrong machine → Device Code.
+        assert!(matches!(
+            pick_interactive_flow(true, true),
+            OidcFlow::DeviceCode
+        ));
+        assert!(matches!(
+            pick_interactive_flow(true, false),
+            OidcFlow::DeviceCode
+        ));
+    }
+
+    #[test]
+    fn local_gui_picks_pkce() {
+        assert!(matches!(
+            pick_interactive_flow(false, true),
+            OidcFlow::AuthCodePkce { .. }
+        ));
+    }
+
+    #[test]
+    fn local_headless_picks_device_code() {
+        assert!(matches!(
+            pick_interactive_flow(false, false),
+            OidcFlow::DeviceCode
+        ));
+    }
 }

@@ -180,6 +180,54 @@ async fn valid_token_returns_200() {
     assert_eq!(resp.status(), axum::http::StatusCode::OK);
 }
 
+// ── D1: AudiencePolicy::RequireAny (Keycloak aud is an array) ─────────────────
+
+#[tokio::test]
+async fn require_any_accepts_token_matching_one_of_several() {
+    let server = MockServer::start().await;
+    setup_mock_discovery(&server).await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&server, &kp).await;
+
+    let mut cfg = make_cfg(&server);
+    cfg.audience = AudiencePolicy::RequireAny(vec!["api-two".into(), "api-one".into()]);
+
+    let app = make_app(cfg).await;
+    let token = mint_jwt(&kp, valid_claims(&server.uri(), "api-one"));
+
+    let req = axum::http::Request::builder()
+        .uri("/protected")
+        .header("authorization", format!("Bearer {}", token))
+        .body(axum::body::Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn require_any_rejects_token_matching_none() {
+    let server = MockServer::start().await;
+    setup_mock_discovery(&server).await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&server, &kp).await;
+
+    let mut cfg = make_cfg(&server);
+    cfg.audience = AudiencePolicy::RequireAny(vec!["api-two".into(), "api-three".into()]);
+
+    let app = make_app(cfg).await;
+    let token = mint_jwt(&kp, valid_claims(&server.uri(), "api-one"));
+
+    let req = axum::http::Request::builder()
+        .uri("/protected")
+        .header("authorization", format!("Bearer {}", token))
+        .body(axum::body::Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+}
+
 #[tokio::test]
 async fn missing_auth_header_returns_401_with_www_authenticate() {
     let server = MockServer::start().await;
