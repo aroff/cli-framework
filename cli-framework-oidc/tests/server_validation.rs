@@ -5,7 +5,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::{response::IntoResponse, routing::get, Router};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use jsonwebtoken::Algorithm;
-use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde_json::json;
 use tower::{Layer, ServiceExt};
 use wiremock::matchers::{method, path};
@@ -16,67 +15,74 @@ use cli_framework_oidc::server::{
 };
 
 // ── Key helpers ───────────────────────────────────────────────────────────────
+//
+// Keys are P-256 / ES256 generated via `rcgen` (backed by ring). This avoids
+// the `rsa` crate which carries RUSTSEC-2023-0071 with no upstream fix.
 
 struct TestKeyPair {
-    pub public_key: RsaPublicKey,
+    pub x: String, // base64url x coordinate
+    pub y: String, // base64url y coordinate
     pub encoding_key: jsonwebtoken::EncodingKey,
     pub kid: String,
 }
 
 fn test_key_pair() -> TestKeyPair {
-    let mut rng = rand_core::OsRng;
-    let priv_key = RsaPrivateKey::new(&mut rng, 2048).expect("key gen");
-    let pub_key = RsaPublicKey::from(&priv_key);
-    let pem = rsa::pkcs8::EncodePrivateKey::to_pkcs8_pem(&priv_key, rsa::pkcs8::LineEnding::LF)
-        .expect("pem");
-    let encoding_key = jsonwebtoken::EncodingKey::from_rsa_pem(pem.as_bytes()).expect("enc key");
+    test_key_pair_with_kid("test-kid-1")
+}
+
+fn test_key_pair_with_kid(kid: &str) -> TestKeyPair {
+    let kp = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).expect("key gen");
+    // public_key_raw() returns the uncompressed EC point: 0x04 || x(32) || y(32)
+    let point = kp.public_key_raw();
+    assert_eq!(point.len(), 65, "P-256 uncompressed point must be 65 bytes");
+    let x = URL_SAFE_NO_PAD.encode(&point[1..33]);
+    let y = URL_SAFE_NO_PAD.encode(&point[33..65]);
+    let encoding_key =
+        jsonwebtoken::EncodingKey::from_ec_pem(kp.serialize_pem().as_bytes()).expect("enc key");
     TestKeyPair {
-        public_key: pub_key,
+        x,
+        y,
         encoding_key,
-        kid: "test-kid-1".to_string(),
+        kid: kid.to_string(),
     }
 }
 
 fn jwk_for_key(kp: &TestKeyPair) -> serde_json::Value {
-    use rsa::traits::PublicKeyParts;
-    let n = URL_SAFE_NO_PAD.encode(kp.public_key.n().to_bytes_be());
-    let e = URL_SAFE_NO_PAD.encode(kp.public_key.e().to_bytes_be());
     json!({
-        "kty": "RSA",
+        "kty": "EC",
+        "crv": "P-256",
         "kid": kp.kid,
-        "alg": "RS256",
+        "alg": "ES256",
         "use": "sig",
-        "n": n,
-        "e": e,
+        "x": kp.x,
+        "y": kp.y,
     })
 }
 
 fn jwk_for_key_no_kid(kp: &TestKeyPair) -> serde_json::Value {
-    use rsa::traits::PublicKeyParts;
-    let n = URL_SAFE_NO_PAD.encode(kp.public_key.n().to_bytes_be());
-    let e = URL_SAFE_NO_PAD.encode(kp.public_key.e().to_bytes_be());
     json!({
-        "kty": "RSA",
-        "alg": "RS256",
+        "kty": "EC",
+        "crv": "P-256",
+        "alg": "ES256",
         "use": "sig",
-        "n": n,
-        "e": e,
+        "x": kp.x,
+        "y": kp.y,
     })
 }
 
 fn mint_jwt(kp: &TestKeyPair, claims: serde_json::Value) -> String {
-    let mut header = jsonwebtoken::Header::new(Algorithm::RS256);
+    let mut header = jsonwebtoken::Header::new(Algorithm::ES256);
     header.kid = Some(kp.kid.clone());
     jsonwebtoken::encode(&header, &claims, &kp.encoding_key).expect("encode")
 }
 
 fn mint_jwt_no_kid(kp: &TestKeyPair, claims: serde_json::Value) -> String {
-    let header = jsonwebtoken::Header::new(Algorithm::RS256);
+    let header = jsonwebtoken::Header::new(Algorithm::ES256);
     jsonwebtoken::encode(&header, &claims, &kp.encoding_key).expect("encode")
 }
 
 fn mint_jwt_with_kid(kp: &TestKeyPair, claims: serde_json::Value, kid: &str) -> String {
-    let mut header = jsonwebtoken::Header::new(Algorithm::RS256);
+    let mut header = jsonwebtoken::Header::new(Algorithm::ES256);
     header.kid = Some(kid.to_string());
     jsonwebtoken::encode(&header, &claims, &kp.encoding_key).expect("encode")
 }
@@ -95,7 +101,7 @@ fn make_cfg(server: &MockServer) -> OidcValidationConfig {
         issuer_url: server.uri(),
         audience: AudiencePolicy::Unchecked,
         jwks_uri: Some(format!("{}/jwks", server.uri())),
-        algorithms: vec![Algorithm::RS256],
+        algorithms: vec![Algorithm::ES256],
         jwks_ttl: std::time::Duration::from_secs(300),
         clock_skew: std::time::Duration::from_secs(60),
         min_refetch_interval: std::time::Duration::from_secs(60),
@@ -763,7 +769,7 @@ async fn discovered_insecure_jwks_uri_returns_503() {
         issuer_url: base.clone(),
         audience: AudiencePolicy::Unchecked,
         jwks_uri: None, // force discovery path
-        algorithms: vec![Algorithm::RS256],
+        algorithms: vec![Algorithm::ES256],
         jwks_ttl: std::time::Duration::from_secs(300),
         clock_skew: std::time::Duration::from_secs(0),
         min_refetch_interval: std::time::Duration::from_secs(0),
@@ -813,7 +819,7 @@ async fn discovery_issuer_mismatch_returns_503() {
         issuer_url: base.clone(),
         audience: AudiencePolicy::Unchecked,
         jwks_uri: None, // force discovery path
-        algorithms: vec![Algorithm::RS256],
+        algorithms: vec![Algorithm::ES256],
         jwks_ttl: std::time::Duration::from_secs(300),
         clock_skew: std::time::Duration::from_secs(0),
         min_refetch_interval: std::time::Duration::from_secs(0),

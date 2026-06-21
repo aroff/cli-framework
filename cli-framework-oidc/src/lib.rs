@@ -1,10 +1,11 @@
 //! OIDC/OAuth2 provider for cli-framework.
 //!
-//! Two independent features:
+//! Three independent features (any combination may be enabled together):
 //! - `client`: [`OidcClient`] implementing [`cli_framework::auth::TokenProvider`]
 //! - `server`: [`server::oidc_validation_layer`] tower middleware + [`server::OidcClaims`] extractor
+//! - `browser`: [`browser::oidc_browser_session_layer`] + [`browser::oidc_dual_mode_layer`] for SPA auth
 
-/// Shared error type used by both `client` and `server` features.
+/// Shared error type.
 #[derive(thiserror::Error, Debug)]
 #[non_exhaustive]
 pub enum OidcConfigError {
@@ -18,10 +19,12 @@ pub enum OidcConfigError {
     InvalidJwksUri(String),
     #[error("invalid flow configuration: {0}")]
     InvalidFlow(String),
+    #[error("cookie envelope exceeds browser size limit: {0} bytes (max 3900)")]
+    CookieTooLarge(usize),
 }
 
 /// Validate that a JWKS URI is secure: must be https, or http to loopback only.
-#[cfg(feature = "server")]
+#[cfg(any(feature = "server", feature = "browser"))]
 pub(crate) fn validate_jwks_uri(uri: &str) -> Result<(), OidcConfigError> {
     let url =
         url::Url::parse(uri).map_err(|e| OidcConfigError::InvalidJwksUri(format!("{uri}: {e}")))?;
@@ -87,8 +90,23 @@ pub fn normalize_issuer(raw: &str) -> Result<String, OidcConfigError> {
     }
 }
 
+/// Shared OIDC types (AudiencePolicy, OidcClaims) — available when server or browser feature is on.
+#[cfg(any(feature = "server", feature = "browser"))]
+pub mod types;
+
+/// Shared JWKS fetching and caching logic.
+#[cfg(any(feature = "server", feature = "browser"))]
+pub(crate) mod jwks;
+
 #[cfg(feature = "client")]
 pub mod client;
 
 #[cfg(feature = "server")]
 pub mod server;
+
+#[cfg(feature = "browser")]
+pub mod browser;
+
+// Re-export shared types at crate root when either feature is active.
+#[cfg(any(feature = "server", feature = "browser"))]
+pub use types::{AudiencePolicy, OidcClaims};

@@ -30,6 +30,22 @@ server = [
     "dep:time",
     "dep:tower",
 ]
+browser = [
+    "cli-framework/api-server",
+    "dep:jsonwebtoken",
+    "dep:reqwest",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:time",
+    "dep:tower",
+    "dep:sha2",
+    "dep:base64",
+    "dep:aes-gcm",
+    "dep:zeroize",
+    "dep:rand",
+    "dep:hmac",
+    "dep:hkdf",
+]
 
 [dependencies]
 cli-framework = { path = "..", default-features = false }
@@ -56,6 +72,13 @@ dirs = { version = "5", optional = true }
 jsonwebtoken = { version = "9", optional = true }
 tower = { version = "0.5", features = ["util"], optional = true }
 
+# browser feature deps
+aes-gcm = { version = "0.10", optional = true }
+zeroize = { version = "1.7", features = ["derive"], optional = true }
+rand = { version = "0.8", optional = true }
+hmac = { version = "0.12", optional = true }
+hkdf = { version = "0.12", optional = true }
+
 [[example]]
 name = "keycloak_cli"
 path = "examples/keycloak_cli.rs"
@@ -80,13 +103,17 @@ name = "server_validation"
 path = "tests/server_validation.rs"
 required-features = ["server"]
 
+[[test]]
+name = "browser_validation"
+path = "tests/browser_validation.rs"
+required-features = ["browser"]
+
 [dev-dependencies]
 tokio = { version = "1.52", features = ["full"] }
 wiremock = "0.6"
 tempfile = "3.0"
 serde_json = "1.0"
-rsa = { version = "0.9", features = ["pem"] }
-rand_core = { version = "0.6", features = ["std"] }
+rcgen = "0.13"
 base64 = "0.22"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 jsonwebtoken = "9"

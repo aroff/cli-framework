@@ -21,14 +21,52 @@ fn noop_execute() -> Arc<
     Arc::new(|_ctx, _args| Box::pin(async { Ok(()) }))
 }
 
-async fn wait_for_server(addr: &str) {
-    for _ in 0..50 {
-        if tokio::net::TcpStream::connect(addr).await.is_ok() {
-            return;
+/// Wait until the server is ready at the HTTP level, not just TCP level.
+/// Returns the session ID from the initialize handshake.
+///
+/// Checking TCP connectivity only (connect + drop) creates a TOCTOU race: the OS
+/// kernel accepts the SYN before axum has finished wiring its router, so a
+/// subsequent HTTP request can still get "Connection refused".  Probing with an
+/// actual HTTP initialize avoids that window entirely.
+async fn wait_for_http_server(client: &reqwest::Client, base_url: &str) -> Option<String> {
+    for attempt in 0..100 {
+        match client
+            .post(format!("{}/mcp", base_url))
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "probe",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "probe", "version": "0"}
+                }
+            }))
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                let session_id = resp
+                    .headers()
+                    .get("Mcp-Session-Id")
+                    .or_else(|| resp.headers().get("mcp-session-id"))
+                    .map(|v| v.to_str().unwrap_or("").to_string());
+                let _ = resp.text().await;
+                return session_id;
+            }
+            _ => {}
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        if attempt == 99 {
+            panic!(
+                "Server did not become HTTP-ready within 10s at {}",
+                base_url
+            );
+        }
     }
-    panic!("Server did not start within 5s at {}", addr);
+    unreachable!()
 }
 
 fn parse_sse_data(body: &str) -> serde_json::Value {
@@ -133,12 +171,9 @@ async fn test_tools_list_over_http() {
         .await;
     });
 
-    wait_for_server(&format!("127.0.0.1:{}", port)).await;
-
     let client = reqwest::Client::new();
     let base_url = format!("http://127.0.0.1:{}", port);
-
-    let session_id = initialize_session(&client, &base_url).await;
+    let session_id = wait_for_http_server(&client, &base_url).await;
 
     // Send tools/list
     let mut req = client
@@ -235,12 +270,9 @@ async fn test_tool_call_success_over_http() {
         .await;
     });
 
-    wait_for_server(&format!("127.0.0.1:{}", port)).await;
-
     let client = reqwest::Client::new();
     let base_url = format!("http://127.0.0.1:{}", port);
-
-    let session_id = initialize_session(&client, &base_url).await;
+    let session_id = wait_for_http_server(&client, &base_url).await;
 
     // Call the tool
     let mut req = client
@@ -335,11 +367,11 @@ async fn test_mcp_serve_subcommand_tools_list() {
         });
     });
 
-    wait_for_server(&format!("127.0.0.1:{}", port)).await;
-
     let client = reqwest::Client::new();
     let base_url = format!("http://127.0.0.1:{}", port);
-    let session_id = initialize_session(&client, &base_url).await;
+    // wait_for_http_server combines the TCP wait + initialize in one HTTP retry loop,
+    // eliminating the TOCTOU race between TCP-ready and HTTP-handler-ready.
+    let session_id = wait_for_http_server(&client, &base_url).await;
 
     let mut req = client
         .post(format!("{}/mcp", base_url))
