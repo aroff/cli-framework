@@ -1,5 +1,6 @@
 //! OIDC server-side validation middleware.
 
+use crate::jwks::{fetch_discovery, fetch_jwks, filter_keys, JwksCache, KeyResult, OidcDiscovery};
 use crate::OidcConfigError;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde_json::Value as JsonValue;
@@ -10,6 +11,9 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tower::{Layer, Service};
+
+// Re-export shared types so callers can use cli_framework_oidc::server::{AudiencePolicy, OidcClaims}.
+pub use crate::types::{AudiencePolicy, OidcClaims};
 
 // ── Public config types ─────────────────────────────────────────────────────
 
@@ -22,16 +26,6 @@ pub struct OidcValidationConfig {
     pub jwks_ttl: Duration,
     pub clock_skew: Duration,
     pub min_refetch_interval: Duration,
-}
-
-#[derive(Clone, Debug)]
-pub enum AudiencePolicy {
-    /// Token is valid only if its `aud` contains this exact value.
-    Require(String),
-    /// Token is valid if its `aud` contains **any** of these values. Useful with
-    /// Keycloak, whose access-token `aud` is an array (e.g. `["account", "my-api"]`).
-    RequireAny(Vec<String>),
-    Unchecked,
 }
 
 impl OidcValidationConfig {
@@ -48,49 +42,7 @@ impl OidcValidationConfig {
     }
 }
 
-/// Extracted and validated OIDC claims, inserted into request extensions.
-#[derive(Clone, Debug)]
-pub struct OidcClaims {
-    pub sub: String,
-    pub iss: String,
-    pub aud: Vec<String>,
-    pub exp: i64,
-    pub iat: Option<i64>,
-    pub nbf: Option<i64>,
-    pub preferred_username: Option<String>,
-    pub email: Option<String>,
-    pub scopes: Vec<String>,
-    pub roles: Vec<String>,
-    pub raw: JsonValue,
-}
-
 // ── Internal state ──────────────────────────────────────────────────────────
-
-struct JwksCache {
-    keys: Vec<(Option<String>, DecodingKey)>, // (kid, key)
-    fetched_at: Option<Instant>,
-}
-
-impl JwksCache {
-    fn empty() -> Self {
-        Self {
-            keys: vec![],
-            fetched_at: None,
-        }
-    }
-
-    fn is_fresh(&self, ttl: Duration) -> bool {
-        self.fetched_at.is_some_and(|t| t.elapsed() < ttl)
-    }
-
-    fn is_empty(&self) -> bool {
-        self.keys.is_empty()
-    }
-}
-
-struct OidcDiscovery {
-    jwks_uri: String,
-}
 
 struct OidcLayerState {
     issuer_url: String,
@@ -98,10 +50,7 @@ struct OidcLayerState {
     jwks_cache: Mutex<JwksCache>,
     discovery: tokio::sync::OnceCell<OidcDiscovery>,
     last_forced_refetch: Mutex<Option<Instant>>,
-    /// Single-flight gate (ADR 0070): only one task performs a JWKS refetch at a
-    /// time; concurrent refetch-needing requests wait here and share the result.
-    /// Held only by refetch-needing requests, never on the fresh-cache fast path,
-    /// so a slow fetch does not block validation of already-cached keys.
+    /// Single-flight gate (ADR 0070): only one task performs a JWKS refetch at a time.
     refetch_gate: Mutex<()>,
     http: reqwest::Client,
 }
@@ -113,34 +62,28 @@ impl OidcLayerState {
         }
         let disc = self
             .discovery
-            .get_or_try_init(|| fetch_discovery_jwks(&self.issuer_url, &self.http))
+            .get_or_try_init(|| fetch_discovery(&self.issuer_url, &self.http))
             .await
             .map_err(|e| e.to_string())?;
         Ok(disc.jwks_uri.clone())
     }
 
     async fn get_decoding_keys(&self, kid: &Option<String>) -> KeyResult {
-        // Fast path: a fresh cache holding the requested kid needs no fetch and
-        // never touches the single-flight gate, so steady-state validation is
-        // unaffected by an in-flight refetch.
+        // Fast path: fresh cache with the requested kid.
         {
             let cache = self.jwks_cache.lock().await;
             if cache.is_fresh(self.cfg.jwks_ttl) {
                 let result = filter_keys(&cache.keys, kid);
-                // On cache-hit with unknown kid, fall through to forced refetch below.
                 if !matches!(result, KeyResult::UnknownKid) {
                     return result;
                 }
             }
         }
 
-        // Single-flight gate (ADR 0070): coalesce concurrent refetches into one.
-        // Only refetch-needing requests reach here; they queue on this gate so at
-        // most one JWKS fetch is in flight at any instant.
+        // Single-flight gate: coalesce concurrent refetches.
         let _refetch_guard = self.refetch_gate.lock().await;
 
-        // Double-check after acquiring the gate: a prior holder may have already
-        // refreshed the cache while we waited, making our fetch unnecessary.
+        // Double-check after acquiring the gate.
         {
             let cache = self.jwks_cache.lock().await;
             if cache.is_fresh(self.cfg.jwks_ttl) {
@@ -151,7 +94,6 @@ impl OidcLayerState {
             }
         }
 
-        // Try to refetch (TTL-expired or unknown-kid triggered).
         let jwks_uri = match self.get_jwks_uri().await {
             Ok(u) => u,
             Err(e) => {
@@ -164,7 +106,7 @@ impl OidcLayerState {
             }
         };
 
-        // Rate-limit forced refetches to min_refetch_interval.
+        // Rate-limit forced refetches.
         {
             let last = self.last_forced_refetch.lock().await;
             if let Some(t) = *last {
@@ -199,45 +141,9 @@ impl OidcLayerState {
     }
 }
 
-enum KeyResult {
-    Keys(Vec<DecodingKey>),
-    Unavailable,
-    UnknownKid,
-}
-
-fn filter_keys(all: &[(Option<String>, DecodingKey)], kid: &Option<String>) -> KeyResult {
-    if all.is_empty() {
-        return KeyResult::Unavailable;
-    }
-    let matching: Vec<DecodingKey> = match kid {
-        Some(k) => all
-            .iter()
-            .filter(|(id, _)| id.as_deref() == Some(k.as_str()))
-            .map(|(_, key)| key.clone())
-            .collect(),
-        None => {
-            if all.len() == 1 {
-                all.iter().map(|(_, key)| key.clone()).collect()
-            } else {
-                return KeyResult::UnknownKid;
-            }
-        }
-    };
-    if matching.is_empty() && kid.is_some() {
-        // Unknown kid — could be stale cache; caller may force refetch
-        KeyResult::UnknownKid
-    } else if matching.is_empty() {
-        KeyResult::Unavailable
-    } else {
-        KeyResult::Keys(matching)
-    }
-}
-
 // ── Main entry point ────────────────────────────────────────────────────────
 
 /// Build a tower [`Layer`] that validates JWT bearer tokens on every request.
-///
-/// Returns a `BoxCloneSyncServiceLayer` compatible with `cli_framework::tower::util::BoxCloneLayer<axum::Router>`.
 pub fn oidc_validation_layer(
     cfg: OidcValidationConfig,
 ) -> Result<
@@ -363,10 +269,8 @@ where
         let mut inner = std::mem::replace(&mut self.inner, inner);
 
         Box::pin(async move {
-            // Extract headers before the async boundary to avoid holding a &Request<Body>
-            // across await (Body is not Sync).
             let headers = req.headers().clone();
-            match validate_request(&headers, &state).await {
+            match validate_bearer(&headers, &state).await {
                 Ok(claims) => {
                     req.extensions_mut().insert(claims);
                     inner.call(req).await
@@ -409,7 +313,7 @@ impl<S: Send + Sync> cli_framework::axum::extract::FromRequestParts<S> for OidcC
 
 // ── Request validation logic ─────────────────────────────────────────────────
 
-async fn validate_request(
+async fn validate_bearer(
     headers: &cli_framework::axum::http::HeaderMap,
     state: &OidcLayerState,
 ) -> Result<OidcClaims, cli_framework::axum::response::Response> {
@@ -440,7 +344,16 @@ async fn validate_request(
         }
     };
 
-    // Decode header (no signature verification)
+    validate_jwt_token(raw_token, state).await
+}
+
+async fn validate_jwt_token(
+    raw_token: &str,
+    state: &OidcLayerState,
+) -> Result<OidcClaims, cli_framework::axum::response::Response> {
+    use cli_framework::axum::http::StatusCode;
+    use cli_framework::axum::response::IntoResponse;
+
     let header = match jsonwebtoken::decode_header(raw_token) {
         Ok(h) => h,
         Err(_) => {
@@ -452,11 +365,6 @@ async fn validate_request(
                 .into_response())
         }
     };
-
-    // Reject algorithms that provide no security (HS256 etc. with None key).
-    // In jsonwebtoken 9, there is no Algorithm::None variant; we rely on
-    // the allowlist check below to reject anything not in cfg.algorithms.
-    // No explicit None check needed.
 
     if !state.cfg.algorithms.contains(&header.alg) {
         return Err((
@@ -470,7 +378,6 @@ async fn validate_request(
             .into_response());
     }
 
-    // Get matching keys
     let keys = match state.get_decoding_keys(&header.kid).await {
         KeyResult::Keys(k) => k,
         KeyResult::Unavailable => {
@@ -484,8 +391,6 @@ async fn validate_request(
                 .unwrap());
         }
         KeyResult::UnknownKid => {
-            // Force a refetch once then try again
-            // (simplified: just return 401)
             return Err((
                 StatusCode::UNAUTHORIZED,
                 [(
@@ -498,7 +403,6 @@ async fn validate_request(
         }
     };
 
-    // Try each key
     let mut last_error: Option<String> = None;
     for key in &keys {
         match try_validate_jwt(raw_token, key, &state.cfg, &state.issuer_url) {
@@ -521,7 +425,7 @@ async fn validate_request(
         .into_response())
 }
 
-fn try_validate_jwt(
+pub(crate) fn try_validate_jwt(
     token: &str,
     key: &DecodingKey,
     cfg: &OidcValidationConfig,
@@ -544,7 +448,7 @@ fn try_validate_jwt(
     validation.leeway = cfg.clock_skew.as_secs();
 
     let token_data = jsonwebtoken::decode::<JsonValue>(token, key, &validation)
-        .map_err(|e| map_jwt_error(&e))?;
+        .map_err(|e| crate::jwks::map_jwt_error(&e))?;
 
     let claims = &token_data.claims;
 
@@ -601,85 +505,4 @@ fn try_validate_jwt(
         roles,
         raw: claims.clone(),
     })
-}
-
-// ── JWKS fetching ────────────────────────────────────────────────────────────
-
-async fn fetch_discovery_jwks(
-    issuer_url: &str,
-    http: &reqwest::Client,
-) -> Result<OidcDiscovery, String> {
-    let url = format!("{}/.well-known/openid-configuration", issuer_url);
-    let resp = http.get(&url).send().await.map_err(|e| e.to_string())?;
-    let doc: JsonValue = resp.json().await.map_err(|e| e.to_string())?;
-
-    // Verify the discovery doc's issuer matches the configured issuer_url.
-    let discovered_issuer = doc["issuer"]
-        .as_str()
-        .ok_or_else(|| "missing issuer in discovery doc".to_string())?;
-    let normalized_configured = crate::normalize_issuer(issuer_url).map_err(|e| e.to_string())?;
-    let normalized_discovered =
-        crate::normalize_issuer(discovered_issuer).map_err(|e| e.to_string())?;
-    if normalized_configured != normalized_discovered {
-        return Err(format!(
-            "discovery issuer mismatch: expected {normalized_configured}, got {normalized_discovered}"
-        ));
-    }
-
-    let jwks_uri = doc["jwks_uri"]
-        .as_str()
-        .ok_or_else(|| "missing jwks_uri in discovery doc".to_string())?
-        .to_string();
-
-    // Reject discovered JWKS URIs that are insecure (non-loopback http).
-    crate::validate_jwks_uri(&jwks_uri).map_err(|e| e.to_string())?;
-
-    Ok(OidcDiscovery { jwks_uri })
-}
-
-fn map_jwt_error(e: &jsonwebtoken::errors::Error) -> String {
-    use jsonwebtoken::errors::ErrorKind;
-    match e.kind() {
-        ErrorKind::ExpiredSignature => "expired".to_string(),
-        ErrorKind::ImmatureSignature => "not_yet_valid".to_string(),
-        ErrorKind::InvalidSignature => "invalid_signature".to_string(),
-        ErrorKind::InvalidIssuer => "invalid_issuer".to_string(),
-        ErrorKind::InvalidAudience => "invalid_audience".to_string(),
-        ErrorKind::InvalidAlgorithm => "unsupported_algorithm".to_string(),
-        _ => "malformed_token".to_string(),
-    }
-}
-
-async fn fetch_jwks(
-    jwks_uri: &str,
-    http: &reqwest::Client,
-) -> Result<Vec<(Option<String>, DecodingKey)>, String> {
-    let resp = http.get(jwks_uri).send().await.map_err(|e| e.to_string())?;
-    let doc: JsonValue = resp.json().await.map_err(|e| e.to_string())?;
-
-    let keys_arr = doc["keys"].as_array().ok_or("missing keys array")?;
-    let mut result = vec![];
-
-    for jwk in keys_arr {
-        let kid = jwk["kid"].as_str().map(String::from);
-        let kty = jwk["kty"].as_str().unwrap_or("");
-
-        let key = match kty {
-            "RSA" => {
-                let n = jwk["n"].as_str().unwrap_or("");
-                let e = jwk["e"].as_str().unwrap_or("");
-                DecodingKey::from_rsa_components(n, e).map_err(|e| e.to_string())?
-            }
-            "EC" => {
-                let x = jwk["x"].as_str().unwrap_or("");
-                let y = jwk["y"].as_str().unwrap_or("");
-                DecodingKey::from_ec_components(x, y).map_err(|e| e.to_string())?
-            }
-            _ => continue, // skip unsupported key types
-        };
-
-        result.push((kid, key));
-    }
-
-    Ok(result)
 }
