@@ -21,4 +21,10 @@ ignore = [
   "RUSTSEC-2026-0098",
   "RUSTSEC-2026-0099",
   "RUSTSEC-2026-0104",
+  # `rsa 0.9.x` (Marvin Attack timing side-channel) is a **dev-dependency only**,
+  # used exclusively to generate RSA signing keys in test fixtures
+  # (`cli-framework-oidc/tests/server_validation.rs`). It is never linked into
+  # production binaries. No patched version of the `rsa` crate is available.
+  # Remove when rsa releases a patched 0.9.x or we switch test keys to ring/rcgen.
+  "RUSTSEC-2023-0071",
 ]
