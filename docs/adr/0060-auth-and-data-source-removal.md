@@ -3,6 +3,10 @@
 - Date: 2026-05-16
 - Status: Accepted
 - Issue: 60
+- Note: ADR 0069 later re-introduces a *new, differently-shaped* auth layer
+  (a `TokenProvider` trait with runtime integration hooks). It does not reverse
+  this ADR — removing the original inert module was correct — it revisits the
+  premise now that real integration points exist.
 
 ## Context
 
