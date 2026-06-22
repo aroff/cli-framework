@@ -51,3 +51,6 @@ tmp/
 .newton
 # Stray build artifact accidentally committed; ignore at repo root
 /resolution
+
+# Claude Code local session/worktree state
+.claude/
