@@ -308,3 +308,63 @@ async fn test_gate_failed_maps_to_mcp_tool_gate_failed() {
         err.message
     );
 }
+
+// ── Gap 2: dispatch_tool_call emits a cli.command span with surface=mcp ───
+
+#[cfg(feature = "telemetry")]
+#[tokio::test]
+async fn dispatch_tool_call_emits_mcp_surface_span() {
+    use cli_framework::telemetry::init::init_with_exporter;
+    use opentelemetry_sdk::error::OTelSdkResult;
+    use opentelemetry_sdk::trace::{SpanData, SpanExporter};
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::prelude::*;
+
+    #[derive(Clone, Default, Debug)]
+    struct SpanSink(Arc<Mutex<Vec<SpanData>>>);
+    impl SpanExporter for SpanSink {
+        async fn export(&self, batch: Vec<SpanData>) -> OTelSdkResult {
+            self.0.lock().unwrap().extend(batch);
+            Ok(())
+        }
+    }
+
+    let sink = SpanSink::default();
+    let (tel, guard) = init_with_exporter(sink.clone(), "test-mcp-span");
+
+    let tracer = guard.tracer("cli-framework");
+    let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+    let subscriber = tracing_subscriber::registry().with(otel_layer);
+
+    let cmd = make_cmd("hello");
+    let mut reg = CommandRegistry::new();
+    reg.register(cmd);
+    let tool_registry =
+        Arc::new(McpToolRegistry::from_command_registry(&reg, "myapp").with_telemetry(tel));
+
+    // set_default installs the subscriber for this thread's scope without
+    // requiring a sync closure, so we can await dispatch_tool_call directly.
+    let _sub_guard = tracing::subscriber::set_default(subscriber);
+    let _ = dispatch_tool_call(&tool_registry, "myapp_hello", None, McpTransportKind::Http).await;
+
+    guard.flush();
+
+    let spans = sink.0.lock().unwrap().clone();
+    let mcp_span = spans
+        .iter()
+        .find(|s| s.name.as_ref() == "cli.command")
+        .expect("expected a cli.command span — dispatch_tool_call must emit one");
+
+    let surface = mcp_span
+        .attributes
+        .iter()
+        .find(|kv| kv.key.as_str() == "cli.invocation.surface")
+        .map(|kv| kv.value.to_string());
+
+    assert_eq!(
+        surface.as_deref(),
+        Some("mcp"),
+        "cli.invocation.surface must be 'mcp', got: {:?}",
+        surface
+    );
+}

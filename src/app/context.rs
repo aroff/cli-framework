@@ -87,6 +87,17 @@ pub trait AppContext: Send + Sync {
         static NOOP: crate::telemetry::NoopTelemetry = crate::telemetry::NoopTelemetry;
         &NOOP
     }
+
+    /// Return the active telemetry handle as a cloneable `Arc`, if available.
+    ///
+    /// The default returns `None`. The dispatch wrapper overrides this so that
+    /// command closures can extract and forward the handle across async boundaries
+    /// (e.g., to the MCP serve path where `ctx` cannot be moved into the future).
+    fn opt_telemetry_arc(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::telemetry::Telemetry + Send + Sync>> {
+        None
+    }
 }
 
 /// Extension trait for AppContext to provide command registry access

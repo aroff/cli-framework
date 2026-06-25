@@ -70,6 +70,7 @@ pub struct McpToolRegistry {
     risk_enforcer: RiskEnforcer,
     #[cfg(feature = "mcp-server")]
     gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
+    telemetry: Option<std::sync::Arc<dyn crate::telemetry::Telemetry + Send + Sync>>,
 }
 
 impl McpToolRegistry {
@@ -112,6 +113,7 @@ impl McpToolRegistry {
             risk_enforcer: RiskEnforcer::new(crate::security::CommandRiskPolicy::default()),
             #[cfg(feature = "mcp-server")]
             gate: None,
+            telemetry: None,
         }
     }
 
@@ -125,11 +127,21 @@ impl McpToolRegistry {
             risk_enforcer: RiskEnforcer::new(crate::security::CommandRiskPolicy::default()),
             #[cfg(feature = "mcp-server")]
             gate: None,
+            telemetry: None,
         }
     }
 
     pub fn with_risk_policy(mut self, policy: crate::security::CommandRiskPolicy) -> Self {
         self.risk_enforcer = RiskEnforcer::new(policy);
+        self
+    }
+
+    /// Attach a telemetry handle so MCP tool calls emit `cli.command` spans.
+    pub fn with_telemetry(
+        mut self,
+        handle: std::sync::Arc<dyn crate::telemetry::Telemetry + Send + Sync>,
+    ) -> Self {
+        self.telemetry = Some(handle);
         self
     }
 
@@ -181,13 +193,18 @@ pub enum McpTransportKind {
 struct McpAppContext {
     buffer: std::sync::Mutex<Vec<u8>>,
     structured: std::sync::Mutex<Option<Value>>,
+    telemetry: std::sync::Arc<dyn crate::telemetry::Telemetry + Send + Sync>,
 }
 #[cfg(feature = "mcp-server")]
 impl McpAppContext {
-    fn new() -> Self {
+    fn new(
+        telemetry: Option<std::sync::Arc<dyn crate::telemetry::Telemetry + Send + Sync>>,
+    ) -> Self {
         Self {
             buffer: std::sync::Mutex::new(Vec::new()),
             structured: std::sync::Mutex::new(None),
+            telemetry: telemetry
+                .unwrap_or_else(|| std::sync::Arc::new(crate::telemetry::NoopTelemetry)),
         }
     }
 }
@@ -211,6 +228,16 @@ impl crate::app::AppContext for McpAppContext {
 
     fn drain_structured_content(&self) -> Option<Value> {
         self.structured.lock().unwrap().take()
+    }
+
+    fn telemetry(&self) -> &dyn crate::telemetry::Telemetry {
+        self.telemetry.as_ref()
+    }
+
+    fn opt_telemetry_arc(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::telemetry::Telemetry + Send + Sync>> {
+        Some(std::sync::Arc::clone(&self.telemetry))
     }
 }
 
@@ -518,18 +545,32 @@ pub async fn dispatch_tool_call(
     let bridge = tool_registry.bridge_for_call(transport, tool_name);
 
     let arguments_value = arguments.map(Value::Object).unwrap_or(Value::Null);
-    let mut ctx = McpAppContext::new();
-    let res = bridge
-        .invoke_structured(
-            &mut ctx,
-            BridgeInvocation {
-                command: cmd,
-                input: BridgeInput::Json(arguments_value),
-                confirmation: ConfirmationMode::NonInteractive,
-                mode: crate::command_surface::tool_bridge::BridgeMode::Mcp,
-            },
-        )
-        .await;
+    let mut ctx = McpAppContext::new(tool_registry.telemetry.clone());
+
+    let res = {
+        #[cfg(feature = "telemetry")]
+        let span = tracing::info_span!(
+            "cli.command",
+            "cli.command.path" = tool_name,
+            "cli.invocation.surface" = "mcp",
+        );
+        #[cfg(not(feature = "telemetry"))]
+        let span = tracing::Span::none();
+
+        use tracing::Instrument;
+        bridge
+            .invoke_structured(
+                &mut ctx,
+                BridgeInvocation {
+                    command: cmd,
+                    input: BridgeInput::Json(arguments_value),
+                    confirmation: ConfirmationMode::NonInteractive,
+                    mode: crate::command_surface::tool_bridge::BridgeMode::Mcp,
+                },
+            )
+            .instrument(span)
+            .await
+    };
 
     match res {
         Ok(output) => {
@@ -724,6 +765,7 @@ pub async fn serve_mcp_with_gate_opts(
         gate,
         Arc::new(resources::ResourceRegistry::new()),
         banner,
+        None,
     )
     .await
 }
@@ -742,12 +784,16 @@ pub async fn serve_mcp_with_gate_opts_with_resources(
     gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
     resource_registry: Arc<resources::ResourceRegistry>,
     banner: BannerSettings,
+    telemetry: Option<std::sync::Arc<dyn crate::telemetry::Telemetry + Send + Sync>>,
 ) -> Result<()> {
     let mut tool_registry =
         McpToolRegistry::from_command_registry_with_policy(&registry, app_name, export_policy)
             .with_risk_policy(risk_policy);
     if let Some(gate) = gate {
         tool_registry = tool_registry.with_gate(gate);
+    }
+    if let Some(tel) = telemetry {
+        tool_registry = tool_registry.with_telemetry(tel);
     }
     let tool_registry = Arc::new(tool_registry);
 
@@ -797,6 +843,7 @@ pub async fn serve_mcp_stdio_opts(
         gate,
         Arc::new(resources::ResourceRegistry::new()),
         banner,
+        None,
     )
     .await
 }
@@ -814,12 +861,16 @@ pub async fn serve_mcp_stdio_opts_with_resources(
     gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
     resource_registry: Arc<resources::ResourceRegistry>,
     banner: BannerSettings,
+    telemetry: Option<std::sync::Arc<dyn crate::telemetry::Telemetry + Send + Sync>>,
 ) -> anyhow::Result<()> {
     let mut tool_registry =
         McpToolRegistry::from_command_registry_with_policy(&registry, app_name, export_policy)
             .with_risk_policy(risk_policy);
     if let Some(gate) = gate {
         tool_registry = tool_registry.with_gate(gate);
+    }
+    if let Some(tel) = telemetry {
+        tool_registry = tool_registry.with_telemetry(tel);
     }
     let tool_registry = Arc::new(tool_registry);
     transport_stdio::start_stdio_with_resources(tool_registry, resource_registry, banner).await

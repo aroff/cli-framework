@@ -5,6 +5,12 @@ use cli_framework::telemetry::{init, TelemetryConfig};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+// Tests the OTLP HTTP transport using init_batch (BatchSpanProcessor) which is
+// the correct processor for async environments (servers, tests with async runtimes).
+// init_simple uses SimpleSpanProcessor which exports synchronously on span-end via
+// reqwest::blocking, creating a nested Tokio runtime — this is intended for
+// single-threaded CLI processes, not async contexts.  See unit/telemetry.rs for
+// init_simple coverage via TestExporter.
 #[tokio::test]
 async fn otlp_http_transport_posts_to_v1_traces() {
     let mock_server = MockServer::start().await;
@@ -20,9 +26,9 @@ async fn otlp_http_transport_posts_to_v1_traces() {
         ..Default::default()
     };
 
-    let (_handle, guard) = match init::init_simple(&cfg, "test-svc", "0.1") {
+    let (_handle, guard) = match init::init_batch(&cfg, "test-svc", "0.1") {
         Some(pair) => pair,
-        None => panic!("init_simple returned None with a valid endpoint"),
+        None => panic!("init_batch returned None with a valid endpoint"),
     };
 
     use tracing_subscriber::prelude::*;

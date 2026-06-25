@@ -81,6 +81,7 @@ fn parse_sse_data(body: &str) -> serde_json::Value {
     serde_json::from_str(body).unwrap_or(serde_json::Value::Null)
 }
 
+#[allow(dead_code)]
 async fn initialize_session(client: &reqwest::Client, base_url: &str) -> Option<String> {
     let resp = client
         .post(format!("{}/mcp", base_url))
