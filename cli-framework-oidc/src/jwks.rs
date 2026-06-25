@@ -153,6 +153,7 @@ pub(crate) async fn fetch_jwks(
     Ok(result)
 }
 
+#[cfg(feature = "browser")]
 pub(crate) fn map_jwt_error(e: &jsonwebtoken::errors::Error) -> String {
     use jsonwebtoken::errors::ErrorKind;
     match e.kind() {
