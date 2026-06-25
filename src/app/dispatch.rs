@@ -95,6 +95,12 @@ impl<'a> AppContext for CliAppContextWrapper<'a> {
             .as_deref()
             .unwrap_or(&crate::telemetry::NoopTelemetry)
     }
+
+    fn opt_telemetry_arc(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::telemetry::Telemetry + Send + Sync>> {
+        self.env.telemetry.clone()
+    }
 }
 
 impl<'a> crate::app::context::CommandRegistryContext for CliAppContextWrapper<'a> {

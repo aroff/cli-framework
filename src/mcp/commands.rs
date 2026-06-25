@@ -104,6 +104,8 @@ pub fn create_mcp_serve_command_with_deps(
             let resource_registry = Arc::clone(&resource_registry);
             // Resolve banner settings up front (ctx is not 'static, can't cross await).
             let banner = crate::mcp::BannerSettings::resolve(ctx.opt_global_args(), &args);
+            // Extract telemetry Arc before entering the async block — ctx can't cross await.
+            let telemetry = ctx.opt_telemetry_arc();
             Box::pin(async move {
                 // Defaults injected by spec: transport="http", host="127.0.0.1", port="8080", path="/mcp"
                 let transport = args
@@ -152,6 +154,7 @@ pub fn create_mcp_serve_command_with_deps(
                         gate,
                         resource_registry,
                         banner,
+                        telemetry,
                     )
                     .await;
                 }
@@ -193,6 +196,7 @@ pub fn create_mcp_serve_command_with_deps(
                     gate,
                     resource_registry,
                     banner,
+                    telemetry,
                 )
                 .await
             })

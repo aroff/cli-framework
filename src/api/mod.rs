@@ -168,6 +168,9 @@ pub struct ApiServerBuilder {
     mcp_router: Option<axum::Router>,
     root_fallback: Option<axum::Router>,
     health_version: Option<String>,
+    telemetry_config: Option<crate::telemetry::TelemetryConfig>,
+    service_name: String,
+    service_version: String,
 }
 
 impl Default for ApiServerBuilder {
@@ -192,6 +195,9 @@ impl Default for ApiServerBuilder {
             mcp_router: None,
             root_fallback: None,
             health_version: None,
+            telemetry_config: None,
+            service_name: String::new(),
+            service_version: String::new(),
         }
     }
 }
@@ -199,6 +205,23 @@ impl Default for ApiServerBuilder {
 impl ApiServerBuilder {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Enable batch OTel telemetry for the server process.
+    ///
+    /// `init_batch` is called at the start of `ApiServer::serve()` with a
+    /// `BatchSpanProcessor`. The guard lives for the duration of `serve().await`
+    /// so spans flush cleanly on graceful shutdown.
+    pub fn with_telemetry(
+        mut self,
+        config: crate::telemetry::TelemetryConfig,
+        service_name: &str,
+        service_version: &str,
+    ) -> Self {
+        self.telemetry_config = Some(config);
+        self.service_name = service_name.to_string();
+        self.service_version = service_version.to_string();
+        self
     }
 
     pub fn version(mut self, v: ApiVersion) -> Self {
@@ -585,6 +608,9 @@ impl ApiServerBuilder {
             router,
             shutdown,
             shutdown_readiness,
+            telemetry_config: self.telemetry_config,
+            service_name: self.service_name,
+            service_version: self.service_version,
         }
     }
 }
@@ -691,6 +717,9 @@ pub struct ApiServer {
     router: axum::Router,
     shutdown: CancellationToken,
     shutdown_readiness: Arc<AtomicBool>,
+    telemetry_config: Option<crate::telemetry::TelemetryConfig>,
+    service_name: String,
+    service_version: String,
 }
 
 impl ApiServer {
@@ -703,6 +732,16 @@ impl ApiServer {
     }
 
     pub async fn serve(self, addr: &str) -> anyhow::Result<()> {
+        // Init batch telemetry for the server lifetime.  The guard must outlive
+        // the axum::serve call so pending spans flush on graceful shutdown.
+        #[cfg(feature = "telemetry")]
+        let _telemetry_guard = if let Some(ref cfg) = self.telemetry_config {
+            crate::telemetry::init::init_batch(cfg, &self.service_name, &self.service_version)
+                .map(|(_, guard)| guard)
+        } else {
+            None
+        };
+
         let listener = tokio::net::TcpListener::bind(addr).await?;
 
         let shutdown_token = self.shutdown.clone();

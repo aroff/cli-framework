@@ -57,7 +57,10 @@ fn make_handle_and_guard(
     )
 }
 
-/// Init with BatchSpanProcessor for one-shot CLI runs (requires tokio runtime).
+/// Init with SimpleSpanProcessor for one-shot CLI runs.
+///
+/// `SimpleSpanProcessor` exports synchronously on span end — lossless for
+/// short-lived processes that may exit before an async batch would flush.
 pub fn init_simple(
     config: &TelemetryConfig,
     service_name: &str,
@@ -74,7 +77,7 @@ pub fn init_simple(
         .build()
         .ok()?;
     let provider = SdkTracerProvider::builder()
-        .with_batch_exporter(exporter)
+        .with_simple_exporter(exporter)
         .with_resource(build_resource(service_name, service_version))
         .build();
     Some(make_handle_and_guard(provider))
