@@ -1,5 +1,6 @@
 use crate::ailoop::{AiloopClient, AiloopConfig};
 use crate::app::context::AppContext;
+use crate::app::dispatch::InvocationSurface;
 use crate::app::module::Module;
 use crate::app::AppMeta;
 use crate::cli_output::HelpRenderer;
@@ -60,6 +61,7 @@ pub struct AppBuilder {
     suggest_corrections: bool,
     #[cfg(feature = "auth")]
     token_provider: Option<Arc<dyn crate::auth::TokenProvider>>,
+    telemetry_config: Option<crate::telemetry::TelemetryConfig>,
 }
 
 impl AppBuilder {
@@ -91,6 +93,7 @@ impl AppBuilder {
             suggest_corrections: true,
             #[cfg(feature = "auth")]
             token_provider: None,
+            telemetry_config: None,
         }
     }
 
@@ -110,6 +113,16 @@ impl AppBuilder {
     #[cfg(feature = "auth")]
     pub fn with_token_provider(mut self, provider: Arc<dyn crate::auth::TokenProvider>) -> Self {
         self.token_provider = Some(provider);
+        self
+    }
+
+    /// Configure OpenTelemetry telemetry for this app.
+    ///
+    /// When set and `TelemetryConfig::is_active()` returns `true`, the framework will
+    /// initialise an OTLP exporter on every `run()` call and attach a telemetry handle
+    /// to the command dispatch context.
+    pub fn with_telemetry(mut self, config: crate::telemetry::TelemetryConfig) -> Self {
+        self.telemetry_config = Some(config);
         self
     }
 
@@ -553,6 +566,8 @@ impl AppBuilder {
             suggest_corrections: self.suggest_corrections,
             #[cfg(feature = "auth")]
             token_provider: self.token_provider,
+            telemetry_config: self.telemetry_config,
+            active_telemetry: None,
         })
     }
 }
@@ -582,6 +597,10 @@ pub struct App<C: AppContext> {
     suggest_corrections: bool,
     #[cfg(feature = "auth")]
     token_provider: Option<Arc<dyn crate::auth::TokenProvider>>,
+    #[allow(dead_code)]
+    telemetry_config: Option<crate::telemetry::TelemetryConfig>,
+    #[allow(dead_code)]
+    pub(crate) active_telemetry: Option<Arc<dyn crate::telemetry::Telemetry + Send + Sync>>,
 }
 
 impl<C: AppContext> App<C> {
@@ -623,6 +642,7 @@ impl<C: AppContext> App<C> {
     }
 
     pub async fn run_with_args(&mut self, args: Vec<String>) -> Result<()> {
+        let _telemetry_guard = self.init_telemetry_simple();
         use crate::app::clap_adapter::parse_with_clap;
         use crate::app::diagnostic_reporter::DiagnosticReporter;
         use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
@@ -671,8 +691,13 @@ impl<C: AppContext> App<C> {
                                 )));
                             }
                             let cmd_clone = cmd.clone();
-                            self.execute_command_direct(cmd_clone, args, global_args)
-                                .await
+                            self.execute_command_direct(
+                                cmd_clone,
+                                args,
+                                global_args,
+                                InvocationSurface::Cli,
+                            )
+                            .await
                         }
                         None => {
                             let msg = format!(
@@ -779,7 +804,7 @@ impl<C: AppContext> App<C> {
             .get(command_id)
             .ok_or_else(|| anyhow::anyhow!("Command '{}' not found", command_id))?
             .clone();
-        self.execute_command_direct(command, args, HashMap::new())
+        self.execute_command_direct(command, args, HashMap::new(), InvocationSurface::Cli)
             .await
     }
 
@@ -803,7 +828,7 @@ impl<C: AppContext> App<C> {
                 "validation failed".to_string(),
             )));
         }
-        self.execute_command_direct(command, args, global_args)
+        self.execute_command_direct(command, args, global_args, InvocationSurface::Cli)
             .await
     }
 
@@ -814,19 +839,61 @@ impl<C: AppContext> App<C> {
         command: Command,
         args: HashMap<String, ArgValue>,
         global_args: HashMap<String, ArgValue>,
+        surface: InvocationSurface,
     ) -> Result<()> {
         let env = crate::app::dispatch::DispatchEnv {
             command_registry: self.command_registry.as_ref(),
             ailoop_client: &self.ailoop_client,
             global_args: &global_args,
             stdout_capture: self.stdout_capture.clone(),
+            telemetry: self.active_telemetry.clone(),
+            surface,
             #[cfg(feature = "auth")]
             token_provider: self.token_provider.clone(),
         };
+
+        #[cfg(feature = "telemetry")]
+        let _span = {
+            let arg_names: String = args.keys().cloned().collect::<Vec<_>>().join(",");
+            let cmd_id = command.id.as_ref().to_string();
+            tracing::info_span!(
+                "cli.command",
+                "cli.command.path" = cmd_id.as_str(),
+                "cli.invocation.surface" = surface.as_str(),
+                "cli.command.arg_count" = args.len(),
+                "cli.command.arg_names" = arg_names.as_str(),
+            )
+            .entered()
+        };
+
         let mut ctx_wrapper = crate::app::dispatch::CliAppContextWrapper::new(&mut self.ctx, env);
 
         (command.execute)(&mut ctx_wrapper, args).await?;
         Ok(())
+    }
+
+    #[cfg(feature = "telemetry")]
+    fn init_telemetry_simple(&mut self) -> crate::telemetry::TelemetryGuard {
+        if let Some(ref cfg) = self.telemetry_config {
+            let svc = self.meta.as_ref().map(|m| m.name).unwrap_or(self.app_name);
+            let ver = self
+                .meta
+                .as_ref()
+                .map(|m| m.version)
+                .unwrap_or(self.app_version);
+            if let Some((handle, guard)) = crate::telemetry::init::init_simple(cfg, svc, ver) {
+                self.active_telemetry = Some(handle);
+                return guard;
+            }
+        }
+        // Return a noop guard when telemetry is enabled but init didn't produce one.
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
+        crate::telemetry::TelemetryGuard::new(provider)
+    }
+
+    #[cfg(not(feature = "telemetry"))]
+    fn init_telemetry_simple(&mut self) -> crate::telemetry::TelemetryGuard {
+        crate::telemetry::TelemetryGuard
     }
 
     /// Return a reference to the command registry.

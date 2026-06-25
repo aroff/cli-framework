@@ -7,11 +7,34 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum InvocationSurface {
+    Cli,
+    Chat,
+    Mcp,
+    Api,
+}
+
+impl InvocationSurface {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::Chat => "chat",
+            Self::Mcp => "mcp",
+            Self::Api => "api",
+        }
+    }
+}
+
 pub(crate) struct DispatchEnv<'a> {
     pub(crate) command_registry: &'a crate::command::CommandRegistry,
     pub(crate) ailoop_client: &'a Option<AiloopClient>,
     pub(crate) global_args: &'a HashMap<String, ArgValue>,
     pub(crate) stdout_capture: Option<Arc<Mutex<Vec<u8>>>>,
+    pub(crate) telemetry: Option<Arc<dyn crate::telemetry::Telemetry + Send + Sync>>,
+    #[allow(dead_code)]
+    pub(crate) surface: InvocationSurface,
     #[cfg(feature = "auth")]
     pub(crate) token_provider: Option<Arc<dyn crate::auth::TokenProvider>>,
 }
@@ -64,6 +87,13 @@ impl<'a> AppContext for CliAppContextWrapper<'a> {
     #[cfg(feature = "auth")]
     fn opt_token_provider(&self) -> Option<Arc<dyn crate::auth::TokenProvider>> {
         self.env.token_provider.clone()
+    }
+
+    fn telemetry(&self) -> &dyn crate::telemetry::Telemetry {
+        self.env
+            .telemetry
+            .as_deref()
+            .unwrap_or(&crate::telemetry::NoopTelemetry)
     }
 }
 
@@ -137,6 +167,8 @@ mod tests {
             ailoop_client: &ailoop_client,
             global_args: &global_args_map,
             stdout_capture: Some(buf.clone()),
+            telemetry: None,
+            surface: InvocationSurface::Cli,
             #[cfg(feature = "auth")]
             token_provider: None,
         };

@@ -42,6 +42,7 @@ tokio-util = { version = "0.7", features = ["time"], optional = true }
 reqwest = { workspace = true, features = ["json"] }
 httpdate = "1.0"
 tracing.workspace = true
+opentelemetry = "0.31"
 tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter", "fmt"] }
 clap = { version = "4.0", features = ["derive", "string"] }
 toml = "0.8"
@@ -72,11 +73,10 @@ utoipa-swagger-ui = { version = "9.0.2", features = ["axum"], optional = true }
 # Optional emulation dependencies
 mockall = { version = "0.13", optional = true }
 
-# Optional OpenTelemetry dependencies (applications can enable)
-# Note: Applications should add these dependencies themselves when using observability feature
-# opentelemetry = { version = "0.24", optional = true }
-# opentelemetry-otlp = { version = "0.17", optional = true }
-# opentelemetry-sdk = { version = "0.24", optional = true }
+# Optional OpenTelemetry SDK dependencies (enabled via `telemetry` feature)
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"], optional = true }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["http-proto", "reqwest-blocking-client", "reqwest-rustls", "trace"], optional = true }
+tracing-opentelemetry = { version = "0.32", optional = true }
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -92,13 +92,15 @@ tokio-tungstenite = "0.21"
 # Consumers configuring `ApiServerBuilder::cors(...)` supply their own `tower_http::cors::CorsLayer`;
 # tests exercise that path the same way a downstream crate would.
 tower-http = { version = "0.6", features = ["cors"] }
+opentelemetry = "0.31"
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "testing"] }
+tracing-opentelemetry = "0.32"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [features]
 default = ["chat"]
-# observability = ["opentelemetry", "opentelemetry-otlp", "opentelemetry-sdk"]
-# Note: OpenTelemetry integration will be implemented in src/observability/mod.rs
-# Applications should add opentelemetry crates to their own Cargo.toml when using this feature
 observability = ["dep:tracing-subscriber"]
+telemetry = ["observability", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 # CLI output utilities optional features
 table-advanced = ["comfy-table"]
 progress = ["indicatif"]
@@ -360,3 +362,13 @@ required-features = ["auth", "testkit"]
 name = "contract_auth_registration"
 path = "tests/contract/auth_registration.rs"
 required-features = ["auth"]
+
+[[test]]
+name = "unit_telemetry"
+path = "tests/unit/telemetry.rs"
+required-features = ["telemetry", "testkit", "derive"]
+
+[[test]]
+name = "integration_telemetry_otlp"
+path = "tests/integration/telemetry_otlp.rs"
+required-features = ["telemetry"]

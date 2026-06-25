@@ -78,6 +78,15 @@ pub trait AppContext: Send + Sync {
     fn opt_token_provider(&self) -> Option<std::sync::Arc<dyn crate::auth::TokenProvider>> {
         None
     }
+
+    /// Return the telemetry handle for the current invocation.
+    ///
+    /// The default implementation returns a no-op handle. The dispatch wrapper
+    /// overrides this with the active telemetry provider when one is configured.
+    fn telemetry(&self) -> &dyn crate::telemetry::Telemetry {
+        static NOOP: crate::telemetry::NoopTelemetry = crate::telemetry::NoopTelemetry;
+        &NOOP
+    }
 }
 
 /// Extension trait for AppContext to provide command registry access

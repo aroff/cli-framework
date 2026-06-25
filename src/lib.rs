@@ -54,6 +54,7 @@ pub mod observability;
 
 pub mod retry;
 pub mod security;
+pub mod telemetry;
 
 // HTTP retry integration module
 // Note: This module requires applications to provide `reqwest` dependency
@@ -150,6 +151,9 @@ pub mod prelude {
         find_and_load, find_and_load_with_options, find_file_upward, find_file_upward_with_options,
         load_toml_file, load_toml_str, DiscoverOptions, ProjectConfigError, ProjectRoot,
     };
+
+    pub use crate::telemetry::handle::{Counter, Histogram, SpanHandle, Telemetry};
+    pub use crate::telemetry::{NoopTelemetry, TelemetryConfig};
 }
 
 #[cfg(feature = "observability")]

@@ -33,9 +33,14 @@ subsystem is inert.
 - **CLIs lose batch spans.** Short-lived processes routinely exit before a batch exporter flushes —
   silent data loss. `Simple` is the correct default for one-shot runs; `Batch` only earns its keep for
   long-running serving modes, and even there we force-flush on shutdown.
-- **Single auto-instrumentation seam.** `execute_command_direct` (`src/app/builder.rs:705`) is the one
-  chokepoint all surfaces (CLI, chat, MCP, API) pass through, so one span + a `cli.invocation.surface`
-  attribute yields usage analytics sliceable by entry point with no per-surface work.
+- **Two auto-instrumentation seams, not one.** CLI/chat/API surfaces flow through
+  `execute_command_direct` (`src/app/builder.rs`). MCP tool calls flow through a separate
+  `dispatch_tool_call` path (`src/mcp/mod.rs`) that creates its own `McpAppContext` — it does
+  **not** pass through `execute_command_direct`. Both seams are instrumented with the same span
+  shape and `cli.invocation.surface` stamp; the live **Telemetry handle** reaches `McpToolRegistry`
+  via an `Arc` threaded at MCP-server build time (parallel to how `TokenProvider` flows to
+  `DispatchEnv`). A single `cli.invocation.surface` attribute on each span still yields analytics
+  sliceable by entry point.
 - Strict/robust defaults: no endpoint ⇒ no egress; argument **values** are never recorded without an
   explicit opt-in allowlist (spec 013 posture); auth/OTLP headers never hit spans or logs.
 
@@ -60,11 +65,22 @@ subsystem is inert.
   `src/observability/opentelemetry.rs`), `AppBuilder::with_telemetry`, `AppContext::telemetry()`,
   `Telemetry`/`SpanHandle`/`Counter`/`Histogram`, `telemetry::{tracer, meter}()`. Minor version bump;
   note in `CHANGELOG.md`.
-- `DispatchEnv` carries an `InvocationSurface`; each entry point (CLI run, chat tool call, MCP
-  `tools/call`, API handler) stamps it. `CliAppContextWrapper` carries the live `Telemetry` handle.
+- `DispatchEnv` carries an `InvocationSurface` (defined in `cli_framework::app`, not
+  `cli_framework::telemetry` — it is a dispatch concept); each entry point stamps it.
+  `CliAppContextWrapper` carries the live **Telemetry handle** via `DispatchEnv`; `McpToolRegistry`
+  carries it as an `Arc<dyn Telemetry>` for the MCP seam.
+- **Telemetry SDK init is deferred to run-entry-time**, not `AppBuilder::build`. `build` stores
+  `TelemetryConfig`; `App::run_with_args` initialises with `SimpleSpanProcessor` (one-shot CLI);
+  `ApiServerBuilder::serve` initialises with `BatchSpanProcessor` (long-running). The
+  **Telemetry guard** is a local variable in each entry-point, not a field on `App`.
+- `init_default_logging()` is deprecated; subscriber setup (fmt layer ± OTel bridge layer) is
+  owned by the run entry-point so all layers are composed once into a single
+  `tracing::subscriber::set_global_default` call.
 - `with_tracing()` (api/mod.rs) upgrades to real server spans with inbound W3C extraction + HTTP
   metrics; `RetryableHttpClient` injects outbound W3C context — the CLI becomes a first-class
   participant in distributed traces.
 - The `cli.*` span/metric attribute namespace is framework-reserved; app keys must not collide.
 - Glossary: add **Invocation surface** (`cli|chat|mcp|api`), **Telemetry handle**, **Telemetry guard**.
-- Depends on ADR 0067 (config framework) landing first; pairs with spec 014.
+- Does **not** depend on ADR 0067 (layered config framework). The `[telemetry]`
+  TOML config section is explicitly deferred to a future effort that wires the
+  config framework once it lands. This spec (017) is standalone and intentional.

@@ -389,6 +389,47 @@ decision on `OidcClient`, not runtime.
 _Avoid_: "OAuth flow", "grant type" in user-facing text — "flow" is the
 canonical term here.
 
+**Invocation surface**:
+The entry path through which a **Command** was dispatched: `cli` (argv run),
+`chat` (LLM chat tool call), `mcp` (MCP `tools/call`), or `api` (HTTP API
+handler). Carried on `DispatchEnv` and stamped by each entry path before
+**Dispatch**. Used as a telemetry attribute (`cli.invocation.surface`) to
+slice usage analytics by entry point. Lives in `cli_framework::app` — it is
+a dispatch concept, not a telemetry concept.
+_Avoid_: "mode", "transport" (surface is about the caller, not the wire).
+
+**Telemetry handle**:
+The `&dyn Telemetry` value returned by `AppContext::telemetry()`. Always
+present — the default impl returns a zero-sized `NoopTelemetry`; the dispatch
+wrapper overrides it with the live handle when the `telemetry` feature is
+enabled and an endpoint is configured. App handlers call `ctx.telemetry()` to
+emit spans, events, counters, and histograms through the framework's configured
+OTel pipeline without wiring the SDK themselves. App spans automatically nest
+under the enclosing command span because they attach to the current `tracing`
+context.
+_Avoid_: "OTel handle", "metrics client" — the canonical term is Telemetry handle.
+
+**Telemetry guard**:
+A RAII value created at run-entry-time (when `App::run_with_args` or
+`ApiServerBuilder::serve` initialises the OTel SDK) that force-flushes and
+shuts down all OTel providers when dropped. Owned as a local variable by the
+run entry-point, so its lifetime matches the active run exactly. `Drop` is the
+backstop; the entry-point also flushes explicitly on both success and error
+return paths so Ctrl-C and SIGINT do not lose buffered spans.
+_Avoid_: "shutdown hook", "flush guard" — Telemetry guard is the canonical term.
+
+**Telemetry config** (`TelemetryConfig`):
+The value passed to `AppBuilder::with_telemetry(…)` that controls the OTel
+subsystem. Populated from `OTEL_*` environment variables (via
+`TelemetryConfig::from_env()`) with explicit fields taking precedence.
+Key fields: `enabled`, `endpoint` (absent → whole subsystem is inert),
+`protocol` (`http/protobuf` default or `grpc`), `sample_ratio`,
+per-signal toggles (`traces_enabled`, `metrics_enabled`, `logs_enabled`),
+and `record_arg_values` + `arg_value_allowlist` (security gate — R13).
+`OTEL_SDK_DISABLED=true` is a final veto evaluated at init time and cannot
+be overridden by any builder field.
+_Avoid_: "OTel config", "observability config" — use Telemetry config.
+
 ## Relationships
 
 - A **Command** is registered exactly once with `AppBuilder`.

@@ -1,6 +1,5 @@
 ---
 source: tests/unit/mcp_tool_export.rs
-assertion_line: 204
 expression: tool
 ---
 {
@@ -9,6 +8,7 @@ expression: tool
   "inputSchema": {
     "properties": {
       "target": {
+        "description": "Deployment target",
         "type": "string"
       }
     },
