@@ -168,8 +168,11 @@ pub struct ApiServerBuilder {
     mcp_router: Option<axum::Router>,
     root_fallback: Option<axum::Router>,
     health_version: Option<String>,
+    #[cfg_attr(not(feature = "telemetry"), allow(dead_code))]
     telemetry_config: Option<crate::telemetry::TelemetryConfig>,
+    #[cfg_attr(not(feature = "telemetry"), allow(dead_code))]
     service_name: String,
+    #[cfg_attr(not(feature = "telemetry"), allow(dead_code))]
     service_version: String,
 }
 
@@ -717,8 +720,11 @@ pub struct ApiServer {
     router: axum::Router,
     shutdown: CancellationToken,
     shutdown_readiness: Arc<AtomicBool>,
+    #[cfg_attr(not(feature = "telemetry"), allow(dead_code))]
     telemetry_config: Option<crate::telemetry::TelemetryConfig>,
+    #[cfg_attr(not(feature = "telemetry"), allow(dead_code))]
     service_name: String,
+    #[cfg_attr(not(feature = "telemetry"), allow(dead_code))]
     service_version: String,
 }
 

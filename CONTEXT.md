@@ -352,16 +352,22 @@ _Avoid_: implying tokens flow from the Token cache into validation — the serve
 validates *received* tokens against keys, full stop.
 
 **OidcClaims**:
-The typed axum extractor provided by `cli-framework-oidc` (server half) that
-gives API handlers access to validated JWT claims from an incoming bearer
-token. Populated by `oidc_validation_layer()` into the axum request extension
-map. Entirely a `cli-framework-oidc` type — cli-framework core defines nothing
-for the server-side claims surface.
+The typed set of validated claims extracted from a verified JWT — the **success
+type of both** `OidcValidator::validate()` and the `oidc_validation_layer`. A
+plain value (`sub`, `aud`, `scopes`, `roles`, `raw`, …); axum is not required to
+obtain one. It **additionally** implements the axum `FromRequestParts` extractor,
+so handlers behind the layer can pull the value the layer inserted into the
+request extension map — that is one optional consumption path, not the type's
+identity. Entirely a `cli-framework-oidc` type — cli-framework core defines
+nothing for the server-side claims surface.
+_Avoid_: calling `OidcClaims` "the extractor" as if axum were required — it is a
+plain value the layer and the validator both produce; the extractor is one way to
+consume it.
 
 **oidc_validation_layer()**:
 The function in `cli-framework-oidc` (server half) that **returns a**
-`tower::util::BoxCloneLayer<axum::Router>` — the exact type
-`ApiServerBuilder::auth()` accepts — built from an `OidcValidationConfig`
+`tower::util::BoxCloneSyncServiceLayer<Router, Request<Body>, Response, Infallible>`
+— the exact type `ApiServerBuilder::auth()` accepts — built from an `OidcValidationConfig`
 (issuer, audience, JWKS TTL, …). The layer validates incoming
 `Authorization: Bearer` tokens against the provider's JWKS. Behavior: caches
 JWKS with a **5-minute TTL**; on JWT signature validation failure with cached
@@ -369,7 +375,43 @@ keys, refetches JWKS once before returning 401 (handles key rotation without
 spurious rejections); a short debounce prevents thundering-herd refetches under
 concurrent load.
 _Avoid_: "auth middleware" — use the function name to be precise. It is a tower
-`Layer`, not a bare middleware service.
+`Layer`, not a bare middleware service. After spec 018 the layer is a thin
+**transport adapter over `OidcValidator`** — it parses the `Authorization`
+header, calls `OidcValidator::validate_authorization`, and maps the typed
+`OidcValidationError` back to an HTTP response. The verification itself lives in
+`OidcValidator`, not here.
+
+**OidcValidator** _(spec 018)_:
+The cloneable, callable handle for verifying a JWT **in-process**, with no axum
+request — the library-facing counterpart to `oidc_validation_layer`. Built from
+an `OidcValidationConfig` via `OidcValidator::new` (same construction + config
+validation as the layer). `validate(token)` verifies an already-extracted bearer
+token; `validate_authorization(Option<&str>)` parses an `Authorization` header
+value (case-insensitive `Bearer` scheme) first. Both return
+`Result<OidcClaims, OidcValidationError>`. `Clone + Send + Sync`; clones share
+one `Arc`-backed `JWKS cache` / discovery cell / single-flight gate, so
+concurrent calls don't duplicate fetches. The crate exposes **only this concrete
+type — there is no `TokenValidator` trait** (ADR 0071): the framework runtime
+never calls a validator, so the trait seam, if wanted, belongs to the consumer.
+_Avoid_: "TokenValidator" (that is the *consumer's* trait, not this crate's);
+"validation middleware" (that is the layer — `OidcValidator` is callable, not a
+tower `Layer`).
+
+**OidcValidationError** _(spec 018)_:
+The **fully typed** outcome of a failed verification — the error half of
+`OidcValidator::validate`. Four variants split by transport shape:
+`MissingToken` (no credential offered), `MalformedAuthorization` (a credential
+was offered but isn't a well-formed `Bearer <token>`, including non-UTF-8),
+`InvalidToken(TokenRejection)` (a token was extracted and rejected), and
+`JwksUnavailable` (infra: no keys). The rejection cause is the nested
+**`TokenRejection`** enum (`Undecodable`, `UnsupportedAlgorithm`, `UnknownKey`,
+`Malformed`, `Expired`, `NotYetValid`, `InvalidSignature`, `InvalidIssuer`,
+`InvalidAudience`). Consumers match on these variants; they do **not**
+string-match. The HTTP `WWW-Authenticate` `error_description` strings are
+*derived* from the variant inside the layer's single `error_to_response`
+mapping, not carried on the error.
+_Avoid_: a stringly-typed `error_description: Option<String>` payload — the
+reason is a typed variant; the wire string is a transport detail of the layer.
 
 **OIDC flow**:
 The OAuth 2.0 grant type used by `cli-framework-oidc` to acquire tokens.

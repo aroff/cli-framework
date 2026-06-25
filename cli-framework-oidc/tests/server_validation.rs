@@ -1324,3 +1324,515 @@ async fn concurrent_rotation_requests_share_one_refetch_no_spurious_401() {
         "expected exactly 2 JWKS fetches (1 prime + 1 coalesced rotation refetch), got {jwks_hits}"
     );
 }
+
+// ── Spec 018: OidcValidator tests ─────────────────────────────────────────────
+
+use cli_framework_oidc::server::{OidcValidationError, OidcValidator, TokenRejection};
+
+// Helper: build a validator pointing at the mock server.
+fn make_validator(server: &MockServer) -> OidcValidator {
+    OidcValidator::new(make_cfg(server)).expect("validator")
+}
+
+// ── validate() success path ───────────────────────────────────────────────────
+
+#[tokio::test]
+async fn validator_validate_success() {
+    let server = MockServer::start().await;
+    setup_mock_discovery(&server).await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&server, &kp).await;
+
+    let mut cfg = make_cfg(&server);
+    cfg.audience = AudiencePolicy::Require("my-app".into());
+    let validator = OidcValidator::new(cfg).expect("validator");
+
+    let now = now_secs();
+    let claims_val = json!({
+        "sub": "user-abc",
+        "iss": server.uri(),
+        "aud": "my-app",
+        "exp": now + 3600,
+        "iat": now,
+        "scope": "read write",
+        "realm_access": { "roles": ["admin"] },
+    });
+    let token = mint_jwt(&kp, claims_val);
+
+    let result = validator.validate(&token).await.expect("should succeed");
+    assert_eq!(result.sub, "user-abc");
+    assert!(result.scopes.contains(&"read".to_string()));
+    assert!(result.scopes.contains(&"write".to_string()));
+    assert!(result.roles.contains(&"admin".to_string()));
+    assert_eq!(result.aud, vec!["my-app".to_string()]);
+    // raw should contain the original claims
+    assert_eq!(result.raw["sub"].as_str(), Some("user-abc"));
+}
+
+// ── validate() typed errors ───────────────────────────────────────────────────
+
+#[tokio::test]
+async fn validator_unsupported_algorithm() {
+    let server = MockServer::start().await;
+    setup_mock_discovery(&server).await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&server, &kp).await;
+
+    // Validator only accepts RS256 but token is ES256
+    let mut cfg = make_cfg(&server);
+    cfg.algorithms = vec![Algorithm::RS256];
+    let validator = OidcValidator::new(cfg).expect("validator");
+
+    let now = now_secs();
+    let token = mint_jwt(
+        &kp,
+        json!({ "sub": "u", "iss": server.uri(), "exp": now + 3600i64 }),
+    );
+
+    let err = validator.validate(&token).await.unwrap_err();
+    assert_eq!(
+        err,
+        OidcValidationError::InvalidToken(TokenRejection::UnsupportedAlgorithm),
+        "wrong algorithm should yield UnsupportedAlgorithm"
+    );
+}
+
+#[tokio::test]
+async fn validator_unknown_key() {
+    let server = MockServer::start().await;
+    setup_mock_discovery(&server).await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&server, &kp).await;
+
+    let validator = make_validator(&server);
+
+    let now = now_secs();
+    let token = mint_jwt_with_kid(
+        &kp,
+        json!({ "sub": "u", "iss": server.uri(), "exp": now + 3600i64 }),
+        "nonexistent-kid",
+    );
+
+    let err = validator.validate(&token).await.unwrap_err();
+    assert_eq!(
+        err,
+        OidcValidationError::InvalidToken(TokenRejection::UnknownKey),
+        "unknown kid should yield UnknownKey"
+    );
+}
+
+#[tokio::test]
+async fn validator_missing_sub_is_malformed() {
+    let server = MockServer::start().await;
+    setup_mock_discovery(&server).await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&server, &kp).await;
+
+    let validator = make_validator(&server);
+
+    let now = now_secs();
+    // No sub claim
+    let token = mint_jwt(&kp, json!({ "iss": server.uri(), "exp": now + 3600i64 }));
+
+    let err = validator.validate(&token).await.unwrap_err();
+    assert_eq!(
+        err,
+        OidcValidationError::InvalidToken(TokenRejection::Malformed),
+        "missing sub should yield Malformed"
+    );
+}
+
+#[tokio::test]
+async fn validator_expired_token() {
+    let server = MockServer::start().await;
+    setup_mock_discovery(&server).await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&server, &kp).await;
+
+    let mut cfg = make_cfg(&server);
+    cfg.clock_skew = std::time::Duration::from_secs(0);
+    let validator = OidcValidator::new(cfg).expect("validator");
+
+    let now = now_secs();
+    let token = mint_jwt(
+        &kp,
+        json!({ "sub": "u", "iss": server.uri(), "exp": now - 3600i64, "iat": now - 7200i64 }),
+    );
+
+    let err = validator.validate(&token).await.unwrap_err();
+    assert_eq!(
+        err,
+        OidcValidationError::InvalidToken(TokenRejection::Expired),
+        "expired token should yield Expired"
+    );
+}
+
+#[tokio::test]
+async fn validator_wrong_issuer() {
+    let server = MockServer::start().await;
+    setup_mock_discovery(&server).await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&server, &kp).await;
+
+    let validator = make_validator(&server);
+
+    let now = now_secs();
+    let token = mint_jwt(
+        &kp,
+        json!({ "sub": "u", "iss": "https://wrong.example.com", "exp": now + 3600i64 }),
+    );
+
+    let err = validator.validate(&token).await.unwrap_err();
+    assert_eq!(
+        err,
+        OidcValidationError::InvalidToken(TokenRejection::InvalidIssuer),
+        "wrong issuer should yield InvalidIssuer"
+    );
+}
+
+#[tokio::test]
+async fn validator_wrong_audience() {
+    let server = MockServer::start().await;
+    setup_mock_discovery(&server).await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&server, &kp).await;
+
+    let mut cfg = make_cfg(&server);
+    cfg.audience = AudiencePolicy::Require("correct-api".into());
+    let validator = OidcValidator::new(cfg).expect("validator");
+
+    let now = now_secs();
+    let token = mint_jwt(
+        &kp,
+        json!({ "sub": "u", "iss": server.uri(), "aud": "wrong-api", "exp": now + 3600i64 }),
+    );
+
+    let err = validator.validate(&token).await.unwrap_err();
+    assert_eq!(
+        err,
+        OidcValidationError::InvalidToken(TokenRejection::InvalidAudience),
+        "wrong audience should yield InvalidAudience"
+    );
+}
+
+#[tokio::test]
+async fn validator_bad_signature() {
+    let server = MockServer::start().await;
+    setup_mock_discovery(&server).await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&server, &kp).await;
+
+    let validator = make_validator(&server);
+
+    // Sign with a different key but present kp.kid so the known-key path is taken.
+    let other_kp = test_key_pair();
+    let now = now_secs();
+    let token = mint_jwt_with_kid(
+        &other_kp,
+        json!({ "sub": "u", "iss": server.uri(), "exp": now + 3600i64 }),
+        &kp.kid,
+    );
+
+    let err = validator.validate(&token).await.unwrap_err();
+    assert_eq!(
+        err,
+        OidcValidationError::InvalidToken(TokenRejection::InvalidSignature),
+        "bad signature should yield InvalidSignature"
+    );
+}
+
+#[tokio::test]
+async fn validator_undecodable_token() {
+    let server = MockServer::start().await;
+    setup_mock_discovery(&server).await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&server, &kp).await;
+
+    let validator = make_validator(&server);
+
+    // "not.a.jwt" has three segments but the header is not valid base64-JSON.
+    // "notajwt" has no dots at all — decode_header fails immediately.
+    let err = validator.validate("notajwt").await.unwrap_err();
+    assert_eq!(
+        err,
+        OidcValidationError::InvalidToken(TokenRejection::Undecodable),
+        "unparseable header should yield Undecodable"
+    );
+}
+
+// ── validate() JWKS unavailable ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn validator_jwks_unavailable() {
+    let server = MockServer::start().await;
+
+    // Discovery succeeds but JWKS returns 500
+    Mock::given(method("GET"))
+        .and(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "issuer": server.uri(),
+            "token_endpoint": format!("{}/token", server.uri()),
+            "jwks_uri": format!("{}/jwks", server.uri()),
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/jwks"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    let validator = make_validator(&server);
+    let kp = test_key_pair();
+    let now = now_secs();
+    let token = mint_jwt(
+        &kp,
+        json!({ "sub": "u", "iss": server.uri(), "exp": now + 3600i64 }),
+    );
+
+    let err = validator.validate(&token).await.unwrap_err();
+    assert_eq!(
+        err,
+        OidcValidationError::JwksUnavailable,
+        "failed JWKS fetch with empty cache should yield JwksUnavailable"
+    );
+}
+
+// ── validate_authorization() header parsing ───────────────────────────────────
+
+#[tokio::test]
+async fn validate_authorization_none_is_missing_token() {
+    let server = MockServer::start().await;
+    setup_mock_discovery(&server).await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&server, &kp).await;
+
+    let validator = make_validator(&server);
+    let err = validator.validate_authorization(None).await.unwrap_err();
+    assert_eq!(err, OidcValidationError::MissingToken);
+}
+
+#[tokio::test]
+async fn validate_authorization_non_bearer_is_malformed() {
+    let server = MockServer::start().await;
+    setup_mock_discovery(&server).await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&server, &kp).await;
+
+    let validator = make_validator(&server);
+    let err = validator
+        .validate_authorization(Some("Basic dXNlcjpwYXNz"))
+        .await
+        .unwrap_err();
+    assert_eq!(err, OidcValidationError::MalformedAuthorization);
+}
+
+#[tokio::test]
+async fn validate_authorization_mixed_case_bearer_accepted() {
+    let server = MockServer::start().await;
+    setup_mock_discovery(&server).await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&server, &kp).await;
+
+    let validator = make_validator(&server);
+
+    let now = now_secs();
+    let token = mint_jwt(
+        &kp,
+        json!({ "sub": "u", "iss": server.uri(), "exp": now + 3600i64 }),
+    );
+
+    // "bEaReR " prefix (case-insensitive)
+    let result = validator
+        .validate_authorization(Some(&format!("bEaReR {token}")))
+        .await;
+    assert!(
+        result.is_ok(),
+        "mixed-case Bearer should be accepted; got: {:?}",
+        result
+    );
+}
+
+#[tokio::test]
+async fn validate_authorization_normal_bearer_accepted() {
+    let server = MockServer::start().await;
+    setup_mock_discovery(&server).await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&server, &kp).await;
+
+    let validator = make_validator(&server);
+
+    let now = now_secs();
+    let token = mint_jwt(
+        &kp,
+        json!({ "sub": "u", "iss": server.uri(), "exp": now + 3600i64 }),
+    );
+
+    let result = validator
+        .validate_authorization(Some(&format!("Bearer {token}")))
+        .await;
+    assert!(result.is_ok(), "standard Bearer should be accepted");
+}
+
+// ── Layer non-UTF-8 header parity ─────────────────────────────────────────────
+//
+// A present-but-non-UTF-8 Authorization header must produce
+// 401 + Bearer error="invalid_request" (MalformedAuthorization path).
+
+#[tokio::test]
+async fn layer_non_utf8_header_returns_401_invalid_request() {
+    let server = MockServer::start().await;
+    setup_mock_discovery(&server).await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&server, &kp).await;
+
+    let app = make_app(make_cfg(&server)).await;
+
+    // Build a request with a non-UTF-8 Authorization header value.
+    let non_utf8_bytes = vec![0xFF, 0xFE];
+    let hv = axum::http::HeaderValue::from_bytes(&non_utf8_bytes).unwrap();
+    let mut req = axum::http::Request::builder()
+        .uri("/protected")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    req.headers_mut().insert("authorization", hv);
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    let www = resp
+        .headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        www.contains("error=\"invalid_request\""),
+        "non-UTF-8 header must produce invalid_request; got: {www:?}"
+    );
+}
+
+// ── error_to_response wire parity ─────────────────────────────────────────────
+//
+// Validate through the layer that:
+// - Undecodable -> bare error="invalid_token" with NO error_description
+// - Malformed   -> error_description="malformed_token"
+
+#[tokio::test]
+async fn error_to_response_undecodable_has_no_error_description() {
+    let server = MockServer::start().await;
+    setup_mock_discovery(&server).await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&server, &kp).await;
+
+    let app = make_app(make_cfg(&server)).await;
+
+    // "not.a.jwt" - decode_header will fail -> Undecodable
+    let req = axum::http::Request::builder()
+        .uri("/protected")
+        .header("authorization", "Bearer notajwt")
+        .body(axum::body::Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    let www = resp
+        .headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        www.contains("error=\"invalid_token\""),
+        "Undecodable must emit error=invalid_token; got: {www:?}"
+    );
+    assert!(
+        !www.contains("error_description"),
+        "Undecodable must NOT emit error_description; got: {www:?}"
+    );
+}
+
+#[tokio::test]
+async fn error_to_response_malformed_emits_malformed_token() {
+    let server = MockServer::start().await;
+    setup_mock_discovery(&server).await;
+    let kp = test_key_pair();
+    setup_mock_jwks(&server, &kp).await;
+
+    let app = make_app(make_cfg(&server)).await;
+
+    let now = now_secs();
+    // Token without sub -> Malformed
+    let token = mint_jwt(&kp, json!({ "iss": server.uri(), "exp": now + 3600i64 }));
+
+    let req = axum::http::Request::builder()
+        .uri("/protected")
+        .header("authorization", format!("Bearer {token}"))
+        .body(axum::body::Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    let www = resp
+        .headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(
+        extract_error_description(www),
+        Some("malformed_token"),
+        "missing sub must emit error_description=malformed_token; got: {www:?}"
+    );
+}
+
+// ── Shared state across clones: single JWKS fetch ─────────────────────────────
+//
+// Two clones of one OidcValidator issuing concurrent validate() calls for the
+// same kid must trigger AT MOST ONE JWKS fetch (ADR-0070 single-flight preserved).
+
+#[tokio::test]
+async fn validator_clones_share_jwks_state_single_fetch() {
+    let server = MockServer::start().await;
+    setup_mock_discovery(&server).await;
+    let kp = test_key_pair();
+
+    // Slow JWKS so concurrent fetches would overlap if not gated.
+    Mock::given(method("GET"))
+        .and(path("/jwks"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(200))
+                .set_body_json(json!({ "keys": [jwk_for_key(&kp)] })),
+        )
+        .mount(&server)
+        .await;
+
+    let validator = make_validator(&server);
+    let validator2 = validator.clone();
+
+    let issuer = server.uri();
+    let now = now_secs();
+    let token = mint_jwt(
+        &kp,
+        json!({ "sub": "u", "iss": issuer, "exp": now + 3600i64 }),
+    );
+    let token2 = token.clone();
+
+    // Fire two concurrent validate() calls from two clones simultaneously.
+    let h1 = tokio::spawn(async move { validator.validate(&token).await });
+    let h2 = tokio::spawn(async move { validator2.validate(&token2).await });
+
+    let r1 = h1.await.unwrap();
+    let r2 = h2.await.unwrap();
+    assert!(r1.is_ok(), "clone 1 validate should succeed: {:?}", r1);
+    assert!(r2.is_ok(), "clone 2 validate should succeed: {:?}", r2);
+
+    let jwks_hits = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == "/jwks")
+        .count();
+    assert!(
+        jwks_hits <= 1,
+        "shared clones must coalesce into at most 1 JWKS fetch, got {jwks_hits}"
+    );
+}

@@ -15,7 +15,94 @@ use tower::{Layer, Service};
 // Re-export shared types so callers can use cli_framework_oidc::server::{AudiencePolicy, OidcClaims}.
 pub use crate::types::{AudiencePolicy, OidcClaims};
 
-// ── Public config types ─────────────────────────────────────────────────────
+// ── Error types ─────────────────────────────────────────────────────────────
+
+/// Why a token that was extracted from the request failed verification.
+///
+/// `#[non_exhaustive]` reserves room for future additions (e.g. enabling `nbf`
+/// validation would make `NotYetValid` a live path).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TokenRejection {
+    /// `jsonwebtoken::decode_header` failed — not even a parseable JWT.
+    /// Emits NO `error_description` on the wire (distinct from `Malformed`).
+    Undecodable,
+    /// The header `alg` is not in the configured `algorithms` set.
+    UnsupportedAlgorithm,
+    /// The header `kid` matched no key in the (refetched) JWKS.
+    UnknownKey,
+    /// Decoded but unusable: missing `sub`, or any `jsonwebtoken` error not otherwise modelled.
+    /// Emits `error_description="malformed_token"`.
+    Malformed,
+    /// `exp` is in the past (beyond `clock_skew`).
+    Expired,
+    /// `nbf` is in the future (beyond `clock_skew`). Reserved -- not produced today.
+    NotYetValid,
+    /// Signature did not verify against the selected key.
+    InvalidSignature,
+    /// `iss` did not match the configured issuer.
+    InvalidIssuer,
+    /// `aud` did not satisfy the configured `AudiencePolicy`.
+    InvalidAudience,
+}
+
+impl std::fmt::Display for TokenRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Undecodable => write!(f, "token could not be decoded as a JWT"),
+            Self::UnsupportedAlgorithm => write!(f, "token uses an unsupported signing algorithm"),
+            Self::UnknownKey => write!(f, "token key ID not found in JWKS"),
+            Self::Malformed => write!(f, "token is malformed or missing required claims"),
+            Self::Expired => write!(f, "token has expired"),
+            Self::NotYetValid => write!(f, "token is not yet valid"),
+            Self::InvalidSignature => write!(f, "token signature is invalid"),
+            Self::InvalidIssuer => write!(f, "token issuer does not match"),
+            Self::InvalidAudience => write!(f, "token audience does not match"),
+        }
+    }
+}
+
+/// Outcome of verifying a token outside the HTTP layer.
+///
+/// `#[non_exhaustive]` allows adding variants in minor versions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OidcValidationError {
+    /// No credential was offered: the `Authorization` header was absent (only
+    /// returned by `validate_authorization` when the header is `None`).
+    /// Maps to `401` + `WWW-Authenticate: Bearer`.
+    MissingToken,
+
+    /// A credential was offered but is not a well-formed `Bearer <token>`.
+    /// A present-but-non-UTF-8 header is *malformed*, not *missing*.
+    /// Maps to `401` + `Bearer error="invalid_request"`.
+    MalformedAuthorization,
+
+    /// A token was extracted and rejected.
+    /// Maps to `401` + `Bearer error="invalid_token"[, error_description="<reason>"]`.
+    InvalidToken(TokenRejection),
+
+    /// JWKS could not be fetched and no usable cached keys exist.
+    /// Maps to `503` + `Retry-After: <min_refetch_interval secs>`.
+    JwksUnavailable,
+}
+
+impl std::fmt::Display for OidcValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingToken => write!(f, "no Authorization header present"),
+            Self::MalformedAuthorization => {
+                write!(f, "Authorization header is not a valid Bearer token")
+            }
+            Self::InvalidToken(r) => write!(f, "token rejected: {r}"),
+            Self::JwksUnavailable => write!(f, "JWKS unavailable, cannot verify token"),
+        }
+    }
+}
+
+impl std::error::Error for OidcValidationError {}
+
+// ── Public config types ─────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
 pub struct OidcValidationConfig {
@@ -141,6 +228,136 @@ impl OidcLayerState {
     }
 }
 
+// ── OidcValidator ───────────────────────────────────────────────────────────
+
+/// A cloneable, `Send + Sync` handle for verifying OIDC JWT tokens.
+///
+/// Clones share the same underlying JWKS cache, discovery state, and
+/// single-flight refetch gate (ADR 0070). Construct via [`OidcValidator::new`]
+/// and call [`validate`](OidcValidator::validate) or
+/// [`validate_authorization`](OidcValidator::validate_authorization).
+#[derive(Clone)]
+pub struct OidcValidator {
+    state: Arc<OidcLayerState>,
+}
+
+impl OidcValidator {
+    /// Build a validator. Performs config validation (issuer normalization,
+    /// non-empty `algorithms`, JWKS-URI scheme check, `Unchecked` audience WARN).
+    pub fn new(cfg: OidcValidationConfig) -> Result<Self, OidcConfigError> {
+        let normalized_issuer = crate::normalize_issuer(&cfg.issuer_url)?;
+
+        if cfg.algorithms.is_empty() {
+            return Err(OidcConfigError::EmptyAlgorithms);
+        }
+
+        if let Some(ref uri) = cfg.jwks_uri {
+            let parsed = url::Url::parse(uri)
+                .map_err(|e| OidcConfigError::InvalidJwksUri(format!("{uri}: {e}")))?;
+            let scheme = parsed.scheme();
+            let host = parsed.host_str().unwrap_or("");
+            let is_loopback = host == "127.0.0.1" || host == "localhost" || host == "[::1]";
+            if scheme != "https" && !(scheme == "http" && is_loopback) {
+                return Err(OidcConfigError::InvalidJwksUri(format!(
+                    "insecure URI: {uri}"
+                )));
+            }
+        }
+
+        if matches!(cfg.audience, AudiencePolicy::Unchecked) {
+            tracing::warn!(
+                "oidc_validation_layer: AudiencePolicy::Unchecked -- no audience validation"
+            );
+        }
+
+        let state = Arc::new(OidcLayerState {
+            issuer_url: normalized_issuer,
+            cfg,
+            jwks_cache: Mutex::new(JwksCache::empty()),
+            discovery: tokio::sync::OnceCell::new(),
+            last_forced_refetch: Mutex::new(None),
+            refetch_gate: Mutex::new(()),
+            http: reqwest::Client::builder()
+                .user_agent(concat!("cli-framework-oidc/", env!("CARGO_PKG_VERSION")))
+                .build()
+                .expect("reqwest client"),
+        });
+
+        Ok(Self { state })
+    }
+
+    /// Verify an already-extracted bearer token (no `Bearer ` prefix, no header
+    /// parsing). This is the primary seam for trait-based consumers.
+    pub async fn validate(&self, token: &str) -> Result<OidcClaims, OidcValidationError> {
+        let header = match jsonwebtoken::decode_header(token) {
+            Ok(h) => h,
+            Err(_) => {
+                return Err(OidcValidationError::InvalidToken(
+                    TokenRejection::Undecodable,
+                ))
+            }
+        };
+
+        if !self.state.cfg.algorithms.contains(&header.alg) {
+            return Err(OidcValidationError::InvalidToken(
+                TokenRejection::UnsupportedAlgorithm,
+            ));
+        }
+
+        let keys = match self.state.get_decoding_keys(&header.kid).await {
+            KeyResult::Keys(k) => k,
+            KeyResult::Unavailable => return Err(OidcValidationError::JwksUnavailable),
+            KeyResult::UnknownKid => {
+                return Err(OidcValidationError::InvalidToken(
+                    TokenRejection::UnknownKey,
+                ))
+            }
+        };
+
+        let mut last_rejection: Option<TokenRejection> = None;
+        for key in &keys {
+            match try_validate_jwt(token, key, &self.state.cfg, &self.state.issuer_url) {
+                Ok(claims) => return Ok(claims),
+                Err(r) => {
+                    last_rejection = Some(r);
+                }
+            }
+        }
+
+        // `KeyResult::Keys` always carries >= 1 key (`filter_keys` never yields an
+        // empty `Keys`), so the loop body runs at least once.
+        Err(OidcValidationError::InvalidToken(
+            last_rejection.unwrap_or_else(|| unreachable!("keys vec was non-empty")),
+        ))
+    }
+
+    /// Parse an `Authorization` header value and verify the token.
+    ///
+    /// - `None` => [`OidcValidationError::MissingToken`]
+    /// - A value that is not `Bearer <token>` (scheme matched ASCII-case-insensitively)
+    ///   => [`OidcValidationError::MalformedAuthorization`]
+    /// - Otherwise delegates to [`validate`](OidcValidator::validate).
+    pub async fn validate_authorization(
+        &self,
+        authorization: Option<&str>,
+    ) -> Result<OidcClaims, OidcValidationError> {
+        let s = match authorization {
+            None => return Err(OidcValidationError::MissingToken),
+            Some(s) => s,
+        };
+        if s.len() <= 7 || !s[..7].eq_ignore_ascii_case("bearer ") {
+            return Err(OidcValidationError::MalformedAuthorization);
+        }
+        self.validate(&s[7..]).await
+    }
+
+    /// In-crate accessor used by `error_to_response` to read `min_refetch_interval`
+    /// (for `Retry-After`) and audience policy.
+    pub(crate) fn config(&self) -> &OidcValidationConfig {
+        &self.state.cfg
+    }
+}
+
 // ── Main entry point ────────────────────────────────────────────────────────
 
 /// Build a tower [`Layer`] that validates JWT bearer tokens on every request.
@@ -155,43 +372,8 @@ pub fn oidc_validation_layer(
     >,
     OidcConfigError,
 > {
-    let normalized_issuer = crate::normalize_issuer(&cfg.issuer_url)?;
-
-    if cfg.algorithms.is_empty() {
-        return Err(OidcConfigError::EmptyAlgorithms);
-    }
-
-    if let Some(ref uri) = cfg.jwks_uri {
-        let parsed = url::Url::parse(uri)
-            .map_err(|e| OidcConfigError::InvalidJwksUri(format!("{uri}: {e}")))?;
-        let scheme = parsed.scheme();
-        let host = parsed.host_str().unwrap_or("");
-        let is_loopback = host == "127.0.0.1" || host == "localhost" || host == "[::1]";
-        if scheme != "https" && !(scheme == "http" && is_loopback) {
-            return Err(OidcConfigError::InvalidJwksUri(format!(
-                "insecure URI: {uri}"
-            )));
-        }
-    }
-
-    if matches!(cfg.audience, AudiencePolicy::Unchecked) {
-        tracing::warn!("oidc_validation_layer: AudiencePolicy::Unchecked — no audience validation");
-    }
-
-    let state = Arc::new(OidcLayerState {
-        issuer_url: normalized_issuer,
-        cfg,
-        jwks_cache: Mutex::new(JwksCache::empty()),
-        discovery: tokio::sync::OnceCell::new(),
-        last_forced_refetch: Mutex::new(None),
-        refetch_gate: Mutex::new(()),
-        http: reqwest::Client::builder()
-            .user_agent(concat!("cli-framework-oidc/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .expect("reqwest client"),
-    });
-
-    let layer = OidcValidationLayer { state };
+    let validator = OidcValidator::new(cfg)?;
+    let layer = OidcValidationLayer { validator };
     Ok(tower::util::BoxCloneSyncServiceLayer::new(layer))
 }
 
@@ -199,7 +381,7 @@ pub fn oidc_validation_layer(
 
 #[derive(Clone)]
 struct OidcValidationLayer {
-    state: Arc<OidcLayerState>,
+    validator: OidcValidator,
 }
 
 impl<S> Layer<S> for OidcValidationLayer
@@ -219,7 +401,7 @@ where
     fn layer(&self, inner: S) -> Self::Service {
         OidcValidationService {
             inner,
-            state: self.state.clone(),
+            validator: self.validator.clone(),
         }
     }
 }
@@ -227,7 +409,7 @@ where
 #[derive(Clone)]
 struct OidcValidationService<S> {
     inner: S,
-    state: Arc<OidcLayerState>,
+    validator: OidcValidator,
 }
 
 impl<S> Service<cli_framework::axum::http::Request<cli_framework::axum::body::Body>>
@@ -264,18 +446,23 @@ where
         &mut self,
         mut req: cli_framework::axum::http::Request<cli_framework::axum::body::Body>,
     ) -> Self::Future {
-        let state = self.state.clone();
+        let validator = self.validator.clone();
         let inner = self.inner.clone();
         let mut inner = std::mem::replace(&mut self.inner, inner);
 
         Box::pin(async move {
-            let headers = req.headers().clone();
-            match validate_bearer(&headers, &state).await {
+            // Present-but-non-UTF-8 header -> Some("") so it flows to MalformedAuthorization
+            // (a broken credential is *malformed*, not *missing*) -- byte-identical to today.
+            let auth: Option<String> = req
+                .headers()
+                .get("authorization")
+                .map(|h| h.to_str().unwrap_or("").to_owned());
+            match validator.validate_authorization(auth.as_deref()).await {
                 Ok(claims) => {
                     req.extensions_mut().insert(claims);
                     inner.call(req).await
                 }
-                Err(response) => Ok(response),
+                Err(e) => Ok(error_to_response(&e, validator.config())),
             }
         })
     }
@@ -311,126 +498,108 @@ impl<S: Send + Sync> cli_framework::axum::extract::FromRequestParts<S> for OidcC
     }
 }
 
-// ── Request validation logic ─────────────────────────────────────────────────
+// ── Error -> HTTP response mapping (sole place building HTTP responses) ───────
 
-async fn validate_bearer(
-    headers: &cli_framework::axum::http::HeaderMap,
-    state: &OidcLayerState,
-) -> Result<OidcClaims, cli_framework::axum::response::Response> {
+fn error_to_response(
+    err: &OidcValidationError,
+    cfg: &OidcValidationConfig,
+) -> cli_framework::axum::response::Response {
     use cli_framework::axum::http::StatusCode;
     use cli_framework::axum::response::IntoResponse;
 
-    let auth_header = headers.get("authorization");
-    let raw_token = match auth_header {
-        None => {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                [("www-authenticate", "Bearer")],
-                "",
-            )
-                .into_response())
-        }
-        Some(h) => {
-            let s = h.to_str().unwrap_or("");
-            if s.len() <= 7 || !s[..7].eq_ignore_ascii_case("bearer ") {
-                return Err((
-                    StatusCode::UNAUTHORIZED,
-                    [("www-authenticate", "Bearer error=\"invalid_request\"")],
-                    "",
-                )
-                    .into_response());
-            }
-            &s[7..]
-        }
-    };
+    match err {
+        OidcValidationError::MissingToken => (
+            StatusCode::UNAUTHORIZED,
+            [("www-authenticate", "Bearer".to_owned())],
+            "",
+        )
+            .into_response(),
 
-    validate_jwt_token(raw_token, state).await
-}
-
-async fn validate_jwt_token(
-    raw_token: &str,
-    state: &OidcLayerState,
-) -> Result<OidcClaims, cli_framework::axum::response::Response> {
-    use cli_framework::axum::http::StatusCode;
-    use cli_framework::axum::response::IntoResponse;
-
-    let header = match jsonwebtoken::decode_header(raw_token) {
-        Ok(h) => h,
-        Err(_) => {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                [("www-authenticate", "Bearer error=\"invalid_token\"")],
-                "",
-            )
-                .into_response())
-        }
-    };
-
-    if !state.cfg.algorithms.contains(&header.alg) {
-        return Err((
+        OidcValidationError::MalformedAuthorization => (
             StatusCode::UNAUTHORIZED,
             [(
                 "www-authenticate",
-                "Bearer error=\"invalid_token\", error_description=\"unsupported_algorithm\"",
+                "Bearer error=\"invalid_request\"".to_owned(),
             )],
             "",
         )
-            .into_response());
-    }
+            .into_response(),
 
-    let keys = match state.get_decoding_keys(&header.kid).await {
-        KeyResult::Keys(k) => k,
-        KeyResult::Unavailable => {
-            return Err(cli_framework::axum::http::Response::builder()
-                .status(StatusCode::SERVICE_UNAVAILABLE)
-                .header(
-                    "retry-after",
-                    state.cfg.min_refetch_interval.as_secs().to_string(),
-                )
-                .body(cli_framework::axum::body::Body::from("JWKS unavailable"))
-                .unwrap());
-        }
-        KeyResult::UnknownKid => {
-            return Err((
+        OidcValidationError::InvalidToken(TokenRejection::Undecodable) => (
+            StatusCode::UNAUTHORIZED,
+            [(
+                "www-authenticate",
+                "Bearer error=\"invalid_token\"".to_owned(),
+            )],
+            "",
+        )
+            .into_response(),
+
+        OidcValidationError::InvalidToken(rejection) => {
+            let desc = rejection_wire_string(rejection);
+            (
                 StatusCode::UNAUTHORIZED,
                 [(
                     "www-authenticate",
-                    "Bearer error=\"invalid_token\", error_description=\"unknown_key\"",
+                    format!("Bearer error=\"invalid_token\", error_description=\"{desc}\""),
                 )],
                 "",
             )
-                .into_response());
+                .into_response()
         }
-    };
 
-    let mut last_error: Option<String> = None;
-    for key in &keys {
-        match try_validate_jwt(raw_token, key, &state.cfg, &state.issuer_url) {
-            Ok(claims) => return Ok(claims),
-            Err(e) => {
-                last_error = Some(e);
-            }
-        }
+        OidcValidationError::JwksUnavailable => cli_framework::axum::http::Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .header(
+                "retry-after",
+                cfg.min_refetch_interval.as_secs().to_string(),
+            )
+            .body(cli_framework::axum::body::Body::from("JWKS unavailable"))
+            .unwrap(),
     }
-
-    let reason = last_error.unwrap_or_else(|| "invalid_token".to_string());
-    Err((
-        StatusCode::UNAUTHORIZED,
-        [(
-            "www-authenticate",
-            format!("Bearer error=\"invalid_token\", error_description=\"{reason}\""),
-        )],
-        "",
-    )
-        .into_response())
 }
+
+/// Map a `TokenRejection` variant to the wire `error_description` string.
+/// `Undecodable` is handled separately in `error_to_response` and MUST NOT reach here.
+fn rejection_wire_string(r: &TokenRejection) -> &'static str {
+    match r {
+        TokenRejection::Undecodable => {
+            unreachable!("Undecodable handled separately in error_to_response")
+        }
+        TokenRejection::UnsupportedAlgorithm => "unsupported_algorithm",
+        TokenRejection::UnknownKey => "unknown_key",
+        TokenRejection::Malformed => "malformed_token",
+        TokenRejection::Expired => "expired",
+        TokenRejection::NotYetValid => "not_yet_valid",
+        TokenRejection::InvalidSignature => "invalid_signature",
+        TokenRejection::InvalidIssuer => "invalid_issuer",
+        TokenRejection::InvalidAudience => "invalid_audience",
+    }
+}
+
+// ── JWT error -> TokenRejection ───────────────────────────────────────────────
+
+fn jwt_err_to_rejection(e: &jsonwebtoken::errors::Error) -> TokenRejection {
+    use jsonwebtoken::errors::ErrorKind;
+    match e.kind() {
+        ErrorKind::ExpiredSignature => TokenRejection::Expired,
+        ErrorKind::ImmatureSignature => TokenRejection::NotYetValid,
+        ErrorKind::InvalidSignature => TokenRejection::InvalidSignature,
+        ErrorKind::InvalidIssuer => TokenRejection::InvalidIssuer,
+        ErrorKind::InvalidAudience => TokenRejection::InvalidAudience,
+        ErrorKind::InvalidAlgorithm => TokenRejection::UnsupportedAlgorithm,
+        _ => TokenRejection::Malformed,
+    }
+}
+
+// ── Per-key JWT verification ─────────────────────────────────────────────────
 
 pub(crate) fn try_validate_jwt(
     token: &str,
     key: &DecodingKey,
     cfg: &OidcValidationConfig,
     issuer_url: &str,
-) -> Result<OidcClaims, String> {
+) -> Result<OidcClaims, TokenRejection> {
     let mut validation = Validation::new(cfg.algorithms[0]);
     validation.algorithms = cfg.algorithms.clone();
     validation.set_issuer(&[issuer_url]);
@@ -448,13 +617,13 @@ pub(crate) fn try_validate_jwt(
     validation.leeway = cfg.clock_skew.as_secs();
 
     let token_data = jsonwebtoken::decode::<JsonValue>(token, key, &validation)
-        .map_err(|e| crate::jwks::map_jwt_error(&e))?;
+        .map_err(|e| jwt_err_to_rejection(&e))?;
 
     let claims = &token_data.claims;
 
     let sub = claims["sub"]
         .as_str()
-        .ok_or_else(|| "malformed_token".to_string())?
+        .ok_or(TokenRejection::Malformed)?
         .to_string();
     let iss = claims["iss"].as_str().unwrap_or("").to_string();
     let exp = claims["exp"].as_i64().unwrap_or(0);
