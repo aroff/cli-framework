@@ -11,7 +11,11 @@ fn noop_telemetry_is_zero_cost() {
     t.event("evt", &[]);
     t.counter("c").add(1, &[]);
     t.histogram("h").record(1.0, &[]);
-    let _s = t.span("s", &[]);
+    // Exercise SpanHandle Noop paths for set_attr and record_error
+    let span = t.span("s", &[]);
+    span.set_attr("key", "val");
+    let err = std::io::Error::new(std::io::ErrorKind::Other, "noop");
+    span.record_error(&err);
 }
 
 // ── 2. Config: inactive without endpoint ─────────────────────────────────
@@ -155,6 +159,188 @@ async fn init_with_exporter_captures_spans() {
     guard.flush();
     let spans = exporter.spans();
     assert!(!spans.is_empty(), "expected at least one span");
+}
+
+// ── Live handle exercises Counter/Histogram/SpanHandle/event Live variants ─
+
+#[tokio::test]
+async fn live_telemetry_counter_add_exercises_live_variant() {
+    let exporter = TestExporter::default();
+    let (handle, guard) = cli_framework::telemetry::init::init_with_exporter(exporter, "test");
+    let tracer = guard.tracer("cli-framework");
+    use tracing_subscriber::prelude::*;
+    let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+    let subscriber = tracing_subscriber::registry().with(otel_layer);
+    tracing::subscriber::with_default(subscriber, || {
+        // Exercises CounterInner::Live path
+        handle.counter("http.requests").add(3, &[]);
+        handle.counter("http.requests").add(0, &[]);
+    });
+    drop(guard);
+}
+
+#[tokio::test]
+async fn live_telemetry_histogram_record_exercises_live_variant() {
+    let exporter = TestExporter::default();
+    let (handle, guard) = cli_framework::telemetry::init::init_with_exporter(exporter, "test");
+    let tracer = guard.tracer("cli-framework");
+    use tracing_subscriber::prelude::*;
+    let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+    let subscriber = tracing_subscriber::registry().with(otel_layer);
+    tracing::subscriber::with_default(subscriber, || {
+        // Exercises HistogramInner::Live path
+        handle.histogram("latency_ms").record(42.0, &[]);
+    });
+    drop(guard);
+}
+
+#[tokio::test]
+async fn live_telemetry_event_emits() {
+    let exporter = TestExporter::default();
+    let (handle, guard) = cli_framework::telemetry::init::init_with_exporter(exporter, "test");
+    let tracer = guard.tracer("cli-framework");
+    use tracing_subscriber::prelude::*;
+    let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+    let subscriber = tracing_subscriber::registry().with(otel_layer);
+    tracing::subscriber::with_default(subscriber, || {
+        // Exercises LiveTelemetry::event path
+        handle.event("user.login", &[]);
+    });
+    drop(guard);
+}
+
+#[tokio::test]
+async fn live_telemetry_span_set_attr_exercises_live_variant() {
+    let exporter = TestExporter::default();
+    let (handle, guard) = cli_framework::telemetry::init::init_with_exporter(exporter, "test");
+    let tracer = guard.tracer("cli-framework");
+    use tracing_subscriber::prelude::*;
+    let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+    let subscriber = tracing_subscriber::registry().with(otel_layer);
+    tracing::subscriber::with_default(subscriber, || {
+        let span = handle.span("db.query", &[]);
+        // Exercises SpanInner::Live set_attr path
+        span.set_attr("db.statement", "SELECT 1");
+        span.set_attr("db.rows", "5");
+    });
+    drop(guard);
+}
+
+// ── init_batch coverage ────────────────────────────────────────────────────
+
+#[test]
+fn init_batch_returns_none_without_endpoint() {
+    let cfg = TelemetryConfig {
+        endpoint: None,
+        ..Default::default()
+    };
+    // Exercises the is_active() early-return path in init_batch
+    let result = cli_framework::telemetry::init::init_batch(&cfg, "test", "0.1");
+    assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn init_batch_builds_provider_with_active_config() {
+    // Exercises the live path of init_batch; no actual export needed
+    let cfg = TelemetryConfig {
+        endpoint: Some("http://localhost:14318".into()),
+        ..Default::default()
+    };
+    let result = cli_framework::telemetry::init::init_batch(&cfg, "test-batch", "0.1");
+    // build succeeds; export will fail silently since nothing listens on 14318
+    assert!(result.is_some());
+    if let Some((handle, guard)) = result {
+        let tracer = guard.tracer("cli-framework");
+        use tracing_subscriber::prelude::*;
+        let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+        let subscriber = tracing_subscriber::registry().with(otel_layer);
+        tracing::subscriber::with_default(subscriber, || {
+            let _span = tracing::info_span!("init_batch.test").entered();
+            handle.counter("x").add(1, &[]);
+        });
+        drop(guard);
+    }
+}
+
+#[test]
+fn init_simple_returns_none_without_endpoint() {
+    let cfg = TelemetryConfig {
+        endpoint: None,
+        ..Default::default()
+    };
+    let result = cli_framework::telemetry::init::init_simple(&cfg, "test", "0.1");
+    assert!(result.is_none());
+}
+
+// ── config.rs uncovered branches ──────────────────────────────────────────
+
+#[test]
+fn from_env_empty_endpoint_is_ignored() {
+    unsafe {
+        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "");
+    }
+    let cfg = TelemetryConfig::from_env();
+    assert!(
+        cfg.endpoint.is_none(),
+        "empty OTEL_EXPORTER_OTLP_ENDPOINT must not set endpoint"
+    );
+    unsafe {
+        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+    }
+}
+
+#[test]
+fn from_env_empty_service_name_is_ignored() {
+    unsafe {
+        std::env::set_var("OTEL_SERVICE_NAME", "");
+    }
+    let cfg = TelemetryConfig::from_env();
+    assert!(cfg.service_name.is_none());
+    unsafe {
+        std::env::remove_var("OTEL_SERVICE_NAME");
+    }
+}
+
+#[test]
+fn from_env_reads_protocol() {
+    unsafe {
+        std::env::set_var("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc");
+    }
+    let cfg = TelemetryConfig::from_env();
+    assert_eq!(cfg.protocol, "grpc");
+    unsafe {
+        std::env::remove_var("OTEL_EXPORTER_OTLP_PROTOCOL");
+    }
+}
+
+#[test]
+fn from_env_empty_protocol_is_ignored() {
+    unsafe {
+        std::env::set_var("OTEL_EXPORTER_OTLP_PROTOCOL", "");
+    }
+    let cfg = TelemetryConfig::from_env();
+    assert_eq!(
+        cfg.protocol, "http/protobuf",
+        "empty protocol must not override default"
+    );
+    unsafe {
+        std::env::remove_var("OTEL_EXPORTER_OTLP_PROTOCOL");
+    }
+}
+
+#[test]
+fn from_env_invalid_sample_ratio_is_ignored() {
+    unsafe {
+        std::env::set_var("OTEL_TRACES_SAMPLER_ARG", "not-a-number");
+    }
+    let cfg = TelemetryConfig::from_env();
+    assert!(
+        (cfg.sample_ratio - 1.0).abs() < f64::EPSILON,
+        "invalid sample ratio must leave default 1.0 intact"
+    );
+    unsafe {
+        std::env::remove_var("OTEL_TRACES_SAMPLER_ARG");
+    }
 }
 
 // ── 7. Arg value allowlist config ─────────────────────────────────────────
