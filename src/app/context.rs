@@ -98,6 +98,46 @@ pub trait AppContext: Send + Sync {
     ) -> Option<std::sync::Arc<dyn crate::telemetry::Telemetry + Send + Sync>> {
         None
     }
+
+    /// Return the caller identity established for the current request, as an
+    /// opaque type-erased value.
+    ///
+    /// The default returns `None`. Only the MCP tool-dispatch context
+    /// (`McpAppContext`, used by both the HTTP and stdio transports) overrides
+    /// this — and only when the host installed a per-request identity hook via
+    /// [`crate::app::AppBuilder::with_mcp_request_authenticator`] (HTTP only;
+    /// under stdio there is no HTTP request to authenticate, so this remains
+    /// `None` even when a hook is installed).
+    ///
+    /// cli-framework never inspects the value: it is produced by the host's
+    /// own authenticator closure (headers → identity) and is opaque here.
+    /// Prefer the typed [`RequestIdentityExt::request_identity`] helper over
+    /// calling this directly.
+    fn opt_request_identity(&self) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
+        None
+    }
+}
+
+/// Typed accessor over [`AppContext::opt_request_identity`].
+///
+/// Blanket-implemented for every `AppContext`, so any command's `execute`
+/// closure (which receives `&mut dyn AppContext`) can downcast the opaque
+/// per-request identity into its own type without needing the concrete
+/// context type.
+///
+/// Returns `None` when: no authenticator hook is installed, the request
+/// carried no identity (the host's closure returned `None`), the current
+/// context doesn't participate in per-request identity (e.g. CLI/stdio), or
+/// `T` does not match the type the host's closure actually produced.
+pub trait RequestIdentityExt {
+    /// Downcast the current request's opaque identity into `T`.
+    fn request_identity<T: std::any::Any + Send + Sync>(&self) -> Option<std::sync::Arc<T>>;
+}
+
+impl<C: AppContext + ?Sized> RequestIdentityExt for C {
+    fn request_identity<T: std::any::Any + Send + Sync>(&self) -> Option<std::sync::Arc<T>> {
+        self.opt_request_identity()?.downcast::<T>().ok()
+    }
 }
 
 /// Extension trait for AppContext to provide command registry access
@@ -111,4 +151,24 @@ pub trait CommandRegistryContext {
         command_id: &str,
         args: std::collections::HashMap<String, crate::spec::value::ArgValue>,
     ) -> anyhow::Result<()>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct PlainCtx;
+    impl AppContext for PlainCtx {}
+
+    struct MyIdentity;
+
+    /// Opt-in default: a context that never overrides `opt_request_identity`
+    /// (every context outside the MCP tool-dispatch path) always yields
+    /// `None` through the typed accessor too — the seam changes nothing for
+    /// existing `AppContext` implementors that don't participate in it.
+    #[test]
+    fn default_opt_request_identity_yields_none_via_typed_accessor() {
+        let ctx = PlainCtx;
+        assert!(ctx.request_identity::<MyIdentity>().is_none());
+    }
 }

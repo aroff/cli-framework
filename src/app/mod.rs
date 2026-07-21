@@ -9,6 +9,6 @@ pub mod clap_adapter;
 pub(crate) mod version;
 
 pub use builder::{App, AppBuilder, Shell, UsageError};
-pub use context::AppContext;
+pub use context::{AppContext, RequestIdentityExt};
 pub use meta::AppMeta;
 pub use module::Module;

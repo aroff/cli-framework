@@ -55,6 +55,8 @@ pub struct AppBuilder {
     #[cfg(feature = "mcp-server")]
     mcp_resource_registry: Option<std::sync::Arc<crate::mcp::resources::ResourceRegistry>>,
     #[cfg(feature = "mcp-server")]
+    mcp_request_authenticator: Option<crate::mcp::McpRequestAuthenticator>,
+    #[cfg(feature = "mcp-server")]
     auto_register_mcp: bool,
     #[cfg(feature = "chat")]
     chat_tool_policy: crate::command::chat::ChatToolPolicy,
@@ -86,6 +88,8 @@ impl AppBuilder {
             mcp_tool_gate: None,
             #[cfg(feature = "mcp-server")]
             mcp_resource_registry: None,
+            #[cfg(feature = "mcp-server")]
+            mcp_request_authenticator: None,
             #[cfg(feature = "mcp-server")]
             auto_register_mcp: true,
             #[cfg(feature = "chat")]
@@ -236,6 +240,54 @@ impl AppBuilder {
         resource_registry: std::sync::Arc<crate::mcp::resources::ResourceRegistry>,
     ) -> Self {
         self.mcp_resource_registry = Some(resource_registry);
+        self
+    }
+
+    /// Install a per-request identity hook for the auto-registered `mcp serve`
+    /// HTTP transport.
+    ///
+    /// cli-framework never parses bearer tokens, validates JWTs, or knows
+    /// about JWKS/OIDC — it stays unopinionated about authentication. Instead,
+    /// supply a closure that maps the incoming HTTP request's headers to an
+    /// opaque, type-erased identity value (for example, a downstream
+    /// product's own `SecurityContext`, built from a validated Bearer token).
+    /// The MCP HTTP transport invokes this closure once per HTTP request and
+    /// stashes the returned value so a tool's `execute` closure can read it
+    /// back via `ctx.request_identity::<T>()`
+    /// ([`crate::app::RequestIdentityExt`], blanket-implemented for every
+    /// [`AppContext`]).
+    ///
+    /// Opt-in: when unset, `request_identity` always returns `None` and
+    /// behavior is unchanged from before this hook existed. The hook only
+    /// fires on the HTTP transport — under stdio there is no HTTP request to
+    /// authenticate, so the identity remains `None` there regardless.
+    ///
+    /// Out of scope (a separate future spec): OAuth resource-server metadata,
+    /// `WWW-Authenticate` challenges, JWKS fetching, or token validation.
+    /// This hook is only the headers → opaque-identity plumbing seam; the
+    /// host owns all token semantics.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use cli_framework::app::AppBuilder;
+    /// # use std::sync::Arc;
+    /// struct CallerId(String);
+    ///
+    /// let app = AppBuilder::new()
+    ///     .with_version("myapp", "0.1.0")
+    ///     .with_mcp_request_authenticator(Arc::new(|headers: &http::HeaderMap| {
+    ///         let token = headers.get(http::header::AUTHORIZATION)?.to_str().ok()?;
+    ///         let token = token.strip_prefix("Bearer ")?;
+    ///         Some(Arc::new(CallerId(token.to_string())) as Arc<dyn std::any::Any + Send + Sync>)
+    ///     }));
+    /// ```
+    #[cfg(feature = "mcp-server")]
+    pub fn with_mcp_request_authenticator(
+        mut self,
+        authenticator: crate::mcp::McpRequestAuthenticator,
+    ) -> Self {
+        self.mcp_request_authenticator = Some(authenticator);
         self
     }
 
@@ -488,6 +540,7 @@ impl AppBuilder {
                     .mcp_resource_registry
                     .clone()
                     .unwrap_or_else(|| Arc::new(crate::mcp::resources::ResourceRegistry::new()));
+                let request_authenticator_for_serve = self.mcp_request_authenticator.clone();
 
                 let serve_cmd = crate::mcp::commands::create_mcp_serve_command_with_deps(
                     registry_arc_for_serve,
@@ -496,6 +549,7 @@ impl AppBuilder {
                     export_policy_for_serve,
                     gate_for_serve,
                     resource_registry_for_serve,
+                    request_authenticator_for_serve,
                 );
                 self.command_registry
                     .register_at(&mcp_serve_path, serve_cmd)
