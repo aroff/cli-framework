@@ -1,4 +1,4 @@
-use cli_framework::app::{AppBuilder, AppContext};
+use cli_framework::app::{AppBuilder, AppContext, RequestIdentityExt};
 use cli_framework::command::{Command, CommandRegistry};
 use cli_framework::mcp::{
     serve_mcp_with_gate, CliFrameworkHandler, McpServerArgs, McpToolExportPolicy, McpToolRegistry,
@@ -758,4 +758,205 @@ async fn test_mcp_serve_stdio_rejects_http_flags() {
     assert!(result.is_err(), "expected error for invalid stdio usage");
     let msg = result.unwrap_err().to_string();
     assert!(msg.contains("E004"), "expected E004, got: {}", msg);
+}
+
+/// `AppBuilder::with_mcp_request_authenticator` must wire the hook through to
+/// the `mcp serve --transport stdio` path too (parity with HTTP), even though
+/// stdio never invokes it. Runs in-process rather than via a subprocess: the
+/// test harness's own stdin is already closed/EOF, so the stdio transport
+/// returns almost immediately with an I/O error instead of blocking — enough
+/// to prove the authenticator-carrying `mcp serve` command actually runs this
+/// path end to end (`AppBuilder` → `create_mcp_serve_command_with_deps` →
+/// `serve_mcp_stdio_opts_with_resources`) without hanging the test suite.
+#[tokio::test]
+async fn test_mcp_serve_stdio_with_authenticator_installed_does_not_hang() {
+    struct Ctx;
+    impl AppContext for Ctx {}
+
+    let mut app = AppBuilder::new()
+        .with_version("testapp", "0.1.0")
+        .with_mcp_request_authenticator(bearer_authenticator())
+        .build(Ctx)
+        .unwrap();
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        app.run_with_args(vec![
+            "testapp".to_string(),
+            "mcp".to_string(),
+            "serve".to_string(),
+            "--transport".to_string(),
+            "stdio".to_string(),
+        ]),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "mcp serve --transport stdio must not hang when stdin is closed, even with an authenticator installed"
+    );
+}
+
+// ── Per-request identity seam (T1: MCP request-identity plumbing) ─────────
+//
+// End-to-end coverage over the real HTTP transport: an
+// `AppBuilder::with_mcp_request_authenticator` hook reads the actual
+// `Authorization` header off a real `reqwest` HTTP request, and the tool's
+// `execute` closure reads the resulting identity back via
+// `ctx.request_identity::<T>()`.
+
+/// Stand-in for a downstream product's own identity type (e.g. EntityStore's
+/// `SecurityContext`, built from a validated Bearer token). cli-framework
+/// never names this type; it only ever sees `Arc<dyn Any + Send + Sync>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TestCallerId(String);
+
+fn whoami_command() -> Command {
+    Command {
+        id: Arc::from("whoami"),
+        spec: Arc::new(CommandSpec {
+            summary: "report the caller identity established via the MCP request authenticator",
+            ..Default::default()
+        }),
+        validator: None,
+        expose_mcp: true,
+        expose_chat: true,
+        meta: None,
+        visibility: None,
+        execute: Arc::new(|ctx, _args| {
+            Box::pin(async move {
+                let who = ctx
+                    .request_identity::<TestCallerId>()
+                    .map(|id| id.0.clone())
+                    .unwrap_or_else(|| "anonymous".to_string());
+                ctx.framework_println(&who);
+                Ok(())
+            })
+        }),
+    }
+}
+
+/// Bearer-token authenticator: `Authorization: Bearer <token>` → `TestCallerId(<token>)`.
+/// Missing/malformed header → `None` (anonymous caller — not an error).
+fn bearer_authenticator() -> cli_framework::mcp::McpRequestAuthenticator {
+    Arc::new(|headers: &http::HeaderMap| {
+        let value = headers.get(http::header::AUTHORIZATION)?.to_str().ok()?;
+        let token = value.strip_prefix("Bearer ")?;
+        Some(Arc::new(TestCallerId(token.to_string())) as Arc<dyn std::any::Any + Send + Sync>)
+    })
+}
+
+/// Spawns `testapp mcp serve --port <port>` on a background thread, optionally
+/// with `bearer_authenticator()` installed, and returns the bound port.
+fn spawn_whoami_server(install_authenticator: bool) -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        rt.block_on(async move {
+            struct Ctx;
+            impl AppContext for Ctx {}
+
+            let mut builder = AppBuilder::new()
+                .with_version("testapp", "0.1.0")
+                .register_command(whoami_command())
+                .unwrap();
+            if install_authenticator {
+                builder = builder.with_mcp_request_authenticator(bearer_authenticator());
+            }
+            let mut app = builder.build(Ctx).unwrap();
+
+            let _ = app
+                .run_with_args(vec![
+                    "testapp".to_string(),
+                    "mcp".to_string(),
+                    "serve".to_string(),
+                    "--port".to_string(),
+                    port.to_string(),
+                ])
+                .await;
+        });
+    });
+
+    port
+}
+
+async fn call_whoami(client: &reqwest::Client, base_url: &str, bearer: Option<&str>) -> String {
+    let session_id = wait_for_http_server(client, base_url).await;
+
+    let mut req = client
+        .post(format!("{}/mcp", base_url))
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream");
+    if let Some(ref sid) = session_id {
+        req = req.header("Mcp-Session-Id", sid);
+    }
+    if let Some(token) = bearer {
+        req = req.header("Authorization", format!("Bearer {}", token));
+    }
+
+    let resp = req
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "whoami",
+            "method": "tools/call",
+            "params": {
+                "name": "testapp_whoami",
+                "arguments": {}
+            }
+        }))
+        .send()
+        .await
+        .expect("tools/call request failed");
+
+    assert!(resp.status().is_success(), "status: {}", resp.status());
+    let body = resp.text().await.unwrap();
+    let json = parse_sse_data(&body);
+    json.pointer("/result/content/0/text")
+        .and_then(|t| t.as_str())
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+/// Requirement: "authenticator invoked with request headers; identity visible
+/// + correctly downcast in a tool's execute" AND "missing/empty header →
+/// None". A real `Authorization: Bearer <token>` header sent over HTTP must
+/// reach the authenticator closure and the resulting identity must be
+/// readable, correctly typed, inside the tool's `execute`; a request with no
+/// such header must yield `None` (not an error). Both assertions share one
+/// background server (rather than one each) to limit the number of
+/// concurrently spawned HTTP servers this test binary needs.
+#[tokio::test]
+async fn test_mcp_request_authenticator_identity_visible_and_missing_header_yields_none() {
+    let _ = env_logger::try_init();
+    let port = spawn_whoami_server(true);
+    let client = reqwest::Client::new();
+    let base_url = format!("http://127.0.0.1:{}", port);
+
+    let who = call_whoami(&client, &base_url, Some("alice-token")).await;
+    assert_eq!(who, "alice-token");
+
+    let who = call_whoami(&client, &base_url, None).await;
+    assert_eq!(who, "anonymous");
+}
+
+/// Requirement: "no authenticator installed → None". Even though the request
+/// carries a real bearer token, no hook was installed via
+/// `AppBuilder::with_mcp_request_authenticator`, so behavior is unchanged
+/// from before the seam existed: the tool never sees an identity.
+#[tokio::test]
+async fn test_mcp_no_authenticator_installed_yields_none() {
+    let _ = env_logger::try_init();
+    let port = spawn_whoami_server(false);
+    let client = reqwest::Client::new();
+    let base_url = format!("http://127.0.0.1:{}", port);
+
+    let who = call_whoami(&client, &base_url, Some("alice-token")).await;
+    assert_eq!(who, "anonymous");
 }

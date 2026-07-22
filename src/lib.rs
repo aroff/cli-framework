@@ -131,7 +131,7 @@ macro_rules! path {
 
 /// Prelude module for convenient imports
 pub mod prelude {
-    pub use crate::app::{AppBuilder, AppContext, AppMeta, UsageError};
+    pub use crate::app::{AppBuilder, AppContext, AppMeta, RequestIdentityExt, UsageError};
     pub use crate::command::{Command, FromArgValueMap, IntoCommandSpec, TypedArgs};
     pub use crate::message::{AppMessage, AppMessageKind};
     pub use crate::path;

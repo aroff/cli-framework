@@ -29,12 +29,34 @@ use rmcp::{
 use schema::{command_to_tool_descriptor_full, McpToolDescriptor};
 use serde_json::Value;
 #[cfg(feature = "mcp-server")]
+use std::any::Any;
+#[cfg(feature = "mcp-server")]
 use std::borrow::Cow;
 use std::collections::HashMap;
 #[cfg(feature = "mcp-server")]
 use std::sync::Arc;
 #[cfg(feature = "mcp-server")]
 use tokio::sync::Mutex;
+
+/// A per-request identity hook for the MCP HTTP transport.
+///
+/// cli-framework stays unopinionated about authentication: it never parses
+/// bearer tokens, validates JWTs, or knows about JWKS/OIDC. Instead, the host
+/// (e.g. `AppBuilder::with_mcp_request_authenticator`) supplies a closure that
+/// maps the incoming HTTP request's headers to an opaque, type-erased
+/// identity value — for example, a downstream product's own `SecurityContext`
+/// built from a validated Bearer token.
+///
+/// The MCP HTTP transport calls this closure once per HTTP request (never
+/// under stdio, where no HTTP request exists) and stashes the returned value
+/// so the tool's `execute` closure can read it back via
+/// [`crate::app::RequestIdentityExt::request_identity`]. Returning `None`
+/// (missing/invalid header, anonymous caller, etc.) is a normal outcome, not
+/// an error — cli-framework does not reject or short-circuit the call based
+/// on this hook; enforcement is entirely up to the host's own tool logic.
+#[cfg(feature = "mcp-server")]
+pub type McpRequestAuthenticator =
+    Arc<dyn Fn(&http::HeaderMap) -> Option<Arc<dyn Any + Send + Sync>> + Send + Sync>;
 
 #[derive(Debug, Clone)]
 pub struct McpServerArgs {
@@ -71,6 +93,8 @@ pub struct McpToolRegistry {
     #[cfg(feature = "mcp-server")]
     gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
     telemetry: Option<std::sync::Arc<dyn crate::telemetry::Telemetry + Send + Sync>>,
+    #[cfg(feature = "mcp-server")]
+    request_authenticator: Option<McpRequestAuthenticator>,
 }
 
 impl McpToolRegistry {
@@ -114,6 +138,8 @@ impl McpToolRegistry {
             #[cfg(feature = "mcp-server")]
             gate: None,
             telemetry: None,
+            #[cfg(feature = "mcp-server")]
+            request_authenticator: None,
         }
     }
 
@@ -128,6 +154,8 @@ impl McpToolRegistry {
             #[cfg(feature = "mcp-server")]
             gate: None,
             telemetry: None,
+            #[cfg(feature = "mcp-server")]
+            request_authenticator: None,
         }
     }
 
@@ -149,6 +177,26 @@ impl McpToolRegistry {
     pub fn with_gate(mut self, gate: std::sync::Arc<dyn crate::security::ExecutionGate>) -> Self {
         self.gate = Some(gate);
         self
+    }
+
+    /// Install a per-request identity hook (see [`McpRequestAuthenticator`]).
+    ///
+    /// Opt-in: when unset, every MCP tool call sees `request_identity() ==
+    /// None` — identical to behavior before this hook existed.
+    #[cfg(feature = "mcp-server")]
+    pub fn with_request_authenticator(mut self, authenticator: McpRequestAuthenticator) -> Self {
+        self.request_authenticator = Some(authenticator);
+        self
+    }
+
+    /// Run the installed authenticator (if any) against `headers`, returning
+    /// the opaque identity it produces.
+    ///
+    /// Returns `None` when no authenticator is installed, or when the
+    /// installed authenticator itself returns `None` for these headers.
+    #[cfg(feature = "mcp-server")]
+    fn authenticate(&self, headers: &http::HeaderMap) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.request_authenticator.as_ref().and_then(|f| f(headers))
     }
 
     pub fn tool_count(&self) -> usize {
@@ -194,17 +242,24 @@ struct McpAppContext {
     buffer: std::sync::Mutex<Vec<u8>>,
     structured: std::sync::Mutex<Option<Value>>,
     telemetry: std::sync::Arc<dyn crate::telemetry::Telemetry + Send + Sync>,
+    /// Opaque per-request identity, stashed by the MCP HTTP transport when a
+    /// `McpRequestAuthenticator` is installed and produced a value for this
+    /// call's headers. `None` under stdio, or when no authenticator is
+    /// installed, or when the authenticator itself returned `None`.
+    identity: Option<Arc<dyn Any + Send + Sync>>,
 }
 #[cfg(feature = "mcp-server")]
 impl McpAppContext {
     fn new(
         telemetry: Option<std::sync::Arc<dyn crate::telemetry::Telemetry + Send + Sync>>,
+        identity: Option<Arc<dyn Any + Send + Sync>>,
     ) -> Self {
         Self {
             buffer: std::sync::Mutex::new(Vec::new()),
             structured: std::sync::Mutex::new(None),
             telemetry: telemetry
                 .unwrap_or_else(|| std::sync::Arc::new(crate::telemetry::NoopTelemetry)),
+            identity,
         }
     }
 }
@@ -238,6 +293,10 @@ impl crate::app::AppContext for McpAppContext {
         &self,
     ) -> Option<std::sync::Arc<dyn crate::telemetry::Telemetry + Send + Sync>> {
         Some(std::sync::Arc::clone(&self.telemetry))
+    }
+
+    fn opt_request_identity(&self) -> Option<std::sync::Arc<dyn Any + Send + Sync>> {
+        self.identity.clone()
     }
 }
 
@@ -505,7 +564,7 @@ impl ServerHandler for CliFrameworkHandler {
     fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> impl std::future::Future<Output = Result<CallToolResult, ErrorData>> + Send + '_ {
         let tool_name = request.name.to_string();
         let arguments = request.arguments;
@@ -513,12 +572,30 @@ impl ServerHandler for CliFrameworkHandler {
         let transport = self.transport;
         let serialize = self.stdio_serialize.as_ref().map(Arc::clone);
 
+        // Per-request identity seam: on the HTTP transport, rmcp's
+        // Streamable HTTP layer injects the raw `http::request::Parts` for
+        // this call into `context.extensions` (see
+        // `rmcp::transport::streamable_http_server::tower`). Under stdio
+        // there is no HTTP request, so this is always `None` regardless of
+        // whether an authenticator is installed — the accessor still
+        // compiles and behaves (`request_identity() == None`).
+        let identity = context
+            .extensions
+            .get::<http::request::Parts>()
+            .and_then(|parts| registry.authenticate(&parts.headers));
+
         async move {
             if let Some(lock) = serialize {
                 let _guard = lock.lock().await;
-                dispatch_tool_call_spawned(registry, tool_name, arguments, transport).await
+                dispatch_tool_call_spawned_with_identity(
+                    registry, tool_name, arguments, transport, identity,
+                )
+                .await
             } else {
-                dispatch_tool_call_spawned(registry, tool_name, arguments, transport).await
+                dispatch_tool_call_spawned_with_identity(
+                    registry, tool_name, arguments, transport, identity,
+                )
+                .await
             }
         }
     }
@@ -530,6 +607,22 @@ pub async fn dispatch_tool_call(
     tool_name: &str,
     arguments: Option<JsonObject>,
     transport: McpTransportKind,
+) -> Result<CallToolResult, ErrorData> {
+    dispatch_tool_call_with_identity(tool_registry, tool_name, arguments, transport, None).await
+}
+
+/// Like [`dispatch_tool_call`], but threads a per-request opaque `identity`
+/// (produced by an installed [`McpRequestAuthenticator`], see
+/// [`McpToolRegistry::with_request_authenticator`]) into the tool's
+/// [`McpAppContext`] for this call, readable inside the command's `execute`
+/// closure via [`crate::app::RequestIdentityExt::request_identity`].
+#[cfg(feature = "mcp-server")]
+pub async fn dispatch_tool_call_with_identity(
+    tool_registry: &McpToolRegistry,
+    tool_name: &str,
+    arguments: Option<JsonObject>,
+    transport: McpTransportKind,
+    identity: Option<Arc<dyn Any + Send + Sync>>,
 ) -> Result<CallToolResult, ErrorData> {
     use crate::command_surface::tool_bridge::{
         BridgeError, BridgeInput, BridgeInvocation, ConfirmationMode,
@@ -545,7 +638,7 @@ pub async fn dispatch_tool_call(
     let bridge = tool_registry.bridge_for_call(transport, tool_name);
 
     let arguments_value = arguments.map(Value::Object).unwrap_or(Value::Null);
-    let mut ctx = McpAppContext::new(tool_registry.telemetry.clone());
+    let mut ctx = McpAppContext::new(tool_registry.telemetry.clone(), identity);
 
     let res = {
         #[cfg(feature = "telemetry")]
@@ -619,8 +712,23 @@ pub async fn dispatch_tool_call_spawned(
     arguments: Option<JsonObject>,
     transport: McpTransportKind,
 ) -> Result<CallToolResult, ErrorData> {
+    dispatch_tool_call_spawned_with_identity(tool_registry, tool_name, arguments, transport, None)
+        .await
+}
+
+/// Like [`dispatch_tool_call_spawned`], but threads a per-request opaque
+/// `identity` through to [`dispatch_tool_call_with_identity`].
+#[cfg(feature = "mcp-server")]
+pub async fn dispatch_tool_call_spawned_with_identity(
+    tool_registry: Arc<McpToolRegistry>,
+    tool_name: String,
+    arguments: Option<JsonObject>,
+    transport: McpTransportKind,
+    identity: Option<Arc<dyn Any + Send + Sync>>,
+) -> Result<CallToolResult, ErrorData> {
     let handle = tokio::spawn(async move {
-        dispatch_tool_call(&tool_registry, &tool_name, arguments, transport).await
+        dispatch_tool_call_with_identity(&tool_registry, &tool_name, arguments, transport, identity)
+            .await
     });
     match handle.await {
         Ok(result) => result,
@@ -766,6 +874,7 @@ pub async fn serve_mcp_with_gate_opts(
         Arc::new(resources::ResourceRegistry::new()),
         banner,
         None,
+        None,
     )
     .await
 }
@@ -785,6 +894,7 @@ pub async fn serve_mcp_with_gate_opts_with_resources(
     resource_registry: Arc<resources::ResourceRegistry>,
     banner: BannerSettings,
     telemetry: Option<std::sync::Arc<dyn crate::telemetry::Telemetry + Send + Sync>>,
+    request_authenticator: Option<McpRequestAuthenticator>,
 ) -> Result<()> {
     let mut tool_registry =
         McpToolRegistry::from_command_registry_with_policy(&registry, app_name, export_policy)
@@ -794,6 +904,9 @@ pub async fn serve_mcp_with_gate_opts_with_resources(
     }
     if let Some(tel) = telemetry {
         tool_registry = tool_registry.with_telemetry(tel);
+    }
+    if let Some(authenticator) = request_authenticator {
+        tool_registry = tool_registry.with_request_authenticator(authenticator);
     }
     let tool_registry = Arc::new(tool_registry);
 
@@ -844,6 +957,7 @@ pub async fn serve_mcp_stdio_opts(
         Arc::new(resources::ResourceRegistry::new()),
         banner,
         None,
+        None,
     )
     .await
 }
@@ -851,6 +965,10 @@ pub async fn serve_mcp_stdio_opts(
 /// Like [`serve_mcp_stdio_opts`], but threads a populated
 /// [`resources::ResourceRegistry`] into the served handler so registered
 /// `ui://…` resources are served over the stdio transport.
+///
+/// `request_authenticator`, if installed, is stored on the tool registry for
+/// parity with the HTTP entry point, but is never invoked here: stdio has no
+/// HTTP request to authenticate, so `request_identity()` remains `None`.
 #[cfg(feature = "mcp-server")]
 #[allow(clippy::too_many_arguments)]
 pub async fn serve_mcp_stdio_opts_with_resources(
@@ -862,6 +980,7 @@ pub async fn serve_mcp_stdio_opts_with_resources(
     resource_registry: Arc<resources::ResourceRegistry>,
     banner: BannerSettings,
     telemetry: Option<std::sync::Arc<dyn crate::telemetry::Telemetry + Send + Sync>>,
+    request_authenticator: Option<McpRequestAuthenticator>,
 ) -> anyhow::Result<()> {
     let mut tool_registry =
         McpToolRegistry::from_command_registry_with_policy(&registry, app_name, export_policy)
@@ -871,6 +990,9 @@ pub async fn serve_mcp_stdio_opts_with_resources(
     }
     if let Some(tel) = telemetry {
         tool_registry = tool_registry.with_telemetry(tel);
+    }
+    if let Some(authenticator) = request_authenticator {
+        tool_registry = tool_registry.with_request_authenticator(authenticator);
     }
     let tool_registry = Arc::new(tool_registry);
     transport_stdio::start_stdio_with_resources(tool_registry, resource_registry, banner).await
