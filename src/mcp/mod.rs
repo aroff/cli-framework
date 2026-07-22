@@ -830,6 +830,32 @@ pub fn build_mcp_axum_router_with_resources(
     transport_http::mcp_axum_router_with_resources(tool_registry, resource_registry, path)
 }
 
+/// Like [`build_mcp_axum_router_with_resources`], but overrides the inbound
+/// `Host`-header allowlist enforced by rmcp's Streamable HTTP transport. See
+/// [`transport_http::mcp_axum_router_with_host_policy`] for the semantics of
+/// `allowed_hosts` (`Some` = allow exactly these authorities, `None` =
+/// disable Host validation — network-isolated deployments only).
+#[cfg(feature = "mcp-server")]
+pub fn build_mcp_axum_router_with_host_policy(
+    registry: &CommandRegistry,
+    app_name: &str,
+    _path: &str,
+    risk_policy: crate::security::CommandRiskPolicy,
+    export_policy: McpToolExportPolicy,
+    resource_registry: Arc<resources::ResourceRegistry>,
+    allowed_hosts: Option<Vec<String>>,
+) -> axum::Router {
+    let tool_registry = Arc::new(
+        McpToolRegistry::from_command_registry_with_policy(registry, app_name, export_policy)
+            .with_risk_policy(risk_policy),
+    );
+    transport_http::mcp_axum_router_with_host_policy(
+        tool_registry,
+        resource_registry,
+        allowed_hosts,
+    )
+}
+
 #[cfg(feature = "mcp-server")]
 pub async fn serve_mcp_with_gate(
     registry: Arc<CommandRegistry>,
