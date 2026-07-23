@@ -1,7 +1,12 @@
 use axum::routing::get;
 use cli_framework::command::{Command, CommandRegistry};
 use cli_framework::mcp::{
-    build_mcp_axum_router, transport_http::mcp_axum_router, McpToolExportPolicy, McpToolRegistry,
+    build_mcp_axum_router,
+    resources::ResourceRegistry,
+    transport_http::{
+        mcp_axum_router, mcp_axum_router_with_host_policy, mcp_axum_router_with_resources,
+    },
+    McpToolExportPolicy, McpToolRegistry,
 };
 use cli_framework::security::CommandRiskPolicy;
 use cli_framework::spec::command_tree::CommandSpec;
@@ -311,5 +316,143 @@ async fn test_expose_mcp_only_via_http_router() {
         tool_name.contains("visible"),
         "expected visible command in tool list, got: {}",
         tool_name
+    );
+}
+
+// ── Host-header allowlist override (`mcp_axum_router_with_host_policy`) ────
+//
+// rmcp's Streamable HTTP transport rejects inbound requests whose `Host`
+// header doesn't match its allowlist (default: loopback only), as a
+// DNS-rebinding guard. `mcp_axum_router_with_host_policy` lets a host
+// application override that allowlist for network-isolated deployments
+// (e.g. a cluster-internal listener reached service-to-service) without
+// changing the default behavior of `mcp_axum_router` /
+// `mcp_axum_router_with_resources`. These tests drive the real router over a
+// real TCP listener (mirroring the rest of this file) with a foreign `Host`
+// header to exercise the guard end-to-end.
+
+/// Spawns `router` on an ephemeral loopback port and returns its base URL
+/// once the listener is accepting TCP connections.
+async fn spawn_flat_router(router: axum::Router) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+
+    wait_for_server(&format!("127.0.0.1:{}", port)).await;
+    format!("http://127.0.0.1:{}", port)
+}
+
+/// Sends an `initialize` JSON-RPC request to the flat router root (`"/"`)
+/// carrying the given (possibly foreign) `Host` header, returning the raw
+/// HTTP status so callers can distinguish rmcp's 403 Host rejection from any
+/// other outcome.
+async fn send_initialize_with_host(
+    client: &reqwest::Client,
+    base_url: &str,
+    host_header: &str,
+) -> reqwest::StatusCode {
+    let resp = client
+        .post(base_url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("Host", host_header)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "1",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "test-client", "version": "0.1.0"}
+            }
+        }))
+        .send()
+        .await
+        .expect("initialize request failed");
+    resp.status()
+}
+
+fn empty_registry_tool_registry() -> Arc<McpToolRegistry> {
+    let registry = CommandRegistry::new();
+    Arc::new(McpToolRegistry::from_command_registry(&registry, "testapp"))
+}
+
+#[tokio::test]
+async fn test_default_router_rejects_foreign_host_header() {
+    let _ = env_logger::try_init();
+
+    let tool_registry = empty_registry_tool_registry();
+    let resource_registry = Arc::new(ResourceRegistry::new());
+    let router = mcp_axum_router_with_resources(tool_registry, resource_registry, "/mcp");
+
+    let base_url = spawn_flat_router(router).await;
+    let client = reqwest::Client::new();
+
+    let status = send_initialize_with_host(&client, &base_url, "evil.example.com:3001").await;
+    assert_eq!(
+        status,
+        reqwest::StatusCode::FORBIDDEN,
+        "default mcp_axum_router_with_resources must keep rmcp's loopback-only Host guard"
+    );
+}
+
+#[tokio::test]
+async fn test_host_policy_none_disables_host_guard() {
+    let _ = env_logger::try_init();
+
+    let tool_registry = empty_registry_tool_registry();
+    let resource_registry = Arc::new(ResourceRegistry::new());
+    let router = mcp_axum_router_with_host_policy(tool_registry, resource_registry, None);
+
+    let base_url = spawn_flat_router(router).await;
+    let client = reqwest::Client::new();
+
+    let status = send_initialize_with_host(&client, &base_url, "evil.example.com:3001").await;
+    assert_ne!(
+        status,
+        reqwest::StatusCode::FORBIDDEN,
+        "mcp_axum_router_with_host_policy(.., None) must disable the Host guard entirely"
+    );
+    assert!(
+        status.is_success(),
+        "expected a normal MCP response once the Host guard is disabled, got: {}",
+        status
+    );
+}
+
+#[tokio::test]
+async fn test_host_policy_some_allows_only_listed_host() {
+    let _ = env_logger::try_init();
+
+    let tool_registry = empty_registry_tool_registry();
+    let resource_registry = Arc::new(ResourceRegistry::new());
+    let router = mcp_axum_router_with_host_policy(
+        tool_registry,
+        resource_registry,
+        Some(vec!["evil.example.com:3001".to_string()]),
+    );
+
+    let base_url = spawn_flat_router(router).await;
+    let client = reqwest::Client::new();
+
+    // The explicitly allowed authority must pass.
+    let allowed_status =
+        send_initialize_with_host(&client, &base_url, "evil.example.com:3001").await;
+    assert!(
+        allowed_status.is_success(),
+        "explicitly allowed host must not be rejected, got: {}",
+        allowed_status
+    );
+
+    // A different, unlisted authority must still be rejected.
+    let rejected_status =
+        send_initialize_with_host(&client, &base_url, "another.example.com:3001").await;
+    assert_eq!(
+        rejected_status,
+        reqwest::StatusCode::FORBIDDEN,
+        "hosts outside the overridden allowlist must still be rejected"
     );
 }

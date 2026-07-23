@@ -36,8 +36,48 @@ pub fn mcp_axum_router_with_resources(
     resource_registry: Arc<ResourceRegistry>,
     _path: &str,
 ) -> axum::Router {
+    build_router_with_config(
+        tool_registry,
+        resource_registry,
+        StreamableHttpServerConfig::default(),
+    )
+}
+
+/// Like [`mcp_axum_router_with_resources`], but overrides the inbound
+/// `Host`-header allowlist that rmcp's Streamable HTTP transport enforces for
+/// DNS-rebinding protection.
+///
+/// - `Some(hosts)` — allow exactly these authorities (host or `host:port`).
+/// - `None`        — DISABLE Host validation entirely (accept any `Host`).
+///
+/// Passing `None` removes rmcp's DNS-rebinding guard and is appropriate ONLY
+/// for network-isolated deployments (e.g. a cluster-internal listener gated by
+/// NetworkPolicy, called server-to-server rather than from a browser). The
+/// plain [`mcp_axum_router`] / [`mcp_axum_router_with_resources`] keep rmcp's
+/// default (loopback-only) guard.
+pub fn mcp_axum_router_with_host_policy(
+    tool_registry: Arc<McpToolRegistry>,
+    resource_registry: Arc<ResourceRegistry>,
+    allowed_hosts: Option<Vec<String>>,
+) -> axum::Router {
+    let config = match allowed_hosts {
+        Some(hosts) => StreamableHttpServerConfig::default().with_allowed_hosts(hosts),
+        None => StreamableHttpServerConfig::default().disable_allowed_hosts(),
+    };
+    build_router_with_config(tool_registry, resource_registry, config)
+}
+
+/// Shared body behind [`mcp_axum_router_with_resources`] and
+/// [`mcp_axum_router_with_host_policy`]: builds the `LocalSessionManager` +
+/// `StreamableHttpService` (with the per-session `CliFrameworkHandler` closure)
+/// and mounts it at the flat `"/"` + `"/{*path}"` routes. Only the
+/// `StreamableHttpServerConfig` varies between callers.
+fn build_router_with_config(
+    tool_registry: Arc<McpToolRegistry>,
+    resource_registry: Arc<ResourceRegistry>,
+    config: StreamableHttpServerConfig,
+) -> axum::Router {
     let session_manager = Arc::new(LocalSessionManager::default());
-    let config = StreamableHttpServerConfig::default();
     let service = StreamableHttpService::new(
         {
             let tool_registry = Arc::clone(&tool_registry);
