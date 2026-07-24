@@ -105,6 +105,11 @@ pub mod emulation;
 #[cfg(feature = "auth")]
 pub mod auth;
 
+// SecretStore capability — async trait + in-memory/env-file backends (+ OpenBao
+// behind `secrets-openbao`). See `secrets` module docs.
+#[cfg(feature = "secrets")]
+pub mod secrets;
+
 /// Re-export the exit-code marker for parse/usage errors (spec 012 §R5).
 pub use app::UsageError;
 

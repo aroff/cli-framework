@@ -2,13 +2,14 @@
 
 use crate::OidcConfigError;
 use async_trait::async_trait;
+use cli_framework::secrets::{EnvFileSecretStore, SecretKey, SecretStore};
 use secrecy::SecretString;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 mod cache;
-use cache::{read_cache, write_cache, CacheEntry};
+use cache::{cache_secret_key, read_cache, write_cache, CacheEntry};
 
 // ── Supporting types ────────────────────────────────────────────────────────
 
@@ -98,6 +99,14 @@ pub struct OidcClient {
     refresh_skew: Duration,
     discovery: tokio::sync::OnceCell<DiscoveryDoc>,
     http: reqwest::Client,
+    /// Where the token cache is stored. Defaults to an
+    /// [`EnvFileSecretStore`] rooted at `cache_dir` — this reproduces the
+    /// crate's historical on-disk `oidc-token.json` behavior exactly (see
+    /// `client/cache.rs` docs). Inject a different backend (e.g.
+    /// OpenBao-backed) via [`OidcClientBuilder::secret_store`] to store
+    /// cached tokens somewhere other than a local file.
+    secret_store: Arc<dyn SecretStore>,
+    cache_secret_key: SecretKey,
 }
 
 impl OidcClient {
@@ -165,29 +174,27 @@ impl OidcClient {
             .await
     }
 
+    /// Read the current cache entry for `key` (this client's `cache_key()`)
+    /// out of the injected `SecretStore`, decomposed into the three fields
+    /// callers below need. A read-only lookup — never takes the cache lock.
+    async fn read_entry(&self, key: &str) -> (Option<String>, Option<String>, Option<SystemTime>) {
+        let cache = read_cache(self.secret_store.as_ref(), &self.cache_secret_key).await;
+        match cache.entries.get(key).cloned() {
+            Some(entry) => {
+                let exp = entry.expires_at.as_deref().and_then(cache::parse_rfc3339);
+                (entry.access_token, entry.refresh_token, exp)
+            }
+            None => (None, None, None),
+        }
+    }
+
     async fn get_or_refresh_token(
         &self,
     ) -> Result<cli_framework::auth::AccessToken, cli_framework::auth::AuthError> {
         let key = self.cache_key();
-        let cache_dir = self.cache_dir.clone();
         let refresh_skew = self.refresh_skew;
 
-        let (access_token, refresh_token, expires_at) = {
-            let key = key.clone();
-            let cache_dir = cache_dir.clone();
-            tokio::task::spawn_blocking(move || {
-                let cache = read_cache(&cache_dir);
-                let entry = cache.entries.get(&key).cloned()?;
-                let exp = entry.expires_at.as_deref().and_then(cache::parse_rfc3339);
-                Some((entry.access_token, entry.refresh_token, exp))
-            })
-            .await
-            .map_err(|e| cli_framework::auth::AuthError::Provider {
-                message: e.to_string(),
-                source: None,
-            })?
-            .unwrap_or((None, None, None))
-        };
+        let (access_token, refresh_token, expires_at) = self.read_entry(&key).await;
 
         // Check if access token is still fresh
         if let Some(ref at) = access_token {
@@ -225,22 +232,7 @@ impl OidcClient {
                 self.do_client_credentials_acquire(discovery, client_secret, *token_auth)
                     .await?;
                 // Re-read from cache
-                let (at, _, exp) = {
-                    let key = key.clone();
-                    let cache_dir = cache_dir.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let cache = read_cache(&cache_dir);
-                        let entry = cache.entries.get(&key).cloned()?;
-                        let exp = entry.expires_at.as_deref().and_then(cache::parse_rfc3339);
-                        Some((entry.access_token, entry.refresh_token, exp))
-                    })
-                    .await
-                    .map_err(|e| cli_framework::auth::AuthError::Provider {
-                        message: e.to_string(),
-                        source: None,
-                    })?
-                    .unwrap_or((None, None, None))
-                };
+                let (at, _, exp) = self.read_entry(&key).await;
                 at.map(|s| cli_framework::auth::AccessToken::new(s, exp))
                     .ok_or(cli_framework::auth::AuthError::NotAuthenticated)
             }
@@ -278,19 +270,7 @@ impl OidcClient {
         self.store_token_response(&resp).await?;
 
         let key = self.cache_key();
-        let cache_dir = self.cache_dir.clone();
-        let (at, _, exp) = tokio::task::spawn_blocking(move || {
-            let cache = read_cache(&cache_dir);
-            let entry = cache.entries.get(&key).cloned()?;
-            let exp = entry.expires_at.as_deref().and_then(cache::parse_rfc3339);
-            Some((entry.access_token, entry.refresh_token, exp))
-        })
-        .await
-        .map_err(|e| cli_framework::auth::AuthError::Provider {
-            message: e.to_string(),
-            source: None,
-        })?
-        .unwrap_or((None, None, None));
+        let (at, _, exp) = self.read_entry(&key).await;
 
         at.map(|s| cli_framework::auth::AccessToken::new(s, exp))
             .ok_or(cli_framework::auth::AuthError::NotAuthenticated)
@@ -605,43 +585,33 @@ impl OidcClient {
         let refresh_token = resp["refresh_token"].as_str().map(String::from);
 
         let key = self.cache_key();
-        let cache_dir = self.cache_dir.clone();
         let access_token = access_token.to_string();
         let scopes = self.effective_scopes();
 
-        tokio::task::spawn_blocking(move || {
-            use fs2::FileExt;
-            std::fs::create_dir_all(&cache_dir).ok();
-            let lock_path = cache_dir.join("oidc-token.lock");
-            let lock_file = open_lock_file(&lock_path).unwrap();
-            lock_file.lock_exclusive().ok();
+        let lock = lock_cache_dir(&self.cache_dir).await?;
 
-            let mut cache = read_cache(&cache_dir);
-            let existing_refresh = cache
-                .entries
-                .get(&key)
-                .and_then(|e| e.refresh_token.clone());
+        let mut cache = read_cache(self.secret_store.as_ref(), &self.cache_secret_key).await;
+        let existing_refresh = cache
+            .entries
+            .get(&key)
+            .and_then(|e| e.refresh_token.clone());
 
-            let entry = CacheEntry {
-                access_token: Some(access_token),
-                refresh_token: refresh_token.or(existing_refresh),
-                expires_at: expires_at.map(cache::format_rfc3339),
-                obtained_at: cache::format_rfc3339(SystemTime::now()),
-                scopes,
-            };
-            cache.entries.insert(key, entry);
+        let entry = CacheEntry {
+            access_token: Some(access_token),
+            refresh_token: refresh_token.or(existing_refresh),
+            expires_at: expires_at.map(cache::format_rfc3339),
+            obtained_at: cache::format_rfc3339(SystemTime::now()),
+            scopes,
+        };
+        cache.entries.insert(key, entry);
 
-            if let Err(e) = write_cache(&cache_dir, &cache) {
-                tracing::warn!("oidc token cache: write failed: {e}");
-            }
-            #[allow(clippy::incompatible_msrv)]
-            lock_file.unlock().ok();
-        })
-        .await
-        .map_err(|e| cli_framework::auth::AuthError::Provider {
-            message: e.to_string(),
-            source: None,
-        })
+        if let Err(e) =
+            write_cache(self.secret_store.as_ref(), &self.cache_secret_key, &cache).await
+        {
+            tracing::warn!("oidc token cache: write failed: {e}");
+        }
+        unlock_cache_dir(lock);
+        Ok(())
     }
 }
 
@@ -657,45 +627,37 @@ impl cli_framework::auth::TokenProvider for OidcClient {
 
     async fn invalidate(&self) {
         let key = self.cache_key();
-        let cache_dir = self.cache_dir.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            use fs2::FileExt;
-            std::fs::create_dir_all(&cache_dir).ok();
-            let lock_path = cache_dir.join("oidc-token.lock");
-            let lock_file = open_lock_file(&lock_path).ok()?;
-            lock_file.lock_exclusive().ok()?;
-            let mut cache = read_cache(&cache_dir);
-            if let Some(entry) = cache.entries.get_mut(&key) {
-                entry.access_token = None;
-                entry.expires_at = None;
+        let lock = match lock_cache_dir(&self.cache_dir).await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::warn!("oidc token cache: invalidate lock failed: {e}");
+                return;
             }
-            if let Err(e) = write_cache(&cache_dir, &cache) {
-                tracing::warn!("oidc token cache: invalidate write failed: {e}");
-            }
-            #[allow(clippy::incompatible_msrv)]
-            lock_file.unlock().ok();
-            Some(())
-        })
-        .await;
+        };
+        let mut cache = read_cache(self.secret_store.as_ref(), &self.cache_secret_key).await;
+        if let Some(entry) = cache.entries.get_mut(&key) {
+            entry.access_token = None;
+            entry.expires_at = None;
+        }
+        if let Err(e) =
+            write_cache(self.secret_store.as_ref(), &self.cache_secret_key, &cache).await
+        {
+            tracing::warn!("oidc token cache: invalidate write failed: {e}");
+        }
+        unlock_cache_dir(lock);
     }
 
     async fn peek(&self) -> Option<cli_framework::auth::TokenStatus> {
         let key = self.cache_key();
-        let cache_dir = self.cache_dir.clone();
-        tokio::task::spawn_blocking(move || {
-            let cache = read_cache(&cache_dir);
-            let entry = cache.entries.get(&key).cloned()?;
-            let has_access = entry.access_token.is_some();
-            let has_refresh = entry.refresh_token.is_some();
-            let expires_at = entry.expires_at.as_deref().and_then(cache::parse_rfc3339);
-            Some(cli_framework::auth::TokenStatus {
-                logged_in: has_access || has_refresh,
-                expires_at: if has_access { expires_at } else { None },
-            })
+        let cache = read_cache(self.secret_store.as_ref(), &self.cache_secret_key).await;
+        let entry = cache.entries.get(&key).cloned()?;
+        let has_access = entry.access_token.is_some();
+        let has_refresh = entry.refresh_token.is_some();
+        let expires_at = entry.expires_at.as_deref().and_then(cache::parse_rfc3339);
+        Some(cli_framework::auth::TokenStatus {
+            logged_in: has_access || has_refresh,
+            expires_at: if has_access { expires_at } else { None },
         })
-        .await
-        .ok()
-        .flatten()
     }
 
     async fn login(&self) -> Result<(), cli_framework::auth::AuthError> {
@@ -704,32 +666,16 @@ impl cli_framework::auth::TokenProvider for OidcClient {
 
     async fn logout(&self) -> Result<(), cli_framework::auth::AuthError> {
         let key = self.cache_key();
-        let cache_dir = self.cache_dir.clone();
-        tokio::task::spawn_blocking(move || {
-            use fs2::FileExt;
-            std::fs::create_dir_all(&cache_dir).ok();
-            let lock_path = cache_dir.join("oidc-token.lock");
-            let lock_file = open_lock_file(&lock_path).map_err(|e| {
-                cli_framework::auth::AuthError::Provider {
-                    message: e.to_string(),
-                    source: None,
-                }
-            })?;
-            lock_file.lock_exclusive().ok();
-            let mut cache = read_cache(&cache_dir);
-            cache.entries.remove(&key);
-            if let Err(e) = write_cache(&cache_dir, &cache) {
-                tracing::warn!("oidc token cache: logout write failed: {e}");
-            }
-            #[allow(clippy::incompatible_msrv)]
-            lock_file.unlock().ok();
-            Ok::<(), cli_framework::auth::AuthError>(())
-        })
-        .await
-        .map_err(|e| cli_framework::auth::AuthError::Provider {
-            message: e.to_string(),
-            source: None,
-        })?
+        let lock = lock_cache_dir(&self.cache_dir).await?;
+        let mut cache = read_cache(self.secret_store.as_ref(), &self.cache_secret_key).await;
+        cache.entries.remove(&key);
+        if let Err(e) =
+            write_cache(self.secret_store.as_ref(), &self.cache_secret_key, &cache).await
+        {
+            tracing::warn!("oidc token cache: logout write failed: {e}");
+        }
+        unlock_cache_dir(lock);
+        Ok(())
     }
 }
 
@@ -744,6 +690,7 @@ pub struct OidcClientBuilder {
     app_name: Option<String>,
     reporter: Option<Arc<dyn cli_framework::auth::AuthFlowReporter>>,
     refresh_skew: Duration,
+    secret_store: Option<Arc<dyn SecretStore>>,
 }
 
 impl OidcClientBuilder {
@@ -757,6 +704,7 @@ impl OidcClientBuilder {
             app_name: None,
             reporter: None,
             refresh_skew: Duration::from_secs(60),
+            secret_store: None,
         }
     }
 
@@ -874,6 +822,18 @@ impl OidcClientBuilder {
         self
     }
 
+    /// Where the token cache is stored. Defaults to an
+    /// [`EnvFileSecretStore`] rooted at `cache_dir`, which reproduces the
+    /// crate's historical zero-config on-disk `oidc-token.json` behavior
+    /// exactly. Inject e.g. `secrets-openbao::OpenBaoSecretStore` here to
+    /// store cached tokens in a real secrets manager instead — when a
+    /// non-file backend is configured, no plaintext token file is ever
+    /// written.
+    pub fn secret_store(mut self, store: Arc<dyn SecretStore>) -> Self {
+        self.secret_store = Some(store);
+        self
+    }
+
     pub fn build(self) -> Result<OidcClient, OidcConfigError> {
         let issuer_url = crate::normalize_issuer(
             self.issuer_url
@@ -891,6 +851,9 @@ impl OidcClientBuilder {
         let reporter = self
             .reporter
             .unwrap_or_else(|| Arc::new(cli_framework::auth::StderrAuthFlowReporter));
+        let secret_store = self
+            .secret_store
+            .unwrap_or_else(|| Arc::new(EnvFileSecretStore::new(cache_dir.clone())));
 
         Ok(OidcClient {
             issuer_url,
@@ -902,6 +865,8 @@ impl OidcClientBuilder {
             refresh_skew: self.refresh_skew,
             discovery: tokio::sync::OnceCell::new(),
             http: make_http_client(),
+            secret_store,
+            cache_secret_key: cache_secret_key(),
         })
     }
 }
@@ -915,6 +880,43 @@ fn default_cache_dir(app_name: Option<&str>) -> Result<PathBuf, OidcConfigError>
     Ok(base
         .join("cli-framework-oidc")
         .join(app_name.unwrap_or("default")))
+}
+
+/// Best-effort cross-process advisory lock guarding the read-modify-write
+/// cycle around the token cache (`<cache_dir>/oidc-token.lock`).
+///
+/// This is independent of which `SecretStore` backend is configured: it
+/// still serializes concurrent writers *on this host* even when the backend
+/// is remote (e.g. OpenBao) — not a substitute for backend-side optimistic
+/// concurrency, which is out of scope for R1. Acquiring it never blocks the
+/// caller's task directly (runs via `spawn_blocking`); releasing it
+/// (`unlock_cache_dir`) is a fast local syscall done inline.
+async fn lock_cache_dir(
+    cache_dir: &std::path::Path,
+) -> Result<std::fs::File, cli_framework::auth::AuthError> {
+    let cache_dir = cache_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        std::fs::create_dir_all(&cache_dir).ok();
+        let lock_path = cache_dir.join("oidc-token.lock");
+        let file = open_lock_file(&lock_path)?;
+        use fs2::FileExt;
+        file.lock_exclusive()?;
+        Ok::<_, std::io::Error>(file)
+    })
+    .await
+    .map_err(|e| cli_framework::auth::AuthError::Provider {
+        message: e.to_string(),
+        source: None,
+    })?
+    .map_err(|e| cli_framework::auth::AuthError::Provider {
+        message: format!("oidc token cache: lock failed: {e}"),
+        source: Some(Box::new(e)),
+    })
+}
+
+fn unlock_cache_dir(file: std::fs::File) {
+    #[allow(clippy::incompatible_msrv)]
+    let _ = file.unlock();
 }
 
 fn open_lock_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {

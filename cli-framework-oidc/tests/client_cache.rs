@@ -1,10 +1,12 @@
 //! Tests for the OidcClient cache layer.
 
 use cli_framework::auth::TokenProvider;
+use cli_framework::secrets::InMemorySecretStore;
 use cli_framework_oidc::client::{OidcClient, OidcFlow, TokenAuthMethod};
 use secrecy::SecretString;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
 use tempfile::TempDir;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -341,6 +343,97 @@ async fn default_refresh_skew_is_60s_token_expiring_in_45s_triggers_refetch() {
         "refreshed-token",
         "default refresh_skew must be 60s: token expiring in 45s must trigger refetch"
     );
+}
+
+// ── SecretStore seam: no plaintext file when a non-file backend is used ─────
+//
+// PRD-005 story 9 / ADR-0004: the token cache is routed through an injected
+// `SecretStore`. The default backend (used when `.secret_store(..)` isn't
+// called) reproduces the historical on-disk `oidc-token.json` file exactly
+// (proven by `cache_file_and_lock_have_0600_permissions` above). When a
+// non-file backend — here `InMemorySecretStore` — is injected instead, no
+// plaintext token file should ever be written to `cache_dir`, and the token
+// flow (acquire, cache-hit, invalidate, logout) must still work end to end
+// through that backend.
+
+#[tokio::test]
+async fn no_plaintext_file_when_non_file_backend_is_injected() {
+    let mock = MockServer::start().await;
+    let base = mock.uri();
+    Mock::given(method("GET"))
+        .and(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "issuer": base,
+            "token_endpoint": format!("{}/token", base),
+            "jwks_uri": format!("{}/jwks", base),
+        })))
+        .mount(&mock)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "in-memory-token",
+            "refresh_token": "in-memory-refresh",
+            "token_type": "Bearer",
+            "expires_in": 3600u64,
+        })))
+        .expect(1) // cached on the second call, same as the on-disk backend
+        .mount(&mock)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let secret_store = Arc::new(InMemorySecretStore::new());
+    let client = OidcClient::builder()
+        .issuer_url(&base)
+        .client_id("svc")
+        .flow(OidcFlow::ClientCredentials {
+            client_secret: make_secret("s3cr3t"),
+            token_auth: TokenAuthMethod::Post,
+        })
+        .cache_dir(dir.path().to_path_buf())
+        .secret_store(secret_store)
+        .build()
+        .expect("build");
+
+    let t1 = client.token().await.expect("first token");
+    assert_eq!(t1.as_bearer(), "in-memory-token");
+
+    // Cached: the mock only expects one call, so a second token() must not
+    // hit the network — proving the InMemorySecretStore round-trip works.
+    let t2 = client.token().await.expect("second token (cached)");
+    assert_eq!(t2.as_bearer(), "in-memory-token");
+
+    // The whole point: no plaintext token file anywhere under cache_dir.
+    // (`cache_dir` may still contain the empty, content-free
+    // `oidc-token.lock` advisory-lock file — that's a local-concurrency
+    // guard independent of the SecretStore backend, and never holds token
+    // bytes, so it doesn't defeat the "no plaintext token" property.)
+    assert!(
+        !dir.path().join("oidc-token.json").exists(),
+        "a non-file SecretStore backend must never produce a plaintext oidc-token.json"
+    );
+    for entry in std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+        if path.is_file() {
+            let contents = std::fs::read_to_string(&path).unwrap_or_default();
+            assert!(
+                !contents.contains("in-memory-token") && !contents.contains("in-memory-refresh"),
+                "found token material written to disk at {path:?}: {contents:?}"
+            );
+        }
+    }
+
+    // invalidate/logout still work end to end through the injected backend.
+    client.invalidate().await;
+    let status = client.peek().await;
+    assert!(status.is_some(), "refresh token should still be cached");
+
+    client.logout().await.expect("logout");
+    let status = client.peek().await;
+    assert!(status.is_none(), "logout should clear the cached entry");
 }
 
 #[tokio::test]

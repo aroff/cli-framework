@@ -1,8 +1,22 @@
-//! On-disk token cache for OidcClient.
+//! `OidcClient`'s token cache, stored through a `SecretStore`.
+//!
+//! The entire [`CacheFile`] (every cached grant, keyed by [`OidcClient::cache_key`])
+//! is serialized as one JSON blob and stored as a single [`SecretValue`] under
+//! a stable [`SecretKey`] (see [`cache_secret_key`]) — one file/secret per
+//! `SecretStore` (typically per `cache_dir`), not one per grant. That key was
+//! chosen to be `"oidc-token.json"`: when the default [`EnvFileSecretStore`]
+//! backend is in play, this reproduces the exact on-disk filename
+//! `cli-framework-oidc` has always used, so the pre-existing on-disk cache
+//! layout, permissions, and location are unchanged for callers who don't
+//! inject a different `SecretStore`.
+//!
+//! When a non-file backend (e.g. `secrets-openbao::OpenBaoSecretStore`) is
+//! injected instead, no plaintext token file is ever written — the bytes go
+//! straight through that backend's `put`/`get`.
 
+use cli_framework::secrets::{SecretError, SecretKey, SecretStore, SecretValue};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
 use std::time::SystemTime;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
@@ -30,57 +44,45 @@ impl CacheFile {
     }
 }
 
-pub fn read_cache(cache_dir: &Path) -> CacheFile {
-    let path = cache_dir.join("oidc-token.json");
-    match std::fs::read_to_string(&path) {
-        Ok(s) => serde_json::from_str(&s).unwrap_or_else(|_| {
-            tracing::warn!("oidc token cache: parse error, treating as empty");
+/// The stable `SecretStore` key the whole cache file is stored under.
+///
+/// Fixed at `"oidc-token.json"` so the default [`EnvFileSecretStore`] backend
+/// reproduces the historical on-disk filename exactly (see module docs).
+pub fn cache_secret_key() -> SecretKey {
+    SecretKey::new(["oidc-token.json"]).expect("static key is valid")
+}
+
+pub async fn read_cache(store: &dyn SecretStore, key: &SecretKey) -> CacheFile {
+    match store.get(key).await {
+        Ok(value) => match value
+            .expose_str()
+            .ok()
+            .and_then(|s| serde_json::from_str(s).ok())
+        {
+            Some(cache) => cache,
+            None => {
+                tracing::warn!("oidc token cache: parse error, treating as empty");
+                CacheFile::empty()
+            }
+        },
+        Err(SecretError::NotFound) => CacheFile::empty(),
+        Err(e) => {
+            tracing::warn!("oidc token cache: read failed ({e}), treating as empty");
             CacheFile::empty()
-        }),
-        Err(_) => CacheFile::empty(),
+        }
     }
 }
 
-pub fn write_cache(cache_dir: &Path, cache: &CacheFile) -> anyhow::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(cache_dir)?;
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::create_dir_all(cache_dir)?;
-    }
-
+pub async fn write_cache(
+    store: &dyn SecretStore,
+    key: &SecretKey,
+    cache: &CacheFile,
+) -> anyhow::Result<()> {
     let data = serde_json::to_string_pretty(cache)?;
-    let tmp_path = cache_dir.join(format!("oidc-token.json.tmp.{}", std::process::id()));
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp_path)?;
-        use std::io::Write;
-        f.write_all(data.as_bytes())?;
-        f.sync_all()?;
-    }
-    #[cfg(not(unix))]
-    {
-        let mut f = std::fs::File::create(&tmp_path)?;
-        use std::io::Write;
-        f.write_all(data.as_bytes())?;
-        f.sync_all()?;
-    }
-
-    std::fs::rename(&tmp_path, cache_dir.join("oidc-token.json"))?;
-    Ok(())
+    store
+        .put(key, SecretValue::from(data))
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 pub fn format_rfc3339(t: SystemTime) -> String {
