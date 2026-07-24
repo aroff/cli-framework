@@ -16,7 +16,8 @@ All optional features for `cli-framework`. Default feature set includes `chat`.
 | `testkit` | off | Enable `CliTestHarness` for in-process CLI testing (dev/test use only) |
 | `table-advanced` | off | Enable `comfy-table` based advanced table rendering |
 | `progress` | off | Enable `indicatif` progress bars |
-| `observability` | off | Stub gate for future OpenTelemetry integration (no-op currently) |
+| `observability` | off | `tracing-subscriber` logging foundation; implied by `telemetry` |
+| `telemetry` | off | Built-in OpenTelemetry (ADR 0068). Auto `cli.command` spans at the CLI + MCP dispatch seams, exported over OTLP HTTP; `TelemetryConfig`, `AppBuilder::with_telemetry` / `ApiServerBuilder::with_telemetry`, `ctx.telemetry()` handle. Implies `observability`. **v1 is traces-only** — the `counter()`/`histogram()` handles and auto per-command metrics are not yet exported (no `MeterProvider`; OTLP `metrics` feature not compiled) |
 
 ## `cli-framework-oidc` companion crate
 

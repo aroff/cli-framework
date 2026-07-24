@@ -493,3 +493,109 @@ fn init_batch_returns_none_when_inactive() {
         "init_batch must return None when config is inactive"
     );
 }
+
+// ── 16. record_error actually sets the span status to Error ───────────────
+//
+// Regression: `otel.status_code` / `otel.status_description` must be declared on
+// the span callsite, otherwise `tracing::Span::record` is a silent no-op and the
+// span never reflects the error.
+
+#[tokio::test]
+async fn record_error_sets_span_status_to_error() {
+    use opentelemetry::trace::Status;
+    use tracing_subscriber::prelude::*;
+
+    let exporter = TestExporter::default();
+    let (handle, guard) =
+        cli_framework::telemetry::init::init_with_exporter(exporter.clone(), "test-status");
+    let tracer = guard.tracer("cli-framework");
+    let subscriber =
+        tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+    tracing::subscriber::with_default(subscriber, || {
+        let span = handle.span("op.fail", &[]);
+        let err = std::io::Error::new(std::io::ErrorKind::Other, "boom");
+        span.record_error(&err);
+        drop(span); // closes the span → exported
+    });
+
+    guard.flush();
+    let spans = exporter.spans();
+    let s = spans
+        .iter()
+        .find(|s| s.name.as_ref() == "app.span")
+        .expect("app.span must be exported");
+    match &s.status {
+        Status::Error { description } => {
+            assert!(
+                description.contains("boom"),
+                "error description should carry the message, got: {description:?}"
+            );
+        }
+        other => panic!("expected span status Error, got: {other:?}"),
+    }
+}
+
+// ── 17. sample_ratio flows into the head sampler ──────────────────────────
+//
+// ratio 0.0 → the parent-based TraceIdRatioBased sampler drops every root span;
+// ratio 1.0 → it keeps them. Proves config.sample_ratio is actually wired in.
+
+#[tokio::test]
+async fn sample_ratio_zero_drops_root_spans() {
+    use tracing_subscriber::prelude::*;
+
+    let exporter = TestExporter::default();
+    let cfg = TelemetryConfig {
+        endpoint: Some("http://unused:4318".into()),
+        sample_ratio: 0.0,
+        ..Default::default()
+    };
+    let (_h, guard) = cli_framework::telemetry::init::init_with_exporter_config(
+        exporter.clone(),
+        &cfg,
+        "svc",
+        "1.0",
+    );
+    let tracer = guard.tracer("cli-framework");
+    let subscriber =
+        tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
+    tracing::subscriber::with_default(subscriber, || {
+        let _s = tracing::info_span!("dropped.root").entered();
+    });
+    guard.flush();
+    assert!(
+        exporter.spans().is_empty(),
+        "sample_ratio 0.0 must drop root spans, exported {}",
+        exporter.spans().len()
+    );
+}
+
+#[tokio::test]
+async fn sample_ratio_one_keeps_root_spans() {
+    use tracing_subscriber::prelude::*;
+
+    let exporter = TestExporter::default();
+    let cfg = TelemetryConfig {
+        endpoint: Some("http://unused:4318".into()),
+        sample_ratio: 1.0,
+        ..Default::default()
+    };
+    let (_h, guard) = cli_framework::telemetry::init::init_with_exporter_config(
+        exporter.clone(),
+        &cfg,
+        "svc",
+        "1.0",
+    );
+    let tracer = guard.tracer("cli-framework");
+    let subscriber =
+        tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
+    tracing::subscriber::with_default(subscriber, || {
+        let _s = tracing::info_span!("kept.root").entered();
+    });
+    guard.flush();
+    assert!(
+        !exporter.spans().is_empty(),
+        "sample_ratio 1.0 must keep root spans"
+    );
+}

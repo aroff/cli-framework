@@ -366,7 +366,7 @@ required-features = ["auth"]
 [[test]]
 name = "unit_telemetry"
 path = "tests/unit/telemetry.rs"
-required-features = ["telemetry", "testkit", "derive"]
+required-features = ["telemetry", "testkit", "derive", "api-server"]
 
 [[test]]
 name = "integration_telemetry_otlp"

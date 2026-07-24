@@ -1,10 +1,27 @@
 // Re-export KeyValue so callers don't need the opentelemetry dep directly
 pub use opentelemetry::KeyValue;
 
+/// Handle for emitting telemetry from command handlers.
+///
+/// Obtained via [`AppContext::telemetry`](crate::app::AppContext::telemetry).
+/// The default implementation is [`NoopTelemetry`](crate::telemetry::NoopTelemetry);
+/// a live handle is installed only when the `telemetry` feature is on and an
+/// OTLP endpoint is configured. See the [module docs](crate::telemetry) for the
+/// signals that are actually exported today (traces + events; metrics are not
+/// yet wired).
 pub trait Telemetry: Send + Sync {
+    /// Emit a point-in-time event on the current span.
     fn event(&self, name: &str, attrs: &[KeyValue]);
+    /// Return a monotonic counter handle.
+    ///
+    /// Note: counters are **not yet exported** (no `MeterProvider` is installed
+    /// in v1); `add` is a safe no-op today. See the [module docs](crate::telemetry).
     fn counter(&self, name: &str) -> Counter;
+    /// Return a value-distribution histogram handle.
+    ///
+    /// Note: histograms are **not yet exported** (v1); `record` is a safe no-op.
     fn histogram(&self, name: &str) -> Histogram;
+    /// Open a child span; it closes when the returned [`SpanHandle`] is dropped.
     fn span(&self, name: &str, attrs: &[KeyValue]) -> SpanHandle;
 }
 
@@ -51,6 +68,12 @@ pub(crate) enum SpanInner {
     Live(tracing::span::EnteredSpan),
 }
 impl SpanHandle {
+    /// Record an attribute on the span.
+    ///
+    /// Limitation: because the underlying `tracing` span has a fixed fieldset
+    /// fixed at its callsite, only pre-declared keys take effect — arbitrary
+    /// keys are silently dropped. [`record_error`](Self::record_error) works
+    /// because its fields are declared up front.
     pub fn set_attr(&self, key: &'static str, value: &str) {
         match &self.0 {
             SpanInner::Noop => {
@@ -62,6 +85,8 @@ impl SpanHandle {
             }
         }
     }
+    /// Mark the span as errored, setting its OTel status to `Error` with the
+    /// error's message as the description.
     pub fn record_error(&self, err: &dyn std::error::Error) {
         match &self.0 {
             SpanInner::Noop => {

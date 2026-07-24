@@ -65,6 +65,12 @@ cargo test --verbose
 cargo test --features chat --verbose
 cargo test --features mcp-server --verbose
 cargo test --features "chat,mcp-server" --verbose
+# Telemetry tests are gated behind the `telemetry` feature (and its targets also
+# need api-server + testkit + derive; the MCP span test needs mcp-server), so
+# none of the combos above execute them. Scope to the telemetry targets
+# explicitly (like the MCP step below) to avoid load-flake in unrelated servers.
+cargo test --features "telemetry,mcp-server,api-server,testkit,derive" \
+    --test unit_telemetry --test integration_telemetry_otlp --test unit_mcp_dispatch --verbose
 # Build examples explicitly — `cargo test` skips them, so dead-code in
 # examples is only caught here (RUSTFLAGS=-D warnings applies).
 cargo build --examples --verbose

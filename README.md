@@ -31,6 +31,8 @@ A Rust library for building CLIs with optional AI-assisted command resolution (*
 | `doctor` | no | Structured health-check framework with terminal/JSON output |
 | `project-config` | no | Project root discovery and TOML loading (`PC001`–`PC005` error codes) |
 | `auth` | no | Generic `TokenProvider` trait + `AuthenticatedHttpClient` + four `auth` subcommands; pair with `cli-framework-oidc` for OIDC flows |
+| `observability` | no | `tracing-subscriber` logging foundation (implied by `telemetry`) |
+| `telemetry` | no | Built-in OpenTelemetry: auto `cli.command` spans exported over OTLP (implies `observability`) |
 
 ## MCP Server Mode
 
@@ -443,6 +445,49 @@ fn main() {
 | `with_ailoop_config(config)` | Configure ailoop with a full `AiloopConfig` | — |
 | `with_risk_policy(policy)` | Override the default command risk tier policy | — |
 | `with_token_provider(provider)` | Supply a `TokenProvider`; auto-registers four `auth` commands (requires `auth` feature) | disabled |
+| `with_telemetry(config)` | Enable OpenTelemetry export for CLI runs using a `TelemetryConfig` (requires `telemetry` feature) | disabled |
+
+## Telemetry (`telemetry`)
+
+Opt in with the `telemetry` feature to export OpenTelemetry traces. Every command
+dispatch is automatically wrapped in a `cli.command` span carrying the command
+path, invocation surface (`cli` / `chat` / `mcp` / `api`), and argument count —
+no handler code required. Handlers can also reach a telemetry handle via
+`ctx.telemetry()`.
+
+```rust
+use cli_framework::app::AppBuilder;
+use cli_framework::telemetry::TelemetryConfig;
+
+let app = AppBuilder::new()
+    .with_version("myapp", env!("CARGO_PKG_VERSION"))
+    // Reads OTEL_* env vars; export is a no-op until an endpoint is set.
+    .with_telemetry(TelemetryConfig::from_env())
+    .build(ctx)?;
+```
+
+CLI runs export via a synchronous `SimpleSpanProcessor` (lossless for short-lived
+processes). Long-running servers should instead configure
+`ApiServerBuilder::with_telemetry(config, service_name, service_version)`, which
+uses an async `BatchSpanProcessor` and flushes on shutdown.
+
+Configuration is driven by the standard `OTEL_*` environment variables (see the
+[Environment Variables](#environment-variables) section) or by building a
+`TelemetryConfig` directly. Export only activates when an endpoint is set,
+`enabled` is true, and `OTEL_SDK_DISABLED` is not `true`.
+
+### Known limitations (v1)
+
+- **Traces only.** The `ctx.telemetry().counter()/histogram()` handles and the
+  auto per-command invocation/duration **metrics are not yet exported** — no
+  `MeterProvider` is installed and the OTLP `metrics` feature is not compiled.
+  These calls are safe but currently discard their values. Tracked for a
+  follow-up; prefer spans and `event()` until metrics land.
+- `SpanHandle::set_attr` only records span attributes for keys declared at the
+  span's callsite; arbitrary keys are dropped (a `tracing` fieldset constraint).
+  `record_error` works and sets the span's OTel status to `Error`.
+- Config fields `metrics_enabled`, `logs_enabled`, `record_arg_values`, and
+  `arg_value_allowlist` are reserved for future signals and not yet consulted.
 
 ## Chat Command (default feature)
 
@@ -640,6 +685,18 @@ Defaults: 5s connect timeout, 30s total timeout, built-in TLS roots, TLS certifi
 |---------|------|
 | `AILOOP_CHANNEL` | Channel name (default: `"cli-framework"`) |
 | `AILOOP_SERVER` | WebSocket URL of the paired `ailoop serve` process (default: `ws://localhost:8080`); `http://` and `https://` URLs are normalized to `ws://`/`wss://` automatically |
+
+### Telemetry Configuration (`telemetry` feature)
+
+Read by `TelemetryConfig::from_env()`. Export stays a no-op until an endpoint is set.
+
+| Variable | Role |
+|---------|------|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector base URL (e.g. `http://localhost:4318`); `/v1/traces` is appended automatically |
+| `OTEL_SERVICE_NAME` | Overrides the `service.name` resource attribute (defaults to the app name) |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | OTLP protocol; `http/protobuf` (default) is the only value wired today |
+| `OTEL_TRACES_SAMPLER_ARG` | Head-sampling ratio in `[0.0, 1.0]` (default `1.0` keeps everything) |
+| `OTEL_SDK_DISABLED` | When `true`, vetoes initialisation even if an endpoint is configured |
 
 ## Migration Guide
 
