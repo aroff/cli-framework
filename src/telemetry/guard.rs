@@ -1,3 +1,9 @@
+/// RAII guard that owns the tracer provider pipeline.
+///
+/// Hold it for as long as spans should be exported; on drop it force-flushes and
+/// shuts the provider down so buffered spans are not lost. The builders return
+/// one from their run/serve entry points — keep it alive for the process/server
+/// lifetime.
 #[cfg(feature = "telemetry")]
 pub struct TelemetryGuard {
     tracer_provider: opentelemetry_sdk::trace::SdkTracerProvider,
@@ -10,6 +16,7 @@ impl TelemetryGuard {
             tracer_provider: tp,
         }
     }
+    /// Force-flush buffered spans to the exporter without shutting down.
     pub fn flush(&self) {
         let _ = self.tracer_provider.force_flush();
     }

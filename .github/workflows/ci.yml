@@ -61,6 +61,19 @@ jobs:
       - name: Test (chat + mcp-server)
         run: cargo test --features "chat,mcp-server" --verbose
 
+      # The telemetry unit + integration suites are gated behind the `telemetry`
+      # feature (their targets also need api-server + testkit + derive; the MCP
+      # span test needs mcp-server), so none of the combos above run them. Scope
+      # to the telemetry targets explicitly, like the MCP step below.
+      - name: Test (telemetry)
+        run: >
+          cargo test
+          --features "telemetry,mcp-server,api-server,testkit,derive"
+          --test unit_telemetry
+          --test integration_telemetry_otlp
+          --test unit_mcp_dispatch
+          --verbose
+
       - name: Integration tests (mcp-server)
         run: >
           cargo test

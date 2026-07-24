@@ -51,6 +51,7 @@ chmod +x .git/hooks/pre-commit
 | `cli_output`, `cli_mode`, `message` | help, tables, JSON, modes |
 | `api` (feature `api-server`) | Built-in Axum host for versioned APIs (`/api/{version}/...`) plus `/healthz` + `/readyz`; `build()` may apply a root `fallback_service` (via `root_fallback()`) as its final composition step |
 | `mcp` (feature `mcp-server`) | rmcp `ServerHandler` (tools + resources). Generic, concept-free: per-command `with_meta` (opaque `serde_json::Value`) → `tools/list` top-level `_meta`; `with_visibility` (cli-framework acts on it) → `_meta.visibility`; `mcp::resources::ResourceRegistry` serves resources via `resources/list` / `resources/read` with opaque per-resource `with_meta` at `contents[]._meta`. All UI/MCP-Apps semantics live in the consumer (ADR 0066) |
+| `telemetry` (feature `telemetry`) | OpenTelemetry via the `tracing`→OTLP bridge (ADR 0068). `TelemetryConfig`, deferred `init_simple`/`init_batch`, `TelemetryGuard`, `Telemetry` handle + always-compiled `NoopTelemetry`. Auto `cli.command` spans at the CLI dispatch seam and `dispatch_tool_call` (MCP) seam. v1 is traces-only — metrics handles are not yet exported |
 
 Also: `auth` (feature `auth`) — `TokenProvider` trait, `AccessToken`, `AuthError`, `AuthenticatedHttpClient`, four auto-registered `auth` commands; companion crate `cli-framework-oidc` provides `OidcClient` (feature `client`) and `oidc_validation_layer` (feature `server`); `data_source`; `observability`, `testkit` behind features.
 

@@ -601,6 +601,13 @@ impl ServerHandler for CliFrameworkHandler {
     }
 }
 
+/// Dispatch a single MCP tool call to its backing command.
+///
+/// This is the MCP-surface counterpart to the CLI dispatch path: it resolves the
+/// tool name to a command, validates arguments, applies the tool gate, and runs
+/// the command against an `McpAppContext`. When the registry carries a telemetry
+/// handle (see [`McpToolRegistry::with_telemetry`]), the call is wrapped in a
+/// `cli.command` span tagged `cli.invocation.surface = "mcp"`.
 #[cfg(feature = "mcp-server")]
 pub async fn dispatch_tool_call(
     tool_registry: &McpToolRegistry,
