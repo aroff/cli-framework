@@ -76,6 +76,10 @@ utoipa-swagger-ui = { version = "9.0.2", features = ["axum"], optional = true }
 # Optional emulation dependencies
 mockall = { version = "0.13", optional = true }
 
+# Optional SecretStore dependency (`secrets` feature) — zeroizing byte buffers.
+# `secrets-openbao` adds no dependency beyond this + reqwest (already unconditional above).
+zeroize = { version = "1.7", optional = true }
+
 # Optional OpenTelemetry SDK dependencies (enabled via `telemetry` feature)
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"], optional = true }
 opentelemetry-otlp = { version = "0.31", default-features = false, features = ["http-proto", "reqwest-blocking-client", "reqwest-rustls", "trace"], optional = true }
@@ -99,6 +103,7 @@ opentelemetry = "0.31"
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "testing"] }
 tracing-opentelemetry = "0.32"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+testcontainers = "0.25"
 
 [features]
 default = ["chat"]
@@ -128,6 +133,10 @@ api-swagger = ["api-server", "dep:utoipa-swagger-ui"]
 emulation = ["dep:mockall"]
 # Authentication — generic TokenProvider + AuthenticatedHttpClient + auth commands
 auth = []
+# SecretStore — async trait + SecretKey/SecretValue/SecretError + in-memory/env-file backends
+secrets = ["dep:zeroize"]
+# OpenBao/Vault KV v2 backend (adds nothing beyond `secrets` + reqwest, already unconditional)
+secrets-openbao = ["secrets"]
 
 [lib]
 name = "cli_framework"
@@ -370,6 +379,16 @@ required-features = ["auth"]
 name = "unit_telemetry"
 path = "tests/unit/telemetry.rs"
 required-features = ["telemetry", "testkit", "derive"]
+
+[[test]]
+name = "unit_secrets_conformance"
+path = "tests/unit/secrets_conformance.rs"
+required-features = ["secrets"]
+
+[[test]]
+name = "unit_secrets_openbao_conformance"
+path = "tests/unit/secrets_openbao_conformance.rs"
+required-features = ["secrets-openbao"]
 
 [[test]]
 name = "integration_telemetry_otlp"
