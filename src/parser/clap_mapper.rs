@@ -16,8 +16,8 @@ pub fn build_typed_clap_command(id: &str, spec: &CommandSpec) -> clap::Command {
         cmd = cmd.long_about(long_about);
     }
 
-    if let Some(syntax) = spec.syntax {
-        cmd = cmd.after_help(format!("Syntax: {}", syntax));
+    if let Some(epilogue) = build_epilogue(spec) {
+        cmd = cmd.after_help(epilogue);
     }
 
     for arg_spec in &spec.args {
@@ -25,6 +25,38 @@ pub fn build_typed_clap_command(id: &str, spec: &CommandSpec) -> clap::Command {
     }
 
     cmd
+}
+
+/// Combine `spec.syntax` and `spec.examples` into a single `after_help` epilogue.
+///
+/// clap only allows one `after_help` string, so both pieces must be merged here rather
+/// than set independently (the second call would silently overwrite the first). Syntax
+/// is rendered first — it states the abstract usage pattern — followed by a blank line
+/// and an `Examples:` block showing concrete invocations of it, one per line, indented
+/// to match the two-space convention used elsewhere in the crate's help output.
+///
+/// Returns `None` when neither is set, so callers never emit a stray/empty epilogue.
+fn build_epilogue(spec: &CommandSpec) -> Option<String> {
+    let mut sections: Vec<String> = Vec::new();
+
+    if let Some(syntax) = spec.syntax {
+        sections.push(format!("Syntax: {}", syntax));
+    }
+
+    if !spec.examples.is_empty() {
+        let mut block = String::from("Examples:");
+        for example in &spec.examples {
+            block.push_str("\n  ");
+            block.push_str(example);
+        }
+        sections.push(block);
+    }
+
+    if sections.is_empty() {
+        None
+    } else {
+        Some(sections.join("\n\n"))
+    }
 }
 
 /// Convert `ArgMatches` to a typed arg map. Returns `Err(Diagnostic{E004})` on type mismatch.
@@ -369,5 +401,121 @@ mod tests {
                 ArgValue::Str("b".to_string()),
             ]))
         );
+    }
+
+    // ── Epilogue: examples / syntax combinations ────────────────────────────
+
+    #[test]
+    fn help_epilogue_examples_only() {
+        let spec = CommandSpec {
+            summary: "test",
+            examples: vec!["app test --foo bar", "app test --baz"],
+            ..Default::default()
+        };
+
+        let mut cmd = build_typed_clap_command("test", &spec);
+        let help = cmd.render_help().to_string();
+
+        assert!(
+            help.contains("Examples:"),
+            "expected 'Examples:' header; got:\n{}",
+            help
+        );
+        assert!(help.contains("  app test --foo bar"), "got:\n{}", help);
+        assert!(help.contains("  app test --baz"), "got:\n{}", help);
+        assert!(
+            !help.contains("Syntax:"),
+            "no syntax set, must not show 'Syntax:'; got:\n{}",
+            help
+        );
+    }
+
+    #[test]
+    fn help_epilogue_syntax_only() {
+        let spec = CommandSpec {
+            summary: "test",
+            syntax: Some("test [--foo <val>]"),
+            ..Default::default()
+        };
+
+        let mut cmd = build_typed_clap_command("test", &spec);
+        let help = cmd.render_help().to_string();
+
+        assert!(
+            help.contains("Syntax: test [--foo <val>]"),
+            "got:\n{}",
+            help
+        );
+        assert!(
+            !help.contains("Examples:"),
+            "no examples set, must not show 'Examples:'; got:\n{}",
+            help
+        );
+    }
+
+    #[test]
+    fn help_epilogue_both_examples_and_syntax_coexist() {
+        let spec = CommandSpec {
+            summary: "test",
+            syntax: Some("test [--foo <val>]"),
+            examples: vec!["test --foo bar"],
+            ..Default::default()
+        };
+
+        let mut cmd = build_typed_clap_command("test", &spec);
+        let help = cmd.render_help().to_string();
+
+        assert!(
+            help.contains("Syntax: test [--foo <val>]"),
+            "syntax must still render when examples are also set; got:\n{}",
+            help
+        );
+        assert!(
+            help.contains("Examples:"),
+            "examples must still render when syntax is also set; got:\n{}",
+            help
+        );
+        assert!(help.contains("  test --foo bar"), "got:\n{}", help);
+        // Syntax is documented to render before Examples.
+        let syntax_pos = help.find("Syntax:").unwrap();
+        let examples_pos = help.find("Examples:").unwrap();
+        assert!(
+            syntax_pos < examples_pos,
+            "expected Syntax: before Examples:; got:\n{}",
+            help
+        );
+    }
+
+    #[test]
+    fn help_epilogue_neither_set_emits_no_dangling_section() {
+        let spec = CommandSpec {
+            summary: "test",
+            ..Default::default()
+        };
+
+        let mut cmd = build_typed_clap_command("test", &spec);
+        let help = cmd.render_help().to_string();
+
+        assert!(!help.contains("Syntax:"), "got:\n{}", help);
+        assert!(!help.contains("Examples:"), "got:\n{}", help);
+    }
+
+    #[test]
+    fn help_epilogue_shown_for_both_short_and_long_help() {
+        let spec = CommandSpec {
+            summary: "test",
+            syntax: Some("test [--foo <val>]"),
+            examples: vec!["test --foo bar"],
+            ..Default::default()
+        };
+
+        let mut cmd = build_typed_clap_command("test", &spec);
+        let short_help = cmd.render_help().to_string();
+        let long_help = cmd.render_long_help().to_string();
+
+        for help in [&short_help, &long_help] {
+            assert!(help.contains("Syntax:"), "got:\n{}", help);
+            assert!(help.contains("Examples:"), "got:\n{}", help);
+        }
     }
 }
