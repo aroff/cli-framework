@@ -45,7 +45,7 @@ tracing.workspace = true
 opentelemetry = "0.31"
 tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter", "fmt"] }
 clap = { version = "4.0", features = ["derive", "string"] }
-toml = "0.8"
+toml = "1"
 dirs = "5.0"
 uuid.workspace = true
 crossterm = "0.28"
@@ -65,7 +65,7 @@ axum = { version = "0.8", optional = true }
 http = { version = "1", optional = true }
 # Optional API server dependencies
 tower = { version = "0.5", features = ["util"], optional = true }
-tower-http = { version = "0.6", features = ["cors"], optional = true }
+tower-http = { version = "0.7", features = ["cors"], optional = true }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"], optional = true }
 # Optional MCP install dependency (aikit-sdk provides add_mcp_server and mcp_supported_agents)
 aikit-sdk = { git = "https://github.com/goaikit/aikit.git", package = "aikit-sdk", rev = "435a1132859bbfaf2977c0fb0ce070c795525132", optional = true }
@@ -98,7 +98,7 @@ futures-util = "0.3"
 tokio-tungstenite = "0.21"
 # Consumers configuring `ApiServerBuilder::cors(...)` supply their own `tower_http::cors::CorsLayer`;
 # tests exercise that path the same way a downstream crate would.
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors"] }
 opentelemetry = "0.31"
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "testing"] }
 tracing-opentelemetry = "0.32"
