@@ -479,7 +479,7 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                     default: Some(ArgValue::Str("claude".to_string())),
                     conflicts_with: vec![],
                     requires: vec![],
-                    help: "Agent key (claude, cursor-agent, gemini, copilot, opencode, codex)",
+                    help: "Agent key (claude, cursor, gemini, copilot, opencode, codex)",
                     ..Default::default()
                 },
                 ArgSpec {
