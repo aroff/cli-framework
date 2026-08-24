@@ -5,6 +5,25 @@ use cli_framework::telemetry::{NoopTelemetry, TelemetryConfig};
 
 // ── 1. Noop handle compiles and doesn't panic ─────────────────────────────
 
+/// Serialises the tests that mutate process environment variables.
+///
+/// Process env is global, and these tests come in pairs that set the *same*
+/// variable to conflicting values — e.g. `from_env_reads_protocol` sets
+/// `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` while `from_env_empty_protocol_is_ignored`
+/// sets it to `""`. Run in parallel (the default), whichever calls
+/// `TelemetryConfig::from_env()` at the wrong moment reads the other's value.
+/// That is why four of these failed together under load.
+///
+/// `unwrap_or_else(|e| e.into_inner())` deliberately ignores poisoning: if one
+/// of these tests panics it would otherwise cascade into every other test that
+/// takes this lock, turning one failure into nine.
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 #[test]
 fn noop_telemetry_is_zero_cost() {
     let t = NoopTelemetry;
@@ -56,6 +75,7 @@ fn config_inactive_when_disabled() {
 
 #[test]
 fn otel_sdk_disabled_env_vetoes_active_config() {
+    let _env = env_lock();
     unsafe {
         std::env::set_var("OTEL_SDK_DISABLED", "true");
     }
@@ -74,6 +94,7 @@ fn otel_sdk_disabled_env_vetoes_active_config() {
 
 #[test]
 fn from_env_reads_endpoint() {
+    let _env = env_lock();
     unsafe {
         std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://col:4318");
     }
@@ -86,6 +107,7 @@ fn from_env_reads_endpoint() {
 
 #[test]
 fn from_env_reads_service_name() {
+    let _env = env_lock();
     unsafe {
         std::env::set_var("OTEL_SERVICE_NAME", "my-svc");
     }
@@ -98,6 +120,7 @@ fn from_env_reads_service_name() {
 
 #[test]
 fn from_env_reads_sample_ratio() {
+    let _env = env_lock();
     unsafe {
         std::env::set_var("OTEL_TRACES_SAMPLER_ARG", "0.5");
     }
@@ -276,6 +299,7 @@ fn init_simple_returns_none_without_endpoint() {
 
 #[test]
 fn from_env_empty_endpoint_is_ignored() {
+    let _env = env_lock();
     unsafe {
         std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "");
     }
@@ -291,6 +315,7 @@ fn from_env_empty_endpoint_is_ignored() {
 
 #[test]
 fn from_env_empty_service_name_is_ignored() {
+    let _env = env_lock();
     unsafe {
         std::env::set_var("OTEL_SERVICE_NAME", "");
     }
@@ -303,6 +328,7 @@ fn from_env_empty_service_name_is_ignored() {
 
 #[test]
 fn from_env_reads_protocol() {
+    let _env = env_lock();
     unsafe {
         std::env::set_var("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc");
     }
@@ -315,6 +341,7 @@ fn from_env_reads_protocol() {
 
 #[test]
 fn from_env_empty_protocol_is_ignored() {
+    let _env = env_lock();
     unsafe {
         std::env::set_var("OTEL_EXPORTER_OTLP_PROTOCOL", "");
     }
@@ -330,6 +357,7 @@ fn from_env_empty_protocol_is_ignored() {
 
 #[test]
 fn from_env_invalid_sample_ratio_is_ignored() {
+    let _env = env_lock();
     unsafe {
         std::env::set_var("OTEL_TRACES_SAMPLER_ARG", "not-a-number");
     }
