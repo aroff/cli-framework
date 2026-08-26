@@ -17,3 +17,11 @@ CFW-0006 - Behavioral or public API changes SHOULD update consumer-facing docs (
 CFW-0007 - Temporary or generated artifacts MUST NOT be committed (for example build output under `target/`).
 
 CFW-0008 - The **`cli-framework`** crate and materials in this repository are licensed under **[Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)**. The `license` field in `Cargo.toml` and license notices in documentation MUST remain consistent with that choice unless maintainers explicitly approve a change.
+
+CFW-0009 - When opening a pull request, agents MUST arm auto-merge immediately with `gh pr merge --auto --squash --delete-branch`. Required status checks gate the merge; auto-merge never merges early.
+
+CFW-0010 - Agents MUST NOT use `--admin`, `--force`, or any other bypass or override flag to merge a pull request. If a required check is red or a review is required, the pull request MUST be left open and reported.
+
+CFW-0011 - Agents MUST NOT merge a pull request with failing checks, even when the failure appears unrelated to the change.
+
+CFW-0012 - Agents MUST NOT change repository visibility.
