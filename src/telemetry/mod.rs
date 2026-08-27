@@ -8,24 +8,36 @@
 //! The whole subsystem is opt-in behind the `telemetry` cargo feature. When the
 //! feature is off — or on but no OTLP endpoint is configured — every call
 //! resolves to [`NoopTelemetry`] and costs nothing. Enable export by handing a
-//! [`TelemetryConfig`] to [`AppBuilder::with_telemetry`] (CLI, exports via a
-//! synchronous `SimpleSpanProcessor`) or [`ApiServerBuilder::with_telemetry`]
-//! (long-running server, exports via an async `BatchSpanProcessor`).
+//! [`TelemetryConfig`] to [`AppBuilder::with_telemetry`] or
+//! [`ApiServerBuilder::with_telemetry`]; both export via an async
+//! `BatchSpanProcessor`, flushed by [`TelemetryGuard`] on drop.
 //!
-//! # Current limitations (v1)
+//! # The subscriber
 //!
-//! - **Traces only.** The `counter()` / `histogram()` handles and the auto
-//!   per-command invocation/duration metrics described in spec 017 are **not yet
-//!   exported** — no `MeterProvider` is installed and the OTLP `metrics` feature
-//!   is not compiled. Calling these methods is safe but currently discards the
-//!   values. Tracked as a follow-up; see the crate README. Prefer spans and
-//!   [`Telemetry::event`] until metrics land.
+//! `tracing` spans only become OTel spans if a `tracing-opentelemetry` layer is
+//! installed into the **active subscriber**. `with_telemetry()` therefore
+//! installs a process-wide subscriber (env-filter + `fmt` to stderr + the OTel
+//! bridge). If the application has already installed its own global subscriber,
+//! that call cannot take effect — the framework prints a warning to stderr and
+//! exports nothing. Compose [`init::otel_layer`] into your own subscriber in
+//! that case.
+//!
+//! # Current limitations
+//!
+//! - **No context propagation.** No `traceparent` header is injected or
+//!   extracted, so a trace does not yet span process boundaries (spec 017
+//!   R23/R24). Each service produces its own disconnected trace.
+//! - **No OTLP auth headers.** `OTEL_EXPORTER_OTLP_HEADERS` is not read, so a
+//!   collector requiring authentication cannot be reached (spec 017 R25).
+//! - **`http/protobuf` only.** `OTEL_EXPORTER_OTLP_PROTOCOL` is parsed onto the
+//!   config but not acted on; the exporter is always HTTP (spec 017 R19).
 //! - **[`SpanHandle::set_attr`]** can only record fields that were declared at
 //!   the span's callsite (`tracing`'s fieldset is fixed per callsite), so
 //!   arbitrary keys are dropped. [`SpanHandle::record_error`] works because its
 //!   `otel.status_*` fields are pre-declared.
-//! - Config fields `metrics_enabled`, `logs_enabled`, `record_arg_values`, and
-//!   `arg_value_allowlist` are reserved for future signals and not yet consulted.
+//! - Config fields `traces_enabled`, `logs_enabled`, `record_arg_values`, and
+//!   `arg_value_allowlist` are reserved and not yet consulted. `metrics_enabled`
+//!   *is* honoured.
 //!
 //! [invocation surface]: crate::app::dispatch::InvocationSurface
 //! [`AppContext::telemetry`]: crate::app::AppContext::telemetry

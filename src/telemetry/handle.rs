@@ -6,20 +6,20 @@ pub use opentelemetry::KeyValue;
 /// Obtained via [`AppContext::telemetry`](crate::app::AppContext::telemetry).
 /// The default implementation is [`NoopTelemetry`](crate::telemetry::NoopTelemetry);
 /// a live handle is installed only when the `telemetry` feature is on and an
-/// OTLP endpoint is configured. See the [module docs](crate::telemetry) for the
-/// signals that are actually exported today (traces + events; metrics are not
-/// yet wired).
+/// OTLP endpoint is configured. Traces and metrics are both exported; see the
+/// [module docs](crate::telemetry) for the remaining limitations.
 pub trait Telemetry: Send + Sync {
     /// Emit a point-in-time event on the current span.
     fn event(&self, name: &str, attrs: &[KeyValue]);
     /// Return a monotonic counter handle.
     ///
-    /// Note: counters are **not yet exported** (no `MeterProvider` is installed
-    /// in v1); `add` is a safe no-op today. See the [module docs](crate::telemetry).
+    /// Exported over OTLP when a `metrics_enabled` config with an endpoint is
+    /// active; a safe no-op otherwise.
     fn counter(&self, name: &str) -> Counter;
     /// Return a value-distribution histogram handle.
     ///
-    /// Note: histograms are **not yet exported** (v1); `record` is a safe no-op.
+    /// Exported over OTLP when a `metrics_enabled` config with an endpoint is
+    /// active; a safe no-op otherwise.
     fn histogram(&self, name: &str) -> Histogram;
     /// Open a child span; it closes when the returned [`SpanHandle`] is dropped.
     fn span(&self, name: &str, attrs: &[KeyValue]) -> SpanHandle;

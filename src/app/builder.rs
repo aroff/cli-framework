@@ -696,7 +696,7 @@ impl<C: AppContext> App<C> {
     }
 
     pub async fn run_with_args(&mut self, args: Vec<String>) -> Result<()> {
-        let _telemetry_guard = self.init_telemetry_simple();
+        let _telemetry_guard = self.init_telemetry();
         use crate::app::clap_adapter::parse_with_clap;
         use crate::app::diagnostic_reporter::DiagnosticReporter;
         use crate::parser::diagnostic::{Diagnostic, DiagnosticCategory};
@@ -907,9 +907,11 @@ impl<C: AppContext> App<C> {
         };
 
         #[cfg(feature = "telemetry")]
+        let cmd_id = command.id.as_ref().to_string();
+
+        #[cfg(feature = "telemetry")]
         let _span = {
             let arg_names: String = args.keys().cloned().collect::<Vec<_>>().join(",");
-            let cmd_id = command.id.as_ref().to_string();
             tracing::info_span!(
                 "cli.command",
                 "cli.command.path" = cmd_id.as_str(),
@@ -920,14 +922,45 @@ impl<C: AppContext> App<C> {
             .entered()
         };
 
+        #[cfg(feature = "telemetry")]
+        let started = std::time::Instant::now();
+
         let mut ctx_wrapper = crate::app::dispatch::CliAppContextWrapper::new(&mut self.ctx, env);
 
-        (command.execute)(&mut ctx_wrapper, args).await?;
-        Ok(())
+        let outcome = (command.execute)(&mut ctx_wrapper, args).await;
+
+        // Auto per-command metrics (spec 017 "Command span and metrics shape").
+        // Emitted on the error path too — an error-rate metric that only counts
+        // successes is worse than no metric at all.
+        #[cfg(feature = "telemetry")]
+        if let Some(telemetry) = self.active_telemetry.as_ref() {
+            let attrs = [
+                crate::telemetry::handle::KeyValue::new("command", cmd_id),
+                crate::telemetry::handle::KeyValue::new("surface", surface.as_str().to_string()),
+                crate::telemetry::handle::KeyValue::new(
+                    "status",
+                    if outcome.is_ok() { "ok" } else { "error" },
+                ),
+            ];
+            telemetry.counter("cli.command.invocations").add(1, &attrs);
+            telemetry
+                .histogram("cli.command.duration_ms")
+                .record(started.elapsed().as_secs_f64() * 1000.0, &attrs);
+        }
+
+        outcome
     }
 
+    /// Initialise the export pipeline for a CLI run.
+    ///
+    /// Uses `init_batch`, not `init_simple`: this is called from the `async`
+    /// [`run_with_args`](Self::run_with_args), and `SimpleSpanProcessor` exports
+    /// inline through `reqwest::blocking`, which panics with *"Cannot drop a
+    /// runtime in a context where blocking is not allowed"* on the first span
+    /// close inside a Tokio worker. The guard flushes on drop, so a short-lived
+    /// CLI process still delivers its spans.
     #[cfg(feature = "telemetry")]
-    fn init_telemetry_simple(&mut self) -> crate::telemetry::TelemetryGuard {
+    fn init_telemetry(&mut self) -> crate::telemetry::TelemetryGuard {
         if let Some(ref cfg) = self.telemetry_config {
             let svc = self.meta.as_ref().map(|m| m.name).unwrap_or(self.app_name);
             let ver = self
@@ -935,18 +968,18 @@ impl<C: AppContext> App<C> {
                 .as_ref()
                 .map(|m| m.version)
                 .unwrap_or(self.app_version);
-            if let Some((handle, guard)) = crate::telemetry::init::init_simple(cfg, svc, ver) {
+            if let Some((handle, guard)) = crate::telemetry::init::init_batch(cfg, svc, ver) {
                 self.active_telemetry = Some(handle);
                 return guard;
             }
         }
         // Return a noop guard when telemetry is enabled but init didn't produce one.
         let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
-        crate::telemetry::TelemetryGuard::new(provider)
+        crate::telemetry::TelemetryGuard::new(provider, None)
     }
 
     #[cfg(not(feature = "telemetry"))]
-    fn init_telemetry_simple(&mut self) -> crate::telemetry::TelemetryGuard {
+    fn init_telemetry(&mut self) -> crate::telemetry::TelemetryGuard {
         crate::telemetry::TelemetryGuard
     }
 
