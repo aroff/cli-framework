@@ -17,7 +17,7 @@ All optional features for `cli-framework`. Default feature set includes `chat`.
 | `table-advanced` | off | Enable `comfy-table` based advanced table rendering |
 | `progress` | off | Enable `indicatif` progress bars |
 | `observability` | off | `tracing-subscriber` logging foundation; implied by `telemetry` |
-| `telemetry` | off | Built-in OpenTelemetry (ADR 0068). Auto `cli.command` spans at the CLI + MCP dispatch seams, exported over OTLP HTTP; `TelemetryConfig`, `AppBuilder::with_telemetry` / `ApiServerBuilder::with_telemetry`, `ctx.telemetry()` handle. Implies `observability`. **v1 is traces-only** — the `counter()`/`histogram()` handles and auto per-command metrics are not yet exported (no `MeterProvider`; OTLP `metrics` feature not compiled) |
+| `telemetry` | off | Built-in OpenTelemetry (ADR 0068). Auto `cli.command` spans at the CLI + MCP dispatch seams plus `cli.command.invocations` / `cli.command.duration_ms` metrics tagged `{command, surface, status}`, exported over OTLP HTTP; `TelemetryConfig`, `AppBuilder::with_telemetry` / `ApiServerBuilder::with_telemetry`, `ctx.telemetry()` handle. Implies `observability`. **`with_telemetry()` installs a process-global `tracing` subscriber** — if the app already installed its own, it warns on stderr and exports nothing; compose `telemetry::init::otel_layer(&guard)` instead. No context propagation and no OTLP auth headers yet |
 
 ## `cli-framework-oidc` companion crate
 

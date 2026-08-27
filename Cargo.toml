@@ -82,7 +82,7 @@ zeroize = { version = "1.7", optional = true }
 
 # Optional OpenTelemetry SDK dependencies (enabled via `telemetry` feature)
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"], optional = true }
-opentelemetry-otlp = { version = "0.31", default-features = false, features = ["http-proto", "reqwest-blocking-client", "reqwest-rustls", "trace"], optional = true }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["http-proto", "reqwest-blocking-client", "reqwest-rustls", "trace", "metrics"], optional = true }
 tracing-opentelemetry = { version = "0.32", optional = true }
 
 [dev-dependencies]
@@ -398,4 +398,11 @@ required-features = ["secrets-openbao"]
 [[test]]
 name = "integration_telemetry_otlp"
 path = "tests/integration/telemetry_otlp.rs"
+required-features = ["telemetry"]
+
+# Own binary on purpose: `with_telemetry` installs a process-global subscriber,
+# so this needs a process where no other test has already claimed one.
+[[test]]
+name = "integration_telemetry_end_to_end"
+path = "tests/integration/telemetry_end_to_end.rs"
 required-features = ["telemetry"]

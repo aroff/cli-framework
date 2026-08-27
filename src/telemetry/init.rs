@@ -83,21 +83,147 @@ fn sampler_for(config: &TelemetryConfig) -> opentelemetry_sdk::trace::Sampler {
     Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(config.sample_ratio)))
 }
 
-fn make_handle_and_guard(
-    provider: SdkTracerProvider,
-) -> (Arc<dyn Telemetry + Send + Sync>, TelemetryGuard) {
-    opentelemetry::global::set_tracer_provider(provider.clone());
-    let meter = opentelemetry::global::meter("cli-framework");
-    (
-        Arc::new(LiveTelemetry::new(meter)),
-        TelemetryGuard::new(provider),
+/// Build the `tracing` → OpenTelemetry bridge layer for an existing guard.
+///
+/// **Only spans that pass through a subscriber carrying this layer are exported.**
+/// `with_telemetry()` installs a subscriber containing it automatically; use this
+/// instead when the application owns its own subscriber (see
+/// [`install_subscriber`]'s conflict warning).
+///
+/// ```ignore
+/// let (handle, guard) = init_batch(&cfg, "svc", "1.0").unwrap();
+/// tracing_subscriber::registry()
+///     .with(my_fmt_layer)
+///     .with(cli_framework::telemetry::init::otel_layer(&guard))
+///     .init();
+/// ```
+pub fn otel_layer<S>(
+    guard: &TelemetryGuard,
+) -> tracing_opentelemetry::OpenTelemetryLayer<S, opentelemetry_sdk::trace::SdkTracer>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    tracing_opentelemetry::layer().with_tracer(guard.tracer(INSTRUMENTATION_SCOPE))
+}
+
+/// Instrumentation scope name used for both the tracer and the meter.
+const INSTRUMENTATION_SCOPE: &str = "cli-framework";
+
+/// Install a process-wide subscriber carrying the OTel bridge layer.
+///
+/// Returns `false` when a global subscriber already exists — in which case the
+/// caller's spans will never reach the OTel SDK, so we say so loudly rather than
+/// exporting nothing in silence (the v1 failure mode this replaces).
+fn install_subscriber(tracer: opentelemetry_sdk::trace::SdkTracer) -> bool {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .with(tracing_opentelemetry::layer().with_tracer(tracer))
+        .try_init()
+        .is_ok()
+}
+
+/// Warn once per process that telemetry is configured but cannot export.
+///
+/// Deliberately `eprintln!` and not `tracing::warn!`: the whole problem is that
+/// we do not control the subscriber, so a `tracing` event could itself be
+/// filtered out and the operator would never learn why their collector is empty.
+fn warn_subscriber_conflict() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        eprintln!(
+            "cli-framework telemetry: a global `tracing` subscriber is already installed, \
+             so OpenTelemetry spans will NOT be exported. Compose \
+             `cli_framework::telemetry::init::otel_layer(&guard)` into your own subscriber \
+             instead of relying on `with_telemetry()` alone."
+        );
+    });
+}
+
+/// Build the metrics pipeline (OTLP exporter behind a `PeriodicReader`).
+///
+/// `None` when metrics are switched off or the exporter cannot be built; traces
+/// still work in that case, and the handle's counters fall back to no-ops.
+fn build_meter_provider(
+    config: &TelemetryConfig,
+    resource: opentelemetry_sdk::Resource,
+) -> Option<opentelemetry_sdk::metrics::SdkMeterProvider> {
+    if !config.metrics_enabled {
+        return None;
+    }
+    use opentelemetry_otlp::WithExportConfig;
+    let endpoint = config.endpoint.as_deref()?;
+    let exporter = opentelemetry_otlp::MetricExporter::builder()
+        .with_http()
+        .with_endpoint(format!("{}/v1/metrics", endpoint.trim_end_matches('/')))
+        .build()
+        .ok()?;
+    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter).build();
+    Some(
+        opentelemetry_sdk::metrics::SdkMeterProvider::builder()
+            .with_reader(reader)
+            .with_resource(resource)
+            .build(),
     )
 }
 
-/// Init with SimpleSpanProcessor for one-shot CLI runs.
+/// Wire up globals and hand back the handle + guard.
 ///
-/// `SimpleSpanProcessor` exports synchronously on span end — lossless for
-/// short-lived processes that may exit before an async batch would flush.
+/// `install` is `false` for the test entry points, which compose their own
+/// subscriber and must not race on the process-wide one.
+fn make_handle_and_guard(
+    provider: SdkTracerProvider,
+    meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider>,
+    install: bool,
+) -> (Arc<dyn Telemetry + Send + Sync>, TelemetryGuard) {
+    use opentelemetry::trace::TracerProvider as _;
+
+    opentelemetry::global::set_tracer_provider(provider.clone());
+    // Must precede `global::meter()` below, or the handle captures a no-op meter
+    // and every `counter()`/`histogram()` call silently discards its values.
+    if let Some(mp) = &meter_provider {
+        opentelemetry::global::set_meter_provider(mp.clone());
+    }
+
+    if install && !install_subscriber(provider.tracer(INSTRUMENTATION_SCOPE)) {
+        warn_subscriber_conflict();
+    }
+
+    let meter = opentelemetry::global::meter(INSTRUMENTATION_SCOPE);
+    (
+        Arc::new(LiveTelemetry::new(meter)),
+        TelemetryGuard::new(provider, meter_provider),
+    )
+}
+
+/// Build the OTLP span exporter for a config's endpoint.
+fn span_exporter(config: &TelemetryConfig) -> Option<opentelemetry_otlp::SpanExporter> {
+    use opentelemetry_otlp::WithExportConfig;
+    let endpoint = config.endpoint.as_deref()?;
+    opentelemetry_otlp::SpanExporter::builder()
+        .with_http()
+        .with_endpoint(format!("{}/v1/traces", endpoint.trim_end_matches('/')))
+        .build()
+        .ok()
+}
+
+/// Init with `SimpleSpanProcessor` — synchronous export on span end.
+///
+/// # Do not call this from an async context
+///
+/// `SimpleSpanProcessor` exports inline on span end, and the OTLP exporter is
+/// built on `reqwest::blocking`, which spins up and drops its own runtime. Doing
+/// that inside a Tokio worker panics with *"Cannot drop a runtime in a context
+/// where blocking is not allowed"*. Use [`init_batch`] anywhere a runtime is
+/// live — including [`AppBuilder::run_with_args`], which is `async`.
+///
+/// [`AppBuilder::run_with_args`]: crate::app::AppBuilder::run_with_args
 pub fn init_simple(
     config: &TelemetryConfig,
     service_name: &str,
@@ -106,23 +232,23 @@ pub fn init_simple(
     if !config.is_active() {
         return None;
     }
-    use opentelemetry_otlp::WithExportConfig;
-    let endpoint = config.endpoint.as_deref().unwrap();
-    let exporter = opentelemetry_otlp::SpanExporter::builder()
-        .with_http()
-        .with_endpoint(format!("{}/v1/traces", endpoint.trim_end_matches('/')))
-        .build()
-        .ok()?;
+    let exporter = span_exporter(config)?;
     let (svc, ver) = resolve_service(config, service_name, service_version);
+    let resource = build_resource(svc, ver);
     let provider = SdkTracerProvider::builder()
         .with_sampler(sampler_for(config))
         .with_simple_exporter(exporter)
-        .with_resource(build_resource(svc, ver))
+        .with_resource(resource.clone())
         .build();
-    Some(make_handle_and_guard(provider))
+    let meter_provider = build_meter_provider(config, resource);
+    Some(make_handle_and_guard(provider, meter_provider, true))
 }
 
-/// Init with BatchSpanProcessor for long-running servers.
+/// Init with `BatchSpanProcessor` — asynchronous export on a background worker.
+///
+/// The default for every entry point that runs inside a Tokio runtime (the async
+/// CLI dispatch path and long-running servers alike). Buffered spans are flushed
+/// by [`TelemetryGuard`] on drop, so short-lived processes do not lose them.
 pub fn init_batch(
     config: &TelemetryConfig,
     service_name: &str,
@@ -131,20 +257,16 @@ pub fn init_batch(
     if !config.is_active() {
         return None;
     }
-    use opentelemetry_otlp::WithExportConfig;
-    let endpoint = config.endpoint.as_deref().unwrap();
-    let exporter = opentelemetry_otlp::SpanExporter::builder()
-        .with_http()
-        .with_endpoint(format!("{}/v1/traces", endpoint.trim_end_matches('/')))
-        .build()
-        .ok()?;
+    let exporter = span_exporter(config)?;
     let (svc, ver) = resolve_service(config, service_name, service_version);
+    let resource = build_resource(svc, ver);
     let provider = SdkTracerProvider::builder()
         .with_sampler(sampler_for(config))
         .with_batch_exporter(exporter)
-        .with_resource(build_resource(svc, ver))
+        .with_resource(resource.clone())
         .build();
-    Some(make_handle_and_guard(provider))
+    let meter_provider = build_meter_provider(config, resource);
+    Some(make_handle_and_guard(provider, meter_provider, true))
 }
 
 /// Init with a custom SpanExporter — used in tests.
@@ -162,7 +284,7 @@ pub fn init_with_exporter(
         .with_simple_exporter(exporter)
         .with_resource(resource)
         .build();
-    make_handle_and_guard(provider)
+    make_handle_and_guard(provider, None, false)
 }
 
 /// Init with a custom SpanExporter, honouring the config's sampler and service
@@ -182,7 +304,7 @@ pub fn init_with_exporter_config(
         .with_simple_exporter(exporter)
         .with_resource(build_resource(svc, ver))
         .build();
-    make_handle_and_guard(provider)
+    make_handle_and_guard(provider, None, false)
 }
 
 #[cfg(test)]

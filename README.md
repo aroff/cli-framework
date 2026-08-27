@@ -32,7 +32,7 @@ A Rust library for building CLIs with optional AI-assisted command resolution (*
 | `project-config` | no | Project root discovery and TOML loading (`PC001`–`PC005` error codes) |
 | `auth` | no | Generic `TokenProvider` trait + `AuthenticatedHttpClient` + four `auth` subcommands; pair with `cli-framework-oidc` for OIDC flows |
 | `observability` | no | `tracing-subscriber` logging foundation (implied by `telemetry`) |
-| `telemetry` | no | Built-in OpenTelemetry: auto `cli.command` spans exported over OTLP (implies `observability`) |
+| `telemetry` | no | Built-in OpenTelemetry: auto `cli.command` spans + invocation/duration metrics exported over OTLP (implies `observability`) |
 
 ## MCP Server Mode
 
@@ -449,11 +449,11 @@ fn main() {
 
 ## Telemetry (`telemetry`)
 
-Opt in with the `telemetry` feature to export OpenTelemetry traces. Every command
-dispatch is automatically wrapped in a `cli.command` span carrying the command
-path, invocation surface (`cli` / `chat` / `mcp` / `api`), and argument count —
-no handler code required. Handlers can also reach a telemetry handle via
-`ctx.telemetry()`.
+Opt in with the `telemetry` feature to export OpenTelemetry traces and metrics.
+Every command dispatch is automatically wrapped in a `cli.command` span carrying
+the command path, invocation surface (`cli` / `chat` / `mcp` / `api`), and
+argument count — no handler code required. Handlers can also reach a telemetry
+handle via `ctx.telemetry()`.
 
 ```rust
 use cli_framework::app::AppBuilder;
@@ -466,28 +466,57 @@ let app = AppBuilder::new()
     .build(ctx)?;
 ```
 
-CLI runs export via a synchronous `SimpleSpanProcessor` (lossless for short-lived
-processes). Long-running servers should instead configure
-`ApiServerBuilder::with_telemetry(config, service_name, service_version)`, which
-uses an async `BatchSpanProcessor` and flushes on shutdown.
+Both CLI runs and long-running servers
+(`ApiServerBuilder::with_telemetry(config, service_name, service_version)`)
+export via an async `BatchSpanProcessor`, force-flushed by the `TelemetryGuard`
+on drop so short-lived processes still deliver their spans.
+
+Alongside traces, every dispatch emits two metrics tagged
+`{command, surface, status}` — the `cli.command.invocations` counter and the
+`cli.command.duration_ms` histogram — so error rates and latency percentiles work
+without handler code. `ctx.telemetry().counter()/histogram()` are exported on the
+same pipeline.
 
 Configuration is driven by the standard `OTEL_*` environment variables (see the
 [Environment Variables](#environment-variables) section) or by building a
 `TelemetryConfig` directly. Export only activates when an endpoint is set,
 `enabled` is true, and `OTEL_SDK_DISABLED` is not `true`.
 
-### Known limitations (v1)
+### The subscriber
 
-- **Traces only.** The `ctx.telemetry().counter()/histogram()` handles and the
-  auto per-command invocation/duration **metrics are not yet exported** — no
-  `MeterProvider` is installed and the OTLP `metrics` feature is not compiled.
-  These calls are safe but currently discard their values. Tracked for a
-  follow-up; prefer spans and `event()` until metrics land.
+`tracing` spans only reach OpenTelemetry through a `tracing-opentelemetry` layer
+installed in the **active subscriber**, so `with_telemetry()` installs a
+process-wide subscriber (env-filter + `fmt` to stderr + the OTel bridge).
+
+If your application already installs its own global subscriber, `with_telemetry()`
+cannot take effect — the framework prints a warning to stderr and exports
+nothing. Compose the layer into your own subscriber instead:
+
+```rust
+let (_handle, guard) = cli_framework::telemetry::init::init_batch(&cfg, "svc", "1.0").unwrap();
+tracing_subscriber::registry()
+    .with(my_fmt_layer)
+    .with(cli_framework::telemetry::init::otel_layer(&guard))
+    .init();
+```
+
+### Known limitations
+
+- **No context propagation.** No `traceparent` header is injected or extracted,
+  so traces do not yet span process boundaries — each service produces its own
+  disconnected trace.
+- **No OTLP auth headers.** `OTEL_EXPORTER_OTLP_HEADERS` is not read, so a
+  collector requiring authentication cannot be reached.
+- **`http/protobuf` only.** `OTEL_EXPORTER_OTLP_PROTOCOL` is parsed onto the
+  config but not acted on.
 - `SpanHandle::set_attr` only records span attributes for keys declared at the
   span's callsite; arbitrary keys are dropped (a `tracing` fieldset constraint).
   `record_error` works and sets the span's OTel status to `Error`.
-- Config fields `metrics_enabled`, `logs_enabled`, `record_arg_values`, and
-  `arg_value_allowlist` are reserved for future signals and not yet consulted.
+- The built-in `version` command short-circuits before dispatch, so it emits no
+  `cli.command` span or metrics.
+- Config fields `traces_enabled`, `logs_enabled`, `record_arg_values`, and
+  `arg_value_allowlist` are reserved and not yet consulted. `metrics_enabled`
+  *is* honoured.
 
 ## Chat Command (default feature)
 
@@ -692,7 +721,7 @@ Read by `TelemetryConfig::from_env()`. Export stays a no-op until an endpoint is
 
 | Variable | Role |
 |---------|------|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector base URL (e.g. `http://localhost:4318`); `/v1/traces` is appended automatically |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector base URL (e.g. `http://localhost:4318`); `/v1/traces` and `/v1/metrics` are appended automatically |
 | `OTEL_SERVICE_NAME` | Overrides the `service.name` resource attribute (defaults to the app name) |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | OTLP protocol; `http/protobuf` (default) is the only value wired today |
 | `OTEL_TRACES_SAMPLER_ARG` | Head-sampling ratio in `[0.0, 1.0]` (default `1.0` keeps everything) |
