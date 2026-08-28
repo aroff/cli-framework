@@ -530,9 +530,13 @@ Declared per field in the **Config manifest**, answering *whose value is this*:
 `machine` (this installation — a desktop, a phone, or a server instance),
 `user` (roams with the person across their devices), or `org` (one value
 organisation-wide, delivered only via **Policy**, never authored locally).
-Orthogonal to **Enforced**/**Recommended**, which govern authority rather than
-ownership.
-_Avoid_: "level", "tier"; do not conflate Scope with **Invocation surface**.
+Orthogonal to **Enforced**/**Recommended** for `machine` and `user` fields —
+those govern authority, Scope governs ownership, and either combination is
+valid. **`org` is the one exception, not a second axis**: it has no local
+existence to recommend a default over, so an `org`-scoped field is always
+delivered Enforced; a Policy placing one in Recommended is invalid.
+_Avoid_: "level", "tier"; do not conflate Scope with **Invocation surface**;
+do not read "orthogonal" as applying without exception to `org`.
 
 **Provenance** _(ADR 0072; spec 021)_:
 For a resolved field: which layer produced the value, and whether it is locked by

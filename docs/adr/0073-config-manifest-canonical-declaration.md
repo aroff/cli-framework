@@ -49,7 +49,7 @@ ordering for renderers, constraints, and a fixed set of policy flags:
 
 | Flag | Meaning |
 |---|---|
-| `scope` | `machine` (this installation), `user` (roams across the person's devices), or `org` (one value organisation-wide, delivered only via Policy) |
+| `scope` | `machine` (this installation), `user` (roams across the person's devices), or `org` (one value organisation-wide, delivered only via Policy). Orthogonal to Enforced/Recommended for `machine` and `user` fields — an organisation may recommend *or* enforce either. `org` is the exception: it has no local existence to recommend a default over, so it is always delivered as Enforced. |
 | `platforms` | Which platforms the field applies to; absent means all |
 | `secret` | Never stored in a config file or a Policy; lives in a secret store |
 | `local_only` | Server layers may never set it (bootstrap settings such as the service URL) |
