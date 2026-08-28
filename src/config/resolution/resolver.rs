@@ -229,7 +229,13 @@ pub fn resolve(manifest: &ConfigManifest, input: &ResolutionInput) -> Resolved {
 /// Why (if any) a `recommended`-tree entry for `field` must be dropped
 /// rather than applied. Order matters only for which single reason is
 /// reported when several would apply; the field is dropped either way.
-fn server_tree_drop_reason_recommended(
+///
+/// `pub(crate)` (rather than private) so `crate::config::service`'s startup
+/// policy validation (spec 022) can call the exact same rule set instead of
+/// re-implementing a second copy that could drift — see that module's
+/// `validate` submodule. This is the only visibility change made to this
+/// file for spec 022; the logic itself is untouched.
+pub(crate) fn server_tree_drop_reason_recommended(
     field: &FieldManifest,
     raw: &Value,
 ) -> Option<WarningReason> {
@@ -252,8 +258,12 @@ fn server_tree_drop_reason_recommended(
 }
 
 /// Why (if any) an `enforced`-tree entry for `field` must be dropped rather
-/// than applied.
-fn server_tree_drop_reason_enforced(field: &FieldManifest, raw: &Value) -> Option<WarningReason> {
+/// than applied. `pub(crate)` for the same reason as
+/// [`server_tree_drop_reason_recommended`] above.
+pub(crate) fn server_tree_drop_reason_enforced(
+    field: &FieldManifest,
+    raw: &Value,
+) -> Option<WarningReason> {
     if field.local_only {
         return Some(WarningReason::LocalOnlyInServerTree);
     }

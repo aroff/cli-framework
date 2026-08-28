@@ -17,6 +17,28 @@ jobs:
     name: Check / Lint / Test
     runs-on: ubuntu-latest
 
+    # First service container this repo has ever needed (spec 022): the
+    # config-service's Postgres conformance suite
+    # (tests/integration/config_service_postgres_conformance.rs) is
+    # triggered purely by `DATABASE_URL` being set, which this job now
+    # always does -- unlike the pre-existing `secrets_openbao_conformance.rs`
+    # precedent (testcontainers-based, self-skips locally, never runs in
+    # CI), this suite is meant to actually execute here. Postgres has native
+    # GitHub Actions `services:` support, which is more reliable in CI than
+    # Docker-in-Docker.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
 
@@ -92,3 +114,16 @@ jobs:
 
       - name: Test (config-managed)
         run: cargo test --features config-managed,testkit --verbose
+
+      # config-service (spec 022): DATABASE_URL points at the `postgres`
+      # service container declared on this job above. The migration runner
+      # (crate::config::service::postgres::migrations::run_migrations,
+      # invoked from `connect_and_migrate`) creates every table itself the
+      # first time a test connects -- there is no separate schema-creation
+      # step here, and none is needed. Presence of DATABASE_URL is what
+      # turns on the Postgres half of the conformance suite; the rest of
+      # the config-service tests run unconditionally either way.
+      - name: Test (config-service)
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+        run: cargo test --features config-service,testkit --verbose

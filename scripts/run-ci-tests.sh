@@ -76,6 +76,17 @@ cargo test --features "telemetry,mcp-server,api-server,testkit,derive" \
 # combo above — same gap the telemetry comment describes, closed the same way.
 cargo test --features config,testkit --verbose
 cargo test --features config-managed,testkit --verbose
+# config-service (spec 022): the Postgres half of
+# tests/integration/config_service_postgres_conformance.rs triggers purely
+# on `DATABASE_URL` being set (no separate opt-in flag). CI always sets it
+# (see the `postgres` service container in .github/workflows/ci.yml); a
+# local run without a reachable Postgres at that URL will see just that one
+# suite self-skip with a printed reason (graceful, not a failure) while
+# every other config-service test still runs normally. To exercise the
+# Postgres path locally: `docker run --rm -e POSTGRES_PASSWORD=postgres
+# -p 5432:5432 postgres:16`, then export the same DATABASE_URL before
+# re-running this script.
+cargo test --features config-service,testkit --verbose
 # Build examples explicitly — `cargo test` skips them, so dead-code in
 # examples is only caught here (RUSTFLAGS=-D warnings applies).
 cargo build --examples --verbose

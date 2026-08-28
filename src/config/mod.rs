@@ -74,6 +74,8 @@ mod policy;
 #[cfg(windows)]
 mod registry_backend;
 pub mod resolution;
+#[cfg(feature = "config-service")]
+pub mod service;
 mod store;
 mod versioned;
 
