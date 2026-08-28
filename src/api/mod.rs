@@ -639,6 +639,14 @@ impl ApiServerBuilder {
 /// one (layers wrap outside-in), which nests correctly but is redundant; this is
 /// the canonical server span and app middleware should enrich it rather than
 /// duplicate it.
+///
+/// # Trace continuation
+///
+/// An inbound `traceparent` makes this span a child of the caller's, so a
+/// request arriving from another instrumented service lands in one trace rather
+/// than starting a second, unrelated one. A request without one starts a fresh
+/// root. Outbound propagation is the application's to do — see
+/// [`crate::telemetry::propagation`].
 fn with_tracing(router: Router, label: &'static str) -> Router {
     router.layer(axum::middleware::from_fn(
         move |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {
@@ -684,6 +692,18 @@ fn with_tracing(router: Router, label: &'static str) -> Router {
                     span.record("otel.name", method.as_str());
                 }
             }
+
+            // Continue the caller's trace when it sent one. This must happen
+            // before the span is entered below — `set_parent` mutates the
+            // pending span data the bridge later exports, so a parent attached
+            // after the fact would be dropped.
+            //
+            // Only when the context is actually valid: an ordinary un-traced
+            // request (browser, curl, probe) must start a fresh root trace
+            // rather than be welded onto the empty context the extractor
+            // returns for a missing or malformed header.
+            #[cfg(feature = "telemetry")]
+            crate::telemetry::propagation::continue_trace_from(&span, req.headers());
 
             // `.instrument()` rather than a `span.enter()` guard: a guard held
             // across this await point leaks the span into whatever else the

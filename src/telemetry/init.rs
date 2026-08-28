@@ -90,8 +90,17 @@ fn sampler_for(config: &TelemetryConfig) -> opentelemetry_sdk::trace::Sampler {
 /// instead when the application owns its own subscriber (see
 /// [`install_subscriber`]'s conflict warning).
 ///
+/// # The guard must come from a non-installing entry point
+///
+/// [`init_batch`] and [`init_simple`] install a subscriber themselves, so
+/// composing their guard into a second `registry().…init()` would panic on the
+/// duplicate global — the previous version of this example did exactly that.
+/// Use [`init_batch_without_subscriber`], which builds the same OTLP pipeline
+/// and leaves the subscriber to you:
+///
 /// ```ignore
-/// let (handle, guard) = init_batch(&cfg, "svc", "1.0").unwrap();
+/// let (handle, guard) =
+///     init_batch_without_subscriber(&cfg, "svc", "1.0").expect("telemetry inactive");
 /// tracing_subscriber::registry()
 ///     .with(my_fmt_layer)
 ///     .with(cli_framework::telemetry::init::otel_layer(&guard))
@@ -184,6 +193,13 @@ fn make_handle_and_guard(
 ) -> (Arc<dyn Telemetry + Send + Sync>, TelemetryGuard) {
     use opentelemetry::trace::TracerProvider as _;
 
+    // Before the tracer provider, and unconditionally — including on the
+    // `install: false` test paths, which already set process globals. The OTel
+    // default propagator is a no-op, so without this every `inject_context`
+    // writes no header and every `extract_context` returns an empty context,
+    // both without erroring.
+    crate::telemetry::propagation::install();
+
     opentelemetry::global::set_tracer_provider(provider.clone());
     // Must precede `global::meter()` below, or the handle captures a no-op meter
     // and every `counter()`/`histogram()` call silently discards its values.
@@ -254,6 +270,31 @@ pub fn init_batch(
     service_name: &str,
     service_version: &str,
 ) -> Option<(Arc<dyn Telemetry + Send + Sync>, TelemetryGuard)> {
+    init_batch_inner(config, service_name, service_version, true)
+}
+
+/// Same OTLP batch pipeline as [`init_batch`], but leaves the `tracing`
+/// subscriber alone.
+///
+/// For applications that own their own subscriber: compose
+/// [`otel_layer`] over the returned guard. Without this, the only way to obtain
+/// a guard for a real OTLP exporter was an entry point that had already claimed
+/// the global subscriber, which made `otel_layer` impossible to use as
+/// documented.
+pub fn init_batch_without_subscriber(
+    config: &TelemetryConfig,
+    service_name: &str,
+    service_version: &str,
+) -> Option<(Arc<dyn Telemetry + Send + Sync>, TelemetryGuard)> {
+    init_batch_inner(config, service_name, service_version, false)
+}
+
+fn init_batch_inner(
+    config: &TelemetryConfig,
+    service_name: &str,
+    service_version: &str,
+    install: bool,
+) -> Option<(Arc<dyn Telemetry + Send + Sync>, TelemetryGuard)> {
     if !config.is_active() {
         return None;
     }
@@ -266,7 +307,7 @@ pub fn init_batch(
         .with_resource(resource.clone())
         .build();
     let meter_provider = build_meter_provider(config, resource);
-    Some(make_handle_and_guard(provider, meter_provider, true))
+    Some(make_handle_and_guard(provider, meter_provider, install))
 }
 
 /// Init with a custom SpanExporter — used in tests.
