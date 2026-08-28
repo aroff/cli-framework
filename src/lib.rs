@@ -115,12 +115,31 @@ pub mod secrets;
 #[cfg(feature = "config")]
 pub mod config;
 
+/// Not public API. Re-exports this crate's exact `serde_json` so
+/// `#[derive(ConfigManifest)]`-generated code (which runs in the *consuming*
+/// crate) can name it as `::cli_framework::__private::serde_json` without
+/// requiring every consumer to also list `serde_json` as a direct
+/// dependency — a transitive dependency is not otherwise nameable from a
+/// downstream crate. Mirrors the standard pattern used by e.g. `serde` itself
+/// (`serde::__private`).
+#[cfg(feature = "config")]
+#[doc(hidden)]
+pub mod __private {
+    pub use serde_json;
+}
+
 /// Re-export the exit-code marker for parse/usage errors (spec 012 §R5).
 pub use app::UsageError;
 
 /// Re-export the `#[derive(CommandSpec)]` macro when the `derive` feature is enabled.
 #[cfg(feature = "derive")]
 pub use cli_framework_macros::CommandSpec;
+
+/// Re-export the `#[derive(ConfigManifest)]` macro when the `derive` feature
+/// is enabled. Its generated code names `cli_framework::config::manifest::*`
+/// types, so a consumer needs both `derive` and `config` enabled to use it.
+#[cfg(feature = "derive")]
+pub use cli_framework_macros::ConfigManifest;
 
 /// Construct a `CommandPath` from string literals.
 ///
@@ -165,7 +184,12 @@ pub mod prelude {
     #[cfg(feature = "config")]
     pub use crate::config::{
         ConfigBackend, ConfigError, ConfigFormat, ConfigHandle, ConfigOptions, ConfigStore,
-        FileBackend, VersionedConfig,
+        FileBackend, Policy, StaleAction, VersionedConfig,
+    };
+
+    #[cfg(feature = "config-managed")]
+    pub use crate::config::managed::{
+        PolicyCache, PolicyClient, PolicyClientError, PolicyOutcome, RoamingConfigClient,
     };
 
     pub use crate::telemetry::handle::{Counter, Histogram, SpanHandle, Telemetry};

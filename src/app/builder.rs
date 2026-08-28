@@ -70,6 +70,10 @@ pub struct AppBuilder {
     config_path: Option<PathBuf>,
     #[cfg(feature = "config")]
     config_registration: Option<Box<ConfigRegistrationFn>>,
+    #[cfg(feature = "config")]
+    config_manifest: Option<Arc<crate::config::manifest::ConfigManifest>>,
+    #[cfg(feature = "config-managed")]
+    policy_client: Option<Arc<crate::config::managed::PolicyClient>>,
 }
 
 /// Result of resolving a registered `with_config::<T>()` call against a
@@ -130,6 +134,10 @@ impl AppBuilder {
             config_path: None,
             #[cfg(feature = "config")]
             config_registration: None,
+            #[cfg(feature = "config")]
+            config_manifest: None,
+            #[cfg(feature = "config-managed")]
+            policy_client: None,
         }
     }
 
@@ -211,6 +219,52 @@ impl AppBuilder {
             let erased: Arc<dyn std::any::Any + Send + Sync> = store;
             Ok((handle, erased))
         }));
+        self
+    }
+
+    /// Register the application's declared configuration surface (spec 021,
+    /// "Config manifest") for the built-in `config` command group.
+    ///
+    /// Deliberately independent of [`Self::with_config`]: the manifest
+    /// describes what fields *exist* and their policy flags, while
+    /// `with_config::<T>()` wires the *store* that backs the `config file`
+    /// layer during resolution. An application typically calls both —
+    /// `with_config_manifest(T::config_manifest())` (from
+    /// `#[derive(ConfigManifest)]`, or a hand-authored [`ConfigManifest`])
+    /// alongside `with_config::<T>(options)` — but only this call is what
+    /// makes `build()` auto-register the `config` command group (`config
+    /// show`, `config manifest`, and — under the `config-managed` feature —
+    /// `config profile`/`config refresh`; see spec 021, "Command surface").
+    ///
+    /// [`ConfigManifest`]: crate::config::manifest::ConfigManifest
+    #[cfg(feature = "config")]
+    pub fn with_config_manifest(
+        mut self,
+        manifest: crate::config::manifest::ConfigManifest,
+    ) -> Self {
+        self.config_manifest = Some(Arc::new(manifest));
+        self
+    }
+
+    /// Register a [`PolicyClient`][crate::config::managed::PolicyClient] for
+    /// the built-in `config profile`/`config refresh` commands.
+    ///
+    /// The client's base URL, target app id, and the [`TokenProvider`] it
+    /// authenticates with are the application's own concern to construct
+    /// (spec 021, "Bootstrap": the service address resolves from
+    /// environment, local config, or a builder default, and is structurally
+    /// excluded from both server trees) — `cli-framework` only stores the
+    /// already-built client and hands it to the command group through
+    /// [`AppContext::opt_policy_client`][crate::app::AppContext::opt_policy_client].
+    /// Without this call, `config profile`/`config refresh` report
+    /// [`CFG002`][crate::parser::error_codes::CFG002] ("not managed") rather
+    /// than failing to register at all — `config show`/`config manifest`
+    /// remain available from [`Self::with_config_manifest`] alone.
+    ///
+    /// [`TokenProvider`]: crate::auth::TokenProvider
+    #[cfg(feature = "config-managed")]
+    pub fn with_policy_client(mut self, client: Arc<crate::config::managed::PolicyClient>) -> Self {
+        self.policy_client = Some(client);
         self
     }
 
@@ -592,6 +646,28 @@ impl AppBuilder {
             }
         }
 
+        // Auto-register `config` command group (spec 021, "Command surface")
+        // once an application has declared a config manifest — the whole
+        // group lives behind `config-managed` because `config profile` /
+        // `config refresh` are the pieces that actually need a `PolicyClient`
+        // (`config show` / `config manifest` only need the plain-`config`
+        // manifest + resolver, but there is no separate opt-in for a
+        // narrower group; see `crate::config::commands` for the per-subcommand
+        // gating on the code side).
+        #[cfg(feature = "config-managed")]
+        if self.config_manifest.is_some() {
+            if self.command_registry.get("config").is_none() {
+                crate::config::commands::register_config_commands(
+                    &mut self.command_registry,
+                    self.app_name,
+                )?;
+            } else {
+                tracing::warn!(
+                    "'config' command already registered; skipping built-in config commands"
+                );
+            }
+        }
+
         // Auto-register built-in `spec` command (always-on, no feature gate)
         if self.command_registry.get("spec").is_none() {
             let spec_cmd = crate::command_surface::command::create_spec_command(
@@ -745,6 +821,10 @@ impl AppBuilder {
             config_handle,
             #[cfg(feature = "config")]
             config_value_erased,
+            #[cfg(feature = "config")]
+            config_manifest: self.config_manifest,
+            #[cfg(feature = "config-managed")]
+            policy_client: self.policy_client,
         })
     }
 
@@ -756,12 +836,37 @@ impl AppBuilder {
     /// (there is no dedicated [`crate::config::ConfigError`] variant for a
     /// builder-usage mistake; resolution itself already ran inside `build()`
     /// and any *storage* failure is a `ConfigError` surfaced from there).
+    ///
+    /// When **both** [`Self::with_config_manifest`] and (under
+    /// `config-managed`) [`Self::with_policy_client`] were also called, the
+    /// returned value additionally folds in the policy client's **cached**
+    /// policy (spec 021, ADR 0072's "enforced beats everything") — a
+    /// synchronous, network-free read (see
+    /// `crate::config::managed::fold_cached_policy_into_value`); this is what
+    /// makes the manifest/resolver/policy-client machinery actually reach an
+    /// application's real typed config value, rather than only test code and
+    /// hand-written glue ever seeing a policy-aware value. When either is
+    /// absent — the overwhelming majority of `with_config::<T>()` callers,
+    /// who never touch spec 021 at all — this returns exactly what it always
+    /// has: `store.current()` verbatim, with no resolver/manifest involvement
+    /// whatsoever.
+    ///
+    /// This deliberately never fetches over the network: `build()`/
+    /// `build_with_config()` are synchronous, and blocking on a runtime here
+    /// (or making this function `async`) would be the wrong fix — see
+    /// [`crate::config::managed::refresh_managed_config`], the explicit
+    /// **async** step an application calls itself (at startup and/or on a
+    /// refresh interval) to actually reach the network and push a fresh
+    /// policy into a *running* store.
     #[cfg(feature = "config")]
     pub fn build_with_config<C, T>(self, ctx: C) -> Result<(App<C>, T)>
     where
         C: AppContext + 'static,
         T: crate::config::VersionedConfig,
     {
+        #[cfg(feature = "config-managed")]
+        let managed = self.config_manifest.clone().zip(self.policy_client.clone());
+
         let app = self.build(ctx)?;
         let store = app.config_store::<T>().ok_or_else(|| {
             anyhow::anyhow!(
@@ -770,6 +875,18 @@ impl AppBuilder {
                 std::any::type_name::<T>()
             )
         })?;
+
+        #[cfg(feature = "config-managed")]
+        if let Some((manifest, policy_client)) = managed {
+            let value = crate::config::managed::fold_cached_policy_into_value(
+                &store,
+                &manifest,
+                &policy_client,
+            )
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            return Ok((app, value));
+        }
+
         let value = (*store.current()).clone();
         Ok((app, value))
     }
@@ -806,6 +923,10 @@ pub struct App<C: AppContext> {
     pub(crate) active_telemetry: Option<Arc<dyn crate::telemetry::Telemetry + Send + Sync>>,
     #[cfg(feature = "config")]
     config_handle: Option<Arc<dyn crate::config::ConfigHandle>>,
+    #[cfg(feature = "config")]
+    config_manifest: Option<Arc<crate::config::manifest::ConfigManifest>>,
+    #[cfg(feature = "config-managed")]
+    policy_client: Option<Arc<crate::config::managed::PolicyClient>>,
     #[cfg(feature = "config")]
     config_value_erased: Option<Arc<dyn std::any::Any + Send + Sync>>,
 }
@@ -1059,6 +1180,10 @@ impl<C: AppContext> App<C> {
             token_provider: self.token_provider.clone(),
             #[cfg(feature = "config")]
             config_handle: self.config_handle.clone(),
+            #[cfg(feature = "config")]
+            config_manifest: self.config_manifest.clone(),
+            #[cfg(feature = "config-managed")]
+            policy_client: self.policy_client.clone(),
         };
 
         #[cfg(feature = "telemetry")]

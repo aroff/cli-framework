@@ -55,3 +55,27 @@ pub const AUTH001: &str = "AUTH001";
 pub const AUTH002: &str = "AUTH002";
 /// Auth: not authenticated (used by `auth token` when no session exists).
 pub const AUTH003: &str = "AUTH003";
+
+/// Config commands: no `ConfigManifest` registered via `AppBuilder::with_config_manifest`.
+/// Should not normally occur — the `config` command group is only auto-registered
+/// once a manifest has been declared.
+pub const CFG001: &str = "CFG001";
+/// Config commands: `config profile`/`config refresh` invoked but no `PolicyClient`
+/// was registered via `AppBuilder::with_policy_client` — this app has no managed
+/// configuration wired in at all.
+pub const CFG002: &str = "CFG002";
+/// Config commands: `config refresh` could not produce a usable policy outcome —
+/// either `PolicyOutcome::Denied` (spec 021 failure mapping: 401-after-retry or
+/// 403, which deliberately never falls back to cache) or a `PolicyClientError`
+/// (unreachable with no cache, stale cache refused, cache/response corruption).
+pub const CFG003: &str = "CFG003";
+/// Config commands: `config profile` could not read the cached policy because
+/// the cache itself is corrupt or unreadable (`PolicyClientError` from
+/// `PolicyClient::cached_policy`) — distinct from `CFG003`, which is a
+/// request-time failure (denied access, unreachable server, a bad server
+/// response). `CFG004` specifically means "the local, previously-cached
+/// policy document on disk could not be parsed," which reads very differently
+/// to an operator than "access was denied." `config show` reports the same
+/// underlying condition as a non-fatal warning rather than this code, since it
+/// can still proceed on local/default values.
+pub const CFG004: &str = "CFG004";

@@ -116,6 +116,15 @@ opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "testing"] }
 tracing-opentelemetry = "0.32"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 testcontainers = "0.27"
+# For config-managed tests only: a real TokenProvider (client-credentials
+# flow) minting real (test-signed) JWTs against a synthesized wiremock OIDC
+# issuer, via the promoted `test-support` helper set (spec 021 testing
+# decisions — "this PRD promotes the pattern, not the code").
+cli-framework-oidc = { path = "cli-framework-oidc", features = ["client", "server", "test-support"] }
+# `OidcFlow::ClientCredentials { client_secret: secrecy::SecretString, .. }` is
+# part of cli-framework-oidc's public API, so constructing one from this
+# crate's own tests needs the same `secrecy` type directly.
+secrecy = { version = "0.8", features = ["serde"] }
 
 [features]
 default = ["chat"]
@@ -153,6 +162,12 @@ secrets-openbao = ["secrets"]
 # formats, and schema-version migrations. Windows registry backend compiled in
 # automatically on Windows targets via `dep:winreg` (a no-op elsewhere).
 config = ["dep:winreg"]
+# Config manifest + managed client (spec 021) — PolicyClient/RoamingConfigClient
+# fetch over HTTP with a bearer token from the existing TokenProvider, so this
+# implies both `config` (manifest types, Policy, the resolver) and `auth`
+# (TokenProvider, AuthenticatedHttpClient). Adds no new dependency: reqwest is
+# already an unconditional dependency of this crate.
+config-managed = ["config", "auth"]
 
 [lib]
 name = "cli_framework"
@@ -380,6 +395,26 @@ path = "tests/integration/config.rs"
 required-features = ["config", "testkit"]
 
 [[test]]
+name = "unit_config_manifest"
+path = "tests/unit/config_manifest.rs"
+required-features = ["config", "derive"]
+
+[[test]]
+name = "unit_config_resolution"
+path = "tests/unit/config_resolution.rs"
+required-features = ["config"]
+
+[[test]]
+name = "unit_config_managed_client"
+path = "tests/unit/config_managed_client.rs"
+required-features = ["config-managed", "testkit"]
+
+[[test]]
+name = "integration_config_managed"
+path = "tests/integration/config_managed.rs"
+required-features = ["config-managed", "testkit", "derive"]
+
+[[test]]
 name = "unit_command_surface_json_schema"
 path = "tests/unit/command_surface_json_schema.rs"
 
@@ -418,6 +453,11 @@ required-features = ["auth", "testkit"]
 name = "integration_auth_commands"
 path = "tests/integration/auth_commands.rs"
 required-features = ["auth", "testkit"]
+
+[[test]]
+name = "integration_config_commands"
+path = "tests/integration/config_commands.rs"
+required-features = ["config-managed", "testkit"]
 
 [[test]]
 name = "contract_auth_registration"

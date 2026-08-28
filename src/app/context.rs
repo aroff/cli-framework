@@ -134,6 +134,37 @@ pub trait AppContext: Send + Sync {
     fn opt_config_handle(&self) -> Option<&dyn crate::config::ConfigHandle> {
         None
     }
+
+    /// Return the application's registered
+    /// [`ConfigManifest`][crate::config::manifest::ConfigManifest], if one
+    /// was declared via
+    /// [`AppBuilder::with_config_manifest`][crate::app::AppBuilder::with_config_manifest].
+    ///
+    /// The default implementation returns `None`. The dispatch wrapper
+    /// overrides this with the registered manifest when one is configured.
+    /// This is what the built-in `config` command group (spec 021, "Command
+    /// surface") resolves and renders against — `config show`/`config
+    /// manifest` report [`CFG001`][crate::parser::error_codes::CFG001] when
+    /// this returns `None`, which should not normally happen since that
+    /// command group is only auto-registered once a manifest has been
+    /// declared.
+    #[cfg(feature = "config")]
+    fn opt_config_manifest(&self) -> Option<&crate::config::manifest::ConfigManifest> {
+        None
+    }
+
+    /// Return the [`PolicyClient`][crate::config::managed::PolicyClient]
+    /// registered for this app, if one was wired via
+    /// [`AppBuilder::with_policy_client`][crate::app::AppBuilder::with_policy_client].
+    ///
+    /// The default implementation returns `None`. Returned as an owned
+    /// `Arc` (mirroring [`Self::opt_token_provider`]) so a handler can move
+    /// it into an async block that outlives the `&mut dyn AppContext`
+    /// borrow — exactly the case `config profile`/`config refresh` are in.
+    #[cfg(feature = "config-managed")]
+    fn opt_policy_client(&self) -> Option<std::sync::Arc<crate::config::managed::PolicyClient>> {
+        None
+    }
 }
 
 /// Typed accessor over [`AppContext::opt_request_identity`].

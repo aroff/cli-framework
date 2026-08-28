@@ -110,3 +110,11 @@ pub mod browser;
 // Re-export shared types at crate root when either feature is active.
 #[cfg(any(feature = "server", feature = "browser"))]
 pub use types::{AudiencePolicy, OidcClaims};
+
+/// Synthesized-OIDC-issuer test helpers (spec 021 testing decisions) —
+/// promoted out of `tests/server_validation.rs` so downstream crates'
+/// tests can mint real (test-signed) tokens without re-deriving the
+/// technique. `#[doc(hidden)]` throughout: this is test-only surface, not a
+/// stable API.
+#[cfg(feature = "test-support")]
+pub mod test_support;

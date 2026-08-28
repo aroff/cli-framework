@@ -692,3 +692,7 @@ _Avoid_: "event log", "audit trail" as the canonical term, "event store".
   build profile. Teams are claims that assignment rules match on.
 - **"Enforced"** describes a *field within a Policy*, never a whole Policy — a
   single Policy routinely enforces some fields and merely recommends others.
+- **"`protected`"** is not a stronger version of `local_only` — the two govern
+  different surfaces (command/mutation vs. Policy) and are independently
+  chosen. A `protected` field is routinely still `enforced`; a field that must
+  be unreachable from *both* surfaces needs both flags, not `protected` alone.

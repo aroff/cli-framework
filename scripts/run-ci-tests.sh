@@ -71,6 +71,11 @@ cargo test --features "chat,mcp-server" --verbose
 # explicitly (like the MCP step below) to avoid load-flake in unrelated servers.
 cargo test --features "telemetry,mcp-server,api-server,testkit,derive" \
     --test unit_telemetry --test integration_telemetry_otlp --test unit_mcp_dispatch --verbose
+# `config` and `config-managed` are additive features exercised only by
+# `--all-features` clippy/build above, never actually `cargo test`'d by any
+# combo above — same gap the telemetry comment describes, closed the same way.
+cargo test --features config,testkit --verbose
+cargo test --features config-managed,testkit --verbose
 # Build examples explicitly — `cargo test` skips them, so dead-code in
 # examples is only caught here (RUSTFLAGS=-D warnings applies).
 cargo build --examples --verbose
@@ -83,6 +88,11 @@ echo -e "${YELLOW}[5b] Running cli-framework-oidc tests (feature matrix)...${NC}
 set -x
 cargo test -p cli-framework-oidc --features client --verbose
 cargo test -p cli-framework-oidc --features server --verbose
+# `server_validation.rs` requires `test-support` (spec 021) in addition to
+# `server` — exercised as its own combo so a plain `--features server` run
+# above still proves the crate builds/tests without pulling in test-only
+# surface (rcgen, the promoted helpers) at all.
+cargo test -p cli-framework-oidc --features server,test-support --verbose
 cargo test -p cli-framework-oidc --features client,server --verbose
 cargo build -p cli-framework-oidc --no-default-features --verbose
 cargo test -p cli-framework --no-default-features --features auth,testkit --verbose
