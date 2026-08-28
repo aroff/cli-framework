@@ -1,5 +1,31 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Config store** (spec 016): a new `config` feature adding writable, versioned
+  configuration storage — a byte-level `ConfigBackend` (`FileBackend` with atomic
+  temp-file+rename writes and auto-created parent directories, plus a Windows-only
+  `RegistryBackend` under `#[cfg(windows)]`) beneath a typed `ConfigStore<T>` that owns
+  serialization (JSON by default, TOML selectable), schema-version stamping, migration
+  sequencing, and a `reload()`/subscription seam for long-running applications.
+  - `AppBuilder::with_config_backend`, `with_config_path`, and `with_config::<T>()` wire a
+    store into `build()`, which resolves it once (same point registry freezing happens);
+    `AppBuilder::build_with_config::<C, T>()` additionally hands back the resolved typed
+    value alongside the built `App`, and `App::config_store::<T>()` recovers the shared
+    `Arc<ConfigStore<T>>` for reload/subscribe access.
+  - New `AppContext::opt_config_handle(&self) -> Option<&dyn ConfigHandle>` accessor
+    (mirrors `opt_registry`'s shape) exposing type-erased `reload()` and raw-JSON
+    read/write, since `ConfigStore<T>`'s generic `T` cannot be named on a trait used
+    polymorphically.
+  - New typed `ConfigError` (`CE001`–`CE009`) covering backend read/write, a read-only
+    backend refusing `save`, parse/serialize failures, a failed or missing migration, and
+    a stored schema version newer than the running binary (refused, never downgraded).
+  - Does not touch the existing `project_config` module (unrelated, CWD-upward-search
+    discovery for developer tools) or implement the config manifest / managed-policy layer
+    (PRD 021) — this PRD is the local persistence foundation only.
+
 ## [0.5.4] — 2026-06-13
 
 ### Added

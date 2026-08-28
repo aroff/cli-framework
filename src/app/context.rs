@@ -116,6 +116,24 @@ pub trait AppContext: Send + Sync {
     fn opt_request_identity(&self) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
         None
     }
+
+    /// Return the type-erased configuration handle for the current
+    /// invocation, if a config store was wired via
+    /// [`AppBuilder::with_config`][crate::app::AppBuilder::with_config].
+    ///
+    /// The default implementation returns `None`. The dispatch wrapper
+    /// overrides this with the active [`ConfigHandle`][crate::config::ConfigHandle]
+    /// when one is configured. This cannot return the **typed** resolved
+    /// value: `T` differs per application and a generic method is not
+    /// object-safe on a trait used polymorphically (see spec 016, "Access,
+    /// and why it cannot mirror the `Telemetry` handle exactly"). A handler
+    /// that needs the typed value reaches it through the application's own
+    /// context type instead — see `AppBuilder::build_with_config` and
+    /// `App::config_store`.
+    #[cfg(feature = "config")]
+    fn opt_config_handle(&self) -> Option<&dyn crate::config::ConfigHandle> {
+        None
+    }
 }
 
 /// Typed accessor over [`AppContext::opt_request_identity`].

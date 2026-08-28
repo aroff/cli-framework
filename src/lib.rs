@@ -110,6 +110,11 @@ pub mod auth;
 #[cfg(feature = "secrets")]
 pub mod secrets;
 
+// Config — writable, versioned configuration storage (ConfigBackend/ConfigStore).
+// See `config` module docs.
+#[cfg(feature = "config")]
+pub mod config;
+
 /// Re-export the exit-code marker for parse/usage errors (spec 012 §R5).
 pub use app::UsageError;
 
@@ -155,6 +160,12 @@ pub mod prelude {
     pub use crate::project_config::{
         find_and_load, find_and_load_with_options, find_file_upward, find_file_upward_with_options,
         load_toml_file, load_toml_str, DiscoverOptions, ProjectConfigError, ProjectRoot,
+    };
+
+    #[cfg(feature = "config")]
+    pub use crate::config::{
+        ConfigBackend, ConfigError, ConfigFormat, ConfigHandle, ConfigOptions, ConfigStore,
+        FileBackend, VersionedConfig,
     };
 
     pub use crate::telemetry::handle::{Counter, Histogram, SpanHandle, Telemetry};
