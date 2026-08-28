@@ -166,11 +166,12 @@ fn build_meter_provider(
     if !config.metrics_enabled {
         return None;
     }
-    use opentelemetry_otlp::WithExportConfig;
+    use opentelemetry_otlp::{WithExportConfig, WithHttpConfig};
     let endpoint = config.endpoint.as_deref()?;
     let exporter = opentelemetry_otlp::MetricExporter::builder()
         .with_http()
         .with_endpoint(format!("{}/v1/metrics", endpoint.trim_end_matches('/')))
+        .with_headers(config.headers.clone())
         .build()
         .ok()?;
     let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter).build();
@@ -220,13 +221,67 @@ fn make_handle_and_guard(
 
 /// Build the OTLP span exporter for a config's endpoint.
 fn span_exporter(config: &TelemetryConfig) -> Option<opentelemetry_otlp::SpanExporter> {
-    use opentelemetry_otlp::WithExportConfig;
+    use opentelemetry_otlp::{WithExportConfig, WithHttpConfig};
     let endpoint = config.endpoint.as_deref()?;
     opentelemetry_otlp::SpanExporter::builder()
         .with_http()
         .with_endpoint(format!("{}/v1/traces", endpoint.trim_end_matches('/')))
+        .with_headers(config.headers.clone())
         .build()
         .ok()
+}
+
+/// Refuse to start on a protocol this crate cannot actually speak.
+///
+/// `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` used to be parsed onto the config and then
+/// ignored, exporting over HTTP regardless. That is the worst outcome: the
+/// operator's explicit instruction is discarded silently, and the resulting
+/// failure looks like a collector problem. Returning `None` here means telemetry
+/// is off and says so, which is recoverable; guessing is not.
+///
+/// `eprintln!` rather than `tracing::warn!` for the same reason as
+/// [`warn_subscriber_conflict`]: at this point we may not own the subscriber, so
+/// a `tracing` event could be filtered out and never seen.
+fn reject_unsupported_protocol(config: &TelemetryConfig) -> bool {
+    if config.protocol_is_supported() {
+        return false;
+    }
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    let protocol = config.protocol.clone();
+    ONCE.call_once(move || {
+        eprintln!(
+            "cli-framework telemetry: OTEL_EXPORTER_OTLP_PROTOCOL is set to '{protocol}', which \
+             this build cannot export with. Only '{supported}' is supported. Telemetry is \
+             DISABLED rather than exported over a protocol you did not ask for.",
+            supported = crate::telemetry::config::SUPPORTED_PROTOCOL,
+        );
+    });
+    true
+}
+
+/// Build the tracer provider, honouring `traces_enabled`.
+///
+/// With traces disabled the provider is built **without an exporter** rather
+/// than not built at all: spans are still created, so `cli.command` timings and
+/// W3C context propagation to downstream services keep working, and only the
+/// export is suppressed. Metrics are unaffected either way.
+fn build_tracer_provider(
+    config: &TelemetryConfig,
+    resource: opentelemetry_sdk::Resource,
+    batch: bool,
+) -> Option<SdkTracerProvider> {
+    let mut builder = SdkTracerProvider::builder()
+        .with_sampler(sampler_for(config))
+        .with_resource(resource);
+    if config.traces_enabled {
+        let exporter = span_exporter(config)?;
+        builder = if batch {
+            builder.with_batch_exporter(exporter)
+        } else {
+            builder.with_simple_exporter(exporter)
+        };
+    }
+    Some(builder.build())
 }
 
 /// Init with `SimpleSpanProcessor` — synchronous export on span end.
@@ -245,17 +300,12 @@ pub fn init_simple(
     service_name: &str,
     service_version: &str,
 ) -> Option<(Arc<dyn Telemetry + Send + Sync>, TelemetryGuard)> {
-    if !config.is_active() {
+    if !config.is_active() || reject_unsupported_protocol(config) {
         return None;
     }
-    let exporter = span_exporter(config)?;
     let (svc, ver) = resolve_service(config, service_name, service_version);
     let resource = build_resource(svc, ver);
-    let provider = SdkTracerProvider::builder()
-        .with_sampler(sampler_for(config))
-        .with_simple_exporter(exporter)
-        .with_resource(resource.clone())
-        .build();
+    let provider = build_tracer_provider(config, resource.clone(), false)?;
     let meter_provider = build_meter_provider(config, resource);
     Some(make_handle_and_guard(provider, meter_provider, true))
 }
@@ -295,17 +345,12 @@ fn init_batch_inner(
     service_version: &str,
     install: bool,
 ) -> Option<(Arc<dyn Telemetry + Send + Sync>, TelemetryGuard)> {
-    if !config.is_active() {
+    if !config.is_active() || reject_unsupported_protocol(config) {
         return None;
     }
-    let exporter = span_exporter(config)?;
     let (svc, ver) = resolve_service(config, service_name, service_version);
     let resource = build_resource(svc, ver);
-    let provider = SdkTracerProvider::builder()
-        .with_sampler(sampler_for(config))
-        .with_batch_exporter(exporter)
-        .with_resource(resource.clone())
-        .build();
+    let provider = build_tracer_provider(config, resource.clone(), true)?;
     let meter_provider = build_meter_provider(config, resource);
     Some(make_handle_and_guard(provider, meter_provider, install))
 }
@@ -372,5 +417,35 @@ mod tests {
             resolve_service(&cfg, "app-name", "app-ver"),
             ("app-name", "app-ver")
         );
+    }
+
+    /// Safe as a unit test because rejection happens *before* any global is
+    /// touched — no subscriber or provider is installed on this path.
+    #[test]
+    fn init_refuses_an_unsupported_protocol() {
+        let cfg = TelemetryConfig {
+            endpoint: Some("http://127.0.0.1:9/".to_string()),
+            protocol: "grpc".to_string(),
+            ..Default::default()
+        };
+        assert!(
+            cfg.is_active(),
+            "fixture must otherwise be active, or this passes for the wrong reason"
+        );
+        assert!(
+            init_batch(&cfg, "svc", "1.0").is_none(),
+            "an unsupported protocol must disable telemetry loudly, not export \
+             over HTTP anyway"
+        );
+    }
+
+    /// The complementary half: the guard must not reject the normal case.
+    #[test]
+    fn init_accepts_the_supported_protocol() {
+        let cfg = TelemetryConfig {
+            endpoint: Some("http://127.0.0.1:9/".to_string()),
+            ..Default::default()
+        };
+        assert!(!reject_unsupported_protocol(&cfg));
     }
 }
