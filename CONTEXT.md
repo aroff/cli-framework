@@ -472,6 +472,92 @@ and `record_arg_values` + `arg_value_allowlist` (security gate — R13).
 be overridden by any builder field.
 _Avoid_: "OTel config", "observability config" — use Telemetry config.
 
+**Config backend** _(spec 016)_:
+Where a configuration document physically lives — a file in the user profile,
+the Windows registry, or anything else that can hold bytes. Backends deal in
+**raw bytes only**; the framework owns serialization, which is what lets one
+backend serve both JSON and TOML and lets an app switch storage without other
+changes.
+_Avoid_: "config source", "provider" — a backend is storage, not a layer.
+
+**Config store** _(spec 016)_:
+The app-facing handle over a **Config backend**: loads, migrates, and saves a
+typed configuration value, stamping a schema version on every write. Owns
+atomic-write and migration behaviour. Distinct from the **layered resolver**
+(ADR 0067), which composes the store's output with the other layers.
+_Avoid_: "config manager", "settings service".
+
+**Config manifest** _(ADR 0073; spec 021)_:
+An application's declaration of its own configuration surface — every field with
+its type, default, label, constraints, and policy flags — as a canonical JSON
+document. Generated from the config struct by a derive macro for Rust apps and
+hand-authored by non-Rust apps; every consumer reads the document, never the
+struct. It is what lets a renderer build a settings UI dynamically and lets a
+server validate a **Policy** without knowing the application.
+_Avoid_: "config schema" (a manifest carries UI and policy metadata a schema
+does not), "template", "ADMX".
+
+**Policy** _(ADR 0072; spec 021)_:
+A document authored by an organisation, served for one **Profile**, carrying two
+trees of configuration values — **Enforced** and **Recommended** — plus the
+policy version, maximum cache age, and stale action. The unit a client fetches
+and caches.
+_Avoid_: "managed config" as a noun for the document; "GPO", "policy object".
+Consumers whose own domain already uses "policy" for something else (AI Desktop's
+Attention Policy) MUST qualify this one as **Org Policy** in their context.
+
+**Enforced** / **Recommended**:
+The two trees inside a **Policy**, distinguished by where they sit in resolution.
+**Recommended** sits just above built-in defaults — the organisation supplies a
+better default that every local mechanism still overrides. **Enforced** is
+applied **last, as a veto over the fully resolved value**, above environment
+variables, CLI flags, and builder overrides; no local mechanism outranks it.
+Enforcement is per-field and chosen by the organisation, not a global mode.
+_Avoid_: "mandatory"/"suggested"; "locked layer" — Enforced is a veto pass, not
+a layer.
+
+**Profile** _(ADR 0074; spec 022)_:
+A named grouping of configuration authored by an organisation — `developers`,
+`kiosk`. **Exactly one Profile applies to a given (identity, application)**,
+selected by ordered assignment rules matched against token claims, first match
+wins. A Profile may declare a **single** parent it inherits from; the service
+flattens the chain before serving, so clients never see inheritance.
+_Avoid_: "role", "group", "tenant" — a team is a *targeting input* (a claim an
+assignment rule matches), not a Profile and not a **Scope**.
+
+**Scope** _(ADR 0073)_:
+Declared per field in the **Config manifest**, answering *whose value is this*:
+`machine` (this installation — a desktop, a phone, or a server instance),
+`user` (roams with the person across their devices), or `org` (one value
+organisation-wide, delivered only via **Policy**, never authored locally).
+Orthogonal to **Enforced**/**Recommended**, which govern authority rather than
+ownership.
+_Avoid_: "level", "tier"; do not conflate Scope with **Invocation surface**.
+
+**Provenance** _(ADR 0072; spec 021)_:
+For a resolved field: which layer produced the value, and whether it is locked by
+**Enforced**. Exposed as a first-class query, not a debugging aid — a settings UI
+that cannot distinguish "managed by your organisation" from "you chose this"
+will silently discard user edits.
+_Avoid_: "source" (overloaded with **Config backend**), "origin".
+
+**Config service** _(specs 022, 023)_:
+The server side: an `axum` router an app mounts, holding organisation
+configuration as **target state** in Postgres, resolving a caller's identity to a
+**Profile** and serving the flattened **Policy**. Also serves manifests and each
+user's roaming user-scoped document. Has **no Git dependency** and runs no
+reconciliation loop; devices converge by polling with revalidation.
+_Avoid_: "policy server" in code identifiers (fine in prose), "config backend"
+(that is local storage).
+
+**Mutation log** _(ADR 0075; spec 023)_:
+The append-only record of every administrative change to **target state** —
+actor, timestamp, submitted change, resulting version. Only ever inserted into.
+State tables answer *what is configured*; the Mutation log answers *who changed
+what, when*. Deliberately **not** event sourcing: state is authoritative and is
+never reconstructed from the log.
+_Avoid_: "event log", "audit trail" as the canonical term, "event store".
+
 ## Relationships
 
 - A **Command** is registered exactly once with `AppBuilder`.
@@ -588,3 +674,13 @@ _Avoid_: "OTel config", "observability config" — use Telemetry config.
 - **"Account" / "User" / "Project"** — not part of this domain; if any
   consumer crate uses these, they belong in *that* crate's CONTEXT.md, not
   here.
+- **"Config"** is ambiguous across three things that must be kept apart: the
+  **Config backend** (storage), the **Config store** (typed load/save), and the
+  layered resolver (ADR 0067) that composes them with env and flags. Say which.
+- **"Policy"** in this crate always means the organisation-authored document.
+  Consumers with their own policy concept must qualify ours as **Org Policy** in
+  their own CONTEXT.md rather than redefining the term here.
+- **"Profile"** is not a team, a role, or a tenant, and is unrelated to a cargo
+  build profile. Teams are claims that assignment rules match on.
+- **"Enforced"** describes a *field within a Policy*, never a whole Policy — a
+  single Policy routinely enforces some fields and merely recommends others.
