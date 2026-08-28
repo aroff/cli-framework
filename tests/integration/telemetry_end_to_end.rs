@@ -32,8 +32,10 @@ impl AppContext for ProbeCtx {}
 ///
 /// Deliberately **not** the built-in `version`: that short-circuits in
 /// `run_with_args` (`cmd_id == "version" && registry.get("version").is_none()`)
-/// and returns before the dispatch seam, so it opens no `cli.command` span and
-/// emits no metrics. Asserting against it would pass a broken build.
+/// before ever reaching `execute_command_direct`, the general dispatch seam
+/// this test exercises. `version` instruments itself separately at the
+/// short-circuit site — see `telemetry_version_command_span.rs` (spec 020
+/// item 6) — so it's covered by its own test, not this one.
 fn probe_command() -> Command {
     Command {
         id: Arc::from("probe"),
