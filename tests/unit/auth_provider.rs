@@ -6,9 +6,9 @@ use cli_framework::auth::{
     TokenProvider, TokenStatus,
 };
 use cli_framework::http_retry::RetryableHttpClient;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -34,45 +34,6 @@ impl TokenProvider for AlwaysOkProvider {
             logged_in: true,
             expires_at: self.expires_at,
         })
-    }
-}
-
-/// Always returns NotAuthenticated from token(); login returns Ok.
-struct NotAuthProvider {
-    login_called: Arc<AtomicBool>,
-}
-
-#[async_trait::async_trait]
-impl TokenProvider for NotAuthProvider {
-    async fn token(&self) -> Result<AccessToken, AuthError> {
-        Err(AuthError::NotAuthenticated)
-    }
-    async fn invalidate(&self) {}
-    async fn login(&self) -> Result<(), AuthError> {
-        self.login_called.store(true, Ordering::SeqCst);
-        Ok(())
-    }
-}
-
-/// Rotates between returning a token on first call and NotAuthenticated on subsequent.
-struct RotatingProvider {
-    token: String,
-    call_count: Arc<AtomicUsize>,
-    invalidate_count: Arc<AtomicUsize>,
-}
-
-#[async_trait::async_trait]
-impl TokenProvider for RotatingProvider {
-    async fn token(&self) -> Result<AccessToken, AuthError> {
-        let n = self.call_count.fetch_add(1, Ordering::SeqCst);
-        if n == 0 {
-            Ok(AccessToken::new(self.token.clone(), None))
-        } else {
-            Err(AuthError::NotAuthenticated)
-        }
-    }
-    async fn invalidate(&self) {
-        self.invalidate_count.fetch_add(1, Ordering::SeqCst);
     }
 }
 

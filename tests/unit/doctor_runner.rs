@@ -3,7 +3,7 @@
 use cli_framework::app::AppContext;
 use cli_framework::doctor::builtin::{EnvRequiredCheck, TmpdirWritableCheck};
 use cli_framework::doctor::check::{CheckSeverity, DoctorCheck, DoctorFinding, DoctorFuture};
-use cli_framework::doctor::runner::{DoctorReport, DoctorRunner};
+use cli_framework::doctor::runner::DoctorRunner;
 use cli_framework::doctor::DoctorError;
 use std::sync::Arc;
 
@@ -302,7 +302,6 @@ async fn tmpdir_writable_check_warning_for_nonexistent_dir() {
 
 #[test]
 fn render_json_produces_valid_json() {
-    use cli_framework::doctor::render::render_json;
     use cli_framework::doctor::runner::DoctorReport;
 
     let findings = vec![
