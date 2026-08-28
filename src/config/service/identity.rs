@@ -31,13 +31,17 @@
 //! a sketch: spec 022 requires a runnable adapter, since that is what proves
 //! the seam actually composes end to end.
 
+use super::assignment::rule_matches;
 use super::error::ConfigServiceError;
+use super::types::AssignmentRule;
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::extract::{FromRequestParts, State};
-use axum::http::{header::AUTHORIZATION, request::Parts, Request};
+use axum::http::{header::AUTHORIZATION, request::Parts, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use axum::Json;
+use serde_json::json;
 use std::sync::Arc;
 
 /// Validated claims from whatever authentication scheme the embedding
@@ -122,6 +126,47 @@ pub async fn require_caller_identity(
             next.run(req).await
         }
         Err(e) => e.into_response(),
+    }
+}
+
+/// `axum::middleware::from_fn_with_state` handler: the second half of spec
+/// 023's two-gate model for `/v1/admin/*` routes. Must run **after**
+/// [`require_caller_identity`] has already inserted [`CallerClaims`] into the
+/// request extensions — see [`super::admin_router`]'s module docs for the
+/// exact `.layer()` ordering that guarantees this (axum/tower's `.layer()`
+/// wraps outward-in, so the identity layer must be the *last* `.layer()`
+/// call, making it the *first* middleware to run).
+///
+/// Evaluates `admin_rule` against the caller's already-validated claims with
+/// [`rule_matches`] — the identical function
+/// [`super::assignment::resolve_profile`] uses for ordinary profile
+/// assignment, per spec 023's explicit requirement to reuse "the identical
+/// `{claim_path, operator, value}` shape" rather than a second copy of rule
+/// evaluation. A match proceeds to the next handler; no match is `403`
+/// (distinct from [`require_caller_identity`]'s `401` — "who are you" vs
+/// "you may not do this").
+///
+/// If [`CallerClaims`] is somehow missing from the request extensions (the
+/// layering-order bug this module's docs warn about), this responds `500`
+/// rather than panicking — the same defensive posture
+/// [`MissingCallerClaims`] already takes for handlers extracting
+/// [`CallerClaims`] directly.
+pub async fn require_admin_role(
+    State(admin_rule): State<Arc<AssignmentRule>>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let Some(claims) = req.extensions().get::<CallerClaims>().cloned() else {
+        return MissingCallerClaims.into_response();
+    };
+    if rule_matches(&admin_rule, &claims.0) {
+        next.run(req).await
+    } else {
+        (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "caller does not satisfy the administrative role rule" })),
+        )
+            .into_response()
     }
 }
 

@@ -12,9 +12,9 @@
 //! two copies of "what makes a policy value valid" could silently drift
 //! apart — one accepting something the other would reject.
 
-use super::error::PolicyValidationError;
+use super::error::{InheritanceError, PolicyValidationError};
 use super::store::PolicyStore;
-use super::types::StoredPolicy;
+use super::types::{AssignmentRule, RuleOperator, StoredPolicy};
 use crate::config::manifest::ConfigManifest;
 use crate::config::resolution::{
     server_tree_drop_reason_enforced, server_tree_drop_reason_recommended, WarningReason,
@@ -173,33 +173,12 @@ pub async fn validate_all(
         // not a manifest field.
         match store.assignment_rules(app).await {
             Ok(rules) => {
-                for rule in &rules {
-                    if !by_profile.contains_key(rule.profile.as_str()) {
-                        errors.push(PolicyValidationError::AssignmentRuleMissingProfile {
-                            app: app.clone(),
-                            ord: rule.ord,
-                            profile: rule.profile.clone(),
-                        });
-                    }
-                }
-
-                // Bug 4: a `Default`-operator row (see
-                // `super::types::RuleOperator::Default`'s doc comment) must
-                // be the last-ordered row for its app, or it silently
-                // preempts every rule ordered after it.
-                if let Some(max_ord) = rules.iter().map(|r| r.ord).max() {
-                    for rule in &rules {
-                        if rule.operator == super::types::RuleOperator::Default
-                            && rule.ord != max_ord
-                        {
-                            errors.push(PolicyValidationError::DefaultRuleNotLast {
-                                app: app.clone(),
-                                ord: rule.ord,
-                                max_ord,
-                            });
-                        }
-                    }
-                }
+                errors.extend(assignment_rule_missing_profile_errors(
+                    app,
+                    &rules,
+                    &by_profile,
+                ));
+                errors.extend(default_rule_not_last_errors(app, &rules));
             }
             Err(e) => {
                 errors.push(PolicyValidationError::UnknownField {
@@ -255,6 +234,139 @@ pub async fn validate_all(
     } else {
         Err(super::error::StartupValidationError(errors))
     }
+}
+
+/// Every assignment rule for `app` whose `profile` has no entry in
+/// `by_profile` — Bug 2's fix (spec 022), extracted (spec 023) so both
+/// [`validate_all`] and the administrative assignments-write path
+/// ([`super::admin_store`]) call the identical check rather than
+/// maintaining two copies that could silently drift apart.
+pub(crate) fn assignment_rule_missing_profile_errors(
+    app: &str,
+    rules: &[AssignmentRule],
+    by_profile: &HashMap<&str, &StoredPolicy>,
+) -> Vec<PolicyValidationError> {
+    rules
+        .iter()
+        .filter(|rule| !by_profile.contains_key(rule.profile.as_str()))
+        .map(|rule| PolicyValidationError::AssignmentRuleMissingProfile {
+            app: app.to_string(),
+            ord: rule.ord,
+            profile: rule.profile.clone(),
+        })
+        .collect()
+}
+
+/// Every `Default`-operator rule in `rules` that is not the last-ordered
+/// rule for `app` — Bug 4's fix (spec 022; see
+/// [`super::types::RuleOperator::Default`]'s doc comment for why this
+/// matters). Extracted (spec 023) for the same reason as
+/// [`assignment_rule_missing_profile_errors`].
+pub(crate) fn default_rule_not_last_errors(
+    app: &str,
+    rules: &[AssignmentRule],
+) -> Vec<PolicyValidationError> {
+    let Some(max_ord) = rules.iter().map(|r| r.ord).max() else {
+        return Vec::new();
+    };
+    rules
+        .iter()
+        .filter(|rule| rule.operator == RuleOperator::Default && rule.ord != max_ord)
+        .map(|rule| PolicyValidationError::DefaultRuleNotLast {
+            app: app.to_string(),
+            ord: rule.ord,
+            max_ord,
+        })
+        .collect()
+}
+
+/// The full validation pipeline one administrative policy write (PUT, PATCH
+/// after merge, or restore-after-lookup) must pass before it is stored (spec
+/// 023, "Validation" implementation decision — §6 of the admin API design):
+///
+/// 1. `candidate.app` must have a stored manifest (checked against `store`,
+///    not `by_profile`/`candidate` — a policy can't be validated against a
+///    manifest that doesn't exist).
+/// 2. [`validate_stored_policy`] against that manifest — field-level
+///    conformance (unknown/type/secret/local-only/unmanageable/org-scope/
+///    enforceable).
+/// 3. Inheritance integrity: `candidate` is substituted into (or inserted
+///    as a new entry in) `store`'s full by-profile map for `candidate.app`,
+///    and [`super::inherit::resolve_chain`] is walked from `candidate`'s own
+///    profile — a cycle or missing parent is rejected.
+///
+/// Every error found is returned (not just the first), matching
+/// [`validate_stored_policy`]'s own "report everything in one pass"
+/// convention. `store` is deliberately `&dyn PolicyStore` rather than a
+/// concrete type: the single-resource admin write handlers pass the live
+/// backing store, while bundle import (spec 023, "Export/Import") passes
+/// the just-loaded [`super::fs_store::FsPolicyStore`] itself, so a bundle is
+/// validated purely against its own contents, never merged with whatever is
+/// already stored.
+pub(crate) async fn validate_policy_for_write(
+    store: &dyn PolicyStore,
+    candidate: &StoredPolicy,
+) -> Vec<PolicyValidationError> {
+    let mut errors = Vec::new();
+
+    let manifest = match store.manifest(&candidate.app).await {
+        Ok(Some(m)) => m.doc,
+        Ok(None) => {
+            return vec![PolicyValidationError::MissingManifest {
+                app: candidate.app.clone(),
+                profile: candidate.profile.clone(),
+            }]
+        }
+        Err(e) => {
+            return vec![PolicyValidationError::UnknownField {
+                app: candidate.app.clone(),
+                profile: candidate.profile.clone(),
+                path: format!("<storage error loading manifest: {e}>"),
+            }]
+        }
+    };
+
+    errors.extend(validate_stored_policy(&manifest, candidate));
+
+    let existing = match store.policies_for_app(&candidate.app).await {
+        Ok(p) => p,
+        Err(e) => {
+            errors.push(PolicyValidationError::UnknownField {
+                app: candidate.app.clone(),
+                profile: candidate.profile.clone(),
+                path: format!("<storage error loading policies: {e}>"),
+            });
+            return errors;
+        }
+    };
+
+    let mut by_profile: HashMap<&str, &StoredPolicy> = existing
+        .iter()
+        .filter(|p| p.profile != candidate.profile)
+        .map(|p| (p.profile.as_str(), p))
+        .collect();
+    by_profile.insert(candidate.profile.as_str(), candidate);
+
+    if let Err(e) = super::inherit::resolve_chain(&by_profile, &candidate.profile) {
+        errors.push(match e {
+            // Unreachable: `candidate.profile` is always a key of
+            // `by_profile` by construction above.
+            InheritanceError::ProfileNotFound { .. } => return errors,
+            InheritanceError::MissingParent { child, parent } => {
+                PolicyValidationError::MissingParent {
+                    app: candidate.app.clone(),
+                    profile: child,
+                    parent,
+                }
+            }
+            InheritanceError::Cycle { profile } => PolicyValidationError::InheritanceCycle {
+                app: candidate.app.clone(),
+                profile,
+            },
+        });
+    }
+
+    errors
 }
 
 #[cfg(test)]
@@ -613,5 +725,215 @@ mod tests {
         // as dead code no test ever proves compiles to something sane.
         let result = map_reason("app", "profile", "path", WarningReason::UnknownKey);
         assert!(matches!(result, PolicyValidationError::UnknownField { .. }));
+    }
+
+    // ── Extracted helpers (spec 023): `assignment_rule_missing_profile_errors` /
+    // `default_rule_not_last_errors` must behave identically to the inlined
+    // logic `validate_all`'s own tests above already pin end to end -- these
+    // exercise the pure functions directly, at the unit level. ────────────
+
+    #[test]
+    fn assignment_rule_missing_profile_errors_is_empty_when_every_rule_targets_a_real_profile() {
+        let base = policy("myapp", "base", None);
+        let by_profile: HashMap<&str, &StoredPolicy> = [("base", &base)].into_iter().collect();
+        let rules = vec![rule("myapp", 0, RuleOperator::Equals, "base")];
+        assert!(assignment_rule_missing_profile_errors("myapp", &rules, &by_profile).is_empty());
+    }
+
+    #[test]
+    fn assignment_rule_missing_profile_errors_flags_every_dangling_rule() {
+        let by_profile: HashMap<&str, &StoredPolicy> = HashMap::new();
+        let rules = vec![
+            rule("myapp", 0, RuleOperator::Equals, "ghost-a"),
+            rule("myapp", 1, RuleOperator::Equals, "ghost-b"),
+        ];
+        let errors = assignment_rule_missing_profile_errors("myapp", &rules, &by_profile);
+        assert_eq!(errors.len(), 2);
+        assert!(errors.iter().all(|e| matches!(
+            e,
+            PolicyValidationError::AssignmentRuleMissingProfile { .. }
+        )));
+    }
+
+    #[test]
+    fn default_rule_not_last_errors_is_empty_for_an_empty_rule_list() {
+        assert!(default_rule_not_last_errors("myapp", &[]).is_empty());
+    }
+
+    #[test]
+    fn default_rule_not_last_errors_is_empty_when_default_is_last() {
+        let rules = vec![
+            rule("myapp", 0, RuleOperator::Equals, "base"),
+            AssignmentRule {
+                app: "myapp".to_string(),
+                ord: 1,
+                claim_path: String::new(),
+                operator: RuleOperator::Default,
+                value: None,
+                profile: "fallback".to_string(),
+            },
+        ];
+        assert!(default_rule_not_last_errors("myapp", &rules).is_empty());
+    }
+
+    #[test]
+    fn default_rule_not_last_errors_flags_a_default_ordered_before_the_max() {
+        let rules = vec![
+            AssignmentRule {
+                app: "myapp".to_string(),
+                ord: 0,
+                claim_path: String::new(),
+                operator: RuleOperator::Default,
+                value: None,
+                profile: "fallback".to_string(),
+            },
+            rule("myapp", 1, RuleOperator::Equals, "base"),
+        ];
+        let errors = default_rule_not_last_errors("myapp", &rules);
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(
+            errors[0],
+            PolicyValidationError::DefaultRuleNotLast {
+                ord: 0,
+                max_ord: 1,
+                ..
+            }
+        ));
+    }
+
+    // ── `validate_policy_for_write` (spec 023) ─────────────────────────────
+
+    #[tokio::test]
+    async fn validate_policy_for_write_rejects_a_candidate_with_no_manifest() {
+        let store = ScriptedStore::new(Ok(vec![]), Ok(None), Ok(vec![]));
+        let candidate = policy("myapp", "base", None);
+        let errors = validate_policy_for_write(&store, &candidate).await;
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, PolicyValidationError::MissingManifest { .. })));
+    }
+
+    #[tokio::test]
+    async fn validate_policy_for_write_reports_a_manifest_storage_error() {
+        let store = ScriptedStore::new(Ok(vec![]), Err("manifest table unreachable"), Ok(vec![]));
+        let candidate = policy("myapp", "base", None);
+        let errors = validate_policy_for_write(&store, &candidate).await;
+        assert_eq!(errors.len(), 1);
+        assert!(format!("{}", errors[0]).contains("manifest table unreachable"));
+    }
+
+    #[tokio::test]
+    async fn validate_policy_for_write_reports_a_policies_for_app_storage_error() {
+        let store = ScriptedStore::new(
+            Ok(vec![]),
+            Ok(Some(empty_manifest("myapp"))),
+            Err("policy table unreachable"),
+        );
+        let candidate = policy("myapp", "base", None);
+        let errors = validate_policy_for_write(&store, &candidate).await;
+        assert!(errors
+            .iter()
+            .any(|e| format!("{e}").contains("policy table unreachable")));
+    }
+
+    #[tokio::test]
+    async fn validate_policy_for_write_reports_field_conformance_errors() {
+        let store = ScriptedStore::new(Ok(vec![]), Ok(Some(empty_manifest("myapp"))), Ok(vec![]));
+        let mut candidate = policy("myapp", "base", None);
+        candidate
+            .enforced
+            .insert("no-such-field".to_string(), json!("x"));
+        let errors = validate_policy_for_write(&store, &candidate).await;
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, PolicyValidationError::UnknownField { .. })));
+    }
+
+    #[tokio::test]
+    async fn validate_policy_for_write_rejects_a_candidate_that_would_create_a_cycle() {
+        let existing = policy("myapp", "a", Some("candidate"));
+        let store = ScriptedStore::new(
+            Ok(vec![]),
+            Ok(Some(empty_manifest("myapp"))),
+            Ok(vec![existing]),
+        );
+        // Substituting `candidate` (profile "candidate", parent "a") in
+        // creates a two-node cycle: candidate -> a -> candidate.
+        let candidate = policy("myapp", "candidate", Some("a"));
+        let errors = validate_policy_for_write(&store, &candidate).await;
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, PolicyValidationError::InheritanceCycle { .. })),
+            "got {errors:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_policy_for_write_rejects_a_candidate_naming_a_missing_parent() {
+        let store = ScriptedStore::new(Ok(vec![]), Ok(Some(empty_manifest("myapp"))), Ok(vec![]));
+        let candidate = policy("myapp", "child", Some("ghost-parent"));
+        let errors = validate_policy_for_write(&store, &candidate).await;
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, PolicyValidationError::MissingParent { .. })));
+    }
+
+    #[tokio::test]
+    async fn validate_policy_for_write_accepts_a_fully_valid_candidate() {
+        let f = FieldManifest {
+            key: "greeting".to_string(),
+            kind: FieldKind::Str,
+            default: None,
+            label: None,
+            description: None,
+            group: None,
+            scope: Scope::Machine,
+            platforms: vec![],
+            secret: false,
+            local_only: false,
+            protected: false,
+            manageable: true,
+            enforceable: true,
+            restart_required: false,
+            constraints: None,
+        };
+        let manifest = StoredManifest {
+            app: "myapp".to_string(),
+            doc: ConfigManifest::new("myapp", vec![f]),
+            version: 1,
+        };
+        let store = ScriptedStore::new(Ok(vec![]), Ok(Some(manifest)), Ok(vec![]));
+        let mut candidate = policy("myapp", "base", None);
+        candidate
+            .enforced
+            .insert("greeting".to_string(), json!("hi"));
+        assert!(validate_policy_for_write(&store, &candidate)
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn validate_policy_for_write_substitutes_the_candidate_over_any_existing_row_of_the_same_profile(
+    ) {
+        // The candidate replaces an *existing* stored policy for the same
+        // (app, profile) in the by-profile map used for inheritance
+        // resolution -- not a second, stale copy alongside it. Proven here
+        // by giving the existing row a parent that would cycle, while the
+        // candidate (same profile) has no parent at all: if the stale
+        // existing row were still in the map instead of being replaced, this
+        // would spuriously report a cycle.
+        let stale_existing = policy("myapp", "base", Some("base")); // self-cycle if not replaced
+        let store = ScriptedStore::new(
+            Ok(vec![]),
+            Ok(Some(empty_manifest("myapp"))),
+            Ok(vec![stale_existing]),
+        );
+        let candidate = policy("myapp", "base", None);
+        let errors = validate_policy_for_write(&store, &candidate).await;
+        assert!(
+            errors.is_empty(),
+            "the candidate must replace the stale existing row, not sit alongside it: {errors:?}"
+        );
     }
 }

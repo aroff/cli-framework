@@ -54,12 +54,16 @@
 //! proves [`CallerIdentity`] actually composes with a real OIDC validator,
 //! not just a stub.
 
+mod admin_router;
+mod admin_store;
 mod assignment;
+mod bundle;
 mod error;
 mod fs_store;
 mod identity;
 mod inherit;
 mod memory_store;
+mod merge_patch;
 pub mod postgres;
 mod router;
 mod state;
@@ -67,10 +71,11 @@ mod store;
 mod types;
 mod validate;
 
+pub use admin_store::{ImportSummary, MutationLogEntry, PolicyAdminStore, PolicyWrite};
 pub use assignment::{resolve_profile, ResolvedAssignment};
 pub use error::{
-    ConfigServiceError, InheritanceError, PolicyValidationError, StartupValidationError,
-    StoreError, UserConfigWriteError,
+    AdminWriteError, ConfigServiceError, InheritanceError, PolicyValidationError,
+    StartupValidationError, StoreError, UserConfigWriteError,
 };
 pub use fs_store::FsPolicyStore;
 pub use identity::{CallerClaims, CallerIdentity};
@@ -78,9 +83,11 @@ pub use inherit::{combined_chain_version, flatten, resolve_chain};
 pub use memory_store::InMemoryUserConfigStore;
 pub use router::config_service_router;
 pub use state::{
-    ConfigServiceState, MatchedRule, PolicyLookupError, ResolveDiagnostic,
+    default_admin_rule, ConfigServiceState, MatchedRule, PolicyLookupError, ResolveDiagnostic,
     DEFAULT_MAX_USER_CONFIG_BYTES,
 };
 pub use store::{PolicyStore, UserConfigStore};
-pub use types::{AssignmentRule, RuleOperator, StoredManifest, StoredPolicy, StoredUserConfig};
+pub use types::{
+    AssignmentRule, MutationKind, RuleOperator, StoredManifest, StoredPolicy, StoredUserConfig,
+};
 pub use validate::{validate_all, validate_stored_policy};

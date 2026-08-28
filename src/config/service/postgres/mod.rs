@@ -13,13 +13,19 @@
 
 pub mod migrations;
 
-use super::error::{StoreError, UserConfigWriteError};
+use super::admin_store::{ImportSummary, MutationLogEntry, PolicyAdminStore, PolicyWrite};
+use super::error::{AdminWriteError, StoreError, UserConfigWriteError};
+use super::fs_store::FsPolicyStore;
 use super::store::{PolicyStore, UserConfigStore};
-use super::types::{AssignmentRule, RuleOperator, StoredManifest, StoredPolicy, StoredUserConfig};
+use super::types::{
+    AssignmentRule, MutationKind, RuleOperator, StoredManifest, StoredPolicy, StoredUserConfig,
+};
+use super::validate::validate_policy_for_write;
 use crate::config::manifest::ConfigManifest;
 use crate::config::StaleAction;
 use async_trait::async_trait;
-use serde_json::{Map, Value};
+use chrono::{DateTime, Utc};
+use serde_json::{json, Map, Value};
 use sqlx_core::row::Row;
 use sqlx_core::types::Json;
 use sqlx_postgres::{PgRow, Postgres};
@@ -49,6 +55,76 @@ fn parse_stale_action(app: &str, raw: &str) -> Result<StaleAction, StoreError> {
             message: format!("policy.stale_action has unrecognized value '{other}'"),
         }),
     }
+}
+
+/// The inverse of [`parse_stale_action`] — needed by every administrative
+/// write path (spec 023) that stores a `policy.stale_action`, not just
+/// `testkit` seeding (which used to be the only writer, hence why this used
+/// to live inside that module alone).
+fn stale_action_wire_str(action: StaleAction) -> &'static str {
+    match action {
+        StaleAction::Warn => "warn",
+        StaleAction::Refuse => "refuse",
+    }
+}
+
+fn row_to_mutation_log_entry(row: &PgRow) -> Result<MutationLogEntry, StoreError> {
+    let id: i64 = row.try_get("id").map_err(StoreError::backend)?;
+    let app: String = row.try_get("app").map_err(StoreError::backend)?;
+    let profile: Option<String> = row.try_get("profile").map_err(StoreError::backend)?;
+    let kind_raw: String = row.try_get("kind").map_err(StoreError::backend)?;
+    let actor: String = row.try_get("actor").map_err(StoreError::backend)?;
+    let occurred_at: DateTime<Utc> = row.try_get("occurred_at").map_err(StoreError::backend)?;
+    let submitted: Json<Value> = row.try_get("submitted").map_err(StoreError::backend)?;
+    let resulting_document: Json<Value> = row
+        .try_get("resulting_document")
+        .map_err(StoreError::backend)?;
+    let resulting_version: i64 = row
+        .try_get("resulting_version")
+        .map_err(StoreError::backend)?;
+
+    let kind = MutationKind::parse_wire_str(&kind_raw).ok_or_else(|| StoreError::Corrupt {
+        app: app.clone(),
+        message: format!("mutation_log.kind has unrecognized value '{kind_raw}'"),
+    })?;
+
+    Ok(MutationLogEntry {
+        id,
+        app,
+        profile,
+        kind,
+        actor,
+        occurred_at,
+        submitted: submitted.0,
+        resulting_document: resulting_document.0,
+        resulting_version: resulting_version as u64,
+    })
+}
+
+/// The canonical `resulting_document` shape [`PgPolicyStore::put_policy`]
+/// writes for a policy write — also the shape
+/// [`super::admin_router`]'s restore handler reads back out of a
+/// [`MutationLogEntry`] to reconstruct a [`PolicyWrite`] for
+/// `kind: `[`MutationKind::PolicyRestore`]`. Kept next to the writer (this
+/// module) rather than the reader (`admin_router`) since a shape and its own
+/// producer drifting apart silently is exactly the failure mode a single
+/// source of truth avoids.
+fn policy_resulting_document(
+    app: &str,
+    profile: &str,
+    policy: &PolicyWrite,
+    version: u64,
+) -> Value {
+    json!({
+        "app": app,
+        "profile": profile,
+        "enforced": policy.enforced,
+        "recommended": policy.recommended,
+        "parent_profile": policy.parent_profile,
+        "max_cache_age_secs": policy.max_cache_age_secs,
+        "stale_action": stale_action_wire_str(policy.stale_action),
+        "version": version,
+    })
 }
 
 fn row_to_stored_manifest(row: &PgRow) -> Result<StoredManifest, StoreError> {
@@ -208,6 +284,701 @@ impl PolicyStore for PgPolicyStore {
         rows.iter()
             .map(|r| r.try_get::<String, _>("app").map_err(StoreError::backend))
             .collect()
+    }
+}
+
+/// Administrative write access (spec 023) — see [`super::admin_store`]'s
+/// module docs for why this is its own trait, and why only [`PgPolicyStore`]
+/// (never [`super::fs_store::FsPolicyStore`]) implements it.
+///
+/// Every write here follows the exact transaction shape
+/// [`PgUserConfigStore::put`] established for spec 022's one prior write
+/// path: `pool.begin()` → `SELECT ... FOR UPDATE` → compare
+/// `expected_version` → `INSERT`/`UPDATE` → on a unique-constraint violation
+/// (the first-write race), explicit `tx.rollback()` then re-read the real
+/// winning version on a fresh statement → `tx.commit()`. The one addition
+/// every method here makes beyond that shape: the `mutation_log` `INSERT`
+/// happens *inside* the same transaction, before `commit()` — spec 023's
+/// non-negotiable "a stored change without a record is not representable."
+#[async_trait]
+impl PolicyAdminStore for PgPolicyStore {
+    async fn put_manifest(
+        &self,
+        app: &str,
+        doc: ConfigManifest,
+        actor: &str,
+        expected_version: u64,
+    ) -> Result<u64, AdminWriteError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+
+        let existing = sqlx_core::query::query::<Postgres>(
+            "SELECT version FROM manifest WHERE app = $1 FOR UPDATE",
+        )
+        .bind(app)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+
+        let current_version: u64 = match &existing {
+            Some(row) => row
+                .try_get::<i64, _>("version")
+                .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?
+                as u64,
+            None => 0,
+        };
+
+        if current_version != expected_version {
+            return Err(AdminWriteError::Conflict {
+                current: current_version,
+                expected: expected_version,
+            });
+        }
+
+        let new_version = current_version + 1;
+        let doc_value = serde_json::to_value(&doc)
+            .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+
+        let write_result = if existing.is_some() {
+            sqlx_core::query::query::<Postgres>(
+                "UPDATE manifest SET doc = $1, version = $2 WHERE app = $3",
+            )
+            .bind(Json(doc_value.clone()))
+            .bind(new_version as i64)
+            .bind(app)
+            .execute(&mut *tx)
+            .await
+        } else {
+            sqlx_core::query::query::<Postgres>(
+                "INSERT INTO manifest (app, doc, version) VALUES ($1, $2, $3)",
+            )
+            .bind(app)
+            .bind(Json(doc_value.clone()))
+            .bind(new_version as i64)
+            .execute(&mut *tx)
+            .await
+        };
+
+        if let Err(e) = write_result {
+            if !is_unique_violation(&e) {
+                return Err(AdminWriteError::Store(StoreError::backend(e)));
+            }
+            let _ = tx.rollback().await;
+            let winner_row =
+                sqlx_core::query::query::<Postgres>("SELECT version FROM manifest WHERE app = $1")
+                    .bind(app)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+            let real_current = match winner_row {
+                Some(row) => row
+                    .try_get::<i64, _>("version")
+                    .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?
+                    as u64,
+                None => current_version,
+            };
+            return Err(AdminWriteError::Conflict {
+                current: real_current,
+                expected: expected_version,
+            });
+        }
+
+        sqlx_core::query::query::<Postgres>(
+            "INSERT INTO mutation_log (app, profile, kind, actor, submitted, resulting_document, resulting_version) \
+             VALUES ($1, NULL, $2, $3, $4, $5, $6)",
+        )
+        .bind(app)
+        .bind(MutationKind::ManifestPut.wire_str())
+        .bind(actor)
+        .bind(Json(doc_value.clone()))
+        .bind(Json(doc_value))
+        .bind(new_version as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+
+        Ok(new_version)
+    }
+
+    async fn put_policy(
+        &self,
+        app: &str,
+        profile: &str,
+        policy: PolicyWrite,
+        kind: MutationKind,
+        submitted: Value,
+        actor: &str,
+        expected_version: u64,
+    ) -> Result<u64, AdminWriteError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+
+        let existing = sqlx_core::query::query::<Postgres>(
+            "SELECT version FROM policy WHERE app = $1 AND profile = $2 FOR UPDATE",
+        )
+        .bind(app)
+        .bind(profile)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+
+        let current_version: u64 = match &existing {
+            Some(row) => row
+                .try_get::<i64, _>("version")
+                .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?
+                as u64,
+            None => 0,
+        };
+
+        if current_version != expected_version {
+            return Err(AdminWriteError::Conflict {
+                current: current_version,
+                expected: expected_version,
+            });
+        }
+
+        let new_version = current_version + 1;
+
+        let write_result = if existing.is_some() {
+            sqlx_core::query::query::<Postgres>(
+                "UPDATE policy SET enforced = $1, recommended = $2, parent_profile = $3, \
+                 max_cache_age_secs = $4, stale_action = $5, version = $6 \
+                 WHERE app = $7 AND profile = $8",
+            )
+            .bind(Json(Value::Object(policy.enforced.clone())))
+            .bind(Json(Value::Object(policy.recommended.clone())))
+            .bind(&policy.parent_profile)
+            .bind(policy.max_cache_age_secs as i64)
+            .bind(stale_action_wire_str(policy.stale_action))
+            .bind(new_version as i64)
+            .bind(app)
+            .bind(profile)
+            .execute(&mut *tx)
+            .await
+        } else {
+            sqlx_core::query::query::<Postgres>(
+                "INSERT INTO policy (app, profile, enforced, recommended, parent_profile, \
+                 max_cache_age_secs, stale_action, version) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            )
+            .bind(app)
+            .bind(profile)
+            .bind(Json(Value::Object(policy.enforced.clone())))
+            .bind(Json(Value::Object(policy.recommended.clone())))
+            .bind(&policy.parent_profile)
+            .bind(policy.max_cache_age_secs as i64)
+            .bind(stale_action_wire_str(policy.stale_action))
+            .bind(new_version as i64)
+            .execute(&mut *tx)
+            .await
+        };
+
+        if let Err(e) = write_result {
+            if !is_unique_violation(&e) {
+                return Err(AdminWriteError::Store(StoreError::backend(e)));
+            }
+            let _ = tx.rollback().await;
+            let winner_row = sqlx_core::query::query::<Postgres>(
+                "SELECT version FROM policy WHERE app = $1 AND profile = $2",
+            )
+            .bind(app)
+            .bind(profile)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+            let real_current = match winner_row {
+                Some(row) => row
+                    .try_get::<i64, _>("version")
+                    .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?
+                    as u64,
+                None => current_version,
+            };
+            return Err(AdminWriteError::Conflict {
+                current: real_current,
+                expected: expected_version,
+            });
+        }
+
+        let resulting_document = policy_resulting_document(app, profile, &policy, new_version);
+
+        sqlx_core::query::query::<Postgres>(
+            "INSERT INTO mutation_log (app, profile, kind, actor, submitted, resulting_document, resulting_version) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(app)
+        .bind(profile)
+        .bind(kind.wire_str())
+        .bind(actor)
+        .bind(Json(submitted))
+        .bind(Json(resulting_document))
+        .bind(new_version as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+
+        Ok(new_version)
+    }
+
+    async fn assignment_rules_version(&self, app: &str) -> Result<u64, StoreError> {
+        let row = sqlx_core::query::query::<Postgres>(
+            "SELECT version FROM assignment_set WHERE app = $1",
+        )
+        .bind(app)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::backend)?;
+        Ok(match row {
+            Some(row) => row
+                .try_get::<i64, _>("version")
+                .map_err(StoreError::backend)? as u64,
+            None => 0,
+        })
+    }
+
+    async fn put_assignment_rules(
+        &self,
+        app: &str,
+        rules: Vec<AssignmentRule>,
+        actor: &str,
+        expected_version: u64,
+    ) -> Result<u64, AdminWriteError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+
+        let existing = sqlx_core::query::query::<Postgres>(
+            "SELECT version FROM assignment_set WHERE app = $1 FOR UPDATE",
+        )
+        .bind(app)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+
+        let current_version: u64 = match &existing {
+            Some(row) => row
+                .try_get::<i64, _>("version")
+                .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?
+                as u64,
+            None => 0,
+        };
+
+        if current_version != expected_version {
+            return Err(AdminWriteError::Conflict {
+                current: current_version,
+                expected: expected_version,
+            });
+        }
+
+        let new_version = current_version + 1;
+
+        sqlx_core::query::query::<Postgres>("DELETE FROM assignment WHERE app = $1")
+            .bind(app)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+
+        // The server assigns `ord` from each rule's position in `rules`
+        // (spec 023: "client does not send `ord`... server assigns it from
+        // array position") -- `enumerate()` here, not whatever `ord` the
+        // caller may have set on each `AssignmentRule`, is what makes that
+        // true regardless of how the handler constructed its input.
+        let mut resulting_rules = Vec::with_capacity(rules.len());
+        for (ord, rule) in rules.iter().enumerate() {
+            let ord = ord as i64;
+            sqlx_core::query::query::<Postgres>(
+                "INSERT INTO assignment (app, ord, claim_path, operator, value, profile) \
+                 VALUES ($1, $2, $3, $4, $5, $6)",
+            )
+            .bind(app)
+            .bind(ord)
+            .bind(&rule.claim_path)
+            .bind(rule.operator.wire_str())
+            .bind(rule.value.clone().map(Json))
+            .bind(&rule.profile)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+            resulting_rules.push(json!({
+                "ord": ord,
+                "claim_path": rule.claim_path,
+                "operator": rule.operator.wire_str(),
+                "value": rule.value,
+                "profile": rule.profile,
+            }));
+        }
+
+        let write_result = if existing.is_some() {
+            sqlx_core::query::query::<Postgres>(
+                "UPDATE assignment_set SET version = $1 WHERE app = $2",
+            )
+            .bind(new_version as i64)
+            .bind(app)
+            .execute(&mut *tx)
+            .await
+        } else {
+            sqlx_core::query::query::<Postgres>(
+                "INSERT INTO assignment_set (app, version) VALUES ($1, $2)",
+            )
+            .bind(app)
+            .bind(new_version as i64)
+            .execute(&mut *tx)
+            .await
+        };
+
+        if let Err(e) = write_result {
+            if !is_unique_violation(&e) {
+                return Err(AdminWriteError::Store(StoreError::backend(e)));
+            }
+            let _ = tx.rollback().await;
+            let winner_row = sqlx_core::query::query::<Postgres>(
+                "SELECT version FROM assignment_set WHERE app = $1",
+            )
+            .bind(app)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+            let real_current = match winner_row {
+                Some(row) => row
+                    .try_get::<i64, _>("version")
+                    .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?
+                    as u64,
+                None => current_version,
+            };
+            return Err(AdminWriteError::Conflict {
+                current: real_current,
+                expected: expected_version,
+            });
+        }
+
+        let submitted = Value::Array(
+            rules
+                .iter()
+                .map(|r| {
+                    json!({
+                        "claim_path": r.claim_path,
+                        "operator": r.operator.wire_str(),
+                        "value": r.value,
+                        "profile": r.profile,
+                    })
+                })
+                .collect(),
+        );
+        let resulting_document = Value::Array(resulting_rules);
+
+        sqlx_core::query::query::<Postgres>(
+            "INSERT INTO mutation_log (app, profile, kind, actor, submitted, resulting_document, resulting_version) \
+             VALUES ($1, NULL, $2, $3, $4, $5, $6)",
+        )
+        .bind(app)
+        .bind(MutationKind::AssignmentsPut.wire_str())
+        .bind(actor)
+        .bind(Json(submitted))
+        .bind(Json(resulting_document))
+        .bind(new_version as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+
+        Ok(new_version)
+    }
+
+    async fn policy_history(
+        &self,
+        app: &str,
+        profile: &str,
+    ) -> Result<Vec<MutationLogEntry>, StoreError> {
+        let rows = sqlx_core::query::query::<Postgres>(
+            "SELECT id, app, profile, kind, actor, occurred_at, submitted, resulting_document, resulting_version \
+             FROM mutation_log WHERE app = $1 AND profile = $2 ORDER BY resulting_version ASC",
+        )
+        .bind(app)
+        .bind(profile)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::backend)?;
+        rows.iter().map(row_to_mutation_log_entry).collect()
+    }
+
+    async fn import_bundle(
+        &self,
+        bundle: &FsPolicyStore,
+        actor: &str,
+    ) -> Result<ImportSummary, AdminWriteError> {
+        let apps = bundle.apps().await.map_err(AdminWriteError::Store)?;
+
+        // ── Phase 1: validate the ENTIRE bundle against its own contents
+        // before touching storage at all (spec 023 user story 26: "an
+        // import validated in full before anything is stored"). ──────────
+        let mut errors = Vec::new();
+        let mut total_manifests = 0usize;
+        let mut total_policies = 0usize;
+        let mut total_rules = 0usize;
+
+        for app in &apps {
+            if bundle
+                .manifest(app)
+                .await
+                .map_err(AdminWriteError::Store)?
+                .is_some()
+            {
+                total_manifests += 1;
+            }
+            let policies = bundle
+                .policies_for_app(app)
+                .await
+                .map_err(AdminWriteError::Store)?;
+            total_policies += policies.len();
+            for policy in &policies {
+                errors.extend(validate_policy_for_write(bundle, policy).await);
+            }
+
+            let rules = bundle
+                .assignment_rules(app)
+                .await
+                .map_err(AdminWriteError::Store)?;
+            total_rules += rules.len();
+            let by_profile: std::collections::HashMap<&str, &StoredPolicy> =
+                policies.iter().map(|p| (p.profile.as_str(), p)).collect();
+            errors.extend(super::validate::assignment_rule_missing_profile_errors(
+                app,
+                &rules,
+                &by_profile,
+            ));
+            errors.extend(super::validate::default_rule_not_last_errors(app, &rules));
+        }
+
+        if !errors.is_empty() {
+            return Err(AdminWriteError::Validation(errors));
+        }
+
+        // ── Phase 2: one transaction for the whole bundle — commit only
+        // once every write has succeeded. ─────────────────────────────────
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+
+        for app in &apps {
+            let mut app_resulting_version: u64 = 0;
+
+            let manifest_present =
+                match bundle.manifest(app).await.map_err(AdminWriteError::Store)? {
+                    Some(manifest) => {
+                        let existing = sqlx_core::query::query::<Postgres>(
+                            "SELECT version FROM manifest WHERE app = $1 FOR UPDATE",
+                        )
+                        .bind(app.as_str())
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+                        let current: u64 = match &existing {
+                            Some(row) => row
+                                .try_get::<i64, _>("version")
+                                .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?
+                                as u64,
+                            None => 0,
+                        };
+                        let new_version = current + 1;
+                        let doc_value = serde_json::to_value(&manifest.doc)
+                            .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+                        if existing.is_some() {
+                            sqlx_core::query::query::<Postgres>(
+                                "UPDATE manifest SET doc = $1, version = $2 WHERE app = $3",
+                            )
+                            .bind(Json(doc_value))
+                            .bind(new_version as i64)
+                            .bind(app.as_str())
+                            .execute(&mut *tx)
+                            .await
+                            .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+                        } else {
+                            sqlx_core::query::query::<Postgres>(
+                                "INSERT INTO manifest (app, doc, version) VALUES ($1, $2, $3)",
+                            )
+                            .bind(app.as_str())
+                            .bind(Json(doc_value))
+                            .bind(new_version as i64)
+                            .execute(&mut *tx)
+                            .await
+                            .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+                        }
+                        app_resulting_version = app_resulting_version.max(new_version);
+                        true
+                    }
+                    None => false,
+                };
+
+            let policies = bundle
+                .policies_for_app(app)
+                .await
+                .map_err(AdminWriteError::Store)?;
+            for policy in &policies {
+                let existing = sqlx_core::query::query::<Postgres>(
+                    "SELECT version FROM policy WHERE app = $1 AND profile = $2 FOR UPDATE",
+                )
+                .bind(app.as_str())
+                .bind(&policy.profile)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+                let current: u64 = match &existing {
+                    Some(row) => row
+                        .try_get::<i64, _>("version")
+                        .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?
+                        as u64,
+                    None => 0,
+                };
+                let new_version = current + 1;
+                if existing.is_some() {
+                    sqlx_core::query::query::<Postgres>(
+                        "UPDATE policy SET enforced = $1, recommended = $2, parent_profile = $3, \
+                         max_cache_age_secs = $4, stale_action = $5, version = $6 \
+                         WHERE app = $7 AND profile = $8",
+                    )
+                    .bind(Json(Value::Object(policy.enforced.clone())))
+                    .bind(Json(Value::Object(policy.recommended.clone())))
+                    .bind(&policy.parent_profile)
+                    .bind(policy.max_cache_age_secs as i64)
+                    .bind(stale_action_wire_str(policy.stale_action))
+                    .bind(new_version as i64)
+                    .bind(app.as_str())
+                    .bind(&policy.profile)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+                } else {
+                    sqlx_core::query::query::<Postgres>(
+                        "INSERT INTO policy (app, profile, enforced, recommended, parent_profile, \
+                         max_cache_age_secs, stale_action, version) \
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                    )
+                    .bind(app.as_str())
+                    .bind(&policy.profile)
+                    .bind(Json(Value::Object(policy.enforced.clone())))
+                    .bind(Json(Value::Object(policy.recommended.clone())))
+                    .bind(&policy.parent_profile)
+                    .bind(policy.max_cache_age_secs as i64)
+                    .bind(stale_action_wire_str(policy.stale_action))
+                    .bind(new_version as i64)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+                }
+                app_resulting_version = app_resulting_version.max(new_version);
+            }
+
+            let rules = bundle
+                .assignment_rules(app)
+                .await
+                .map_err(AdminWriteError::Store)?;
+
+            sqlx_core::query::query::<Postgres>("DELETE FROM assignment WHERE app = $1")
+                .bind(app.as_str())
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+            for (ord, rule) in rules.iter().enumerate() {
+                sqlx_core::query::query::<Postgres>(
+                    "INSERT INTO assignment (app, ord, claim_path, operator, value, profile) \
+                     VALUES ($1, $2, $3, $4, $5, $6)",
+                )
+                .bind(app.as_str())
+                .bind(ord as i64)
+                .bind(&rule.claim_path)
+                .bind(rule.operator.wire_str())
+                .bind(rule.value.clone().map(Json))
+                .bind(&rule.profile)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+            }
+            let existing_set = sqlx_core::query::query::<Postgres>(
+                "SELECT version FROM assignment_set WHERE app = $1 FOR UPDATE",
+            )
+            .bind(app.as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+            let current_set: u64 = match &existing_set {
+                Some(row) => row
+                    .try_get::<i64, _>("version")
+                    .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?
+                    as u64,
+                None => 0,
+            };
+            let new_set_version = current_set + 1;
+            if existing_set.is_some() {
+                sqlx_core::query::query::<Postgres>(
+                    "UPDATE assignment_set SET version = $1 WHERE app = $2",
+                )
+                .bind(new_set_version as i64)
+                .bind(app.as_str())
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+            } else {
+                sqlx_core::query::query::<Postgres>(
+                    "INSERT INTO assignment_set (app, version) VALUES ($1, $2)",
+                )
+                .bind(app.as_str())
+                .bind(new_set_version as i64)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+            }
+            app_resulting_version = app_resulting_version.max(new_set_version);
+
+            let summary = json!({
+                "manifest": manifest_present,
+                "policies": policies.len(),
+                "assignment_rules": rules.len(),
+            });
+
+            sqlx_core::query::query::<Postgres>(
+                "INSERT INTO mutation_log (app, profile, kind, actor, submitted, resulting_document, resulting_version) \
+                 VALUES ($1, NULL, $2, $3, $4, $5, $6)",
+            )
+            .bind(app.as_str())
+            .bind(MutationKind::Import.wire_str())
+            .bind(actor)
+            .bind(Json(json!({"source": "bundle import"})))
+            .bind(Json(summary))
+            .bind(app_resulting_version as i64)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+
+        Ok(ImportSummary {
+            manifests: total_manifests,
+            policies: total_policies,
+            assignment_rules: total_rules,
+        })
     }
 }
 
@@ -404,25 +1175,18 @@ impl UserConfigStore for PgUserConfigStore {
 pub mod testkit {
     use super::*;
 
-    /// The inverse of [`parse_stale_action`] — only needed for seeding
-    /// (production reads always go the other direction), which is why it
-    /// lives here rather than beside its inverse above.
-    fn stale_action_wire_str(action: StaleAction) -> &'static str {
-        match action {
-            StaleAction::Warn => "warn",
-            StaleAction::Refuse => "refuse",
-        }
-    }
-
     /// Remove every row from every config-service table — for isolating
     /// tests that share one long-lived Postgres instance (CI's service
     /// container, or a developer's local database) rather than spinning up
     /// a fresh database per test.
     pub async fn truncate_all(pool: &PgPool) -> Result<(), StoreError> {
-        sqlx_core::raw_sql::raw_sql("TRUNCATE TABLE manifest, policy, assignment, user_config")
-            .execute(pool)
-            .await
-            .map_err(StoreError::backend)?;
+        sqlx_core::raw_sql::raw_sql(
+            "TRUNCATE TABLE manifest, policy, assignment, user_config, \
+             mutation_log, assignment_set",
+        )
+        .execute(pool)
+        .await
+        .map_err(StoreError::backend)?;
         Ok(())
     }
 

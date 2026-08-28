@@ -44,7 +44,13 @@ pub fn resolve_profile<'a>(
 /// Whether `rule` matches `claims`. A claim path that does not resolve on
 /// the token means the rule does **not** match — never an error, since
 /// tokens legitimately vary in which claims they carry (spec 022).
-fn rule_matches(rule: &AssignmentRule, claims: &Value) -> bool {
+///
+/// `pub(crate)` (spec 023): the administrative-role gate
+/// ([`super::identity::require_admin_role`]) reuses this exact function to
+/// evaluate the configured admin rule against a caller's claims — "the
+/// identical `{claim_path, operator, value}` shape" spec 023 requires,
+/// rather than a second, potentially-drifting copy of rule evaluation.
+pub(crate) fn rule_matches(rule: &AssignmentRule, claims: &Value) -> bool {
     match rule.operator {
         RuleOperator::Default => true,
         RuleOperator::Exists => claim_at_path(claims, &rule.claim_path).is_some(),
