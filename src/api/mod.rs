@@ -618,22 +618,99 @@ impl ApiServerBuilder {
     }
 }
 
-/// Wrap a `Router` with a streaming-safe request/response log at `label`.
+/// Wrap a `Router` with a streaming-safe per-request server **span** at `label`,
+/// plus the request/response log line emitted inside it.
+///
+/// # This opens a span, and that is the point
+///
+/// Until this did, no request anywhere on the framework produced an OTel trace.
+/// The layer emitted only a `tracing::info!` **event**, and `tracing-opentelemetry`
+/// maps an event onto its *enclosing* span — with no enclosing span it is
+/// discarded outright. So a service could have telemetry fully configured, with
+/// the bridge correctly installed, and still export nothing: there was nothing to
+/// carry. See [`crate::telemetry`].
+///
+/// The four call sites wrap disjoint route trees (versioned API, mounts, `/mcp`,
+/// root fallback), so a request passes through exactly one and gets exactly one
+/// span. `/healthz` and `/readyz` are deliberately not wrapped — kubelet probes
+/// would otherwise dominate every trace view.
+///
+/// A consumer that already opens its own request span gets it as a child of this
+/// one (layers wrap outside-in), which nests correctly but is redundant; this is
+/// the canonical server span and app middleware should enrich it rather than
+/// duplicate it.
 fn with_tracing(router: Router, label: &'static str) -> Router {
     router.layer(axum::middleware::from_fn(
         move |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {
+            use tracing::Instrument as _;
+
             let start = std::time::Instant::now();
             let method = req.method().clone();
             let path = req.uri().path().to_string();
-            let resp: axum::response::Response = next.run(req).await;
-            tracing::info!(
-                "{} {} {} -> {} ({:?})",
-                label,
-                method,
-                path,
-                resp.status(),
-                start.elapsed()
+
+            // Span names come from the matched route pattern, never the concrete
+            // path: `/users/{id}` is one operation, `/users/8f3a…` is a new
+            // operation name per request and blows up cardinality in the trace
+            // backend. No `MatchedPath` means nothing matched — the fallback
+            // tree, or a 404 — and there the path is caller-controlled input, so
+            // it reports the method alone rather than echoing a URL a scanner
+            // invented.
+            let pattern = req
+                .extensions()
+                .get::<axum::extract::MatchedPath>()
+                .map(|m| m.as_str().to_string());
+
+            // `tracing` fixes a callsite's fieldset at compile time, so anything
+            // filled in after the response must be declared `Empty` here —
+            // `record` on an undeclared field is a silent no-op. `otel.*` are the
+            // special fields `tracing-opentelemetry` maps onto the span itself
+            // rather than carrying as plain attributes.
+            let span = tracing::info_span!(
+                "http.request",
+                otel.name = tracing::field::Empty,
+                otel.kind = "server",
+                otel.status_code = tracing::field::Empty,
+                http.request.method = %method,
+                http.route = tracing::field::Empty,
+                http.response.status_code = tracing::field::Empty,
+                api.surface = label,
             );
+            match &pattern {
+                Some(p) => {
+                    span.record("http.route", p.as_str());
+                    span.record("otel.name", format!("{method} {p}").as_str());
+                }
+                None => {
+                    span.record("otel.name", method.as_str());
+                }
+            }
+
+            // `.instrument()` rather than a `span.enter()` guard: a guard held
+            // across this await point leaks the span into whatever else the
+            // executor schedules on the thread meanwhile.
+            let resp: axum::response::Response = next.run(req).instrument(span.clone()).await;
+
+            span.record("http.response.status_code", resp.status().as_u16());
+            // Only 5xx marks the span failed. A 4xx is the caller's error and a
+            // correctly-served response; marking those ERROR makes every trace
+            // view look like an outage during ordinary auth-rejection traffic.
+            if resp.status().is_server_error() {
+                span.record("otel.status_code", "ERROR");
+            }
+
+            // Emitted inside the span so it attaches as a span event; outside it,
+            // the OTel side drops it and only the log pipeline ever sees it.
+            // `in_scope` (not `enter`) because no await remains in this frame.
+            span.in_scope(|| {
+                tracing::info!(
+                    "{} {} {} -> {} ({:?})",
+                    label,
+                    method,
+                    path,
+                    resp.status(),
+                    start.elapsed()
+                );
+            });
             resp
         },
     ))

@@ -406,3 +406,11 @@ required-features = ["telemetry"]
 name = "integration_telemetry_end_to_end"
 path = "tests/integration/telemetry_end_to_end.rs"
 required-features = ["telemetry"]
+
+# Own binary for the same process-global-subscriber reason as above. Covers the
+# SERVER path (ApiServerBuilder -> serve -> per-request span); the test above
+# covers the CLI dispatch path.
+[[test]]
+name = "integration_telemetry_api_request_span"
+path = "tests/integration/telemetry_api_request_span.rs"
+required-features = ["telemetry", "api-server"]
