@@ -485,12 +485,50 @@ Alongside traces, every dispatch emits two metrics tagged
 `{command, surface, status}` — the `cli.command.invocations` counter and the
 `cli.command.duration_ms` histogram — so error rates and latency percentiles work
 without handler code. `ctx.telemetry().counter()/histogram()` are exported on the
-same pipeline.
+same pipeline. The built-in `version` command is instrumented too, with zero args.
 
 Configuration is driven by the standard `OTEL_*` environment variables (see the
 [Environment Variables](#environment-variables) section) or by building a
 `TelemetryConfig` directly. Export only activates when an endpoint is set,
 `enabled` is true, and `OTEL_SDK_DISABLED` is not `true`.
+
+### Distributed tracing (context propagation)
+
+Inbound `traceparent`/`tracestate` headers are extracted automatically by
+`ApiServerBuilder`'s request layer, so a call arriving from another
+cli-framework service continues that service's trace instead of starting a new
+one. Outbound propagation is explicit — the framework does not own your HTTP
+client:
+
+```rust
+use cli_framework::telemetry::propagation::TracedRequestBuilder as _;
+
+// Inside a handler: the current span is the request's parent, so the
+// downstream call continues this trace rather than starting its own.
+let resp = client.get(url).with_trace_context().send().await?;
+```
+
+Without this, `serviceA → serviceB → serviceC` produces three disconnected
+traces rather than one. Baggage is deliberately not propagated — it would carry
+arbitrary caller-supplied attributes into every downstream service's telemetry.
+
+### Authenticating to the collector
+
+```rust
+use std::collections::HashMap;
+use cli_framework::telemetry::TelemetryConfig;
+
+let mut headers = HashMap::new();
+headers.insert("authorization".into(), "Bearer <token>".into());
+
+let cfg = TelemetryConfig { headers, ..TelemetryConfig::from_env() };
+```
+
+Or set the standard `OTEL_EXPORTER_OTLP_HEADERS` environment variable
+(`key=value,key2=value2`, percent-encoding supported). Headers are sent with
+every OTLP request, traces and metrics alike. `TelemetryConfig`'s `Debug` impl
+prints header **names** and redacts every value — logging a config cannot leak
+a credential.
 
 ### The subscriber
 
@@ -512,21 +550,17 @@ tracing_subscriber::registry()
 
 ### Known limitations
 
-- **No context propagation.** No `traceparent` header is injected or extracted,
-  so traces do not yet span process boundaries — each service produces its own
-  disconnected trace.
-- **No OTLP auth headers.** `OTEL_EXPORTER_OTLP_HEADERS` is not read, so a
-  collector requiring authentication cannot be reached.
-- **`http/protobuf` only.** `OTEL_EXPORTER_OTLP_PROTOCOL` is parsed onto the
-  config but not acted on.
+- **`http/protobuf` only.** It is the sole protocol this crate can export with.
+  `OTEL_EXPORTER_OTLP_PROTOCOL` set to anything else (e.g. `grpc`) is rejected
+  loudly at init — telemetry stays off rather than silently exporting over a
+  protocol you didn't ask for. gRPC would need the `grpc-tonic` feature.
 - `SpanHandle::set_attr` only records span attributes for keys declared at the
   span's callsite; arbitrary keys are dropped (a `tracing` fieldset constraint).
   `record_error` works and sets the span's OTel status to `Error`.
-- The built-in `version` command short-circuits before dispatch, so it emits no
-  `cli.command` span or metrics.
-- Config fields `traces_enabled`, `logs_enabled`, `record_arg_values`, and
-  `arg_value_allowlist` are reserved and not yet consulted. `metrics_enabled`
-  *is* honoured.
+- **No OTLP logs pipeline.** `logs_enabled` is reserved — there is no
+  `SdkLoggerProvider` yet, so the field is reader-visible intent only.
+  `record_arg_values` / `arg_value_allowlist` are likewise reserved.
+  `traces_enabled` and `metrics_enabled` **are** honoured.
 
 ## Chat Command (default feature)
 
