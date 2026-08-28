@@ -102,6 +102,52 @@
   - Does not implement the config-service (server side, PRDs 022/023) or cryptographic policy
     signing.
 
+- **Config service: read path and storage** (spec 022, ADR 0074/0075): the server side of the
+  managed-configuration feature — a new `config-service` feature (implies `config` + `api-server`;
+  adds `sqlx-core`/`sqlx-postgres` directly, never the `sqlx` facade crate, which pulls a MySQL
+  path and a transitive `rsa` RUSTSEC advisory into the lockfile) under the new
+  `cli_framework::config::service` module.
+  - `config_service_router(state)` — a **self-authenticating** `axum` router mounted via
+    `ApiServerBuilder::mount(...)`: `GET /v1/policy/{app}` (resolved, flattened `Policy` with
+    ETag/`If-None-Match` revalidation; `404` = unmanaged), `GET /v1/manifest/{app}`,
+    `GET`/`PUT /v1/config/{app}` (roaming document, `If-Match` optimistic concurrency, `412` on
+    mismatch, server-side rejection of unknown/machine-scoped/secret fields on write, a size
+    cap), and `GET /v1/resolve/{app}` (diagnostic: profile + matching rule, no configuration
+    values). Authenticates itself via a per-router `axum::middleware::from_fn_with_state`,
+    independent of `ApiServerBuilder::auth()` — that seam applies one auth layer to *every*
+    mount in a builder, which would force every other route an embedding app mounts onto the
+    same scheme.
+  - New crate-local `CallerIdentity` trait (object-safe, one async method, raw `Authorization`
+    header in, validated claims as `serde_json::Value` out) — deliberately never names
+    `cli-framework-oidc` (that crate already depends on `cli-framework` by path; naming it back
+    would be a dependency cycle). `skill/examples/with_config_service` is a runnable adapter
+    from `cli-framework-oidc`'s `OidcValidator` to this trait, proving the seam actually
+    composes rather than merely type-checking in isolation.
+  - `PolicyStore` (manifests, policies, assignment rules) and `UserConfigStore` (roaming
+    documents) storage traits, mirroring how `secrets::SecretStore` separates a trait from its
+    backends. `FsPolicyStore` reads a read-only bundle directory
+    (`manifests/{app}.json`, `policies/{app}/{profile}.toml`, `assignments.toml`) for tests/dev;
+    `InMemoryUserConfigStore` is its `UserConfigStore` counterpart.
+    `config::service::postgres::{PgPolicyStore, PgUserConfigStore}` are the real backend, with a
+    small hand-rolled SQL migration runner (embedded `.sql`, a `schema_migrations` table,
+    "refuse rather than downgrade" if the database is ahead of the binary) serialized against
+    concurrent replicas via a Postgres advisory lock.
+  - Assignment-rule evaluation (`{claim_path, operator, value, profile}`, operators
+    `equals`/`contains`/`exists`, first match wins, optional default profile) and single-parent
+    inheritance (deep-merged server-side, cycle-rejected at startup and defensively at read
+    time) so the wire `Policy` never represents inheritance at all. Startup validation reuses
+    — rather than reimplements — spec 021's own resolver drop-reason rules
+    (`server_tree_drop_reason_recommended`/`_enforced`, now `pub(crate)` for this one call
+    site) for unknown-field/type-mismatch/secret/local_only/org-scope/enforceable-false
+    conformance checking.
+  - CI gets its first-ever service container: a `postgres:16` service in `.github/workflows/ci.yml`
+    backs a new `Test (config-service)` step; the Postgres half of the trait-conformance suite
+    (`tests/integration/config_service_postgres_conformance.rs`) triggers purely on `DATABASE_URL`
+    being set (present in CI, usually absent locally) rather than a separate opt-in flag, unlike
+    the pre-existing `testcontainers`-based OpenBao precedent, which never runs in CI at all.
+  - Out of scope: administrative writes, the mutation log, and import/export endpoints
+    (PRD 023); this slice's storage is read-only at the API surface.
+
 ## [0.5.4] — 2026-06-13
 
 ### Added

@@ -91,6 +91,33 @@ tracing-opentelemetry = { version = "0.32", optional = true }
 # and multi-value rules ourselves.
 opentelemetry-http = { version = "0.31", default-features = false, optional = true }
 
+# Postgres access for the `config-service` feature (spec 022). `sqlx-core` +
+# `sqlx-postgres` directly — never the `sqlx` facade crate, which pulls a
+# MySQL driver path and its transitive `rsa` RUSTSEC advisory into the
+# lockfile even when only Postgres is used (this workspace has hit that trap
+# before, see `reference_sqlx_facade_audit_landmine`).
+#
+# TLS: `_tls-rustls-ring-webpki` on `sqlx-core` matches this crate's existing
+# TLS stack exactly — `reqwest`'s `rustls-tls` feature (already unconditional
+# above) resolves to rustls + the `ring` crypto provider + `webpki-roots`
+# (reqwest's `rustls-tls` = `rustls-tls-webpki-roots` = `__rustls-ring` +
+# `webpki-roots`), so this avoids linking a second crypto backend
+# (`aws-lc-rs`) alongside `ring` in the same binary.
+#
+# Runtime: `_rt-tokio` — the only async runtime this crate uses anywhere.
+#
+# `sqlx-postgres`'s own `json` feature (not `sqlx-core/json` directly, though
+# it implies that) is what provides `Encode`/`Decode`/`Type` for
+# `serde_json::Value` against Postgres `json`/`jsonb` columns — required for
+# every table in spec 022's schema.
+#
+# Neither crate declares a `rust-version` in its own manifest as of 0.8.x
+# (unlike sqlx-postgres 0.9, which requires a newer rustc than this
+# workspace's pinned toolchain), so 0.8 is also the version-selection
+# constraint, not just a default.
+sqlx-core = { version = "0.8", default-features = false, features = ["_rt-tokio", "_tls-rustls-ring-webpki"], optional = true }
+sqlx-postgres = { version = "0.8", default-features = false, features = ["json"], optional = true }
+
 # Windows registry backend for the `config` feature (`ConfigBackend`). Only
 # resolved/built when compiling for a Windows target; `config` builds and
 # tests cleanly without it everywhere else.
@@ -168,6 +195,18 @@ config = ["dep:winreg"]
 # (TokenProvider, AuthenticatedHttpClient). Adds no new dependency: reqwest is
 # already an unconditional dependency of this crate.
 config-managed = ["config", "auth"]
+# Config service (spec 022) — the server side: a mountable axum router
+# serving resolved Policy/manifest/roaming-config over HTTP, backed by
+# Postgres (or, for tests/dev, a read-only bundle-directory store). Implies
+# `config` (for Policy/ConfigManifest/the resolver — reusable with no cycle
+# risk, unlike `cli-framework-oidc`) and `api-server` (axum types, the mount
+# seam). Deliberately does NOT imply `config-managed`: the service has no
+# need of the *client* (PolicyClient/RoamingConfigClient/auth's TokenProvider)
+# it serves. Corrects an initial spec 022 draft's "implies api-server only" —
+# that reasoning was specifically about avoiding the cli-framework-oidc
+# dependency cycle (a real risk `config-managed` does NOT reopen, since
+# `config` has no path back to `cli-framework-oidc`).
+config-service = ["config", "api-server", "dep:sqlx-core", "dep:sqlx-postgres"]
 
 [lib]
 name = "cli_framework"
@@ -208,6 +247,19 @@ path = "skill/examples/with_ailoop/src/main.rs"
 name = "with_auth"
 path = "skill/examples/with_auth/src/main.rs"
 required-features = ["auth"]
+
+# Demonstrates the config-service (spec 022) end to end: an FsPolicyStore
+# bundle, an in-memory UserConfigStore, and — the part spec 022 requires this
+# example to prove, not merely assert in prose — a real adapter from
+# cli-framework-oidc's OidcValidator to this crate's crate-local
+# CallerIdentity trait. Uses cli-framework-oidc from [dev-dependencies]
+# (already present with "client, server, test-support" for this crate's own
+# tests) rather than a second nested example crate, matching the single-file
+# `with_api`/`with_doctor` example style.
+[[example]]
+name = "with_config_service"
+path = "skill/examples/with_config_service/src/main.rs"
+required-features = ["config-service"]
 
 [[test]]
 name = "integration_app_builder"
@@ -413,6 +465,45 @@ required-features = ["config-managed", "testkit"]
 name = "integration_config_managed"
 path = "tests/integration/config_managed.rs"
 required-features = ["config-managed", "testkit", "derive"]
+
+# ── config-service (spec 022) ────────────────────────────────────────────────
+
+[[test]]
+name = "unit_config_service_assignment"
+path = "tests/unit/config_service_assignment.rs"
+required-features = ["config-service"]
+
+[[test]]
+name = "unit_config_service_inherit"
+path = "tests/unit/config_service_inherit.rs"
+required-features = ["config-service"]
+
+[[test]]
+name = "unit_config_service_validate"
+path = "tests/unit/config_service_validate.rs"
+required-features = ["config-service"]
+
+[[test]]
+name = "unit_config_service_fs_store"
+path = "tests/unit/config_service_fs_store.rs"
+required-features = ["config-service"]
+
+[[test]]
+name = "integration_config_service_router"
+path = "tests/integration/config_service_router.rs"
+required-features = ["config-service"]
+
+# Trait-conformance suite for `PolicyStore`/`UserConfigStore`: FsPolicyStore
+# and the in-memory `UserConfigStore` unconditionally, plus the Postgres
+# implementations gated on `DATABASE_URL` being set (present in CI via the
+# `postgres` service container; absent in ordinary local dev, in which case
+# the suite prints why and returns early rather than failing — see the test
+# file's module docs). Needs `testkit` for the Postgres seeding/truncate
+# helpers under `cli_framework::config::service::postgres::testkit`.
+[[test]]
+name = "integration_config_service_postgres_conformance"
+path = "tests/integration/config_service_postgres_conformance.rs"
+required-features = ["config-service", "testkit"]
 
 [[test]]
 name = "unit_command_surface_json_schema"

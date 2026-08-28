@@ -19,3 +19,11 @@ pub use provenance::{Layer, Provenance};
 pub use resolver::{
     resolve, ResolutionInput, ResolutionWarning, Resolved, ResolvedEntry, WarningReason,
 };
+
+/// Crate-internal re-export so `crate::config::service`'s startup policy
+/// validation (spec 022) can call the *exact* manifest-conformance rules this
+/// resolver already implements, rather than maintaining a second copy that
+/// could drift. Not part of the public API — `resolver` itself stays a
+/// private submodule of `resolution`.
+#[cfg(feature = "config-service")]
+pub(crate) use resolver::{server_tree_drop_reason_enforced, server_tree_drop_reason_recommended};
