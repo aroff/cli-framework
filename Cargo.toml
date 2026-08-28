@@ -91,6 +91,12 @@ tracing-opentelemetry = { version = "0.32", optional = true }
 # and multi-value rules ourselves.
 opentelemetry-http = { version = "0.31", default-features = false, optional = true }
 
+# Windows registry backend for the `config` feature (`ConfigBackend`). Only
+# resolved/built when compiling for a Windows target; `config` builds and
+# tests cleanly without it everywhere else.
+[target.'cfg(windows)'.dependencies]
+winreg = { version = "0.55", optional = true }
+
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 wiremock = "0.6"
@@ -143,6 +149,10 @@ auth = []
 secrets = ["dep:zeroize"]
 # OpenBao/Vault KV v2 backend (adds nothing beyond `secrets` + reqwest, already unconditional)
 secrets-openbao = ["secrets"]
+# Config — writable ConfigBackend/ConfigStore with atomic file writes, JSON/TOML
+# formats, and schema-version migrations. Windows registry backend compiled in
+# automatically on Windows targets via `dep:winreg` (a no-op elsewhere).
+config = ["dep:winreg"]
 
 [lib]
 name = "cli_framework"
@@ -340,6 +350,34 @@ required-features = ["project-config"]
 name = "integration_project_config"
 path = "tests/integration/project_config.rs"
 required-features = ["project-config"]
+
+[[test]]
+name = "unit_config_store"
+path = "tests/unit/config_store.rs"
+required-features = ["config"]
+
+[[test]]
+name = "unit_config_backend_file"
+path = "tests/unit/config_backend_file.rs"
+required-features = ["config"]
+
+[[test]]
+name = "unit_config_versioning"
+path = "tests/unit/config_versioning.rs"
+required-features = ["config"]
+
+# Windows-only content, but always registered: the file is `#![cfg(windows)]`
+# at the top so it compiles to an empty, trivially-passing test binary on
+# every other platform (spec 016 user story 7).
+[[test]]
+name = "unit_config_registry_backend"
+path = "tests/unit/config_registry_backend.rs"
+required-features = ["config"]
+
+[[test]]
+name = "integration_config"
+path = "tests/integration/config.rs"
+required-features = ["config", "testkit"]
 
 [[test]]
 name = "unit_command_surface_json_schema"

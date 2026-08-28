@@ -37,6 +37,8 @@ pub(crate) struct DispatchEnv<'a> {
     pub(crate) surface: InvocationSurface,
     #[cfg(feature = "auth")]
     pub(crate) token_provider: Option<Arc<dyn crate::auth::TokenProvider>>,
+    #[cfg(feature = "config")]
+    pub(crate) config_handle: Option<Arc<dyn crate::config::ConfigHandle>>,
 }
 
 pub(crate) struct CliAppContextWrapper<'a> {
@@ -100,6 +102,11 @@ impl<'a> AppContext for CliAppContextWrapper<'a> {
         &self,
     ) -> Option<std::sync::Arc<dyn crate::telemetry::Telemetry + Send + Sync>> {
         self.env.telemetry.clone()
+    }
+
+    #[cfg(feature = "config")]
+    fn opt_config_handle(&self) -> Option<&dyn crate::config::ConfigHandle> {
+        self.env.config_handle.as_deref()
     }
 }
 
@@ -177,6 +184,8 @@ mod tests {
             surface: InvocationSurface::Cli,
             #[cfg(feature = "auth")]
             token_provider: None,
+            #[cfg(feature = "config")]
+            config_handle: None,
         };
         let mut inner = DummyCtx;
         let wrapper = CliAppContextWrapper::new(&mut inner, env);

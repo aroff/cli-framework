@@ -15,6 +15,7 @@ A Rust library for building CLIs with optional AI-assisted command resolution (*
 - **MCP Server Mode**: Expose registered commands as MCP tools over Streamable HTTP or stdio (opt-in via `mcp-server` feature)
 - **API Server**: Built-in Axum host for serving versioned HTTP APIs with `/healthz` + `/readyz` (opt-in via `api-server` feature)
 - **Project Config**: Project root discovery and TOML loading (opt-in via `project-config` feature)
+- **Config store**: Writable, versioned configuration for the user profile — atomic file writes (or the Windows registry), JSON/TOML, schema migrations (opt-in via `config` feature)
 
 ## Cargo Features
 
@@ -33,6 +34,7 @@ A Rust library for building CLIs with optional AI-assisted command resolution (*
 | `auth` | no | Generic `TokenProvider` trait + `AuthenticatedHttpClient` + four `auth` subcommands; pair with `cli-framework-oidc` for OIDC flows |
 | `observability` | no | `tracing-subscriber` logging foundation (implied by `telemetry`) |
 | `telemetry` | no | Built-in OpenTelemetry: auto `cli.command` spans + invocation/duration metrics exported over OTLP (implies `observability`) |
+| `config` | no | Writable `ConfigBackend`/`ConfigStore` with atomic file writes, JSON/TOML formats, and schema-version migrations (`CE001`–`CE009` error codes); Windows registry backend compiled in automatically on Windows targets |
 
 ## MCP Server Mode
 
@@ -446,6 +448,10 @@ fn main() {
 | `with_risk_policy(policy)` | Override the default command risk tier policy | — |
 | `with_token_provider(provider)` | Supply a `TokenProvider`; auto-registers four `auth` commands (requires `auth` feature) | disabled |
 | `with_telemetry(config)` | Enable OpenTelemetry export for CLI runs using a `TelemetryConfig` (requires `telemetry` feature) | disabled |
+| `with_config_backend(backend)` | Select an explicit `ConfigBackend` for the typed config (requires `config` feature) | `FileBackend::for_app(app_name)` |
+| `with_config_path(path)` | Shorthand for `with_config_backend(Arc::new(FileBackend::new(path)))` (requires `config` feature) | — |
+| `with_config::<T>(options)` | Register a typed configuration `T`, its format, and its migrations; `build()` resolves it once (requires `config` feature) | disabled |
+| `build_with_config::<C, T>(ctx)` | Like `build()`, but also returns the resolved typed `T` alongside the built `App` (requires `config` feature) | — |
 
 ## Telemetry (`telemetry`)
 

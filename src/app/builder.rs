@@ -64,7 +64,33 @@ pub struct AppBuilder {
     #[cfg(feature = "auth")]
     token_provider: Option<Arc<dyn crate::auth::TokenProvider>>,
     telemetry_config: Option<crate::telemetry::TelemetryConfig>,
+    #[cfg(feature = "config")]
+    config_backend: Option<Arc<dyn crate::config::ConfigBackend>>,
+    #[cfg(feature = "config")]
+    config_path: Option<PathBuf>,
+    #[cfg(feature = "config")]
+    config_registration: Option<Box<ConfigRegistrationFn>>,
 }
+
+/// Result of resolving a registered `with_config::<T>()` call against a
+/// concrete backend: the type-erased [`crate::config::ConfigHandle`] wired
+/// into `AppContext::opt_config_handle`, and the same store type-erased as
+/// `Any` so [`App::config_store`] can downcast it back to `ConfigStore<T>`.
+#[cfg(feature = "config")]
+type ConfigResolution = (
+    Arc<dyn crate::config::ConfigHandle>,
+    Arc<dyn std::any::Any + Send + Sync>,
+);
+
+/// Closure captured by `with_config::<T>()`, monomorphized for that `T`, that
+/// builds a `ConfigStore<T>` over whatever backend `build()` resolves and
+/// runs resolution once. Boxed so `AppBuilder` (non-generic over `T`) can
+/// hold one regardless of which `T` an application uses.
+#[cfg(feature = "config")]
+type ConfigRegistrationFn = dyn FnOnce(
+        Arc<dyn crate::config::ConfigBackend>,
+    ) -> Result<ConfigResolution, crate::config::ConfigError>
+    + Send;
 
 impl AppBuilder {
     pub fn new() -> Self {
@@ -98,6 +124,12 @@ impl AppBuilder {
             #[cfg(feature = "auth")]
             token_provider: None,
             telemetry_config: None,
+            #[cfg(feature = "config")]
+            config_backend: None,
+            #[cfg(feature = "config")]
+            config_path: None,
+            #[cfg(feature = "config")]
+            config_registration: None,
         }
     }
 
@@ -128,6 +160,82 @@ impl AppBuilder {
     pub fn with_telemetry(mut self, config: crate::telemetry::TelemetryConfig) -> Self {
         self.telemetry_config = Some(config);
         self
+    }
+
+    /// Select an explicit [`ConfigBackend`][crate::config::ConfigBackend] for the
+    /// typed config registered via [`Self::with_config`].
+    ///
+    /// Takes precedence over [`Self::with_config_path`]. When neither this nor
+    /// `with_config_path` is called, `build()` defaults to
+    /// `FileBackend::for_app(app_name)`.
+    #[cfg(feature = "config")]
+    pub fn with_config_backend(mut self, backend: Arc<dyn crate::config::ConfigBackend>) -> Self {
+        self.config_backend = Some(backend);
+        self
+    }
+
+    /// Shorthand for `with_config_backend(Arc::new(FileBackend::new(path)))`.
+    #[cfg(feature = "config")]
+    pub fn with_config_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.config_path = Some(path.into());
+        self
+    }
+
+    /// Register a typed configuration `T`, its format, and its migrations.
+    ///
+    /// Causes `build()` to construct a `ConfigStore<T>` over the configured
+    /// backend (see [`Self::with_config_backend`] / [`Self::with_config_path`])
+    /// and run resolution exactly once, at the same point registry freezing
+    /// happens. The resulting type-erased handle is what
+    /// `AppContext::opt_config_handle` returns during dispatch; the typed
+    /// resolved value is not threaded through `AppContext` at all — get it
+    /// back via [`Self::build_with_config`] or, for reload/subscribe access,
+    /// via [`App::config_store`] after building.
+    #[cfg(feature = "config")]
+    pub fn with_config<T>(mut self, options: crate::config::ConfigOptions<T>) -> Self
+    where
+        T: crate::config::VersionedConfig,
+    {
+        self.config_registration = Some(Box::new(move |backend| {
+            let mut store = crate::config::ConfigStore::<T>::new(
+                backend,
+                options.format,
+                options.current_version,
+            );
+            for (from_version, migration) in options.migrations {
+                store = store.with_migration(from_version, move |value| migration(value));
+            }
+            store.resolve()?;
+            let store = Arc::new(store);
+            let handle: Arc<dyn crate::config::ConfigHandle> = store.clone();
+            let erased: Arc<dyn std::any::Any + Send + Sync> = store;
+            Ok((handle, erased))
+        }));
+        self
+    }
+
+    /// Resolve the configured backend (explicit backend, explicit path, or
+    /// `FileBackend::for_app(app_name)`) and, if [`Self::with_config`] was
+    /// called, run its registration closure against it.
+    #[cfg(feature = "config")]
+    fn resolve_config(&mut self) -> Result<Option<ConfigResolution>> {
+        let Some(registration) = self.config_registration.take() else {
+            return Ok(None);
+        };
+        let backend: Arc<dyn crate::config::ConfigBackend> =
+            if let Some(b) = self.config_backend.take() {
+                b
+            } else if let Some(p) = self.config_path.take() {
+                Arc::new(crate::config::FileBackend::new(p))
+            } else {
+                Arc::new(
+                    crate::config::FileBackend::for_app(self.app_name)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?,
+                )
+            };
+        registration(backend)
+            .map(Some)
+            .map_err(|e| anyhow::anyhow!("{e}"))
     }
 
     /// Disable auto-registration of the built-in `completion` command.
@@ -423,6 +531,11 @@ impl AppBuilder {
     }
 
     pub fn build<C: AppContext + 'static>(mut self, ctx: C) -> Result<App<C>> {
+        // Resolve config first (mirrors registry freezing / telemetry config capture
+        // below in spirit: a framework-owned service is finalized exactly once here).
+        #[cfg(feature = "config")]
+        let config_resolved = self.resolve_config()?;
+
         let ailoop_client = if let Some(config) = self.ailoop_config {
             Some(AiloopClient::with_config(config)?)
         } else {
@@ -605,6 +718,12 @@ impl AppBuilder {
 
         let registry_arc = Arc::new(self.command_registry);
 
+        #[cfg(feature = "config")]
+        let (config_handle, config_value_erased) = match config_resolved {
+            Some((handle, erased)) => (Some(handle), Some(erased)),
+            None => (None, None),
+        };
+
         Ok(App {
             command_registry: registry_arc,
             ailoop_client,
@@ -622,7 +741,37 @@ impl AppBuilder {
             token_provider: self.token_provider,
             telemetry_config: self.telemetry_config,
             active_telemetry: None,
+            #[cfg(feature = "config")]
+            config_handle,
+            #[cfg(feature = "config")]
+            config_value_erased,
         })
+    }
+
+    /// Like [`Self::build`], but also returns the resolved typed configuration
+    /// value registered via [`Self::with_config::<T>`][Self::with_config].
+    ///
+    /// Fails if `with_config::<T>()` was never called, or was called with a
+    /// different type than `T` names here — both surface as a plain error
+    /// (there is no dedicated [`crate::config::ConfigError`] variant for a
+    /// builder-usage mistake; resolution itself already ran inside `build()`
+    /// and any *storage* failure is a `ConfigError` surfaced from there).
+    #[cfg(feature = "config")]
+    pub fn build_with_config<C, T>(self, ctx: C) -> Result<(App<C>, T)>
+    where
+        C: AppContext + 'static,
+        T: crate::config::VersionedConfig,
+    {
+        let app = self.build(ctx)?;
+        let store = app.config_store::<T>().ok_or_else(|| {
+            anyhow::anyhow!(
+                "build_with_config::<{}>() requires a matching with_config::<{}>() call",
+                std::any::type_name::<T>(),
+                std::any::type_name::<T>()
+            )
+        })?;
+        let value = (*store.current()).clone();
+        Ok((app, value))
     }
 }
 
@@ -655,6 +804,10 @@ pub struct App<C: AppContext> {
     telemetry_config: Option<crate::telemetry::TelemetryConfig>,
     #[allow(dead_code)]
     pub(crate) active_telemetry: Option<Arc<dyn crate::telemetry::Telemetry + Send + Sync>>,
+    #[cfg(feature = "config")]
+    config_handle: Option<Arc<dyn crate::config::ConfigHandle>>,
+    #[cfg(feature = "config")]
+    config_value_erased: Option<Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 impl<C: AppContext> App<C> {
@@ -904,6 +1057,8 @@ impl<C: AppContext> App<C> {
             surface,
             #[cfg(feature = "auth")]
             token_provider: self.token_provider.clone(),
+            #[cfg(feature = "config")]
+            config_handle: self.config_handle.clone(),
         };
 
         #[cfg(feature = "telemetry")]
@@ -999,6 +1154,28 @@ impl<C: AppContext> App<C> {
 
     pub fn has_plugins(&self) -> bool {
         self.plugin_registry_manager.is_some()
+    }
+
+    /// Recover the typed `ConfigStore<T>` registered via
+    /// `AppBuilder::with_config::<T>()`, for applications that need
+    /// reload/subscribe access (long-running apps — see spec 016 user
+    /// stories 16-17) rather than just the one-shot resolved value returned
+    /// by [`AppBuilder::build_with_config`].
+    ///
+    /// Returns `None` if `with_config::<T>()` was never called, or was
+    /// called with a different `T` than requested here. The returned `Arc`
+    /// is the *same* store instance backing `AppContext::opt_config_handle`,
+    /// so calling `reload()` through either one updates both and notifies
+    /// subscribers registered through either one.
+    #[cfg(feature = "config")]
+    pub fn config_store<T>(&self) -> Option<Arc<crate::config::ConfigStore<T>>>
+    where
+        T: crate::config::VersionedConfig,
+    {
+        self.config_value_erased
+            .clone()?
+            .downcast::<crate::config::ConfigStore<T>>()
+            .ok()
     }
 }
 
