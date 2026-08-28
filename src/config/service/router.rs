@@ -155,20 +155,42 @@ async fn get_user_config(
 /// (and not merely trusting) the client's own
 /// `RoamingConfigClient::put`/`filter_user_scoped` filtering (spec 022 user
 /// story 24: "machine-scoped and secret fields rejected on write").
+///
+/// Spec 024 review, Fix 3: also rejects a `local_only` field. `local_only`'s
+/// documented contract (`crate::config::manifest::FieldManifest::local_only`)
+/// is "never set remotely" — without this check, a `local_only` field that
+/// also happens to be `User`-scoped could be written here and then roam to
+/// the same person's other devices, contradicting that contract even though
+/// nothing about it is `secret` or non-`User`-scoped.
+///
+/// Spec 024 review, Fix 1: also holds the value to the field's own declared
+/// [`crate::config::manifest::FieldConstraints`] (`min`/`max`/
+/// `allowed_values`), via the exact same check
+/// [`super::validate::validate_stored_policy`] applies to an admin policy
+/// write — a user's own roaming document is held to the same declared
+/// bounds an organisation's policy is.
 fn first_invalid_user_field(
     manifest: &crate::config::manifest::ConfigManifest,
     doc: &Map<String, Value>,
 ) -> Option<String> {
     use crate::config::manifest::Scope;
-    for key in doc.keys() {
+    for (key, value) in doc {
         match manifest.leaf_by_path(key) {
             None => return Some(format!("unknown field '{key}'")),
             Some(field) => {
                 if field.secret {
                     return Some(format!("field '{key}' is secret and cannot be written"));
                 }
+                if field.local_only {
+                    return Some(format!(
+                        "field '{key}' is local_only and cannot be written remotely"
+                    ));
+                }
                 if field.scope != Scope::User {
                     return Some(format!("field '{key}' is not user-scoped"));
+                }
+                if let Some(detail) = super::validate::constraint_violation_detail(field, value) {
+                    return Some(format!("field '{key}' {detail}"));
                 }
             }
         }

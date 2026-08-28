@@ -121,6 +121,22 @@ pub enum PolicyValidationError {
         profile: String,
         path: String,
     },
+    /// `field.constraints` (`min`/`max`/`allowed_values` — spec 021 user
+    /// story 6) rejected the stored value. Spec 024 review, Fix 1: these
+    /// were previously carried but never enforced anywhere server-side (only
+    /// rendered into a JSON Schema document for a UI by
+    /// `crate::config::manifest::json_schema`) — an admin write or a
+    /// roaming user-config write could land a value wildly outside a
+    /// field's declared bounds. `detail` names which bound was violated and
+    /// by what value, since (unlike this enum's other variants) that detail
+    /// can't be reconstructed from `app`/`profile`/`path` alone.
+    #[error("app '{app}' profile '{profile}': field '{path}' violates its declared constraint: {detail}")]
+    ConstraintViolation {
+        app: String,
+        profile: String,
+        path: String,
+        detail: String,
+    },
     #[error("app '{app}' has a policy for profile '{profile}' but no manifest is stored for it")]
     MissingManifest { app: String, profile: String },
     #[error("app '{app}' profile '{profile}' names parent '{parent}', which has no stored policy")]

@@ -1067,6 +1067,43 @@ impl PolicyAdminStore for PgPolicyStore {
                     .await
                     .map_err(AdminWriteError::Store)?;
 
+                // Fix 2 (spec 024 review, "Low-Medium": lock-order inversion
+                // between `import_bundle` and `put_assignment_rules`, a
+                // latent Postgres deadlock): lock `assignment_set` FIRST,
+                // *before* touching the `assignment` table, matching
+                // `put_assignment_rules`'s own order below. Previously this
+                // block deleted/reinserted `assignment` rows first and only
+                // locked `assignment_set` afterward -- the exact reverse of
+                // `put_assignment_rules`'s (lock `assignment_set`, then
+                // delete/reinsert `assignment`) order. Two transactions
+                // acquiring the same two resources in opposite orders is a
+                // textbook Postgres deadlock/race setup: verified directly
+                // (spec 024 review) that reverting this ordering makes
+                // `concurrent_import_and_put_assignment_rules_never_deadlock`
+                // fail deterministically (5/5 runs) with a duplicate-key
+                // constraint violation on `assignment_pkey`, not merely a
+                // theoretical risk. See
+                // `validate_existing_policies_against_manifest`'s doc comment
+                // above for the same "acquire shared lock targets in a
+                // consistent order across every method that touches both"
+                // discipline already applied between `put_manifest` and
+                // `put_policy`.
+                let existing_set = sqlx_core::query::query::<Postgres>(
+                    "SELECT version FROM assignment_set WHERE app = $1 FOR UPDATE",
+                )
+                .bind(app.as_str())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+                let current_set: u64 = match &existing_set {
+                    Some(row) => row
+                        .try_get::<i64, _>("version")
+                        .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?
+                        as u64,
+                    None => 0,
+                };
+                let new_set_version = current_set + 1;
+
                 sqlx_core::query::query::<Postgres>("DELETE FROM assignment WHERE app = $1")
                     .bind(app.as_str())
                     .execute(&mut *tx)
@@ -1087,21 +1124,6 @@ impl PolicyAdminStore for PgPolicyStore {
                     .await
                     .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
                 }
-                let existing_set = sqlx_core::query::query::<Postgres>(
-                    "SELECT version FROM assignment_set WHERE app = $1 FOR UPDATE",
-                )
-                .bind(app.as_str())
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
-                let current_set: u64 = match &existing_set {
-                    Some(row) => row
-                        .try_get::<i64, _>("version")
-                        .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?
-                        as u64,
-                    None => 0,
-                };
-                let new_set_version = current_set + 1;
                 if existing_set.is_some() {
                     sqlx_core::query::query::<Postgres>(
                         "UPDATE assignment_set SET version = $1 WHERE app = $2",
