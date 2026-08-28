@@ -466,3 +466,17 @@ required-features = ["telemetry", "api-server"]
 name = "integration_telemetry_context_propagation"
 path = "tests/integration/telemetry_context_propagation.rs"
 required-features = ["telemetry", "api-server"]
+
+# Own binary for the same reason, and additionally because it sets OTEL_* env
+# vars that would leak into any other test sharing the process.
+[[test]]
+name = "integration_telemetry_otlp_headers"
+path = "tests/integration/telemetry_otlp_headers.rs"
+required-features = ["telemetry"]
+
+# Own binary for the same process-global-subscriber reason. Asserts the
+# `traces_enabled` toggle suppresses trace export WITHOUT taking metrics down.
+[[test]]
+name = "integration_telemetry_signal_toggles"
+path = "tests/integration/telemetry_signal_toggles.rs"
+required-features = ["telemetry"]

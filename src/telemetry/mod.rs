@@ -47,17 +47,30 @@
 //!
 //! # Current limitations
 //!
-//! - **No OTLP auth headers.** `OTEL_EXPORTER_OTLP_HEADERS` is not read, so a
-//!   collector requiring authentication cannot be reached (spec 017 R25).
-//! - **`http/protobuf` only.** `OTEL_EXPORTER_OTLP_PROTOCOL` is parsed onto the
-//!   config but not acted on; the exporter is always HTTP (spec 017 R19).
+//! - **`http/protobuf` only.** It is the sole protocol this crate can export
+//!   with. `OTEL_EXPORTER_OTLP_PROTOCOL` set to anything else (e.g. `grpc`) is
+//!   now **rejected at init** with a message on stderr, and telemetry stays off
+//!   rather than being exported over a protocol you did not ask for (spec 017
+//!   R19). gRPC would need the `grpc-tonic` feature.
 //! - **[`SpanHandle::set_attr`]** can only record fields that were declared at
 //!   the span's callsite (`tracing`'s fieldset is fixed per callsite), so
 //!   arbitrary keys are dropped. [`SpanHandle::record_error`] works because its
 //!   `otel.status_*` fields are pre-declared.
-//! - Config fields `traces_enabled`, `logs_enabled`, `record_arg_values`, and
-//!   `arg_value_allowlist` are reserved and not yet consulted. `metrics_enabled`
-//!   *is* honoured.
+//! - `traces_enabled` and `metrics_enabled` are honoured. `logs_enabled` is
+//!   reserved — there is no OTLP logs pipeline yet, so it is reader-visible
+//!   intent only (spec 020 item 5). `record_arg_values` and
+//!   `arg_value_allowlist` are likewise reserved.
+//!
+//! # Authenticating to the collector
+//!
+//! Set [`TelemetryConfig::headers`], or the standard `OTEL_EXPORTER_OTLP_HEADERS`
+//! environment variable, and they are sent with every OTLP request for **both**
+//! traces and metrics. Values may be percent-encoded, which is how one
+//! containing `,` or `=` survives the list format.
+//!
+//! These are credentials, so `TelemetryConfig`'s `Debug` impl prints header
+//! names and **redacts every value** — a config reaching a log cannot leak a
+//! bearer token.
 //!
 //! [invocation surface]: crate::app::dispatch::InvocationSurface
 //! [`AppContext::telemetry`]: crate::app::AppContext::telemetry
