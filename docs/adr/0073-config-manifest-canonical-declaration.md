@@ -55,6 +55,7 @@ ordering for renderers, constraints, and a fixed set of policy flags:
 | `local_only` | Server layers may never set it (bootstrap settings such as the service URL) |
 | `protected` | Writable only by the application's own privileged surface, never by a remote or automated caller |
 | `manageable` | `false` means an organisation may not set it even as a recommendation |
+| `enforceable` | Defaults `true`. `false` means an organisation may recommend a default but may never force it — a policy placing such a field in Enforced is invalid, given the same tolerant drop-and-warn treatment as any other misplaced field. For a field whose "on" state is itself an act of standing consent by the person using the device, forcing it would mean the organisation granting consent on that person's behalf, which no Recommended/Enforced pair can be allowed to do silently |
 | `restart_required` | Renderer badge; excluded from hot-apply |
 
 One application id covers all of a product's form factors; `platforms` handles
