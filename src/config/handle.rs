@@ -33,6 +33,24 @@ pub trait ConfigHandle: Send + Sync {
     /// if it were somehow present in the backend.
     fn current_json(&self) -> Result<serde_json::Value, ConfigError>;
 
+    /// Read the backend **fresh** (bypassing the cached [`Self::current_json`]
+    /// value entirely) and return it as JSON.
+    ///
+    /// This exists specifically for policy-folding (spec 021): the
+    /// `config_file` layer [`crate::config::resolution::resolve`] folds
+    /// against must always be what the local file actually says, never a
+    /// previously policy-folded [`Self::current_json`] value. Using
+    /// `current_json` here would let a value a *prior* fold applied from an
+    /// enforced/recommended tree get laundered back in as if the user had
+    /// authored it locally — and then survive indefinitely even after the
+    /// organisation withdraws that policy, since nothing would ever tell it
+    /// apart from a real local setting again. `Self::reload` does not serve
+    /// this purpose either: it also **replaces** [`Self::current_json`] and
+    /// notifies subscribers, which is a real, visible side effect this read
+    /// must not have.
+    #[cfg(feature = "config-managed")]
+    fn backend_json(&self) -> Result<serde_json::Value, ConfigError>;
+
     /// Set the stored document from a JSON value, for callers with no reason
     /// to name `T` (a generic `config` command, `doctor`). This does **not**
     /// bypass `T`: the value is deserialized into `T` and re-serialized
@@ -43,6 +61,22 @@ pub trait ConfigHandle: Send + Sync {
     /// nowhere in `T` for it to round-trip through). Fails the same way
     /// [`ConfigStore::save`] does against a read-only backend.
     fn save_json(&self, value: serde_json::Value) -> Result<(), ConfigError>;
+
+    /// Replace the cached in-memory resolved value from a JSON document and
+    /// notify subscribers — the type-erased counterpart of
+    /// [`ConfigStore::set_current_and_notify`], for callers with no reason to
+    /// name `T` (spec 021's `config refresh` command; see
+    /// `crate::config::managed::refresh_managed_config`, which is the typed
+    /// entry point an application calls directly when it does know `T`).
+    ///
+    /// Unlike [`Self::save_json`], this **never writes to the backend** — it
+    /// exists specifically for a value that folded in a `Policy`'s
+    /// `recommended`/`enforced` trees, which must never be persisted to the
+    /// local file (see [`ConfigStore::set_current_and_notify`]'s docs for
+    /// why). Gated behind `config-managed` because only that feature's
+    /// policy-folding path has a reason to call it.
+    #[cfg(feature = "config-managed")]
+    fn set_current_json_and_notify(&self, value: serde_json::Value) -> Result<(), ConfigError>;
 }
 
 // `ConfigStore<T>` has inherent methods with the same names as several of
@@ -69,11 +103,30 @@ where
         })
     }
 
+    #[cfg(feature = "config-managed")]
+    fn backend_json(&self) -> Result<serde_json::Value, ConfigError> {
+        let fresh = ConfigStore::load(self)?;
+        serde_json::to_value(&fresh).map_err(|e| ConfigError::Serialize {
+            backend: ConfigStore::backend_label(self),
+            source: Box::new(e),
+        })
+    }
+
     fn save_json(&self, value: serde_json::Value) -> Result<(), ConfigError> {
         let typed: T = serde_json::from_value(value).map_err(|e| ConfigError::Parse {
             backend: ConfigStore::backend_label(self),
             source: Box::new(e),
         })?;
         ConfigStore::save(self, &typed)
+    }
+
+    #[cfg(feature = "config-managed")]
+    fn set_current_json_and_notify(&self, value: serde_json::Value) -> Result<(), ConfigError> {
+        let typed: T = serde_json::from_value(value).map_err(|e| ConfigError::Parse {
+            backend: ConfigStore::backend_label(self),
+            source: Box::new(e),
+        })?;
+        ConfigStore::set_current_and_notify(self, typed);
+        Ok(())
     }
 }

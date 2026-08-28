@@ -260,6 +260,59 @@ fn reentrant_subscribe_from_within_a_callback_does_not_deadlock() {
     assert!(*inner_saw.lock().unwrap());
 }
 
+// `set_current_and_notify` (spec 021 bug fix): replaces the cached value and
+// notifies subscribers exactly like `reload()`, but never touches the
+// backend at all — this is the seam a policy-folded value goes through
+// (`crate::config::managed::refresh_managed_config`), since such a value
+// must never be persisted to the local file.
+#[test]
+fn set_current_and_notify_replaces_current_value_and_notifies_subscribers() {
+    let backend = Arc::new(InMemoryBackend::new());
+    let store = ConfigStore::<DemoConfig>::new(backend.clone(), ConfigFormat::default(), 1);
+    store.resolve().unwrap();
+    assert_eq!(store.current().greeting, "");
+
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen_clone = seen.clone();
+    store.subscribe(move |cfg| seen_clone.lock().unwrap().push(cfg.greeting.clone()));
+
+    let mut new_value = (*store.current()).clone();
+    new_value.greeting = "policy-folded".to_string();
+    store.set_current_and_notify(new_value);
+
+    assert_eq!(store.current().greeting, "policy-folded");
+    assert_eq!(
+        seen.lock().unwrap().as_slice(),
+        ["policy-folded".to_string()]
+    );
+}
+
+// The defining property that makes this safe for a policy-folded value:
+// unlike `save()`, the backend is never written to.
+#[test]
+fn set_current_and_notify_never_touches_the_backend() {
+    let backend = Arc::new(InMemoryBackend::new());
+    let store = ConfigStore::<DemoConfig>::new(backend.clone(), ConfigFormat::default(), 1);
+    store.resolve().unwrap();
+    assert!(
+        backend.snapshot().is_empty(),
+        "nothing written to the backend yet"
+    );
+
+    let mut new_value = (*store.current()).clone();
+    new_value.greeting = "should-not-be-persisted".to_string();
+    store.set_current_and_notify(new_value);
+
+    assert_eq!(store.current().greeting, "should-not-be-persisted");
+    assert!(
+        backend.snapshot().is_empty(),
+        "set_current_and_notify must never write to the backend"
+    );
+    // A fresh `load()` (which reads the backend, bypassing the cached
+    // `current()`) must NOT see the in-memory-only value.
+    assert_eq!(store.load().unwrap().greeting, "");
+}
+
 // `resolve()` is what `AppBuilder::build()` calls once; a caller that never
 // calls `reload()` afterward keeps a stable value even if the backend
 // changes underneath it — the one-shot CLI contract (user story 18).

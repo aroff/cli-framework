@@ -16,6 +16,7 @@ A Rust library for building CLIs with optional AI-assisted command resolution (*
 - **API Server**: Built-in Axum host for serving versioned HTTP APIs with `/healthz` + `/readyz` (opt-in via `api-server` feature)
 - **Project Config**: Project root discovery and TOML loading (opt-in via `project-config` feature)
 - **Config store**: Writable, versioned configuration for the user profile — atomic file writes (or the Windows registry), JSON/TOML, schema migrations (opt-in via `config` feature)
+- **Config manifest + managed client**: `#[derive(ConfigManifest)]` declares an app's configuration surface as a plain JSON document; a `PolicyClient`/`RoamingConfigClient` fetch an organisation's policy and a user's roaming settings, with enforced-veto resolution and per-field provenance, plus a built-in `config show`/`manifest`/`profile`/`refresh` command group (opt-in via `config-managed` feature)
 
 ## Cargo Features
 
@@ -35,6 +36,7 @@ A Rust library for building CLIs with optional AI-assisted command resolution (*
 | `observability` | no | `tracing-subscriber` logging foundation (implied by `telemetry`) |
 | `telemetry` | no | Built-in OpenTelemetry: auto `cli.command` spans + invocation/duration metrics exported over OTLP (implies `observability`) |
 | `config` | no | Writable `ConfigBackend`/`ConfigStore` with atomic file writes, JSON/TOML formats, and schema-version migrations (`CE001`–`CE009` error codes); Windows registry backend compiled in automatically on Windows targets |
+| `config-managed` | no | `PolicyClient`/`RoamingConfigClient` (spec 021) fetching an org policy / roaming user config over HTTP via the existing `TokenProvider`, plus a built-in `config show`/`manifest`/`profile`/`refresh` subcommand group (`CFG001`–`CFG003` error codes); implies `config` + `auth` |
 
 ## MCP Server Mode
 

@@ -39,6 +39,10 @@ pub(crate) struct DispatchEnv<'a> {
     pub(crate) token_provider: Option<Arc<dyn crate::auth::TokenProvider>>,
     #[cfg(feature = "config")]
     pub(crate) config_handle: Option<Arc<dyn crate::config::ConfigHandle>>,
+    #[cfg(feature = "config")]
+    pub(crate) config_manifest: Option<Arc<crate::config::manifest::ConfigManifest>>,
+    #[cfg(feature = "config-managed")]
+    pub(crate) policy_client: Option<Arc<crate::config::managed::PolicyClient>>,
 }
 
 pub(crate) struct CliAppContextWrapper<'a> {
@@ -107,6 +111,16 @@ impl<'a> AppContext for CliAppContextWrapper<'a> {
     #[cfg(feature = "config")]
     fn opt_config_handle(&self) -> Option<&dyn crate::config::ConfigHandle> {
         self.env.config_handle.as_deref()
+    }
+
+    #[cfg(feature = "config")]
+    fn opt_config_manifest(&self) -> Option<&crate::config::manifest::ConfigManifest> {
+        self.env.config_manifest.as_deref()
+    }
+
+    #[cfg(feature = "config-managed")]
+    fn opt_policy_client(&self) -> Option<Arc<crate::config::managed::PolicyClient>> {
+        self.env.policy_client.clone()
     }
 }
 
@@ -186,6 +200,10 @@ mod tests {
             token_provider: None,
             #[cfg(feature = "config")]
             config_handle: None,
+            #[cfg(feature = "config")]
+            config_manifest: None,
+            #[cfg(feature = "config-managed")]
+            policy_client: None,
         };
         let mut inner = DummyCtx;
         let wrapper = CliAppContextWrapper::new(&mut inner, env);

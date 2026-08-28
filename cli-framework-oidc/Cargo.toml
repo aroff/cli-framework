@@ -52,6 +52,16 @@ browser = [
     "dep:hmac",
     "dep:hkdf",
 ]
+# Test-support: promotes the synthesized-OIDC-issuer helper set (runtime P-256
+# keys, minted JWTs, wiremock discovery+JWKS) that `tests/server_validation.rs`
+# used to keep as private copies, exposing them as `#[doc(hidden)] pub`
+# functions in `src/test_support.rs` (spec 021 testing decisions). Both this
+# crate's own tests and downstream crates' tests (see `cli-framework`'s
+# `config-managed` tests) depend on it. Implies `server` for
+# `OidcValidationConfig`/`AudiencePolicy`, and adds `dep:rcgen` (previously
+# dev-only) since generated code here runs as part of the library, not a test
+# binary.
+test-support = ["server", "dep:rcgen", "dep:base64"]
 
 [dependencies]
 cli-framework = { path = "..", default-features = false }
@@ -85,6 +95,10 @@ rand = { version = "0.8", optional = true }
 hmac = { version = "0.12", optional = true }
 hkdf = { version = "0.12", optional = true }
 
+# test-support feature deps — P-256 key generation for minting test JWTs.
+# `base64`/`jsonwebtoken` are already optional deps above (client/server).
+rcgen = { version = "0.13", optional = true }
+
 [[example]]
 name = "keycloak_cli"
 path = "examples/keycloak_cli.rs"
@@ -107,7 +121,7 @@ required-features = ["client"]
 [[test]]
 name = "server_validation"
 path = "tests/server_validation.rs"
-required-features = ["server"]
+required-features = ["server", "test-support"]
 
 [[test]]
 name = "browser_validation"

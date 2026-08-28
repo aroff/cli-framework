@@ -1,9 +1,6 @@
 //! Tests for oidc_validation_layer middleware.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use axum::{response::IntoResponse, routing::get, Router};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use jsonwebtoken::Algorithm;
 use serde_json::json;
 use tower::{Layer, ServiceExt};
@@ -14,98 +11,25 @@ use cli_framework_oidc::server::{
     oidc_validation_layer, AudiencePolicy, OidcClaims, OidcValidationConfig,
 };
 
-// ── Key helpers ───────────────────────────────────────────────────────────────
+// ── Key/JWT/config helpers ──────────────────────────────────────────────────
 //
-// Keys are P-256 / ES256 generated via `rcgen` (backed by ring). This avoids
-// the `rsa` crate which carries RUSTSEC-2023-0071 with no upstream fix.
-
-struct TestKeyPair {
-    pub x: String, // base64url x coordinate
-    pub y: String, // base64url y coordinate
-    pub encoding_key: jsonwebtoken::EncodingKey,
-    pub kid: String,
-}
-
-fn test_key_pair() -> TestKeyPair {
-    test_key_pair_with_kid("test-kid-1")
-}
-
-fn test_key_pair_with_kid(kid: &str) -> TestKeyPair {
-    let kp = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).expect("key gen");
-    // public_key_raw() returns the uncompressed EC point: 0x04 || x(32) || y(32)
-    let point = kp.public_key_raw();
-    assert_eq!(point.len(), 65, "P-256 uncompressed point must be 65 bytes");
-    let x = URL_SAFE_NO_PAD.encode(&point[1..33]);
-    let y = URL_SAFE_NO_PAD.encode(&point[33..65]);
-    let encoding_key =
-        jsonwebtoken::EncodingKey::from_ec_pem(kp.serialize_pem().as_bytes()).expect("enc key");
-    TestKeyPair {
-        x,
-        y,
-        encoding_key,
-        kid: kid.to_string(),
-    }
-}
-
-fn jwk_for_key(kp: &TestKeyPair) -> serde_json::Value {
-    json!({
-        "kty": "EC",
-        "crv": "P-256",
-        "kid": kp.kid,
-        "alg": "ES256",
-        "use": "sig",
-        "x": kp.x,
-        "y": kp.y,
-    })
-}
-
-fn jwk_for_key_no_kid(kp: &TestKeyPair) -> serde_json::Value {
-    json!({
-        "kty": "EC",
-        "crv": "P-256",
-        "alg": "ES256",
-        "use": "sig",
-        "x": kp.x,
-        "y": kp.y,
-    })
-}
-
-fn mint_jwt(kp: &TestKeyPair, claims: serde_json::Value) -> String {
-    let mut header = jsonwebtoken::Header::new(Algorithm::ES256);
-    header.kid = Some(kp.kid.clone());
-    jsonwebtoken::encode(&header, &claims, &kp.encoding_key).expect("encode")
-}
-
-fn mint_jwt_no_kid(kp: &TestKeyPair, claims: serde_json::Value) -> String {
-    let header = jsonwebtoken::Header::new(Algorithm::ES256);
-    jsonwebtoken::encode(&header, &claims, &kp.encoding_key).expect("encode")
-}
-
-fn mint_jwt_with_kid(kp: &TestKeyPair, claims: serde_json::Value, kid: &str) -> String {
-    let mut header = jsonwebtoken::Header::new(Algorithm::ES256);
-    header.kid = Some(kid.to_string());
-    jsonwebtoken::encode(&header, &claims, &kp.encoding_key).expect("encode")
-}
-
-fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
-}
+// Promoted to `cli_framework_oidc::test_support` (spec 021 testing
+// decisions) — this file no longer keeps a private copy. Keys are P-256 /
+// ES256 generated via `rcgen` (backed by ring), avoiding the `rsa` crate
+// (RUSTSEC-2023-0071, no upstream fix).
+use cli_framework_oidc::test_support::{
+    jwk_for_key, jwk_for_key_no_kid, mint_jwt, mint_jwt_no_kid, mint_jwt_with_kid, now_secs,
+    test_key_pair, TestKeyPair,
+};
 
 // ── Test app builder ──────────────────────────────────────────────────────────
 
+/// Thin, file-local adapter over the shared `test_support::make_cfg` (which
+/// takes a bare issuer URI, since the promoted helpers live in the library
+/// crate and cannot depend on `wiremock`): every call site in this file
+/// already has a `&MockServer` in hand.
 fn make_cfg(server: &MockServer) -> OidcValidationConfig {
-    OidcValidationConfig {
-        issuer_url: server.uri(),
-        audience: AudiencePolicy::Unchecked,
-        jwks_uri: Some(format!("{}/jwks", server.uri())),
-        algorithms: vec![Algorithm::ES256],
-        jwks_ttl: std::time::Duration::from_secs(300),
-        clock_skew: std::time::Duration::from_secs(60),
-        min_refetch_interval: std::time::Duration::from_secs(60),
-    }
+    cli_framework_oidc::test_support::make_cfg(&server.uri())
 }
 
 async fn make_app(cfg: OidcValidationConfig) -> Router {

@@ -272,4 +272,54 @@ impl<T: VersionedConfig> ConfigStore<T> {
             .expect("ConfigStore subscribers lock poisoned")
             .push(Arc::new(f));
     }
+
+    /// Replace the cached [`Self::current`] value and notify subscribers
+    /// registered via [`Self::subscribe`] — **without** touching the backend
+    /// at all (no read, no write).
+    ///
+    /// This is the seam a value that folded in a
+    /// [`crate::config::Policy`]'s `recommended`/`enforced` trees via
+    /// [`crate::config::resolution::resolve`] must go through instead of
+    /// [`Self::save`]: such a value must never be persisted to the local
+    /// file, since the file holds only this device's own authored settings,
+    /// not a snapshot of a Policy that changes independently server-side
+    /// (see `crate::config::managed::refresh_managed_config`, which is what
+    /// actually connects a `PolicyClient` fetch to a running application's
+    /// `ConfigStore` through this method).
+    ///
+    /// Mirrors [`Self::reload`]'s locking/notification shape exactly:
+    /// subscribers are invoked from a snapshot taken under the lock, then
+    /// invoked after the lock is dropped, so a subscriber calling back into
+    /// this store from its own callback does not deadlock on `subscribers`
+    /// (`std::sync::Mutex` is not reentrant — see [`Self::reload`]'s docs for
+    /// the full rationale).
+    pub fn set_current_and_notify(&self, value: T) {
+        // Acquired for the swap only (matching `save()`'s own critical
+        // section) so this and a concurrent `save()` cannot interleave into
+        // an inconsistent `current` value — whichever commits last simply
+        // wins, the same "two writers, well-defined outcome" guarantee
+        // `save()` already gives two concurrent savers. Released *before*
+        // notifying subscribers, same as `reload()`: holding it across a
+        // callback would deadlock if that callback itself called `save()` or
+        // `set_current_and_notify()` (`write_lock` is a plain
+        // `std::sync::Mutex`, not reentrant).
+        {
+            let _guard = self
+                .write_lock
+                .lock()
+                .expect("ConfigStore write lock poisoned");
+            *self
+                .current
+                .write()
+                .expect("ConfigStore current-value lock poisoned") = Arc::new(value.clone());
+        }
+        let subs: Vec<Subscriber<T>> = self
+            .subscribers
+            .lock()
+            .expect("ConfigStore subscribers lock poisoned")
+            .clone();
+        for f in &subs {
+            f(&value);
+        }
+    }
 }

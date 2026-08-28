@@ -26,6 +26,82 @@
     discovery for developer tools) or implement the config manifest / managed-policy layer
     (PRD 021) — this PRD is the local persistence foundation only.
 
+- **Config manifest and the managed-configuration client** (spec 021, ADR 0072/0073):
+  builds on the config store above with two independent pieces under `cli_framework::config`.
+  - `config::manifest`: a purpose-built, plain-JSON `ConfigManifest` document (fields,
+    kinds — boolean/integer/float/string/enumeration/duration/path/url/list/nested
+    section — labels, constraints, and the ADR 0073 policy flags `scope`/`platforms`/
+    `secret`/`local_only`/`protected`/`manageable`/`enforceable`/`restart_required`). A new
+    `#[derive(ConfigManifest)]` alongside `#[derive(CommandSpec)]` in `cli-framework-macros`
+    generates it from a config struct's field attributes (`#[config_manifest(app = "...")]`,
+    `#[manifest(...)]`); every consumer (the resolver, a provenance query) reads the JSON
+    document alone, never the Rust type, so a non-Rust application can author the identical
+    document by hand. A one-way `to_json_schema` export is provided for external validators.
+  - `config::Policy` / `config::StaleAction`: the plain-data document an organisation serves
+    for one profile — `enforced`/`recommended` trees (flat, dotted-leaf-path keyed),
+    `policy_version`, `max_cache_age_secs`, `stale_action`. No networking dependency.
+  - `config::resolution::resolve`: folds a manifest and six layers (`defaults -> recommended
+    -> config file -> environment -> flags -> builder overrides`) plus an `ENFORCED` **veto
+    pass** (applied last, over the fully resolved value — not a seventh layer) into resolved
+    values and `Provenance` (which layer won, and whether it's locked). Local_only/non-
+    manageable/secret fields are dropped (with a structured warning) from a server tree;
+    `org`-scoped fields are dropped from `recommended` and `enforceable: false` fields are
+    dropped from `enforced`; unknown/type-mismatched server-tree keys are skipped with
+    siblings still applying, while the local file keeps this crate's existing
+    deny-unknown-fields strictness.
+  - New `config-managed` feature (implies `config` + `auth`): `config::managed::PolicyClient`
+    fetches `GET /v1/policy/{app}` through the existing `AuthenticatedHttpClient` (reusing its
+    401-invalidate-and-retry-once behavior) with ETag revalidation, caches the verbatim policy
+    under the platform **data** directory (not config — it's derived state), and applies the
+    spec's failure-mapping table: a `401` where retry also fails is treated **identically** to
+    `403` and never falls back to cache (this is the safety-critical guard — a token that reads
+    as revoked must not be masked by a stale cached policy); `404` runs unmanaged and clears
+    the cache; only network failure or `5xx` falls back to cache, subject to the policy's own
+    `max_cache_age_secs`/`stale_action`. `config::managed::RoamingConfigClient` reads/writes
+    the user-scoped roaming document (`GET`/`PUT /v1/config/{app}`, `If-Match` optimistic
+    concurrency), sending only `scope: user` fields regardless of what a caller passes in.
+  - Cross-crate: `cli-framework-oidc` gains a `test-support` feature promoting the
+    synthesized-OIDC-issuer test helpers (P-256 key generation, JWT minting, a wiremock
+    discovery/JWKS/token setup) out of `tests/server_validation.rs` as `#[doc(hidden)] pub`
+    functions in `src/test_support.rs`; that test file now consumes the shared versions, and
+    `cli-framework`'s own `config-managed` tests depend on it (as a dev-dependency) to mint
+    real signed tokens for an end-to-end `OidcClient` (Client Credentials) -> `PolicyClient`
+    -> `resolve()` test.
+  - **Command surface**: a built-in `config` command group — `config show` (resolved values
+    with per-field provenance, `--format table|json`), `config manifest` (the registered
+    manifest as pretty-printed JSON, for a release pipeline to publish), `config profile`
+    (active org profile + policy version from the last cached fetch, reporting "unmanaged"
+    cleanly when nothing was ever fetched), and `config refresh` (forces a policy refetch,
+    surfacing `PolicyOutcome`/failure-mapping outcomes verbatim — a `Denied` never falls back
+    to cache here either). New `AppBuilder::with_config_manifest` (feature `config`) and
+    `AppBuilder::with_policy_client` (feature `config-managed`) register the manifest/client
+    the command group renders against, surfaced to handlers via the new
+    `AppContext::opt_config_manifest`/`opt_policy_client` accessors; auto-registered in
+    `build()` (mirroring the `auth` group's guard) once a manifest is present. New `CFG001`–
+    `CFG004` diagnostic codes. Adds `Resolved::entries()` (all resolved leaf paths as one
+    `(path, value, provenance)` list) to `config::resolution` and `PolicyClient::cached_policy()`
+    (reads the cache with no network call) as the small additive surface these commands needed.
+  - **Post-review fixes**: `PolicyClient::fetch` no longer lets a corrupt on-disk cache
+    permanently block every future fetch — a cache-read failure now degrades to "as if no
+    cache existed" rather than propagating immediately. The failure-mapping `classify()`
+    step no longer folds every non-401/403/404 `4xx` (`400`, `409`, `422`, `429`, ...) into
+    the same cache-fallback bucket as a genuine `5xx`/network failure; a new
+    `HttpFailureClass::ClientError` / `PolicyClientError::ClientError` pair makes those a
+    hard, non-cache-eligible error instead. `config show` now reports a visible warning
+    (rather than silently degrading to "unmanaged") when the policy cache itself is
+    corrupt/unreadable; `config profile` reports the same condition under a new, distinct
+    `CFG004` rather than reusing `CFG003` (which is now reserved for request-time failures —
+    denied access, an unrecoverable refresh). Most importantly: the manifest/resolver/
+    `PolicyClient` machinery above now actually reaches an application's real typed config
+    value — `AppBuilder::build_with_config` folds in the policy client's **cached** enforced
+    value (network-free) when both a manifest and a policy client are registered, and the new
+    `config::managed::refresh_managed_config` (plus `ConfigStore::set_current_and_notify` and
+    `config::resolution::unflatten_from_paths`) lets a running application's own explicit
+    refresh call — or the built-in `config refresh` command — push a freshly fetched policy
+    into the live store, not just print what the server said.
+  - Does not implement the config-service (server side, PRDs 022/023) or cryptographic policy
+    signing.
+
 ## [0.5.4] — 2026-06-13
 
 ### Added

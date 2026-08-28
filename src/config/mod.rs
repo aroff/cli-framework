@@ -11,6 +11,16 @@
 //! settings that live in the user profile and that the application itself
 //! writes back to (spec 016).
 //!
+//! Built on top of the above (spec 021, ADR 0072/0073): [`manifest`] is the
+//! JSON document an application declares its configuration surface in;
+//! [`Policy`] is the document an organisation authors for one profile;
+//! [`resolution`] folds a manifest and the resolution-order layers
+//! (`defaults -> recommended -> config file -> environment -> flags ->
+//! builder overrides -> ENFORCED`) into resolved values plus provenance. All
+//! three are plain data, available under plain `config`. The networked
+//! fetchers (`PolicyClient`, `RoamingConfigClient`) live in [`managed`],
+//! gated behind the `config-managed` feature.
+//!
 //! ```
 //! use cli_framework::config::{ConfigStore, InMemoryBackend, VersionedConfig};
 //! use serde::{Deserialize, Serialize};
@@ -49,14 +59,21 @@
 //! ```
 
 mod backend;
+#[cfg(feature = "config-managed")]
+pub(crate) mod commands;
 mod error;
 mod file_backend;
 mod format;
 mod handle;
 mod in_memory_backend;
+#[cfg(feature = "config-managed")]
+pub mod managed;
+pub mod manifest;
 mod options;
+mod policy;
 #[cfg(windows)]
 mod registry_backend;
+pub mod resolution;
 mod store;
 mod versioned;
 
@@ -67,6 +84,7 @@ pub use format::ConfigFormat;
 pub use handle::ConfigHandle;
 pub use in_memory_backend::InMemoryBackend;
 pub use options::ConfigOptions;
+pub use policy::{Policy, StaleAction};
 #[cfg(windows)]
 pub use registry_backend::RegistryBackend;
 pub use store::{ConfigStore, MigrationFn};

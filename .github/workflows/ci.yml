@@ -82,3 +82,13 @@ jobs:
           --test integration_mcp_http
           --test integration_mcp_axum_mount
           --verbose
+
+      # `config` and `config-managed` are additive features exercised only by
+      # the all-features clippy/build steps above, never actually `cargo
+      # test`'d by any combo above — same gap the telemetry step exists to
+      # close, closed the same way.
+      - name: Test (config)
+        run: cargo test --features config,testkit --verbose
+
+      - name: Test (config-managed)
+        run: cargo test --features config-managed,testkit --verbose
