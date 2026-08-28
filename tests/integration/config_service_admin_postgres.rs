@@ -1384,3 +1384,145 @@ async fn import_bundle_rejects_a_manifest_that_would_invalidate_an_existing_db_o
         "a rejected import must append no new mutation_log row"
     );
 }
+
+// ── Spec 024 review, Fix 2: lock-order consistency between `import_bundle`
+// and `put_assignment_rules` ─────────────────────────────────────────────────
+//
+// Both methods touch the same two resources for a given app --
+// `assignment_set` (the version counter) and the `assignment` table rows --
+// and must acquire them in the SAME order to avoid a Postgres deadlock
+// (`40P01`) when they run concurrently. `put_assignment_rules` has always
+// locked `assignment_set` first; `import_bundle`'s per-app assignment block
+// previously deleted/reinserted `assignment` rows FIRST and only locked
+// `assignment_set` afterward -- the exact reverse order. This is a
+// probabilistic race (whether the two transactions' operations interleave
+// closely enough to actually deadlock depends on timing), so this test runs
+// the concurrent pair a number of times rather than once, and every
+// operation is wrapped in an explicit bounded timeout so a genuine deadlock
+// (or any other hang) fails this test loudly and quickly instead of
+// stalling the whole suite.
+#[tokio::test]
+async fn concurrent_import_and_put_assignment_rules_never_deadlock() {
+    let Some(pool) = pool_or_skip().await else {
+        return;
+    };
+
+    for i in 0..15 {
+        let app = unique(&format!("admin-import-assign-race-{i}"));
+        let store = PgPolicyStore::new(pool.clone());
+
+        // Seed real prior state for BOTH operations, so each takes its
+        // "existing row" branch (not "first ever write") -- that's what
+        // actually exercises lock contention on already-held rows, not just
+        // two concurrent inserts racing to create a not-yet-existing row.
+        store
+            .put_manifest(&app, sample_manifest(&app), "alice", 0)
+            .await
+            .unwrap();
+        store
+            .put_policy(
+                &app,
+                "base",
+                policy_write_with_greeting("hi"),
+                MutationKind::PolicyPut,
+                json!({}),
+                "alice",
+                0,
+            )
+            .await
+            .unwrap();
+        let seeded_rules = vec![AssignmentRule {
+            app: app.clone(),
+            ord: 0,
+            claim_path: "team".to_string(),
+            operator: RuleOperator::Equals,
+            value: Some(json!("platform")),
+            profile: "base".to_string(),
+        }];
+        store
+            .put_assignment_rules(&app, seeded_rules, "alice", 0)
+            .await
+            .unwrap();
+
+        // A bundle for the SAME app that also declares assignments, so
+        // `import_bundle`'s assignment-writing block actually runs (not
+        // skipped via `has_declared_assignments` returning false).
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            &dir.path().join(format!("manifests/{app}.json")),
+            &serde_json::to_string(&sample_manifest(&app)).unwrap(),
+        );
+        write(
+            &dir.path().join(format!("policies/{app}/base.toml")),
+            r#"
+            version = 1
+            [enforced]
+            "greeting" = "hi"
+            "#,
+        );
+        write(
+            &dir.path().join("assignments.toml"),
+            &format!(
+                r#"
+                [{app}]
+                default_profile = "base"
+                "#
+            ),
+        );
+        let bundle = FsPolicyStore::load(dir.path()).unwrap();
+
+        let store_import = PgPolicyStore::new(pool.clone());
+        let import_task = tokio::spawn(async move {
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                store_import.import_bundle(&bundle, "alice"),
+            )
+            .await
+        });
+
+        let store_put = PgPolicyStore::new(pool.clone());
+        let app_for_put = app.clone();
+        let put_task = tokio::spawn(async move {
+            let new_rules = vec![AssignmentRule {
+                app: app_for_put.clone(),
+                ord: 0,
+                claim_path: "team".to_string(),
+                operator: RuleOperator::Equals,
+                value: Some(json!("other")),
+                profile: "base".to_string(),
+            }];
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                store_put.put_assignment_rules(&app_for_put, new_rules, "bob", 1),
+            )
+            .await
+        });
+
+        let (import_result, put_result) = tokio::join!(import_task, put_task);
+        let import_result = import_result
+            .unwrap()
+            .expect("import_bundle must not hang/deadlock");
+        let put_result = put_result
+            .unwrap()
+            .expect("put_assignment_rules must not hang/deadlock");
+
+        // Either call may legitimately fail with `Conflict` (the other one
+        // won the race on `assignment_set`'s version) -- that is ordinary,
+        // correct optimistic-concurrency behavior. What must NEVER happen is
+        // a raw `Store` error, which is what a Postgres deadlock (`40P01`)
+        // surfaces as after the two transactions' opposing lock orders force
+        // Postgres to abort one of them.
+        if let Err(AdminWriteError::Store(e)) = &import_result {
+            panic!(
+                "iteration {i}: import_bundle returned a Store error -- likely a lock-order \
+                 deadlock: {e:?}"
+            );
+        }
+        if let Err(AdminWriteError::Store(e)) = &put_result {
+            panic!(
+                "iteration {i}: put_assignment_rules returned a Store error -- likely a \
+                 lock-order deadlock: {e:?}"
+            );
+        }
+    }
+}

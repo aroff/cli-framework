@@ -92,7 +92,10 @@ fn write_standard_bundle(root: &Path) {
                 {"key": "greeting", "kind": "string", "scope": "user"},
                 {"key": "proxy_url", "kind": "url", "scope": "machine"},
                 {"key": "api_key", "kind": "string", "scope": "user", "secret": true},
-                {"key": "install_id", "kind": "string", "scope": "machine"}
+                {"key": "install_id", "kind": "string", "scope": "machine"},
+                {"key": "device_nickname", "kind": "string", "scope": "user", "local_only": true},
+                {"key": "retry_count", "kind": "integer", "scope": "user", "constraints": {"min": 0, "max": 10}},
+                {"key": "log_level", "kind": "string", "scope": "user", "constraints": {"allowed_values": ["info", "warn", "error"]}}
             ]
         }"#,
     );
@@ -547,6 +550,129 @@ async fn a_machine_scoped_field_in_a_write_is_rejected() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 400);
+}
+
+// ── Fix 3 (spec 024 review): `local_only` + `User`-scoped fields ───────────
+
+#[tokio::test]
+async fn a_local_only_field_in_a_write_is_rejected() {
+    let dir = TempDir::new().unwrap();
+    write_standard_bundle(dir.path());
+    let identity = Arc::new(TokenIdentity::new());
+    identity.issue("good", developer_claims());
+    let base = spawn(dir.path(), identity).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .put(format!("{base}/v1/config/myapp"))
+        .bearer_auth("good")
+        .header("If-Match", "\"0\"")
+        .json(&json!({"device_nickname": "should-not-roam"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+// ── Fix 1 (spec 024 review): declared `min`/`max`/`allowed_values`
+// constraints, now enforced on the roaming user-config write path too, not
+// just the admin policy path. ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn a_below_minimum_value_in_a_roaming_write_is_rejected() {
+    let dir = TempDir::new().unwrap();
+    write_standard_bundle(dir.path());
+    let identity = Arc::new(TokenIdentity::new());
+    identity.issue("good", developer_claims());
+    let base = spawn(dir.path(), identity).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .put(format!("{base}/v1/config/myapp"))
+        .bearer_auth("good")
+        .header("If-Match", "\"0\"")
+        .json(&json!({"retry_count": -1}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn an_above_maximum_value_in_a_roaming_write_is_rejected() {
+    let dir = TempDir::new().unwrap();
+    write_standard_bundle(dir.path());
+    let identity = Arc::new(TokenIdentity::new());
+    identity.issue("good", developer_claims());
+    let base = spawn(dir.path(), identity).await;
+
+    let client = reqwest::Client::new();
+    // The exact scenario named in the spec 024 review: a manifest declares
+    // `retry_count: Int` with `constraints { max: 10 }`; a write of `999999`
+    // must now be rejected rather than roamed as-is.
+    let resp = client
+        .put(format!("{base}/v1/config/myapp"))
+        .bearer_auth("good")
+        .header("If-Match", "\"0\"")
+        .json(&json!({"retry_count": 999_999}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn a_disallowed_value_in_a_roaming_write_is_rejected() {
+    let dir = TempDir::new().unwrap();
+    write_standard_bundle(dir.path());
+    let identity = Arc::new(TokenIdentity::new());
+    identity.issue("good", developer_claims());
+    let base = spawn(dir.path(), identity).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .put(format!("{base}/v1/config/myapp"))
+        .bearer_auth("good")
+        .header("If-Match", "\"0\"")
+        .json(&json!({"log_level": "trace"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+/// Negative check for the three constraint-rejection tests above: values
+/// that actually satisfy `retry_count`'s `min`/`max` and `log_level`'s
+/// `allowed_values` must still roam successfully — proving the new checks
+/// discriminate rather than rejecting every write to a constrained field.
+#[tokio::test]
+async fn values_within_declared_constraints_are_accepted() {
+    let dir = TempDir::new().unwrap();
+    write_standard_bundle(dir.path());
+    let identity = Arc::new(TokenIdentity::new());
+    identity.issue("good", developer_claims());
+    let base = spawn(dir.path(), identity).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .put(format!("{base}/v1/config/myapp"))
+        .bearer_auth("good")
+        .header("If-Match", "\"0\"")
+        .json(&json!({"retry_count": 5, "log_level": "warn"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let get = client
+        .get(format!("{base}/v1/config/myapp"))
+        .bearer_auth("good")
+        .send()
+        .await
+        .unwrap();
+    let body: Value = get.json().await.unwrap();
+    assert_eq!(body["retry_count"], 5);
+    assert_eq!(body["log_level"], "warn");
 }
 
 #[tokio::test]

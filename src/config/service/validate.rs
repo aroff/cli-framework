@@ -15,10 +15,11 @@
 use super::error::{InheritanceError, PolicyValidationError};
 use super::store::PolicyStore;
 use super::types::{AssignmentRule, RuleOperator, StoredPolicy};
-use crate::config::manifest::ConfigManifest;
+use crate::config::manifest::{ConfigManifest, FieldManifest};
 use crate::config::resolution::{
     server_tree_drop_reason_enforced, server_tree_drop_reason_recommended, WarningReason,
 };
+use serde_json::Value;
 use std::collections::HashMap;
 
 /// Validate one stored policy's `enforced`/`recommended` trees against
@@ -41,11 +42,23 @@ pub fn validate_stored_policy(
                 profile: policy.profile.clone(),
                 path: path.clone(),
             }),
-            Some(field) => {
-                if let Some(reason) = server_tree_drop_reason_recommended(field, value) {
-                    errors.push(map_reason(&policy.app, &policy.profile, path, reason));
+            Some(field) => match server_tree_drop_reason_recommended(field, value) {
+                Some(reason) => errors.push(map_reason(&policy.app, &policy.profile, path, reason)),
+                // Fix 1 (spec 024 review): a value that already cleared the
+                // existing drop-reason check (so it's not e.g. a
+                // `TypeMismatch`) is additionally held to its field's own
+                // declared `min`/`max`/`allowed_values`, if any.
+                None => {
+                    if let Some(detail) = constraint_violation_detail(field, value) {
+                        errors.push(PolicyValidationError::ConstraintViolation {
+                            app: policy.app.clone(),
+                            profile: policy.profile.clone(),
+                            path: path.clone(),
+                            detail,
+                        });
+                    }
                 }
-            }
+            },
         }
     }
 
@@ -56,15 +69,71 @@ pub fn validate_stored_policy(
                 profile: policy.profile.clone(),
                 path: path.clone(),
             }),
-            Some(field) => {
-                if let Some(reason) = server_tree_drop_reason_enforced(field, value) {
-                    errors.push(map_reason(&policy.app, &policy.profile, path, reason));
+            Some(field) => match server_tree_drop_reason_enforced(field, value) {
+                Some(reason) => errors.push(map_reason(&policy.app, &policy.profile, path, reason)),
+                None => {
+                    if let Some(detail) = constraint_violation_detail(field, value) {
+                        errors.push(PolicyValidationError::ConstraintViolation {
+                            app: policy.app.clone(),
+                            profile: policy.profile.clone(),
+                            path: path.clone(),
+                            detail,
+                        });
+                    }
                 }
-            }
+            },
         }
     }
 
     errors
+}
+
+/// The reason (if any) `value` violates `field`'s declared
+/// [`crate::config::manifest::FieldConstraints`] (`min`/`max`/
+/// `allowed_values` — spec 021 user story 6). `None` both when `field` has
+/// no constraints at all and when `value` satisfies every constraint it has.
+///
+/// `pub(crate)` so [`super::router`]'s `first_invalid_user_field` (the
+/// roaming user-config write path) can hold a user's own document to the
+/// exact same declared bounds an admin policy write is held to here, rather
+/// than maintaining a second copy of this check.
+///
+/// Deliberately scoped to plain scalar leaf fields, matching
+/// `crate::config::manifest::json_schema`'s `apply_constraints` (the only
+/// other consumer of `FieldConstraints` today): `FieldKind::List`'s
+/// per-element constraints and any special-casing of `FieldKind::Enum`'s own
+/// `values` list are out of scope (spec 024 review, Fix 1) — an `Enum` field
+/// that also carries `allowed_values` simply has both checks apply
+/// independently.
+pub(crate) fn constraint_violation_detail(field: &FieldManifest, value: &Value) -> Option<String> {
+    let constraints = field.constraints.as_ref()?;
+
+    // `as_f64()` is `None` for a non-numeric `Value` -- skip the range check
+    // entirely rather than reporting a confusing second error on top of
+    // whatever `TypeMismatch`/`value_matches_kind` already caught for a
+    // value of the wrong shape.
+    if let Some(num) = value.as_f64() {
+        if let Some(min) = constraints.min {
+            if num < min {
+                return Some(format!("value {num} is below the declared minimum {min}"));
+            }
+        }
+        if let Some(max) = constraints.max {
+            if num > max {
+                return Some(format!("value {num} exceeds the declared maximum {max}"));
+            }
+        }
+    }
+
+    if let Some(allowed) = &constraints.allowed_values {
+        if !allowed.contains(value) {
+            return Some(format!(
+                "value {value} is not one of the declared allowed values {allowed:?}"
+            ));
+        }
+    }
+
+    None
 }
 
 fn map_reason(

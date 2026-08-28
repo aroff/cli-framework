@@ -275,19 +275,166 @@ fn every_violation_across_both_trees_is_reported_in_one_pass_not_just_the_first(
     );
 }
 
+// ── Fix 1 (spec 024 review): declared `min`/`max`/`allowed_values`
+// constraints are now enforced here, in the one function every write path
+// (startup `validate_all`, and every admin write via
+// `validate_policy_for_write`) already calls -- closing the gap the
+// resolver's own `constraints_are_carried_but_not_enforced_by_the_resolver`
+// test (`src/config/resolution/resolver.rs`) deliberately leaves to "the
+// server/renderer's job." That resolver-side test is untouched by this fix:
+// the *client-side* resolver still does not enforce constraints; only the
+// server (this module) now does. ───────────────────────────────────────────
+
 #[test]
-fn constraints_do_not_affect_validation_they_are_advisory_only() {
-    let mut f = field("count", FieldKind::Int);
+fn a_value_below_the_declared_minimum_is_rejected() {
+    let mut f = field("retry_count", FieldKind::Int);
+    f.constraints = Some(FieldConstraints {
+        min: Some(1.0),
+        max: None,
+        allowed_values: None,
+    });
+    let m = manifest(vec![f]);
+    let p = only_enforced("retry_count", json!(0));
+    let errors = validate_stored_policy(&m, &p);
+    assert!(
+        errors.iter().any(|e| matches!(
+            e,
+            PolicyValidationError::ConstraintViolation { path, .. } if path == "retry_count"
+        )),
+        "expected ConstraintViolation for a below-minimum value, got {errors:?}"
+    );
+}
+
+#[test]
+fn a_value_above_the_declared_maximum_is_rejected() {
+    let mut f = field("retry_count", FieldKind::Int);
+    f.constraints = Some(FieldConstraints {
+        min: None,
+        max: Some(10.0),
+        allowed_values: None,
+    });
+    let m = manifest(vec![f]);
+    // The exact scenario named in the spec 024 review: a manifest declares
+    // `retry_count: Int` with `constraints { max: 10 }`; an admin write of
+    // `999999` must now be rejected rather than stored as-is.
+    let p = only_enforced("retry_count", json!(999_999));
+    let errors = validate_stored_policy(&m, &p);
+    assert!(
+        errors.iter().any(|e| matches!(
+            e,
+            PolicyValidationError::ConstraintViolation { path, .. } if path == "retry_count"
+        )),
+        "expected ConstraintViolation for an above-maximum value, got {errors:?}"
+    );
+}
+
+#[test]
+fn a_value_not_in_allowed_values_is_rejected() {
+    let mut f = field("log_level", FieldKind::Str);
+    f.constraints = Some(FieldConstraints {
+        min: None,
+        max: None,
+        allowed_values: Some(vec![json!("info"), json!("warn"), json!("error")]),
+    });
+    let m = manifest(vec![f]);
+    let p = only_enforced("log_level", json!("trace"));
+    let errors = validate_stored_policy(&m, &p);
+    assert!(
+        errors.iter().any(|e| matches!(
+            e,
+            PolicyValidationError::ConstraintViolation { path, .. } if path == "log_level"
+        )),
+        "expected ConstraintViolation for a disallowed value, got {errors:?}"
+    );
+}
+
+#[test]
+fn a_value_within_min_and_max_validates_cleanly() {
+    let mut f = field("retry_count", FieldKind::Int);
     f.constraints = Some(FieldConstraints {
         min: Some(0.0),
         max: Some(10.0),
         allowed_values: None,
     });
     let m = manifest(vec![f]);
-    let p = only_enforced("count", json!(9999));
+    let p = only_enforced("retry_count", json!(5));
     let errors = validate_stored_policy(&m, &p);
     assert!(
         errors.is_empty(),
-        "constraints are not enforced by this validator, got {errors:?}"
+        "an in-range value must validate cleanly, got {errors:?}"
     );
+}
+
+#[test]
+fn a_value_in_allowed_values_validates_cleanly() {
+    let mut f = field("log_level", FieldKind::Str);
+    f.constraints = Some(FieldConstraints {
+        min: None,
+        max: None,
+        allowed_values: Some(vec![json!("info"), json!("warn"), json!("error")]),
+    });
+    let m = manifest(vec![f]);
+    let p = only_enforced("log_level", json!("warn"));
+    let errors = validate_stored_policy(&m, &p);
+    assert!(
+        errors.is_empty(),
+        "an allowed value must validate cleanly, got {errors:?}"
+    );
+}
+
+#[test]
+fn a_field_with_no_constraints_at_all_never_reports_a_constraint_violation() {
+    let f = field("greeting", FieldKind::Str);
+    let m = manifest(vec![f]);
+    let p = only_enforced("greeting", json!("anything at all"));
+    let errors = validate_stored_policy(&m, &p);
+    assert!(
+        errors.is_empty(),
+        "a field with no declared constraints must never fail one, got {errors:?}"
+    );
+}
+
+#[test]
+fn constraints_are_also_enforced_in_the_recommended_tree() {
+    let mut f = field("retry_count", FieldKind::Int);
+    f.constraints = Some(FieldConstraints {
+        min: None,
+        max: Some(10.0),
+        allowed_values: None,
+    });
+    let m = manifest(vec![f]);
+    let p = only_recommended("retry_count", json!(999));
+    let errors = validate_stored_policy(&m, &p);
+    assert!(
+        errors.iter().any(|e| matches!(
+            e,
+            PolicyValidationError::ConstraintViolation { path, .. } if path == "retry_count"
+        )),
+        "expected ConstraintViolation in the recommended tree too, got {errors:?}"
+    );
+}
+
+#[test]
+fn a_non_numeric_value_skips_the_range_check_rather_than_double_reporting() {
+    // A value of the wrong JSON shape is already caught by `TypeMismatch`
+    // (`value_matches_kind`) -- the constraint check must not also fire a
+    // confusing second error for the same value.
+    let mut f = field("retry_count", FieldKind::Int);
+    f.constraints = Some(FieldConstraints {
+        min: Some(0.0),
+        max: Some(10.0),
+        allowed_values: None,
+    });
+    let m = manifest(vec![f]);
+    let p = only_enforced("retry_count", json!("not-a-number"));
+    let errors = validate_stored_policy(&m, &p);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error (TypeMismatch), not a doubled-up ConstraintViolation too: {errors:?}"
+    );
+    assert!(matches!(
+        errors[0],
+        PolicyValidationError::TypeMismatch { .. }
+    ));
 }
