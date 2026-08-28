@@ -1,9 +1,16 @@
 //! Built-in OpenTelemetry integration (ADR 0068, spec 017).
 //!
 //! Every command dispatch is automatically wrapped in a `cli.command` span
-//! carrying the command path and [invocation surface]. Handler authors can also
-//! emit their own signals through [`AppContext::telemetry`], which returns a
-//! [`Telemetry`] handle.
+//! carrying the command path and [invocation surface], and every HTTP request
+//! served by `ApiServer` in an `http.request` server span carrying the matched
+//! route, method and status. Handler authors can also emit their own signals
+//! through [`AppContext::telemetry`], which returns a [`Telemetry`] handle.
+//!
+//! An application does **not** need to add request instrumentation of its own,
+//! and should not: its span would nest inside the framework's rather than
+//! replace it. To attach app-specific detail (tenant, principal, product),
+//! `tracing::info!` inside the handler — events land on the enclosing
+//! `http.request` span.
 //!
 //! The whole subsystem is opt-in behind the `telemetry` cargo feature. When the
 //! feature is off — or on but no OTLP endpoint is configured — every call
