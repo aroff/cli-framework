@@ -2,9 +2,10 @@
 name: tools-cli-framework
 description: >-
   Guides building and refactoring Rust CLIs with the cli-framework crate (tokio/async
-  dispatch, Arc command handlers, CommandSpec, plugins, ailoop, chat). Use when the
-  user or codebase mentions cli-framework, AppBuilder, Command registration, natural
-  language chat, plugin registry, or operational command layout for Rust binaries.
+  dispatch, Arc command handlers, CommandSpec, plugins, ailoop, chat, OpenTelemetry).
+  Use when the user or codebase mentions cli-framework, AppBuilder, Command registration,
+  natural language chat, plugin registry, operational command layout for Rust binaries,
+  or telemetry/tracing/metrics/OTLP export on a cli-framework-based service.
 license: Apache-2.0
 metadata:
   version: "0.4.0"
@@ -257,7 +258,40 @@ let client = RetryableHttpClient::builder()
 
 `secure_reqwest_client` enforces TLS, disables redirects to non-HTTPS, and sets a timeout. Retryable vs. non-retryable error classification is automatic. See `skill/references/http-retry.md` and `skill/examples/http_retry_demo`.
 
-## 14. Testkit
+## 14. Telemetry (`telemetry` feature)
+
+Enable with `features = ["telemetry"]`. Every command dispatch — CLI, chat,
+MCP, and `version` — gets an automatic `cli.command` OpenTelemetry span plus
+`cli.command.invocations`/`cli.command.duration_ms` metrics, no handler code
+required:
+
+```rust
+use cli_framework::telemetry::TelemetryConfig;
+
+let app = AppBuilder::new()
+    .with_version("myapp", env!("CARGO_PKG_VERSION"))
+    .with_telemetry(TelemetryConfig::from_env())   // no-op until an OTLP endpoint is set
+    .build(ctx)?;
+```
+
+**The one trap that matters**: `with_telemetry()` installs the process's
+`tracing` subscriber. If anything else installs one first — including this
+framework's own `init_default_logging()` — the OTel bridge cannot attach and
+export goes silently to nowhere (a warning is printed to stderr, not
+`tracing::warn!`, since the subscriber may not be listening). Call
+`init_default_logging()` only when telemetry is inactive; never both.
+
+Outbound distributed tracing requires one explicit call per HTTP request —
+`with_trace_context()` on a `reqwest::RequestBuilder`
+(`cli_framework::telemetry::propagation::TracedRequestBuilder`) — inbound
+extraction on `ApiServerBuilder` is automatic. Skip it and every service
+downstream produces a disconnected trace instead of joining the caller's.
+
+Full detail — subscriber-ownership trap, propagation, OTLP auth headers,
+protocol/signal config, app-level `ctx.telemetry()` usage, testing pattern —
+in `skill/references/telemetry.md`.
+
+## 15. Testkit
 
 ```rust
 // In test, with features = ["testkit"]
@@ -270,7 +304,7 @@ assert!(output.contains("ok"));
 
 The `testkit` feature enables in-process CLI testing without spawning a subprocess. See `skill/references/testing-with-testkit.md` and `docs/testing.md`.
 
-## 15. Doctor diagnostics framework (`doctor` feature)
+## 16. Doctor diagnostics framework (`doctor` feature)
 
 Enable with `features = ["doctor"]`. Provides a structured `DoctorCheck` trait, concurrent runner, and a `doctor` CLI command with terminal table and JSON output.
 
@@ -355,7 +389,7 @@ CI pipelines can rely on this: `myapp doctor --json | jq '.summary.errors'`.
 cargo run --example with_doctor --features doctor
 ```
 
-## 16. Authentication (`auth` feature)
+## 17. Authentication (`auth` feature)
 
 Enable with `features = ["auth"]` in `cli-framework`. Pair with `cli-framework-oidc` (feature `client`) for OIDC flows.
 
@@ -405,7 +439,7 @@ let resp = api.get("https://api.example.com/things").await?;
 
 Full detail — Keycloak client config, all three flows, cache file schema, runtime caching logic, JWT server validation, testing with stubs — in `skill/references/auth-and-oidc.md`. Runnable example: `skill/examples/with_auth`.
 
-## 17. Pointers to `references/` and `skill/examples/`
+## 18. Pointers to `references/` and `skill/examples/`
 
 ### Reference files
 
@@ -419,6 +453,7 @@ Full detail — Keycloak client config, all three flows, cache file schema, runt
 | `skill/references/mcp-streamable-http.md` | Full MCP reference: flags, error codes, concurrency |
 | `skill/references/plugins-and-ailoop.md` | Plugin manifests, ailoop confirmations |
 | `skill/references/http-retry.md` | `RetryableHttpClient`, circuit breaker |
+| `skill/references/telemetry.md` | OpenTelemetry: subscriber trap, auto spans/metrics, W3C propagation, OTLP auth headers, testing |
 | `skill/references/testing-with-testkit.md` | `CliTestHarness`, in-process test pattern |
 | `skill/references/cli-creation-scenarios.md` | Domain CLI layouts (internal tooling, API client, data ops, plugins) |
 
