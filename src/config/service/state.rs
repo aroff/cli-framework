@@ -6,12 +6,13 @@
 //! refreshing on interval does not translate into a database read per
 //! device").
 
+use super::admin_store::PolicyAdminStore;
 use super::assignment::resolve_profile;
 use super::error::InheritanceError;
 use super::identity::CallerIdentity;
 use super::inherit::{combined_chain_version, flatten, resolve_chain};
 use super::store::{PolicyStore, UserConfigStore};
-use super::types::StoredPolicy;
+use super::types::{AssignmentRule, RuleOperator, StoredPolicy};
 use crate::config::Policy;
 use serde::Serialize;
 use serde_json::Value;
@@ -62,12 +63,44 @@ pub struct MatchedRule {
     pub value: Option<Value>,
 }
 
+/// The default administrative-role rule (spec 023): a caller's
+/// `realm_access.roles` claim must contain `"config-admin"`. Overridable per
+/// deployment via [`ConfigServiceState::with_admin_rule`] — spec 023 is
+/// explicit this must not be hardcoded.
+pub fn default_admin_rule() -> AssignmentRule {
+    AssignmentRule {
+        // `app`/`ord`/`profile` are unused by rule evaluation
+        // (`assignment::rule_matches` only ever inspects `claim_path`/
+        // `operator`/`value`) — this rule is never stored in the
+        // `assignment` table, so there is no real app/ord/profile for it to
+        // name. Placeholder values, chosen only to satisfy the type.
+        app: String::new(),
+        ord: 0,
+        claim_path: "realm_access.roles".to_string(),
+        operator: RuleOperator::Contains,
+        value: Some(Value::String("config-admin".to_string())),
+        profile: String::new(),
+    }
+}
+
 /// Shared state for every handler the config-service router registers.
 pub struct ConfigServiceState {
     pub policy_store: Arc<dyn PolicyStore>,
     pub user_config_store: Arc<dyn UserConfigStore>,
     pub identity: Arc<dyn CallerIdentity>,
     pub max_user_config_bytes: usize,
+    /// Administrative write access (spec 023) — `None` for deployments that
+    /// only ever construct a [`super::fs_store::FsPolicyStore`]-backed state
+    /// (read-only test/dev setups, and every existing caller of [`Self::new`]
+    /// from before spec 023 shipped). The `/v1/admin/*` routes still mount in
+    /// that case (see [`super::router::config_service_router`]) but every
+    /// handler responds `500` — an administrative API with nothing behind it
+    /// to write to is a deployment-configuration gap, not a `404`-shaped
+    /// "this route doesn't exist."
+    pub admin_store: Option<Arc<dyn PolicyAdminStore>>,
+    /// The rule a caller's validated claims must satisfy to pass
+    /// [`super::identity::require_admin_role`] — see [`default_admin_rule`].
+    pub admin_rule: AssignmentRule,
     /// Keyed by `(app, profile, combined_chain_version)` — the version
     /// component is [`combined_chain_version`] over the *entire* resolved
     /// inheritance chain, not the leaf profile's own stored version alone.
@@ -98,6 +131,8 @@ impl ConfigServiceState {
             user_config_store,
             identity,
             max_user_config_bytes: DEFAULT_MAX_USER_CONFIG_BYTES,
+            admin_store: None,
+            admin_rule: default_admin_rule(),
             cache: Mutex::new(HashMap::new()),
         })
     }
@@ -113,6 +148,38 @@ impl ConfigServiceState {
             user_config_store: self.user_config_store.clone(),
             identity: self.identity.clone(),
             max_user_config_bytes: max_bytes,
+            admin_store: self.admin_store.clone(),
+            admin_rule: self.admin_rule.clone(),
+            cache: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Attach administrative write access (spec 023) — without this, every
+    /// `/v1/admin/*` route responds `500`. Call this once, at startup,
+    /// against a real [`super::postgres::PgPolicyStore`] (the only shipped
+    /// [`PolicyAdminStore`] implementation).
+    pub fn with_admin_store(self: Arc<Self>, admin_store: Arc<dyn PolicyAdminStore>) -> Arc<Self> {
+        Arc::new(Self {
+            policy_store: self.policy_store.clone(),
+            user_config_store: self.user_config_store.clone(),
+            identity: self.identity.clone(),
+            max_user_config_bytes: self.max_user_config_bytes,
+            admin_store: Some(admin_store),
+            admin_rule: self.admin_rule.clone(),
+            cache: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Override the administrative-role rule (see [`default_admin_rule`]) —
+    /// spec 023's "overridable per deployment" requirement.
+    pub fn with_admin_rule(self: Arc<Self>, admin_rule: AssignmentRule) -> Arc<Self> {
+        Arc::new(Self {
+            policy_store: self.policy_store.clone(),
+            user_config_store: self.user_config_store.clone(),
+            identity: self.identity.clone(),
+            max_user_config_bytes: self.max_user_config_bytes,
+            admin_store: self.admin_store.clone(),
+            admin_rule,
             cache: Mutex::new(HashMap::new()),
         })
     }
@@ -267,6 +334,43 @@ mod tests {
             Arc::new(InMemoryUserConfigStore::new()),
             Arc::new(StubIdentity),
         )
+    }
+
+    #[tokio::test]
+    async fn with_max_user_config_bytes_overrides_the_default_cap() {
+        let dir = TempDir::new().unwrap();
+        write(&dir.path().join("manifests/myapp.json"), manifest_json());
+        let state = state_with_bundle(dir.path())
+            .await
+            .with_max_user_config_bytes(1234);
+        assert_eq!(state.max_user_config_bytes, 1234);
+    }
+
+    #[tokio::test]
+    async fn with_admin_rule_overrides_the_default_admin_rule() {
+        let dir = TempDir::new().unwrap();
+        write(&dir.path().join("manifests/myapp.json"), manifest_json());
+        let custom_rule = AssignmentRule {
+            app: String::new(),
+            ord: 0,
+            claim_path: "custom.claim".to_string(),
+            operator: RuleOperator::Exists,
+            value: None,
+            profile: String::new(),
+        };
+        let state = state_with_bundle(dir.path())
+            .await
+            .with_admin_rule(custom_rule.clone());
+        assert_eq!(state.admin_rule.claim_path, "custom.claim");
+        assert_eq!(state.admin_rule.operator, RuleOperator::Exists);
+    }
+
+    #[test]
+    fn default_admin_rule_is_realm_access_roles_contains_config_admin() {
+        let rule = default_admin_rule();
+        assert_eq!(rule.claim_path, "realm_access.roles");
+        assert_eq!(rule.operator, RuleOperator::Contains);
+        assert_eq!(rule.value, Some(Value::String("config-admin".to_string())));
     }
 
     #[tokio::test]

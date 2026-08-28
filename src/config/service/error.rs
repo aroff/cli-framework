@@ -182,6 +182,32 @@ pub enum InheritanceError {
     Cycle { profile: String },
 }
 
+/// Why an administrative write ([`super::admin_store::PolicyAdminStore`],
+/// spec 023) failed. The router maps [`Self::Conflict`] to `412 Precondition
+/// Failed` (the same optimistic-concurrency outcome
+/// [`UserConfigWriteError::Conflict`] already maps to `412` for the
+/// device-facing write path — spec 023 is explicit this is "one mechanism,
+/// not two"), [`Self::Validation`] to `400 Bad Request` (listing every
+/// error, not just the first), and [`Self::Store`] to `500`.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum AdminWriteError {
+    /// The caller's `expected_version` (from `If-Match`, or `0` to mean
+    /// "must not already exist") no longer matches the stored resource's
+    /// current version.
+    #[error("stored version is {current}, expected {expected}")]
+    Conflict { current: u64, expected: u64 },
+    /// Manifest-conformance or inheritance-integrity validation rejected the
+    /// candidate document before any storage write was attempted — see
+    /// [`super::validate::validate_stored_policy`]/[`super::inherit::resolve_chain`],
+    /// which this variant's contents come from unchanged (spec 023: "using
+    /// the same validator... not a second copy of the rules").
+    #[error("write failed validation: {0:?}")]
+    Validation(Vec<PolicyValidationError>),
+    #[error(transparent)]
+    Store(#[from] StoreError),
+}
+
 /// The result of [`super::validate::validate_all`] — every conformance
 /// failure found across every stored policy, surfaced together rather than
 /// stopping at the first one, so a deployment operator can fix a broken
@@ -238,5 +264,33 @@ mod tests {
     fn startup_validation_error_display_with_zero_errors() {
         let err = StartupValidationError(vec![]);
         assert!(err.to_string().contains("0 error(s)"));
+    }
+
+    #[test]
+    fn admin_write_error_conflict_displays_both_versions() {
+        let err = AdminWriteError::Conflict {
+            current: 5,
+            expected: 3,
+        };
+        let text = err.to_string();
+        assert!(text.contains('5'));
+        assert!(text.contains('3'));
+    }
+
+    #[test]
+    fn admin_write_error_validation_displays_the_errors() {
+        let err = AdminWriteError::Validation(vec![PolicyValidationError::UnknownField {
+            app: "myapp".to_string(),
+            profile: "developers".to_string(),
+            path: "ghost".to_string(),
+        }]);
+        assert!(err.to_string().contains("ghost"));
+    }
+
+    #[test]
+    fn admin_write_error_store_is_transparent() {
+        let err: AdminWriteError = StoreError::backend("boom").into();
+        assert!(matches!(err, AdminWriteError::Store(_)));
+        assert!(err.to_string().contains("boom"));
     }
 }

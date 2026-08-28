@@ -27,8 +27,13 @@ use sqlx_core::row::Row;
 use sqlx_postgres::PgConnection;
 
 /// Every migration this binary knows about, in order. `1` is the initial
-/// schema (spec 022's four tables plus `schema_migrations` itself).
-pub const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("migrations/001_initial.sql"))];
+/// schema (spec 022's four tables plus `schema_migrations` itself). `2` adds
+/// the administrative-API mutation log and `assignment_set` version counter
+/// (spec 023).
+pub const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("migrations/001_initial.sql")),
+    (2, include_str!("migrations/002_admin_mutation_log.sql")),
+];
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -353,8 +358,16 @@ mod tests {
             .await
             .expect("migrations must apply cleanly to a fresh database");
 
-        // Every table from 001_initial.sql now exists and is queryable.
-        for table in ["manifest", "policy", "assignment", "user_config"] {
+        // Every table from 001_initial.sql and 002_admin_mutation_log.sql
+        // now exists and is queryable.
+        for table in [
+            "manifest",
+            "policy",
+            "assignment",
+            "user_config",
+            "mutation_log",
+            "assignment_set",
+        ] {
             sqlx_core::query::query::<sqlx_postgres::Postgres>(&format!(
                 "SELECT COUNT(*) FROM {table}"
             ))
@@ -362,7 +375,7 @@ mod tests {
             .await
             .unwrap_or_else(|e| panic!("table {table} must exist and be queryable: {e}"));
         }
-        assert_eq!(current_version_of(&db.pool).await, 1);
+        assert_eq!(current_version_of(&db.pool).await, 2);
     }
 
     #[tokio::test]
@@ -375,7 +388,7 @@ mod tests {
         run_migrations(&db.pool)
             .await
             .expect("second run must be a no-op, not an error");
-        assert_eq!(current_version_of(&db.pool).await, 1);
+        assert_eq!(current_version_of(&db.pool).await, 2);
     }
 
     #[tokio::test]
@@ -400,7 +413,7 @@ mod tests {
                 err,
                 MigrationError::DatabaseAheadOfBinary {
                     found: 999,
-                    known: 1
+                    known: 2
                 }
             ),
             "got {err:?}"
@@ -517,7 +530,7 @@ mod tests {
                  bug 3's self-inflicted deadlock"
             ),
         }
-        assert_eq!(current_version_of(&db.pool).await, 1);
+        assert_eq!(current_version_of(&db.pool).await, 2);
     }
 
     #[test]

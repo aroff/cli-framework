@@ -66,7 +66,14 @@ http = { version = "1", optional = true }
 # Optional API server dependencies
 tower = { version = "0.5", features = ["util"], optional = true }
 tower-http = { version = "0.7", features = ["cors"], optional = true }
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"], optional = true }
+# `serde` (spec 023): `mutation_log.occurred_at` decodes to `chrono::DateTime<Utc>`
+# (see the `sqlx-core`/`sqlx-postgres` `chrono` feature comment below) and is
+# serialized directly onto the `/v1/admin/policy/{app}/{profile}/history`
+# wire response — chrono's own `serde` feature is what provides that
+# `Serialize`/`Deserialize` impl; nothing used it before spec 023 since
+# `HeaderConfig` (the sole prior `DateTime<Utc>` consumer) is never
+# (de)serialized itself.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"], optional = true }
 # Optional MCP install dependency (aikit-sdk provides add_mcp_server and mcp_supported_agents)
 aikit-sdk = { git = "https://github.com/goaikit/aikit.git", package = "aikit-sdk", rev = "14b02dbb90acf00ab12f9417153c8c027c5c47b1", optional = true }
 ## Optional embedded agent dependency (used by `chat` feature)
@@ -115,8 +122,23 @@ opentelemetry-http = { version = "0.31", default-features = false, optional = tr
 # (unlike sqlx-postgres 0.9, which requires a newer rustc than this
 # workspace's pinned toolchain), so 0.8 is also the version-selection
 # constraint, not just a default.
-sqlx-core = { version = "0.8", default-features = false, features = ["_rt-tokio", "_tls-rustls-ring-webpki"], optional = true }
-sqlx-postgres = { version = "0.8", default-features = false, features = ["json"], optional = true }
+#
+# `chrono` (both crates): spec 023's `mutation_log.occurred_at` is a
+# Postgres `TIMESTAMPTZ` column, decoded as `chrono::DateTime<Utc>` —
+# `chrono` is already an unconditional-when-`api-server`-is-on dependency of
+# this crate (`config-service` already implies `api-server`), so enabling
+# sqlx's own `chrono` feature (which just wires up `Encode`/`Decode` against
+# the same crate, the same way its `json` feature already does for
+# `serde_json::Value`) adds no new dependency to the graph.
+sqlx-core = { version = "0.8", default-features = false, features = ["_rt-tokio", "_tls-rustls-ring-webpki", "chrono"], optional = true }
+sqlx-postgres = { version = "0.8", default-features = false, features = ["json", "chrono"], optional = true }
+
+# Administrative bundle export/import (`config-service`, spec 023): plain,
+# uncompressed tar — these bundles are small text files (manifests/policies/
+# assignments), so compression is not worth a second new dependency
+# (`flate2`) alongside this one. No `tar` crate exists anywhere else in this
+# workspace.
+tar = { version = "0.4", optional = true }
 
 # Windows registry backend for the `config` feature (`ConfigBackend`). Only
 # resolved/built when compiling for a Windows target; `config` builds and
@@ -206,7 +228,7 @@ config-managed = ["config", "auth"]
 # that reasoning was specifically about avoiding the cli-framework-oidc
 # dependency cycle (a real risk `config-managed` does NOT reopen, since
 # `config` has no path back to `cli-framework-oidc`).
-config-service = ["config", "api-server", "dep:sqlx-core", "dep:sqlx-postgres"]
+config-service = ["config", "api-server", "dep:sqlx-core", "dep:sqlx-postgres", "dep:tar"]
 
 [lib]
 name = "cli_framework"
@@ -503,6 +525,33 @@ required-features = ["config-service"]
 [[test]]
 name = "integration_config_service_postgres_conformance"
 path = "tests/integration/config_service_postgres_conformance.rs"
+required-features = ["config-service", "testkit"]
+
+# ── config-service admin API (spec 023) ──────────────────────────────────────
+
+# `PolicyAdminStore` (PgPolicyStore's write side) exercised directly against a
+# real Postgres, same `DATABASE_URL`-presence skip contract as
+# `integration_config_service_postgres_conformance`. Needs `testkit` for
+# `postgres::testkit` seeding/truncate helpers and for direct pool access
+# (proving `mutation_log` has no FK to `policy` by deleting a row with raw
+# SQL).
+[[test]]
+name = "integration_config_service_admin_postgres"
+path = "tests/integration/config_service_admin_postgres.rs"
+required-features = ["config-service", "testkit"]
+
+# The `/v1/admin/*` HTTP surface end to end: the mounted router (spec 023's
+# "mounted router driven in-process" seam), a `TokenIdentity` double standing
+# in for the synthesized-OIDC-issuer seam (same precedent
+# `config_service_router.rs` already established for spec 022 — see that
+# file's own module docs for why a token-in/claims-out double is the right
+# level to test *this crate's* auth wiring at), and a real Postgres-backed
+# `PolicyAdminStore`/`PolicyStore` pair so admin writes are actually visible
+# on the device-facing read path in the same process. `testkit` for seeding
+# and pool access, same as the file above.
+[[test]]
+name = "integration_config_service_admin_router"
+path = "tests/integration/config_service_admin_router.rs"
 required-features = ["config-service", "testkit"]
 
 [[test]]

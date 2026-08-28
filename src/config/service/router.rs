@@ -38,7 +38,7 @@ use std::sync::Arc;
 /// application-level decision (spec 022 user story 27).
 pub fn config_service_router(state: Arc<ConfigServiceState>) -> Router {
     let identity = state.identity.clone();
-    Router::new()
+    let main = Router::new()
         .route("/v1/policy/{app}", get(get_policy))
         .route("/v1/manifest/{app}", get(get_manifest))
         .route(
@@ -50,10 +50,17 @@ pub fn config_service_router(state: Arc<ConfigServiceState>) -> Router {
             identity,
             require_caller_identity,
         ))
-        .with_state(state)
+        .with_state(state.clone());
+
+    // The administrative surface (spec 023) is a genuinely separate router,
+    // with its own two-layer auth stack — see `super::admin_router`'s module
+    // docs. `.merge(...)` is what makes `config_service_router`'s own public
+    // signature keep returning one `Router`, unchanged for every existing
+    // caller, with the admin routes now included.
+    main.merge(super::admin_router::admin_router(state))
 }
 
-fn internal_error(context: &str, err: impl std::fmt::Display) -> Response {
+pub(crate) fn internal_error(context: &str, err: impl std::fmt::Display) -> Response {
     tracing::error!("config-service: {context}: {err}");
     StatusCode::INTERNAL_SERVER_ERROR.into_response()
 }
@@ -67,14 +74,14 @@ fn unmanaged() -> Response {
 /// specific claim as the roaming-document key, but `sub` is the one claim
 /// every OIDC-shaped identity (user or service account) carries, and it is
 /// exactly what `cli-framework-oidc`'s `OidcClaims.sub` already surfaces.
-fn subject_from_claims(claims: &Value) -> Option<String> {
+pub(crate) fn subject_from_claims(claims: &Value) -> Option<String> {
     claims
         .get("sub")
         .and_then(|v| v.as_str())
         .map(str::to_string)
 }
 
-fn missing_sub_response() -> Response {
+pub(crate) fn missing_sub_response() -> Response {
     (
         StatusCode::UNAUTHORIZED,
         Json(json!({ "error": "validated identity is missing a 'sub' claim" })),
@@ -169,8 +176,40 @@ fn first_invalid_user_field(
     None
 }
 
-fn parse_etag(raw: &str) -> Option<u64> {
+pub(crate) fn parse_etag(raw: &str) -> Option<u64> {
     raw.trim().trim_matches('"').parse().ok()
+}
+
+/// The exact `If-Match` parsing/response-shaping this router's own
+/// `put_user_config` handler already used before spec 023: a missing header
+/// is `400` ("If-Match header is required"), an unparseable one is `400`
+/// ("If-Match header could not be parsed"), otherwise the numeric version it
+/// names. Reused by every admin write handler
+/// ([`super::admin_router`]) — spec 023 is explicit this must be "the exact
+/// same convention," not a second one.
+// `Response` is a large `Err` variant by clippy's own threshold, but this
+// helper exists specifically so callers can early-return it directly as
+// their own handler's `Response` (see every call site in this module and in
+// `super::admin_router`) — boxing it would just add an unbox at every one of
+// those call sites for no benefit, since axum handlers always end up
+// returning an owned `Response` anyway.
+#[allow(clippy::result_large_err)]
+pub(crate) fn require_if_match(headers: &HeaderMap) -> Result<u64, Response> {
+    let Some(raw) = headers.get(IF_MATCH).and_then(|v| v.to_str().ok()) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "If-Match header is required" })),
+        )
+            .into_response());
+    };
+    match parse_etag(raw) {
+        Some(v) => Ok(v),
+        None => Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "If-Match header could not be parsed" })),
+        )
+            .into_response()),
+    }
 }
 
 async fn put_user_config(
@@ -184,19 +223,9 @@ async fn put_user_config(
         return missing_sub_response();
     };
 
-    let Some(if_match_raw) = headers.get(IF_MATCH).and_then(|v| v.to_str().ok()) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "If-Match header is required" })),
-        )
-            .into_response();
-    };
-    let Some(expected_version) = parse_etag(if_match_raw) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "If-Match header could not be parsed" })),
-        )
-            .into_response();
+    let expected_version = match require_if_match(&headers) {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
 
     let Value::Object(doc) = body else {

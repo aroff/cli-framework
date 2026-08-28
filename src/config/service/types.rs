@@ -137,6 +137,60 @@ pub struct AssignmentRule {
     pub profile: String,
 }
 
+/// What kind of administrative write produced one [`mutation_log`] row
+/// (spec 023). Follows the exact `wire_str()`/`parse_wire_str()` convention
+/// [`RuleOperator`] already established, even though the underlying
+/// `mutation_log.kind` column is a bare `TEXT` — so the Postgres store and
+/// (if a future bundle-export format ever wants to round-trip history) any
+/// other reader share one mapping rather than each inventing their own
+/// string literals.
+///
+/// [`mutation_log`]: super::postgres — see that module's `002_admin_mutation_log.sql`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MutationKind {
+    /// `PUT /v1/admin/manifest/{app}`.
+    ManifestPut,
+    /// `PUT /v1/admin/policy/{app}/{profile}`.
+    PolicyPut,
+    /// `PATCH /v1/admin/policy/{app}/{profile}`.
+    PolicyPatch,
+    /// `POST /v1/admin/policy/{app}/{profile}/history/{version}/restore`.
+    PolicyRestore,
+    /// `PUT /v1/admin/assignments/{app}`.
+    AssignmentsPut,
+    /// `POST /v1/admin/import`.
+    Import,
+}
+
+impl MutationKind {
+    /// The canonical wire/storage string for this kind — used by
+    /// `mutation_log.kind` and by [`Self::parse_wire_str`]'s inverse.
+    pub fn wire_str(self) -> &'static str {
+        match self {
+            Self::ManifestPut => "manifest_put",
+            Self::PolicyPut => "policy_put",
+            Self::PolicyPatch => "policy_patch",
+            Self::PolicyRestore => "policy_restore",
+            Self::AssignmentsPut => "assignments_put",
+            Self::Import => "import",
+        }
+    }
+
+    /// The inverse of [`Self::wire_str`]. `None` for anything else.
+    pub fn parse_wire_str(s: &str) -> Option<Self> {
+        match s {
+            "manifest_put" => Some(Self::ManifestPut),
+            "policy_put" => Some(Self::PolicyPut),
+            "policy_patch" => Some(Self::PolicyPatch),
+            "policy_restore" => Some(Self::PolicyRestore),
+            "assignments_put" => Some(Self::AssignmentsPut),
+            "import" => Some(Self::Import),
+            _ => None,
+        }
+    }
+}
+
 /// A stored roaming user-scoped document for one (application, subject) pair.
 ///
 /// `version` starts at `0` for a subject with no document yet (never `None`
@@ -172,5 +226,26 @@ mod tests {
         assert_eq!(RuleOperator::parse_wire_str("startswith"), None);
         assert_eq!(RuleOperator::parse_wire_str(""), None);
         assert_eq!(RuleOperator::parse_wire_str("EQUALS"), None);
+    }
+
+    #[test]
+    fn mutation_kind_wire_str_and_parse_wire_str_round_trip_for_every_variant() {
+        for kind in [
+            MutationKind::ManifestPut,
+            MutationKind::PolicyPut,
+            MutationKind::PolicyPatch,
+            MutationKind::PolicyRestore,
+            MutationKind::AssignmentsPut,
+            MutationKind::Import,
+        ] {
+            assert_eq!(MutationKind::parse_wire_str(kind.wire_str()), Some(kind));
+        }
+    }
+
+    #[test]
+    fn mutation_kind_parse_wire_str_rejects_anything_else() {
+        assert_eq!(MutationKind::parse_wire_str("policy_delete"), None);
+        assert_eq!(MutationKind::parse_wire_str(""), None);
+        assert_eq!(MutationKind::parse_wire_str("PolicyPut"), None);
     }
 }
