@@ -191,14 +191,40 @@ fn tar_directory(root: &Path) -> Result<Vec<u8>, String> {
 pub(crate) async fn build_export_tar(
     policy_store: &dyn PolicyStore,
 ) -> Result<Vec<u8>, StoreError> {
-    let root = scratch_dir_path("export");
+    build_export_tar_at(policy_store, &scratch_dir_path("export")).await
+}
+
+/// The actual work, parameterized over the scratch root — separated out
+/// purely so a test can pass a dedicated, pre-existing path instead of one
+/// drawn from the shared, process-wide [`SCRATCH_COUNTER`] (mirroring
+/// [`extract_bundle_from_tar_at`]'s own reason for existing separately from
+/// [`extract_bundle_from_tar`] — see that function's doc comment).
+async fn build_export_tar_at(
+    policy_store: &dyn PolicyStore,
+    root: &Path,
+) -> Result<Vec<u8>, StoreError> {
     let result: Result<Vec<u8>, String> = async {
-        std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-        write_export_bundle(policy_store, &root).await?;
-        tar_directory(&root)
+        // `create_dir` (never `_all`) for this exact leaf directory,
+        // deliberately: `temp_dir()` itself always already exists, but the
+        // leaf must not. Fix 4 (spec 023 review, "Medium": scratch directory
+        // names can collide with a stale directory from a prior crashed
+        // process reusing the same PID) — silently reusing an existing
+        // directory here (the old `create_dir_all` behavior) risked mixing
+        // in leftover files that were never part of this export. Failing
+        // loudly instead means a reused PID/counter collision surfaces as an
+        // error rather than silently producing a wrong bundle.
+        std::fs::create_dir(root).map_err(|e| {
+            format!(
+                "scratch directory {root:?} could not be created for export -- it may already \
+                 exist (e.g. left over from a prior crashed process whose PID has since been \
+                 reused): {e}"
+            )
+        })?;
+        write_export_bundle(policy_store, root).await?;
+        tar_directory(root)
     }
     .await;
-    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(root);
     result.map_err(StoreError::backend)
 }
 
@@ -224,7 +250,18 @@ pub(crate) fn extract_bundle_from_tar(tar_bytes: &[u8]) -> Result<FsPolicyStore,
 /// it.
 fn extract_bundle_from_tar_at(tar_bytes: &[u8], root: &Path) -> Result<FsPolicyStore, String> {
     let result = (|| {
-        std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
+        // See `build_export_tar_at`'s matching comment (Fix 4, spec 023
+        // review): `create_dir`, never `_all`, for this exact leaf so a
+        // stale directory from a prior crashed process (possible PID reuse)
+        // is a loud error rather than a silent read of leftover files mixed
+        // into a fresh import.
+        std::fs::create_dir(root).map_err(|e| {
+            format!(
+                "scratch directory {root:?} could not be created for import -- it may already \
+                 exist (e.g. left over from a prior crashed process whose PID has since been \
+                 reused): {e}"
+            )
+        })?;
         let mut archive = tar::Archive::new(tar_bytes);
         archive.unpack(root).map_err(|e| e.to_string())?;
         FsPolicyStore::load(root).map_err(|e| e.to_string())
@@ -415,6 +452,56 @@ mod tests {
         assert!(
             !root.exists(),
             "a failed extraction must not leak its scratch directory"
+        );
+    }
+
+    /// Fix 4 (spec 023 review, "Medium": scratch directory names can
+    /// collide with a stale directory from a prior crashed process reusing
+    /// the same PID): pre-creates the exact leaf path `build_export_tar_at`
+    /// is handed, simulating that stale-directory collision, and confirms
+    /// the call fails loudly instead of silently reusing it. Before the fix
+    /// (`std::fs::create_dir_all`, which succeeds unconditionally whether or
+    /// not the directory already existed), this exact scenario would
+    /// silently proceed to build and return a bundle rather than erroring —
+    /// confirmed by hand while writing this test (temporarily reverting to
+    /// `create_dir_all` here made this assertion fail with "called
+    /// `Result::unwrap_err()` on an `Ok` value", then restoring the fix made
+    /// it pass again).
+    #[tokio::test]
+    async fn build_export_tar_at_fails_loudly_if_the_scratch_directory_already_exists() {
+        let base = tempfile::TempDir::new().unwrap();
+        let root = base.path().join("scratch-root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("stale-leftover-file.txt"), b"leftover").unwrap();
+
+        let store = FixturePolicyStore::default();
+        let err = build_export_tar_at(&store, &root).await.unwrap_err();
+        assert!(
+            matches!(err, StoreError::Backend(_)),
+            "a pre-existing scratch directory must be a loud error, not a silent reuse: {err:?}"
+        );
+    }
+
+    /// The `extract_bundle_from_tar_at` (import-side) counterpart to
+    /// [`build_export_tar_at_fails_loudly_if_the_scratch_directory_already_exists`] —
+    /// same collision scenario, same negative-check performed by hand
+    /// (temporarily reverting to `create_dir_all` here also made this
+    /// assertion fail, confirming the test can actually detect the bug it's
+    /// named for).
+    #[tokio::test]
+    async fn extract_bundle_from_tar_at_fails_loudly_if_the_scratch_directory_already_exists() {
+        let store = FixturePolicyStore::default();
+        let tar_bytes = build_export_tar(&store).await.unwrap();
+
+        let base = tempfile::TempDir::new().unwrap();
+        let root = base.path().join("scratch-root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("stale-leftover-file.txt"), b"leftover").unwrap();
+
+        let err = extract_bundle_from_tar_at(&tar_bytes, &root).unwrap_err();
+        assert!(
+            !err.is_empty(),
+            "a pre-existing scratch directory must be a loud error, not a silent reuse"
         );
     }
 
