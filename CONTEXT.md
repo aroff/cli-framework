@@ -512,7 +512,11 @@ The two trees inside a **Policy**, distinguished by where they sit in resolution
 better default that every local mechanism still overrides. **Enforced** is
 applied **last, as a veto over the fully resolved value**, above environment
 variables, CLI flags, and builder overrides; no local mechanism outranks it.
-Enforcement is per-field and chosen by the organisation, not a global mode.
+Enforcement is per-field and chosen by the organisation, not a global mode —
+except where the **Config manifest** itself forbids it: a field marked
+`enforceable: false` may appear in Recommended but never in Enforced, because
+its "on" state is itself an act of the person's own standing consent (see
+`enforceable` in ADR 0073) and no organisation may grant that consent by proxy.
 _Avoid_: "mandatory"/"suggested"; "locked layer" — Enforced is a veto pass, not
 a layer.
 
