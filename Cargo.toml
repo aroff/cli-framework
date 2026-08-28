@@ -480,3 +480,12 @@ required-features = ["telemetry"]
 name = "integration_telemetry_signal_toggles"
 path = "tests/integration/telemetry_signal_toggles.rs"
 required-features = ["telemetry"]
+
+# Own binary for the same process-global-subscriber reason. Covers the
+# built-in `version` short-circuit in `run_with_args` (spec 020 item 6), which
+# bypasses `execute_command_direct` and needs its own `cli.command`
+# span/metrics wiring.
+[[test]]
+name = "integration_telemetry_version_command_span"
+path = "tests/integration/telemetry_version_command_span.rs"
+required-features = ["telemetry"]

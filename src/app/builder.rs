@@ -879,10 +879,44 @@ impl<C: AppContext> App<C> {
             } => {
                 let cmd_id = command_path.leaf().unwrap_or("").to_string();
                 if cmd_id == "version" && self.command_registry.get("version").is_none() {
+                    // Built-in `version` bypasses `execute_command_direct` (it has no
+                    // `Command`/`execute` closure to dispatch through — see spec 020
+                    // item 6), so it must instrument itself here to stay symmetric with
+                    // every other command's `cli.command` span and metrics.
+                    #[cfg(feature = "telemetry")]
+                    let _span = tracing::info_span!(
+                        "cli.command",
+                        "cli.command.path" = "version",
+                        "cli.invocation.surface" = InvocationSurface::Cli.as_str(),
+                        "cli.command.arg_count" = 0,
+                        "cli.command.arg_names" = "",
+                    )
+                    .entered();
+
+                    #[cfg(feature = "telemetry")]
+                    let started = std::time::Instant::now();
+
                     if self.app_name == "unknown" {
                         tracing::warn!("version called but with_version() was not configured");
                     }
                     self.framework_println(&self.version_string());
+
+                    #[cfg(feature = "telemetry")]
+                    if let Some(telemetry) = self.active_telemetry.as_ref() {
+                        let attrs = [
+                            crate::telemetry::handle::KeyValue::new("command", "version"),
+                            crate::telemetry::handle::KeyValue::new(
+                                "surface",
+                                InvocationSurface::Cli.as_str(),
+                            ),
+                            crate::telemetry::handle::KeyValue::new("status", "ok"),
+                        ];
+                        telemetry.counter("cli.command.invocations").add(1, &attrs);
+                        telemetry
+                            .histogram("cli.command.duration_ms")
+                            .record(started.elapsed().as_secs_f64() * 1000.0, &attrs);
+                    }
+
                     return Ok(());
                 }
 
