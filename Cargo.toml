@@ -84,6 +84,12 @@ zeroize = { version = "1.7", optional = true }
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"], optional = true }
 opentelemetry-otlp = { version = "0.31", default-features = false, features = ["http-proto", "reqwest-blocking-client", "reqwest-rustls", "trace", "metrics"], optional = true }
 tracing-opentelemetry = { version = "0.32", optional = true }
+# W3C `traceparent` extraction/injection over `http::HeaderMap`. Already in the
+# build as a transitive dependency of `opentelemetry-otlp`, so declaring it
+# direct adds nothing to the graph — it just lets us name the canonical
+# `HeaderExtractor`/`HeaderInjector` instead of re-implementing header casing
+# and multi-value rules ourselves.
+opentelemetry-http = { version = "0.31", default-features = false, optional = true }
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -108,7 +114,7 @@ testcontainers = "0.27"
 [features]
 default = ["chat"]
 observability = ["dep:tracing-subscriber"]
-telemetry = ["observability", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
+telemetry = ["observability", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry", "dep:opentelemetry-http", "dep:http"]
 # CLI output utilities optional features
 table-advanced = ["comfy-table"]
 progress = ["indicatif"]
@@ -413,4 +419,12 @@ required-features = ["telemetry"]
 [[test]]
 name = "integration_telemetry_api_request_span"
 path = "tests/integration/telemetry_api_request_span.rs"
+required-features = ["telemetry", "api-server"]
+
+# Own binary for the same process-global-subscriber reason as above. Runs TWO
+# services in one process and asserts they share a trace id — the acceptance
+# criterion for W3C context propagation (spec 020 item 1).
+[[test]]
+name = "integration_telemetry_context_propagation"
+path = "tests/integration/telemetry_context_propagation.rs"
 required-features = ["telemetry", "api-server"]

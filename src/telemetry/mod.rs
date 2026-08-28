@@ -29,11 +29,24 @@
 //! exports nothing. Compose [`init::otel_layer`] into your own subscriber in
 //! that case.
 //!
+//! # Distributed tracing
+//!
+//! Inbound `traceparent`/`tracestate` headers are extracted automatically and
+//! become the parent of the `http.request` span, so a request arriving from
+//! another instrumented service continues that service's trace instead of
+//! starting a new one. Outbound calls are **not** automatic — the framework does
+//! not own your HTTP client — so propagate them explicitly:
+//!
+//! ```ignore
+//! use cli_framework::telemetry::propagation::TracedRequestBuilder as _;
+//! let resp = client.get(url).with_trace_context().send().await?;
+//! ```
+//!
+//! See [`propagation`] for the full contract, including why baggage is
+//! deliberately not propagated.
+//!
 //! # Current limitations
 //!
-//! - **No context propagation.** No `traceparent` header is injected or
-//!   extracted, so a trace does not yet span process boundaries (spec 017
-//!   R23/R24). Each service produces its own disconnected trace.
 //! - **No OTLP auth headers.** `OTEL_EXPORTER_OTLP_HEADERS` is not read, so a
 //!   collector requiring authentication cannot be reached (spec 017 R25).
 //! - **`http/protobuf` only.** `OTEL_EXPORTER_OTLP_PROTOCOL` is parsed onto the
@@ -56,6 +69,8 @@ pub mod handle;
 #[cfg(feature = "telemetry")]
 pub mod init;
 pub mod noop;
+#[cfg(feature = "telemetry")]
+pub mod propagation;
 
 pub use config::TelemetryConfig;
 pub use guard::TelemetryGuard;
