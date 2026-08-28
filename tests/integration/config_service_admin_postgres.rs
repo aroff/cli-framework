@@ -15,12 +15,14 @@ use cli_framework::config::manifest::{ConfigManifest, FieldKind, FieldManifest, 
 use cli_framework::config::service::postgres::{connect_and_migrate, PgPolicyStore, PgPool};
 use cli_framework::config::service::{
     AdminWriteError, AssignmentRule, FsPolicyStore, MutationKind, PolicyAdminStore, PolicyStore,
-    PolicyWrite, RuleOperator, StoredManifest, StoredPolicy,
+    PolicyValidationError, PolicyWrite, RuleOperator, StoredManifest, StoredPolicy,
 };
 use cli_framework::config::StaleAction;
 use serde_json::{json, Map, Value};
 use sqlx_core::row::Row;
+use sqlx_core::types::Json;
 use std::path::Path;
+use std::time::Duration;
 use uuid::Uuid;
 
 async fn pool_or_skip() -> Option<PgPool> {
@@ -208,6 +210,16 @@ async fn put_policy_creates_a_new_profile_and_records_the_submitted_body() {
     let store = PgPolicyStore::new(pool.clone());
     let submitted = json!({"enforced": {"greeting": "hi"}});
 
+    // Fix 2 (spec 023 review): `put_policy` now re-validates against a
+    // locked manifest row inside its own transaction, rejecting with
+    // `MissingManifest` if none exists for `app` -- a manifest must be
+    // seeded first, unlike before this fix, when `PgPolicyStore::put_policy`
+    // performed no manifest checking of its own at all.
+    store
+        .put_manifest(&app, sample_manifest(&app), "alice", 0)
+        .await
+        .unwrap();
+
     let v = store
         .put_policy(
             &app,
@@ -248,6 +260,13 @@ async fn put_policy_stale_if_match_is_a_conflict_and_the_document_is_unchanged()
     };
     let app = unique("admin-policy-conflict");
     let store = PgPolicyStore::new(pool.clone());
+
+    // Fix 2 (spec 023 review): see the matching comment in
+    // `put_policy_creates_a_new_profile_and_records_the_submitted_body`.
+    store
+        .put_manifest(&app, sample_manifest(&app), "alice", 0)
+        .await
+        .unwrap();
 
     store
         .put_policy(
@@ -295,6 +314,13 @@ async fn put_policy_can_be_reused_for_patch_and_restore_kinds() {
     };
     let app = unique("admin-policy-kinds");
     let store = PgPolicyStore::new(pool.clone());
+
+    // Fix 2 (spec 023 review): see the matching comment in
+    // `put_policy_creates_a_new_profile_and_records_the_submitted_body`.
+    store
+        .put_manifest(&app, sample_manifest(&app), "alice", 0)
+        .await
+        .unwrap();
 
     store
         .put_policy(
@@ -374,6 +400,13 @@ async fn policy_history_survives_the_underlying_policy_row_being_deleted() {
     };
     let app = unique("admin-policy-survives-delete");
     let store = PgPolicyStore::new(pool.clone());
+
+    // Fix 2 (spec 023 review): see the matching comment in
+    // `put_policy_creates_a_new_profile_and_records_the_submitted_body`.
+    store
+        .put_manifest(&app, sample_manifest(&app), "alice", 0)
+        .await
+        .unwrap();
 
     store
         .put_policy(
@@ -761,6 +794,63 @@ async fn import_rejects_the_whole_bundle_even_when_only_one_of_several_apps_is_i
     assert_eq!(count_mutation_log_rows(&pool, &valid_app, None).await, 0);
 }
 
+/// Regression test: `import_bundle` must never touch `assignment`/
+/// `assignment_set` for an app the bundle doesn't declare an
+/// `assignments.toml` stanza for -- mirroring how a missing manifest or
+/// policy file for that app is left untouched, not overwritten-to-empty.
+/// Before the fix, `bundle.assignment_rules(app)` returning an empty `Vec`
+/// (which it also does for a *declared-but-empty* stanza) was
+/// indistinguishable from "not declared", so importing a bundle that only
+/// carried a manifest for `app` silently deleted `app`'s real, pre-existing
+/// assignment rules.
+#[tokio::test]
+async fn import_bundle_does_not_touch_assignments_for_an_app_that_declares_none() {
+    let Some(pool) = pool_or_skip().await else {
+        return;
+    };
+    let store = PgPolicyStore::new(pool.clone());
+
+    let app = unique("admin-import-assignments-untouched");
+    let seeded_rules = vec![AssignmentRule {
+        app: app.clone(),
+        ord: 0,
+        claim_path: "team".to_string(),
+        operator: RuleOperator::Equals,
+        value: Some(json!("platform")),
+        profile: "platform".to_string(),
+    }];
+    store
+        .put_assignment_rules(&app, seeded_rules, "alice", 0)
+        .await
+        .unwrap();
+    assert_eq!(store.assignment_rules_version(&app).await.unwrap(), 1);
+
+    // A bundle that declares ONLY a manifest for `app` -- no `policies/`
+    // entry, and critically no `assignments.toml` stanza at all.
+    let dir = tempfile::TempDir::new().unwrap();
+    write(
+        &dir.path().join(format!("manifests/{app}.json")),
+        &serde_json::to_string(&sample_manifest(&app)).unwrap(),
+    );
+    let bundle = FsPolicyStore::load(dir.path()).unwrap();
+
+    let summary = store.import_bundle(&bundle, "alice").await.unwrap();
+    assert_eq!(summary.assignment_rules, 0, "the bundle declared none");
+
+    assert_eq!(
+        store.assignment_rules_version(&app).await.unwrap(),
+        1,
+        "import must not bump/touch the assignment_set version for an app it didn't declare assignments for"
+    );
+    let rules = PolicyStore::assignment_rules(&store, &app).await.unwrap();
+    assert_eq!(
+        rules.len(),
+        1,
+        "the seeded assignment rule must survive an import that never mentioned assignments for this app"
+    );
+    assert_eq!(rules[0].profile, "platform");
+}
+
 // Export -> import round-tripping is exercised at the HTTP level, in
 // `config_service_admin_router.rs` (`GET /v1/admin/export` followed by
 // `POST /v1/admin/import`), since `build_export_tar`/`extract_bundle_from_tar`
@@ -887,6 +977,17 @@ async fn concurrent_first_put_policy_calls_produce_exactly_one_winner() {
     let store_b = PgPolicyStore::new(pool.clone());
     let verify_store = PgPolicyStore::new(pool.clone());
 
+    // Fix 2 (spec 023 review): `put_policy` now locks and re-reads the
+    // manifest row inside its own transaction, rejecting with
+    // `MissingManifest` if none exists -- seed one up front so this race is
+    // still decided by the `policy` row's own unique-constraint/lock
+    // contention (what this test exists to exercise), not by both sides
+    // uniformly failing validation instead.
+    verify_store
+        .put_manifest(&app, sample_manifest(&app), "alice", 0)
+        .await
+        .unwrap();
+
     let app_a = app.clone();
     let task_a = tokio::spawn(async move {
         store_a
@@ -987,4 +1088,299 @@ async fn concurrent_first_put_assignment_rules_calls_produce_exactly_one_winner(
         .find_map(|r| r.as_ref().ok().copied())
         .unwrap();
     assert_eq!(actual_version, winner_version);
+}
+
+// ── Spec 023 review fixes: manifest/policy conformance races ───────────────
+//
+// Fix 1 ("High": manifest updates can invalidate already-stored policies),
+// Fix 2 ("High": policy/restore validation races a concurrent manifest
+// change), and Fix 3 ("Medium": partial import can strand existing DB
+// policies under an incompatible imported manifest) all close the same
+// underlying gap: manifest writes and policy writes previously validated
+// against each other using stale, unlocked reads. See
+// `src/config/service/postgres/mod.rs`'s `validate_existing_policies_against_manifest`
+// (Fix 1/3's shared helper) and `PgPolicyStore::put_policy`'s own
+// manifest-locking code (Fix 2) for the implementation.
+
+/// Fix 1: `put_manifest` must reject a new manifest that would strand an
+/// already-stored policy -- and must change *nothing* (the old manifest
+/// stays exactly as it was) when it does.
+#[tokio::test]
+async fn put_manifest_rejects_a_new_manifest_that_would_invalidate_an_existing_stored_policy() {
+    let Some(pool) = pool_or_skip().await else {
+        return;
+    };
+    let app = unique("admin-manifest-strands-policy");
+    let store = PgPolicyStore::new(pool.clone());
+
+    // v1 declares `greeting`; a policy enforces it.
+    store
+        .put_manifest(&app, sample_manifest(&app), "alice", 0)
+        .await
+        .unwrap();
+    store
+        .put_policy(
+            &app,
+            "base",
+            policy_write_with_greeting("hi"),
+            MutationKind::PolicyPut,
+            json!({}),
+            "alice",
+            0,
+        )
+        .await
+        .unwrap();
+
+    // v2 no longer declares `greeting` at all -- the stored `base` policy's
+    // `enforced.greeting` would become an UnknownField against it.
+    let v2 = ConfigManifest::new(&app, vec![]);
+    let err = store.put_manifest(&app, v2, "bob", 1).await.unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            AdminWriteError::Validation(errors)
+                if errors.iter().any(|e| matches!(
+                    e,
+                    PolicyValidationError::UnknownField { path, .. } if path == "greeting"
+                ))
+        ),
+        "expected a Validation(UnknownField) rejection, got {err:?}"
+    );
+
+    // The old manifest must still be exactly what it was -- a rejected
+    // write changes nothing.
+    let stored_manifest = PolicyStore::manifest(&store, &app).await.unwrap().unwrap();
+    assert_eq!(
+        stored_manifest.version, 1,
+        "the rejected manifest write must not have landed"
+    );
+    assert!(
+        stored_manifest.doc.leaf_by_path("greeting").is_some(),
+        "the OLD manifest (still declaring 'greeting') must remain stored"
+    );
+
+    // The policy is untouched too.
+    let stored_policy = PolicyStore::policy(&store, &app, "base")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored_policy.enforced.get("greeting"), Some(&json!("hi")));
+    assert_eq!(stored_policy.version, 1);
+
+    // No new mutation_log row for the rejected manifest write (only the
+    // original `put_manifest` call's own row).
+    assert_eq!(count_mutation_log_rows(&pool, &app, None).await, 1);
+}
+
+/// Fix 2: the genuine interleaving proof. A raw, low-level transaction
+/// (bypassing `PgPolicyStore` entirely) locks the manifest row `FOR UPDATE`
+/// *before* the concurrent `put_policy` call is even spawned -- deterministic
+/// ordering by construction, not a timing race -- so `put_policy`'s own new
+/// manifest-locking read (Fix 2's fix) is guaranteed to block on that same
+/// row until this raw transaction commits its manifest update (v1, which
+/// declares `greeting` -> v2, which removes it). Once it commits,
+/// `put_policy`'s call resumes, re-reads the now-current v2 manifest, and
+/// must reject the write it was about to make (valid against v1, invalid
+/// against v2) -- proving the two operations are properly serialized rather
+/// than `put_policy` racing past a stale, already-superseded manifest
+/// snapshot. Given this crate's chosen lock order (manifest row locked
+/// before the policy row, in both `put_manifest` and `put_policy`), admin B
+/// (the manifest change) is the one guaranteed to have already committed by
+/// the time admin A's (`put_policy`'s) re-validation runs, so admin A is the
+/// side that must lose this race -- asserted specifically below, not just
+/// "one of them failed."
+#[tokio::test]
+async fn put_policy_blocks_on_and_then_rejects_against_a_concurrently_committed_manifest_change() {
+    let Some(pool) = pool_or_skip().await else {
+        return;
+    };
+    let app = unique("admin-manifest-policy-race");
+    let store = PgPolicyStore::new(pool.clone());
+
+    // (a) Seed manifest v1 (declares `greeting`) and a policy enforcing it.
+    store
+        .put_manifest(&app, sample_manifest(&app), "alice", 0)
+        .await
+        .unwrap();
+    store
+        .put_policy(
+            &app,
+            "base",
+            policy_write_with_greeting("hi"),
+            MutationKind::PolicyPut,
+            json!({}),
+            "alice",
+            0,
+        )
+        .await
+        .unwrap();
+
+    // (b) A raw transaction, directly against the pool (bypassing
+    // `PgPolicyStore`), that locks the manifest row FOR UPDATE. This
+    // `.await` fully resolves before the concurrent `put_policy` call below
+    // is even spawned, so the lock is deterministically held first.
+    let mut raw_tx = pool.begin().await.unwrap();
+    sqlx_core::query::query::<sqlx_postgres::Postgres>(
+        "SELECT doc FROM manifest WHERE app = $1 FOR UPDATE",
+    )
+    .bind(&app)
+    .fetch_one(&mut *raw_tx)
+    .await
+    .unwrap();
+
+    // (c) Concurrently, attempt a policy write that is valid against v1
+    // (still enforcing `greeting`) but would be invalid against the v2
+    // manifest the raw transaction is about to commit (which removes
+    // `greeting` entirely). `put_policy`'s own manifest `FOR UPDATE` read
+    // must block on the row lock (b) already holds.
+    let app_for_task = app.clone();
+    let store_for_task = PgPolicyStore::new(pool.clone());
+    let task = tokio::spawn(async move {
+        store_for_task
+            .put_policy(
+                &app_for_task,
+                "base",
+                policy_write_with_greeting("still-hi"),
+                MutationKind::PolicyPatch,
+                json!({}),
+                "bob",
+                1,
+            )
+            .await
+    });
+
+    // Not required for correctness (the row lock itself is what serializes
+    // the two, regardless of timing) -- purely so the interleaving actually
+    // exercised is the one this test is named for, giving the spawned task
+    // a moment to reach and start blocking on its own `FOR UPDATE` before
+    // the raw transaction below commits.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let v2 = ConfigManifest::new(&app, vec![]); // no longer declares `greeting`
+    let v2_value = serde_json::to_value(&v2).unwrap();
+    sqlx_core::query::query::<sqlx_postgres::Postgres>(
+        "UPDATE manifest SET doc = $1, version = 2 WHERE app = $2",
+    )
+    .bind(Json(v2_value))
+    .bind(&app)
+    .execute(&mut *raw_tx)
+    .await
+    .unwrap();
+    raw_tx.commit().await.unwrap();
+
+    // (d) `put_policy` was blocked on the same manifest row lock; now that
+    // the raw transaction has committed v2, it resumes, re-validates
+    // against v2, and must reject -- `greeting` no longer exists in the
+    // manifest it just observed.
+    let result = task.await.unwrap();
+    let err = result.expect_err(
+        "put_policy must reject once it observes the concurrently-committed v2 manifest, \
+         which no longer declares 'greeting'",
+    );
+    assert!(
+        matches!(
+            &err,
+            AdminWriteError::Validation(errors)
+                if errors.iter().any(|e| matches!(
+                    e,
+                    PolicyValidationError::UnknownField { path, .. } if path == "greeting"
+                ))
+        ),
+        "expected a Validation(UnknownField) rejection for 'greeting', got {err:?}"
+    );
+
+    // The policy must still be exactly what it was before this race -- the
+    // rejected write changed nothing.
+    let stored_policy = PolicyStore::policy(&store, &app, "base")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored_policy.version, 1,
+        "the rejected write must not have landed"
+    );
+    assert_eq!(stored_policy.enforced.get("greeting"), Some(&json!("hi")));
+
+    // The manifest is at v2, as committed by the raw transaction -- admin
+    // B's write is the one that won this race, by construction.
+    let stored_manifest = PolicyStore::manifest(&store, &app).await.unwrap().unwrap();
+    assert_eq!(stored_manifest.version, 2);
+    assert!(stored_manifest.doc.leaf_by_path("greeting").is_none());
+}
+
+/// Fix 3: importing a bundle that declares a new manifest for an app with an
+/// existing (already-in-the-target-database, NOT bundle-declared) policy
+/// that the new manifest would invalidate must reject the whole import, and
+/// must leave the prior manifest and policy completely untouched.
+#[tokio::test]
+async fn import_bundle_rejects_a_manifest_that_would_invalidate_an_existing_db_only_policy() {
+    let Some(pool) = pool_or_skip().await else {
+        return;
+    };
+    let app = unique("admin-import-strands-existing-policy");
+    let store = PgPolicyStore::new(pool.clone());
+
+    // Seed target-database state directly through the admin API -- a v1
+    // manifest declaring `greeting`, and a policy enforcing it. The bundle
+    // below will NOT mention this policy at all.
+    store
+        .put_manifest(&app, sample_manifest(&app), "alice", 0)
+        .await
+        .unwrap();
+    store
+        .put_policy(
+            &app,
+            "base",
+            policy_write_with_greeting("hi"),
+            MutationKind::PolicyPut,
+            json!({}),
+            "alice",
+            0,
+        )
+        .await
+        .unwrap();
+
+    // A bundle that imports a NEW manifest for the same app, dropping
+    // `greeting` entirely, and declares no policy for `app` at all.
+    let dir = tempfile::TempDir::new().unwrap();
+    write(
+        &dir.path().join(format!("manifests/{app}.json")),
+        &serde_json::to_string(&ConfigManifest::new(&app, vec![])).unwrap(),
+    );
+    let bundle = FsPolicyStore::load(dir.path()).unwrap();
+
+    let err = store.import_bundle(&bundle, "bob").await.unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            AdminWriteError::Validation(errors)
+                if errors.iter().any(|e| matches!(
+                    e,
+                    PolicyValidationError::UnknownField { path, .. } if path == "greeting"
+                ))
+        ),
+        "expected a Validation(UnknownField) rejection, got {err:?}"
+    );
+
+    // Both the prior manifest and the prior (bundle-unmentioned) policy must
+    // be completely untouched.
+    let stored_manifest = PolicyStore::manifest(&store, &app).await.unwrap().unwrap();
+    assert_eq!(
+        stored_manifest.version, 1,
+        "the rejected import must not have landed"
+    );
+    assert!(stored_manifest.doc.leaf_by_path("greeting").is_some());
+
+    let stored_policy = PolicyStore::policy(&store, &app, "base")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored_policy.enforced.get("greeting"), Some(&json!("hi")));
+    assert_eq!(stored_policy.version, 1);
+
+    assert_eq!(
+        count_mutation_log_rows(&pool, &app, None).await,
+        1,
+        "a rejected import must append no new mutation_log row"
+    );
 }

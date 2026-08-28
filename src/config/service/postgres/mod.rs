@@ -14,13 +14,13 @@
 pub mod migrations;
 
 use super::admin_store::{ImportSummary, MutationLogEntry, PolicyAdminStore, PolicyWrite};
-use super::error::{AdminWriteError, StoreError, UserConfigWriteError};
+use super::error::{AdminWriteError, PolicyValidationError, StoreError, UserConfigWriteError};
 use super::fs_store::FsPolicyStore;
 use super::store::{PolicyStore, UserConfigStore};
 use super::types::{
     AssignmentRule, MutationKind, RuleOperator, StoredManifest, StoredPolicy, StoredUserConfig,
 };
-use super::validate::validate_policy_for_write;
+use super::validate::{validate_policy_for_write, validate_stored_policy};
 use crate::config::manifest::ConfigManifest;
 use crate::config::StaleAction;
 use async_trait::async_trait;
@@ -28,7 +28,7 @@ use chrono::{DateTime, Utc};
 use serde_json::{json, Map, Value};
 use sqlx_core::row::Row;
 use sqlx_core::types::Json;
-use sqlx_postgres::{PgRow, Postgres};
+use sqlx_postgres::{PgConnection, PgRow, Postgres};
 
 pub type PgPool = sqlx_core::pool::Pool<Postgres>;
 
@@ -210,6 +210,57 @@ fn row_to_assignment_rule(row: &PgRow) -> Result<AssignmentRule, StoreError> {
     })
 }
 
+/// Every stored policy row for `app`, locked `FOR UPDATE`, validated against
+/// `new_manifest` — the shared core of two spec-023-review fixes: `put_manifest`
+/// (an ordinary manifest update must not strand an already-stored policy — a
+/// stranded policy would then fail [`super::validate::validate_all`] and
+/// refuse to let a fresh instance of this service boot) and `import_bundle`
+/// (an imported manifest must not strand a policy already in the *target*
+/// database, even one the bundle itself never mentions). Extracted into one
+/// function so both call sites share a single "what makes an existing policy
+/// still valid against a new manifest" check rather than risking two copies
+/// silently drifting apart.
+///
+/// Returns every validation error found across every failing policy, not
+/// just the first — matching [`validate_stored_policy`]'s own "report
+/// everything in one pass" convention.
+///
+/// Locking these rows `FOR UPDATE` is not only for the atomicity of this
+/// check: it is also most of the fix for the sibling manifest/policy race (a
+/// concurrent [`PolicyAdminStore::put_policy`] call for this app now blocks
+/// on these row locks until this transaction commits or rolls back). See
+/// `put_policy`'s own manifest-locking code for the other half of that fix.
+/// Both `put_manifest` and `put_policy` lock the manifest row *before* any
+/// policy row(s) for the same app — a deliberately consistent order between
+/// the two methods (the two lock targets are the same; only the acquiring
+/// method differs) so that neither can deadlock against the other.
+async fn validate_existing_policies_against_manifest(
+    tx: &mut PgConnection,
+    app: &str,
+    new_manifest: &ConfigManifest,
+) -> Result<(), AdminWriteError> {
+    let rows = sqlx_core::query::query::<Postgres>(
+        "SELECT app, profile, enforced, recommended, parent_profile, max_cache_age_secs, \
+         stale_action, version FROM policy WHERE app = $1 FOR UPDATE",
+    )
+    .bind(app)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+
+    let mut errors = Vec::new();
+    for row in &rows {
+        let policy = row_to_stored_policy(row).map_err(AdminWriteError::Store)?;
+        errors.extend(validate_stored_policy(new_manifest, &policy));
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(AdminWriteError::Validation(errors))
+    }
+}
+
 /// Postgres-backed [`PolicyStore`] — see the module docs.
 pub struct PgPolicyStore {
     pool: PgPool,
@@ -338,6 +389,17 @@ impl PolicyAdminStore for PgPolicyStore {
             });
         }
 
+        // Fix 1 (spec 023 review, "High": manifest updates can invalidate
+        // already-stored policies): before this manifest write is allowed to
+        // proceed, every policy already stored for `app` -- including ones
+        // this request never mentions -- must still conform to `doc`.
+        // Rejecting here (before any write below) keeps a rejected write's
+        // "changes nothing" guarantee cheap; dropping `tx` on this early
+        // return rolls back the transaction automatically (nothing has been
+        // written to `manifest` yet at this point), so no explicit
+        // `tx.rollback()` call is needed for this path.
+        validate_existing_policies_against_manifest(&mut tx, app, &doc).await?;
+
         let new_version = current_version + 1;
         let doc_value = serde_json::to_value(&doc)
             .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
@@ -423,6 +485,55 @@ impl PolicyAdminStore for PgPolicyStore {
             .await
             .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
 
+        // Fix 2 (spec 023 review, "High": policy/restore validation races a
+        // concurrent manifest change): lock and re-read the manifest row
+        // INSIDE this transaction, before deciding whether to write, so a
+        // concurrent manifest change cannot land between the caller's own
+        // pre-write `validate_policy_for_write` call (a plain, unlocked pool
+        // read in `admin_router.rs`) and this write actually committing.
+        //
+        // Locked *before* the policy row below, deliberately -- see
+        // `validate_existing_policies_against_manifest`'s doc comment (the
+        // fix for the sibling `put_manifest` race) for why both methods that
+        // can lock (manifest row, policy row(s)) for the same app must
+        // acquire them in the same order: `put_manifest` locks
+        // manifest-then-policy, so `put_policy` must too, or the two methods
+        // running concurrently could deadlock against each other instead of
+        // one simply blocking until the other resolves.
+        let manifest_row = sqlx_core::query::query::<Postgres>(
+            "SELECT doc FROM manifest WHERE app = $1 FOR UPDATE",
+        )
+        .bind(app)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+
+        let manifest_doc: ConfigManifest = match manifest_row {
+            Some(row) => {
+                let doc: Json<Value> = row
+                    .try_get("doc")
+                    .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+                serde_json::from_value(doc.0).map_err(|e| {
+                    AdminWriteError::Store(StoreError::Corrupt {
+                        app: app.to_string(),
+                        message: e.to_string(),
+                    })
+                })?
+            }
+            // No manifest at all for `app` -- the same narrow edge case
+            // `validate_policy_for_write` already handles (manifest deleted,
+            // or never published). Reuse its exact variant rather than
+            // inventing a second way to say the same thing.
+            None => {
+                return Err(AdminWriteError::Validation(vec![
+                    PolicyValidationError::MissingManifest {
+                        app: app.to_string(),
+                        profile: profile.to_string(),
+                    },
+                ]))
+            }
+        };
+
         let existing = sqlx_core::query::query::<Postgres>(
             "SELECT version FROM policy WHERE app = $1 AND profile = $2 FOR UPDATE",
         )
@@ -445,6 +556,31 @@ impl PolicyAdminStore for PgPolicyStore {
                 current: current_version,
                 expected: expected_version,
             });
+        }
+
+        // Fix 2, continued: re-validate `policy` against the manifest row
+        // this transaction just locked -- by this point it reflects
+        // whatever is actually live (or committed-before-us) in the
+        // database, not the possibly-stale snapshot `validate_policy_for_write`
+        // read before this transaction even opened. Deliberately scoped to
+        // manifest-conformance only, not the full inheritance-chain
+        // (`resolve_chain`) check: a concurrent write to a *sibling or
+        // parent* profile is a narrower, lower-priority residual risk than
+        // the manifest race this closes, and `validate_all` at startup
+        // remains the backstop for that case.
+        let candidate = StoredPolicy {
+            app: app.to_string(),
+            profile: profile.to_string(),
+            enforced: policy.enforced.clone(),
+            recommended: policy.recommended.clone(),
+            parent_profile: policy.parent_profile.clone(),
+            max_cache_age_secs: policy.max_cache_age_secs,
+            stale_action: policy.stale_action,
+            version: current_version,
+        };
+        let validation_errors = validate_stored_policy(&manifest_doc, &candidate);
+        if !validation_errors.is_empty() {
+            return Err(AdminWriteError::Validation(validation_errors));
         }
 
         let new_version = current_version + 1;
@@ -800,6 +936,31 @@ impl PolicyAdminStore for PgPolicyStore {
                             None => 0,
                         };
                         let new_version = current + 1;
+
+                        // Fix 3 (spec 023 review, "Medium": partial import can
+                        // strand existing DB policies under an incompatible
+                        // imported manifest): the same check Fix 1 added to
+                        // `put_manifest`, reused here verbatim via the shared
+                        // helper -- an imported manifest for `app` must not
+                        // invalidate any policy already stored for `app` in
+                        // the TARGET database, even one the bundle itself
+                        // never mentions. Runs against whatever is currently
+                        // stored (locked `FOR UPDATE` by the helper) before
+                        // this same loop iteration's own policy writes below
+                        // apply, which is deliberately conservative: a bundle
+                        // that bumps both the manifest and a same-profile
+                        // policy in a mutually-consistent way can still be
+                        // rejected if the OLD stored row doesn't happen to
+                        // satisfy the new manifest, exactly as `put_manifest`
+                        // has no way to "look ahead" to a not-yet-applied
+                        // sibling write either.
+                        validate_existing_policies_against_manifest(
+                            &mut tx,
+                            app.as_str(),
+                            &manifest.doc,
+                        )
+                        .await?;
+
                         let doc_value = serde_json::to_value(&manifest.doc)
                             .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
                         if existing.is_some() {
@@ -888,66 +1049,83 @@ impl PolicyAdminStore for PgPolicyStore {
                 app_resulting_version = app_resulting_version.max(new_version);
             }
 
-            let rules = bundle
-                .assignment_rules(app)
-                .await
-                .map_err(AdminWriteError::Store)?;
+            // Only touch `assignment`/`assignment_set` for `app` if the
+            // bundle actually has an `assignments.toml` stanza for it.
+            // `bundle.assignment_rules(app)` alone can't tell "declared with
+            // zero rules" apart from "not declared at all" (both return an
+            // empty `Vec` — see `FsPolicyStore::assignment_rules`), and
+            // treating "not declared" as "declared empty" here would mean a
+            // bundle that only carries a manifest or a policy for `app`
+            // silently wipes that app's real, pre-existing assignment rules
+            // in the target database — the same class of bug a missing
+            // manifest/policy entry deliberately does NOT cause (both of
+            // those are skipped entirely, not overwritten-to-empty, when
+            // the bundle doesn't declare them for `app`).
+            let rules = if bundle.has_declared_assignments(app) {
+                let rules = bundle
+                    .assignment_rules(app)
+                    .await
+                    .map_err(AdminWriteError::Store)?;
 
-            sqlx_core::query::query::<Postgres>("DELETE FROM assignment WHERE app = $1")
-                .bind(app.as_str())
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
-            for (ord, rule) in rules.iter().enumerate() {
-                sqlx_core::query::query::<Postgres>(
-                    "INSERT INTO assignment (app, ord, claim_path, operator, value, profile) \
-                     VALUES ($1, $2, $3, $4, $5, $6)",
+                sqlx_core::query::query::<Postgres>("DELETE FROM assignment WHERE app = $1")
+                    .bind(app.as_str())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+                for (ord, rule) in rules.iter().enumerate() {
+                    sqlx_core::query::query::<Postgres>(
+                        "INSERT INTO assignment (app, ord, claim_path, operator, value, profile) \
+                         VALUES ($1, $2, $3, $4, $5, $6)",
+                    )
+                    .bind(app.as_str())
+                    .bind(ord as i64)
+                    .bind(&rule.claim_path)
+                    .bind(rule.operator.wire_str())
+                    .bind(rule.value.clone().map(Json))
+                    .bind(&rule.profile)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+                }
+                let existing_set = sqlx_core::query::query::<Postgres>(
+                    "SELECT version FROM assignment_set WHERE app = $1 FOR UPDATE",
                 )
                 .bind(app.as_str())
-                .bind(ord as i64)
-                .bind(&rule.claim_path)
-                .bind(rule.operator.wire_str())
-                .bind(rule.value.clone().map(Json))
-                .bind(&rule.profile)
-                .execute(&mut *tx)
+                .fetch_optional(&mut *tx)
                 .await
                 .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
-            }
-            let existing_set = sqlx_core::query::query::<Postgres>(
-                "SELECT version FROM assignment_set WHERE app = $1 FOR UPDATE",
-            )
-            .bind(app.as_str())
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
-            let current_set: u64 = match &existing_set {
-                Some(row) => row
-                    .try_get::<i64, _>("version")
-                    .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?
-                    as u64,
-                None => 0,
-            };
-            let new_set_version = current_set + 1;
-            if existing_set.is_some() {
-                sqlx_core::query::query::<Postgres>(
-                    "UPDATE assignment_set SET version = $1 WHERE app = $2",
-                )
-                .bind(new_set_version as i64)
-                .bind(app.as_str())
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+                let current_set: u64 = match &existing_set {
+                    Some(row) => row
+                        .try_get::<i64, _>("version")
+                        .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?
+                        as u64,
+                    None => 0,
+                };
+                let new_set_version = current_set + 1;
+                if existing_set.is_some() {
+                    sqlx_core::query::query::<Postgres>(
+                        "UPDATE assignment_set SET version = $1 WHERE app = $2",
+                    )
+                    .bind(new_set_version as i64)
+                    .bind(app.as_str())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+                } else {
+                    sqlx_core::query::query::<Postgres>(
+                        "INSERT INTO assignment_set (app, version) VALUES ($1, $2)",
+                    )
+                    .bind(app.as_str())
+                    .bind(new_set_version as i64)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
+                }
+                app_resulting_version = app_resulting_version.max(new_set_version);
+                rules
             } else {
-                sqlx_core::query::query::<Postgres>(
-                    "INSERT INTO assignment_set (app, version) VALUES ($1, $2)",
-                )
-                .bind(app.as_str())
-                .bind(new_set_version as i64)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| AdminWriteError::Store(StoreError::backend(e)))?;
-            }
-            app_resulting_version = app_resulting_version.max(new_set_version);
+                Vec::new()
+            };
 
             let summary = json!({
                 "manifest": manifest_present,

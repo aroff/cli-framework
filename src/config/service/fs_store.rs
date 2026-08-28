@@ -340,6 +340,19 @@ impl FsPolicyStore {
     }
 }
 
+impl FsPolicyStore {
+    /// Whether `app` has an explicit `assignments.toml` stanza in this
+    /// bundle, as opposed to no stanza at all. [`Self::assignment_rules`]
+    /// (the [`PolicyStore`] trait method) collapses both cases to an empty
+    /// `Vec` and so cannot distinguish them — callers that need to tell
+    /// "declared, zero rules" apart from "not declared" (import, notably:
+    /// see [`super::postgres::PgPolicyStore::import_bundle`]'s own doc
+    /// comment) must use this instead.
+    pub(crate) fn has_declared_assignments(&self, app: &str) -> bool {
+        self.assignments.contains_key(app)
+    }
+}
+
 #[async_trait]
 impl PolicyStore for FsPolicyStore {
     async fn manifest(&self, app: &str) -> Result<Option<StoredManifest>, StoreError> {
