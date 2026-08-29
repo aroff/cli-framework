@@ -6,7 +6,9 @@
 //! depends on unconditionally (`async-trait`). The heavier OpenBao/Vault
 //! backend lives behind the separate `secrets-openbao` feature
 //! ([`openbao`]), which adds no dependency beyond `reqwest` (already a core
-//! dependency).
+//! dependency). An OS-native credential store backend (Windows Credential
+//! Manager / macOS Keychain / Linux Secret Service) lives behind
+//! `secrets-keychain` ([`keychain`]), which adds the `keyring` crate.
 //!
 //! ```
 //! # #[tokio::main] async fn main() {
@@ -28,6 +30,9 @@ mod value;
 
 #[cfg(feature = "secrets-openbao")]
 pub mod openbao;
+
+#[cfg(feature = "secrets-keychain")]
+pub mod keychain;
 
 pub use env_file::EnvFileSecretStore;
 pub use error::SecretError;
