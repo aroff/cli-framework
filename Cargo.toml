@@ -87,6 +87,17 @@ mockall = { version = "0.13", optional = true }
 # `secrets-openbao` adds no dependency beyond this + reqwest (already unconditional above).
 zeroize = { version = "1.7", optional = true }
 
+# Optional OS-native keychain dependency (`secrets-keychain` feature):
+# `Entry::get_password`/`set_password`/`delete_credential` over Windows
+# Credential Manager / macOS Keychain / Linux Secret Service. Default
+# features (keyring's own `v1` feature, on by default) already cover all
+# three platforms — Linux goes through `zbus-secret-service-keyring-store`,
+# a pure-Rust D-Bus client, so no `libdbus-dev`/`pkg-config` is needed at
+# build time. Note: keyring 4.x's own declared `rust-version` (1.88.0) is
+# newer than this workspace's baseline (1.83.0) — only consumers who enable
+# `secrets-keychain` are affected.
+keyring = { version = "4.1", optional = true }
+
 # Optional OpenTelemetry SDK dependencies (enabled via `telemetry` feature)
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"], optional = true }
 opentelemetry-otlp = { version = "0.31", default-features = false, features = ["http-proto", "reqwest-blocking-client", "reqwest-rustls", "trace", "metrics"], optional = true }
@@ -207,6 +218,9 @@ auth = []
 secrets = ["dep:zeroize"]
 # OpenBao/Vault KV v2 backend (adds nothing beyond `secrets` + reqwest, already unconditional)
 secrets-openbao = ["secrets"]
+# OS-native keychain backend (Windows Credential Manager / macOS Keychain /
+# Linux Secret Service) via the `keyring` crate's default `v1` feature.
+secrets-keychain = ["secrets", "dep:keyring"]
 # Config — writable ConfigBackend/ConfigStore with atomic file writes, JSON/TOML
 # formats, and schema-version migrations. Windows registry backend compiled in
 # automatically on Windows targets via `dep:winreg` (a no-op elsewhere).
@@ -618,6 +632,11 @@ required-features = ["secrets"]
 name = "unit_secrets_openbao_conformance"
 path = "tests/unit/secrets_openbao_conformance.rs"
 required-features = ["secrets-openbao"]
+
+[[test]]
+name = "unit_secrets_keychain_conformance"
+path = "tests/unit/secrets_keychain_conformance.rs"
+required-features = ["secrets-keychain"]
 
 [[test]]
 name = "integration_telemetry_otlp"

@@ -39,6 +39,7 @@ A Rust library for building CLIs with optional AI-assisted command resolution (*
 | `config` | no | Writable `ConfigBackend`/`ConfigStore` with atomic file writes, JSON/TOML formats, and schema-version migrations (`CE001`–`CE009` error codes); Windows registry backend compiled in automatically on Windows targets |
 | `config-managed` | no | `PolicyClient`/`RoamingConfigClient` (spec 021) fetching an org policy / roaming user config over HTTP via the existing `TokenProvider`, plus a built-in `config show`/`manifest`/`profile`/`refresh` subcommand group (`CFG001`–`CFG004` error codes); implies `config` + `auth` |
 | `config-service` | no | The server side of the above (specs 022/023): `config_service_router` — a self-authenticating `axum` router serving `/v1/policy`, `/v1/manifest`, `/v1/config`, `/v1/resolve` (read path), plus an admin-role-gated `/v1/admin/*` write API (manifest/policy publish, JSON Merge Patch, history + restore, assignments, bundle export/import) backed by an append-only `mutation_log`; backed by `PgPolicyStore`/`PgUserConfigStore` (also `PgPolicyStore`'s `PolicyAdminStore` impl for admin writes; via `sqlx-core`/`sqlx-postgres` directly, never the `sqlx` facade) or `FsPolicyStore`/`InMemoryUserConfigStore` for tests/dev (read-only, no admin writes); implies `config` + `api-server` |
+| `secrets-keychain` | no | `KeychainSecretStore`: a `SecretStore` backed by the OS-native credential store (Windows Credential Manager, macOS Keychain, Linux Secret Service via the `keyring` crate); implies `secrets` |
 
 ## MCP Server Mode
 

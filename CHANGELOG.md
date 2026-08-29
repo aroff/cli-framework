@@ -4,6 +4,34 @@
 
 ### Added
 
+- **OS-native keychain `SecretStore` backend**: a new `secrets-keychain` feature (implies
+  `secrets`) adding `KeychainSecretStore` under `cli_framework::secrets::keychain`, backed by
+  the `keyring` crate (v4, its `v1` compatibility API) — Windows Credential Manager, macOS
+  Keychain, or Linux/BSD Secret Service over D-Bus (via keyring's default `v1` feature
+  pulling in `zbus-secret-service-keyring-store`, a pure-Rust D-Bus client — no
+  `libdbus-dev`/`pkg-config` needed at build time). This is the prerequisite a downstream
+  desktop-app PRD depends on for moving plaintext secrets out of its config file and into a
+  real OS-backed store.
+  - Identity mapping: a caller-supplied `service` prefix (namespaces credentials per
+    application, avoiding collisions on a shared machine) paired with the full `/`-joined
+    `SecretKey::as_str()` as the account/username — two OS-level fields, documented on
+    `KeychainSecretStore` and factored into a standalone `keyring_identity` mapping function
+    that's unit-tested without touching a real OS credential store.
+  - `get`/`put`/`delete` map onto `keyring::Entry::get_password`/`set_password`/
+    `delete_credential`, each off-loaded to `tokio::task::spawn_blocking` (keyring's calls are
+    synchronous OS/D-Bus I/O), matching the blocking-call convention `EnvFileSecretStore`
+    already uses for its filesystem I/O. `keyring::Error::NoEntry` maps to
+    `SecretError::NotFound`; `delete` of an already-absent key is a no-op success, matching
+    the trait's documented contract. `rotate` returns `SecretError::NotSupported`, same as
+    `InMemorySecretStore` — no backend-generated material to mint here either.
+  - Note: `keyring` 4.x's own declared `rust-version` (1.88.0) is newer than this workspace's
+    baseline (1.83.0); this only affects consumers who enable `secrets-keychain` specifically.
+  - Live-backend trait-conformance coverage
+    (`tests/unit/secrets_keychain_conformance.rs`) is opt-in behind `CFW_TEST_KEYCHAIN_LIVE=1`
+    and skips (does not fail) otherwise, mirroring the existing `secrets-openbao` precedent —
+    this sandbox has a D-Bus session bus but no Secret Service provider registered on it, so
+    it can't be exercised here.
+
 - **Config store** (spec 016): a new `config` feature adding writable, versioned
   configuration storage — a byte-level `ConfigBackend` (`FileBackend` with atomic
   temp-file+rename writes and auto-created parent directories, plus a Windows-only
