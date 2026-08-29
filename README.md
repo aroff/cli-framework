@@ -17,7 +17,7 @@ A Rust library for building CLIs with optional AI-assisted command resolution (*
 - **Project Config**: Project root discovery and TOML loading (opt-in via `project-config` feature)
 - **Config store**: Writable, versioned configuration for the user profile — atomic file writes (or the Windows registry), JSON/TOML, schema migrations (opt-in via `config` feature)
 - **Config manifest + managed client**: `#[derive(ConfigManifest)]` declares an app's configuration surface as a plain JSON document; a `PolicyClient`/`RoamingConfigClient` fetch an organisation's policy and a user's roaming settings, with enforced-veto resolution and per-field provenance, plus a built-in `config show`/`manifest`/`profile`/`refresh` command group (opt-in via `config-managed` feature)
-- **Config service**: the server side of the above — a mountable, self-authenticating `axum` router resolving a caller's identity to a profile and serving the flattened policy, manifest, and roaming user document, backed by Postgres (or a read-only bundle directory for tests/dev) (opt-in via `config-service` feature)
+- **Config service**: the server side of the above — a mountable, self-authenticating `axum` router resolving a caller's identity to a profile and serving the flattened policy, manifest, and roaming user document, backed by Postgres (or a read-only bundle directory for tests/dev), plus an administrative `/v1/admin/*` write API (manifest/policy publish, JSON Merge Patch, history + restore, assignment rules, tar bundle export/import) recorded in an append-only mutation log (opt-in via `config-service` feature)
 
 ## Cargo Features
 
@@ -37,8 +37,8 @@ A Rust library for building CLIs with optional AI-assisted command resolution (*
 | `observability` | no | `tracing-subscriber` logging foundation (implied by `telemetry`) |
 | `telemetry` | no | Built-in OpenTelemetry: auto `cli.command` spans + invocation/duration metrics exported over OTLP (implies `observability`) |
 | `config` | no | Writable `ConfigBackend`/`ConfigStore` with atomic file writes, JSON/TOML formats, and schema-version migrations (`CE001`–`CE009` error codes); Windows registry backend compiled in automatically on Windows targets |
-| `config-managed` | no | `PolicyClient`/`RoamingConfigClient` (spec 021) fetching an org policy / roaming user config over HTTP via the existing `TokenProvider`, plus a built-in `config show`/`manifest`/`profile`/`refresh` subcommand group (`CFG001`–`CFG003` error codes); implies `config` + `auth` |
-| `config-service` | no | The server side of the above (spec 022): `config_service_router` — a self-authenticating `axum` router serving `/v1/policy`, `/v1/manifest`, `/v1/config`, `/v1/resolve`, backed by `PgPolicyStore`/`PgUserConfigStore` (via `sqlx-core`/`sqlx-postgres` directly, never the `sqlx` facade) or `FsPolicyStore`/`InMemoryUserConfigStore` for tests/dev; implies `config` + `api-server` |
+| `config-managed` | no | `PolicyClient`/`RoamingConfigClient` (spec 021) fetching an org policy / roaming user config over HTTP via the existing `TokenProvider`, plus a built-in `config show`/`manifest`/`profile`/`refresh` subcommand group (`CFG001`–`CFG004` error codes); implies `config` + `auth` |
+| `config-service` | no | The server side of the above (specs 022/023): `config_service_router` — a self-authenticating `axum` router serving `/v1/policy`, `/v1/manifest`, `/v1/config`, `/v1/resolve` (read path), plus an admin-role-gated `/v1/admin/*` write API (manifest/policy publish, JSON Merge Patch, history + restore, assignments, bundle export/import) backed by an append-only `mutation_log`; backed by `PgPolicyStore`/`PgUserConfigStore` (also `PgPolicyStore`'s `PolicyAdminStore` impl for admin writes; via `sqlx-core`/`sqlx-postgres` directly, never the `sqlx` facade) or `FsPolicyStore`/`InMemoryUserConfigStore` for tests/dev (read-only, no admin writes); implies `config` + `api-server` |
 
 ## MCP Server Mode
 
@@ -258,6 +258,180 @@ let client = AuthenticatedHttpClient::new(
 let resp = client.get("https://api.example.com/data").await?;
 ```
 
+## Managed Configuration (`config`, `config-managed`, `config-service`)
+
+Three independently-gated layers build on each other: the manifest data model and
+local resolver (`config`), the HTTP client that fetches an organisation's policy
+(`config-managed`), and the server that serves and administers it (`config-service`).
+
+### Config manifest (`config` feature)
+
+`ConfigManifest { manifest_schema_version, app, fields: Vec<FieldManifest> }` is an
+application's declared configuration surface as a plain JSON document — every
+consumer (the resolver, a provenance query, a non-Rust renderer) works from the
+document alone, never from a Rust type. `#[derive(ConfigManifest)]` (the `derive`
+feature) generates one from a config struct's field attributes; a non-Rust
+application can author the identical JSON by hand.
+
+Each `FieldManifest` carries a `kind` (`FieldKind::{Bool, Int, Float, Str, Enum{values},
+Duration, Path, Url, List{item}, Section{fields}}`), an optional `default`/`label`/
+`description`/`group`, and the policy flags ADR 0073 defines:
+
+| Flag | Meaning |
+|------|---------|
+| `scope` | `Scope::Machine` (default) / `User` / `Org` — whose value this is. `machine`/`user` are orthogonal to enforced/recommended; `org` fields have no local default to recommend over, so they are always delivered `enforced` |
+| `platforms` | Which platforms this field applies to; empty means all |
+| `secret` | Never written into a config document or a policy — structurally excluded from the managed-config channel |
+| `local_only` | Bootstrap-only; never set remotely (e.g. the config service's own address) |
+| `protected` | Only the application's own privileged surface may change it; no automated caller, including an org policy, may |
+| `manageable` | Whether an org may set this field at all, as `recommended` or `enforced` (default `true`) |
+| `enforceable` | Whether an org may place this field in `enforced`; it may still be `recommended` when `false` (default `true`) |
+| `restart_required` | Advisory: applying this field's new value needs a process restart |
+| `constraints` | Optional `FieldConstraints { min, max, allowed_values }` — range/allowed-value bounds enforced server-side (see the administrative API below) |
+
+`ConfigManifest::iter_leaves()`/`leaf_by_path()` flatten nested `Section` fields into
+dot-joined paths (`network.proxy_url`) — the coordinate system every layer below
+resolves against. A one-way `to_json_schema` export exists for external validators.
+
+### Managed client and resolution order (`config-managed` feature)
+
+`config::managed::PolicyClient` fetches `GET /v1/policy/{app}` through the existing
+`AuthenticatedHttpClient` (reusing its 401-invalidate-and-retry-once behavior), with
+ETag revalidation and an on-disk cache. Its failure mapping is deliberately not "HTTP
+status in, outcome out" — the distinction that matters is what a status implies about
+the *token*:
+
+| Server outcome | `PolicyOutcome` | Cache behavior |
+|---|---|---|
+| `200` / `304` | `Fresh(policy)` | Cache written/refreshed either way |
+| `401` (retry also fails) or `403` | `Denied` | Never reads the cache — a token that reads as revoked must not be masked by a stale policy |
+| `404` | `Unmanaged` | Cache cleared |
+| Network failure or `5xx` | `FromCache { policy, stale }` (or `PolicyClientError::Unreachable`/`StaleCacheRefused` with nothing usable) | Falls back to cache, subject to the policy's own `max_cache_age_secs`/`stale_action` |
+| Any other `4xx` (`400`, `409`, `422`, `429`, ...) | `PolicyClientError::ClientError` | Hard error — never cache-eligible |
+
+`config::managed::RoamingConfigClient` reads/writes the user-scoped roaming document
+(`GET`/`PUT /v1/config/{app}`, `If-Match` optimistic concurrency, `412` on conflict)
+and unconditionally strips every field not declared `scope: user` before sending —
+a caller cannot accidentally (or deliberately) roam a `machine`- or `org`-scoped field.
+
+`config::resolution::resolve` folds a manifest and six layers into a resolved value
+plus `Provenance` (which layer won, and whether it's locked):
+
+```text
+defaults -> recommended -> config file -> environment -> flags -> builder overrides -> ENFORCED
+```
+
+`ENFORCED` is applied **last as a veto pass**, not a seventh layer — this is what lets
+a server-delivered policy beat environment variables and CLI flags even though those
+are "more local." `local_only`/non-`manageable`/`secret` fields are dropped (with a
+structured `ResolutionWarning`) from a server tree; `org`-scoped fields are dropped
+from `recommended`; `enforceable: false` fields are dropped from `enforced`; unknown or
+type-mismatched server-tree keys are skipped with siblings still applying.
+
+Wire this into an application's typed config with the builder:
+
+```rust
+use cli_framework::app::AppBuilder;
+use std::sync::Arc;
+
+let app = AppBuilder::new()
+    .with_config::<MyConfig>(options)
+    .with_config_manifest(MyConfig::config_manifest()) // from #[derive(ConfigManifest)]
+    .with_policy_client(Arc::new(policy_client))        // requires config-managed
+    .build(ctx)?;
+```
+
+`AppBuilder::build_with_config::<C, T>()` folds in the policy client's **cached**
+policy synchronously (no network call) when both are registered; an application calls
+the async `config::managed::refresh_managed_config` itself (at startup and/or on an
+interval) to push a freshly *fetched* policy into a running store. A built-in `config`
+command group (`config show`/`manifest`/`profile`/`refresh`) is auto-registered once a
+manifest is present, reporting `CFG001`–`CFG004` diagnostics when unmanaged or unable
+to refresh.
+
+### Config service: read path (`config-service` feature)
+
+`config::service::config_service_router(state)` is a **self-authenticating** `axum`
+router — independent of `ApiServerBuilder::auth()`, so mounting it never forces every
+other route in the embedding app onto the same auth scheme. It validates every request
+via a crate-local `CallerIdentity` trait (one async method: raw `Authorization` header
+in, validated claims as `serde_json::Value` out — a real `cli-framework-oidc` adapter
+ships in `skill/examples/with_config_service`) before serving:
+
+| Route | What it does |
+|---|---|
+| `GET /v1/policy/{app}` | The caller's resolved, flattened `Policy` (ETag / `If-None-Match`); `404` = unmanaged |
+| `GET /v1/manifest/{app}` | The stored `ConfigManifest` |
+| `GET`/`PUT /v1/config/{app}` | The roaming document — `If-Match` optimistic concurrency, `412` on conflict, server-side rejection of unknown/`machine`-scoped/`secret`/`local_only` fields and a size cap (`ConfigServiceState::with_max_user_config_bytes`, default 64 KiB) |
+| `GET /v1/resolve/{app}` | Diagnostic: which profile the caller's claims resolve to and which rule matched — no configuration values |
+
+Storage is behind two traits mirroring how `secrets::SecretStore` separates a trait
+from its backends: `PolicyStore` (manifests, policies, assignment rules — read-only at
+this layer) and `UserConfigStore` (roaming documents; "no document yet" is version `0`
+with an empty body, not `Option::None`, so the very first write uses the same
+compare-and-set path as every later one). `FsPolicyStore` loads a read-only bundle
+directory (`manifests/{app}.json`, `policies/{app}/{profile}.toml`,
+`assignments.toml`) for tests/dev; `InMemoryUserConfigStore` is its `UserConfigStore`
+counterpart. `config::service::postgres::{PgPolicyStore, PgUserConfigStore}` (via
+`connect_and_migrate(database_url)`) are the real backend — hand-written queries
+against `sqlx-core`/`sqlx-postgres` directly, never the `sqlx` facade, which pulls a
+MySQL path and a transitive `rsa` RUSTSEC advisory into the lockfile.
+
+Assignment rules (`{claim_path, operator, value, profile}`, operators `equals` /
+`contains` / `exists`, first match wins, plus an optional default profile) select a
+caller's profile; single-parent inheritance is deep-merged server-side and
+cycle-rejected both at startup (`ConfigServiceState::validate_at_startup` —
+call this before mounting the router and refuse to start on failure) and defensively
+at read time.
+
+### Administrative API (`config-service` feature, spec 023)
+
+The same router also mounts an admin-role-gated `/v1/admin/*` write surface. Every
+route requires **two** gates, applied in this order: a valid `CallerIdentity` (`401`)
+and then a match against the deployment's admin `AssignmentRule` (`403`) — the same
+`{claim_path, operator, value}` evaluator ordinary profile assignment already uses.
+The default rule requires `realm_access.roles` to contain `"config-admin"`;
+override it with `ConfigServiceState::with_admin_rule(...)`. Without
+`ConfigServiceState::with_admin_store(...)` wiring in a `PolicyAdminStore` (only
+`PgPolicyStore` implements it — `FsPolicyStore`-backed read-only deployments have
+none), every `/v1/admin/*` route responds `500`, not `404`: an admin API with nothing
+behind it is a deployment gap, not a missing route.
+
+| Route | What it does |
+|---|---|
+| `PUT /v1/admin/manifest/{app}` | Replace a manifest wholesale |
+| `GET`/`PUT`/`PATCH /v1/admin/policy/{app}/{profile}` | Read, fully replace, or partially update a policy |
+| `GET /v1/admin/policy/{app}/{profile}/history` | The `mutation_log` entries for that policy |
+| `POST /v1/admin/policy/{app}/{profile}/history/{version}/restore` | Restore a prior version |
+| `GET`/`PUT /v1/admin/assignments/{app}` | Read/replace the app's ordered assignment-rule set |
+| `GET /v1/admin/export` / `POST /v1/admin/import` | Whole configuration set as a tar bundle, in the exact `FsPolicyStore` bundle-directory format |
+
+`PATCH` is RFC 7386 JSON Merge Patch, hand-rolled (no such crate exists in this
+workspace) and applied **independently** to the `enforced` and `recommended` trees —
+one request can move a field between them by patching both. Restore is implemented as
+a **forward change**: it writes a brand-new version whose content matches the chosen
+historical one, rather than rewriting history in place, so the mutation log stays a
+true append-only record of everything that ever happened (ADR 0075). Every write
+except `import_bundle` is optimistic-concurrency-checked via `If-Match`/
+`expected_version`, mapped to `412` on mismatch — the identical mechanism the
+device-facing roaming-config write already uses. `import_bundle` validates an entire
+bundle against its own contents before writing anything, then commits every table
+plus one `mutation_log` row per app in a single transaction; nothing is stored if any
+part fails validation.
+
+The `mutation_log` table itself is append-only by design: it has **no foreign key**
+to `manifest`, `policy`, or `assignment` (ADR 0075), so a row survives deletion of the
+resource it describes — deleting a profile does not erase the record of what it once
+enforced. Each row records `app`, `profile` (`None` for manifest/assignment-level
+changes), `kind` (`ManifestPut` / `PolicyPut` / `PolicyPatch` / `PolicyRestore` /
+`AssignmentsPut` / `Import`), `actor`, `occurred_at`, exactly what the caller
+`submitted` (the raw PATCH fragment for a patch, `{"restore_from_version": N}` for a
+restore — never the merged/restored result), and a `resulting_document` snapshot for
+audit/restore. Declared field `constraints` (`min`/`max`/`allowed_values`) are
+enforced server-side on every write path (admin and roaming alike) — they are
+carried in the manifest and rendered into a JSON Schema document for UIs, but the
+resolver itself still treats them as advisory only, by design.
+
 ## Built-in commands
 
 `cli-framework` auto-registers a small set of built-ins during `AppBuilder::build()`:
@@ -456,6 +630,8 @@ fn main() {
 | `with_config_path(path)` | Shorthand for `with_config_backend(Arc::new(FileBackend::new(path)))` (requires `config` feature) | — |
 | `with_config::<T>(options)` | Register a typed configuration `T`, its format, and its migrations; `build()` resolves it once (requires `config` feature) | disabled |
 | `build_with_config::<C, T>(ctx)` | Like `build()`, but also returns the resolved typed `T` alongside the built `App` (requires `config` feature) | — |
+| `with_config_manifest(manifest)` | Register a `ConfigManifest` (declared fields, scopes, policy flags) for the built-in `config` command group and the managed-config resolver; auto-registers `config show`/`config manifest` (requires `config` feature) | disabled |
+| `with_policy_client(client)` | Register a `PolicyClient` so `config profile`/`config refresh` (and `build_with_config`'s cached-policy fold) have a managed policy source (requires `config-managed` feature) | disabled |
 
 ## Telemetry (`telemetry`)
 

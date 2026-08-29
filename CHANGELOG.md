@@ -148,6 +148,67 @@
   - Out of scope: administrative writes, the mutation log, and import/export endpoints
     (PRD 023); this slice's storage is read-only at the API surface.
 
+- **Config service: administrative write API and mutation log** (spec 023, ADR 0075): an
+  administrative HTTP surface under `/v1/admin/*`, mounted on the same
+  `config_service_router`, for publishing manifests, replacing/patching policy documents,
+  reading change history and restoring a prior version, replacing assignment rules, and
+  whole-store bundle export/import.
+  - Every write is authorized by a two-gate model: a valid `CallerIdentity` (`401`), then a
+    configurable admin-role `AssignmentRule` (`403`) reusing the existing assignment-rule
+    evaluator — default rule requires `realm_access.roles` to contain `"config-admin"`,
+    overridable via `ConfigServiceState::with_admin_rule`.
+  - New `PolicyAdminStore` trait (`put_manifest`, `put_policy`, `assignment_rules_version`,
+    `put_assignment_rules`, `policy_history`, `import_bundle`), implemented only by
+    `config::service::postgres::PgPolicyStore`; wired in via the new
+    `ConfigServiceState::with_admin_store`. Without it, every `/v1/admin/*` route responds
+    `500` (a deployment-configuration gap), not `404`.
+  - `PATCH /v1/admin/policy/{app}/{profile}` applies hand-rolled RFC 7386 JSON Merge Patch
+    independently to the `enforced` and `recommended` trees, so one request can move a field
+    between them. Every write except `import_bundle` is optimistic-concurrency-checked via
+    `If-Match`/`expected_version`, mapped to `412` on mismatch — the same mechanism the
+    device-facing roaming-config write already uses.
+  - `POST .../history/{version}/restore` writes a **new** version whose content matches a
+    prior one (a forward change, never an in-place history rewrite). New migration
+    `002_admin_mutation_log.sql` adds an append-only `mutation_log` table with **no foreign
+    key** to `manifest`/`policy`/`assignment` — by design, so a row survives deletion of the
+    resource it describes — plus `assignment_set`, a per-app version counter the `assignment`
+    table itself has no column for, needed to give `/v1/admin/assignments/{app}` an
+    `If-Match`/`ETag` basis. Each `mutation_log` row records `kind`
+    (`manifest_put`/`policy_put`/`policy_patch`/`policy_restore`/`assignments_put`/`import`),
+    `actor`, `occurred_at`, exactly what the caller `submitted` (never the merged/restored
+    result), and a `resulting_document` snapshot.
+  - `GET /v1/admin/export` / `POST /v1/admin/import` speak the existing bundle-directory
+    format; `FsPolicyStore::load` is the only parser (no second, hand-rolled one).
+    `import_bundle` validates the entire bundle against its own contents before writing
+    anything, then commits every table plus one `mutation_log` row per app in a single
+    transaction.
+  - Validation reuses `validate_stored_policy` + `inherit::resolve_chain` unchanged; two
+    checks inlined in `validate_all` were extracted into `pub(crate)` helpers so the admin
+    write path and startup validation share one implementation rather than risking drift.
+  - **Post-review fixes (#133)**: a manifest write no longer strands already-stored policies
+    against a validation gap that could refuse the service on next restart, and policy writes
+    no longer validate against a plain unlocked read taken before their own transaction (which
+    let a concurrent manifest change race past validation) — both closed by locking the
+    manifest and policy rows for an app in a consistent order and re-validating against the
+    locked state before committing; `import_bundle` reuses the same discipline. Also hardens
+    bundle export/import scratch directories against a stale-directory reuse on PID collision
+    (fails loudly instead of silently mixing in leftover files), and fixes an
+    assignment-rule-wiping bug in partial bundle imports.
+  - **Post-review fixes (#134)**, from a final whole-system adversarial review across the
+    merged spec 016/021/022/023 feature (no criticals; three real gaps): declared field
+    `constraints` (`min`/`max`/`allowed_values`) — previously carried in the manifest and
+    rendered into a JSON Schema document for UIs, but never enforced anywhere server-side —
+    are now enforced in `validate_stored_policy` (reused by every write path) and by the
+    roaming user-config write handler; the resolver's own advisory-only treatment of
+    constraints is unchanged. Fixed a lock-order inversion between `import_bundle` and
+    `put_assignment_rules` (opposite acquisition order for the `assignment_set` and
+    `assignment` locks — a concurrency test confirms this causes a real, deterministic
+    duplicate-key failure when the two race, not just a theoretical deadlock) by locking
+    `assignment_set` first in both, matching the existing manifest-then-policy discipline
+    elsewhere. Roaming user-config writes now reject `local_only` fields too (previously only
+    `secret` and non-`user`-scoped fields were rejected), closing a path for a
+    device-bootstrap-only field to roam to a user's other devices via the server.
+
 ## [0.5.4] — 2026-06-13
 
 ### Added
