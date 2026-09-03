@@ -132,15 +132,28 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
         run: cargo test --features config-service,testkit --verbose
 
-      # Every `cargo test` step above runs the ROOT package only -- `.` is a
-      # workspace member, so cargo's default selection is this manifest's own
-      # package, never the whole workspace. `cli-framework-oidc` therefore had
-      # NO test step at all: not one of its seven targets had ever run in CI,
-      # including the OIDC token-validation and PKCE/device-code suites. Its
-      # test targets are additionally gated behind `required-features`
-      # (client / server+test-support / browser), so selecting the package is
-      # necessary but not sufficient -- the features have to be on too, which
-      # is what `--all-features` does here. Same gap the telemetry and config
-      # steps above exist to close, closed the same way.
-      - name: Test (cli-framework-oidc)
-        run: cargo test -p cli-framework-oidc --all-features --verbose
+      # Mirrors step 5b of `scripts/run-ci-tests.sh`, which has run this matrix
+      # locally for a long time while this workflow ran none of it. Every
+      # `cargo test` step above selects the ROOT package only -- `.` is itself a
+      # `[workspace] members` entry, so cargo's default selection is this
+      # manifest's own package -- and the crate's test targets are additionally
+      # gated behind `required-features`. Net effect: not one of
+      # cli-framework-oidc's test targets had ever run in CI, including the OIDC
+      # token-validation and the PKCE/device-code suites, and the script that
+      # claims to "replicate the exact test commands run in GitHub Actions CI"
+      # was in fact a strict superset of it.
+      #
+      # `--all-features` is deliberately NOT used: it collapses the matrix into a
+      # single build and would hide a feature that is broken on its own. Keep
+      # these lines in step with 5b -- that script is the local parity gate
+      # (CFW-0005) and the two drifting apart is the defect this step closes.
+      - name: Test (cli-framework-oidc feature matrix)
+        run: |
+          cargo test -p cli-framework-oidc --features client --verbose
+          cargo test -p cli-framework-oidc --features server --verbose
+          cargo test -p cli-framework-oidc --features server,test-support --verbose
+          cargo test -p cli-framework-oidc --features browser --verbose
+          cargo test -p cli-framework-oidc --features client,server --verbose
+          cargo build -p cli-framework-oidc --no-default-features --verbose
+          cargo test -p cli-framework --no-default-features --features auth,testkit --verbose
+          cargo test -p cli-framework --features auth,testkit --verbose
