@@ -98,6 +98,10 @@ pub mod types;
 #[cfg(any(feature = "server", feature = "browser"))]
 pub(crate) mod jwks;
 
+/// PKCE (RFC 7636) helpers, shared by the `client` and `browser` flows.
+#[cfg(any(feature = "client", feature = "browser"))]
+pub mod pkce;
+
 #[cfg(feature = "client")]
 pub mod client;
 
