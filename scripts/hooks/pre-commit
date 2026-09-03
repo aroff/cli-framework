@@ -13,8 +13,11 @@ if ! cargo fmt --all -- --check; then
 fi
 echo -e "${GREEN}[pre-commit] fmt ok${NC}"
 
-echo -e "${YELLOW}[pre-commit] cargo clippy --all-features...${NC}"
-if ! RUSTFLAGS="-D warnings" cargo clippy --all-features -- -D warnings; then
+# `--workspace` matches the CI step of the same name. Without it cargo selects
+# only the root package (`.` is itself a `[workspace] members` entry), so this
+# hook silently skipped cli-framework-oidc and cli-framework-macros.
+echo -e "${YELLOW}[pre-commit] cargo clippy --workspace --all-features...${NC}"
+if ! RUSTFLAGS="-D warnings" cargo clippy --workspace --all-features -- -D warnings; then
     echo -e "${RED}[pre-commit] Clippy errors. Fix them before committing.${NC}"
     exit 1
 fi

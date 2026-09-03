@@ -309,9 +309,28 @@ impl OidcClient {
 
         let scopes = self.effective_scopes();
         let scope_str = scopes.join(" ");
+
+        // PKCE on the device flow (RFC 8628 + RFC 7636), sent UNCONDITIONALLY.
+        //
+        // A provider that mandates PKCE rejects the device-authorization request
+        // outright when it is absent — Keycloak with the client attribute
+        // `pkce.code.challenge.method: S256` answers
+        // `invalid_request: Missing parameter: code_challenge_method`, so the
+        // whole flow is dead before a user code is ever shown. Sending it to a
+        // provider that does NOT mandate it is harmless: the challenge is stored
+        // and the verifier checked at redemption, which is strictly better than
+        // not binding the device code at all. Both halves verified end to end
+        // against Keycloak 26.6.3 with two clients, one with the attribute and
+        // one without; a mismatched verifier is rejected with
+        // `invalid_grant: PKCE verification failed`.
+        let code_verifier = crate::pkce::generate_verifier();
+        let code_challenge = crate::pkce::derive_challenge(&code_verifier);
+
         let params = [
             ("client_id", self.client_id.as_str()),
             ("scope", scope_str.as_str()),
+            ("code_challenge", code_challenge.as_str()),
+            ("code_challenge_method", "S256"),
         ];
 
         let resp: serde_json::Value = self
@@ -331,9 +350,37 @@ impl OidcClient {
                 source: Some(Box::new(e)),
             })?;
 
-        let verification_uri = resp["verification_uri"].as_str().unwrap_or("");
-        let user_code = resp["user_code"].as_str().unwrap_or("");
-        let device_code = resp["device_code"].as_str().unwrap_or("").to_string();
+        // The device-authorization response is an error object or a grant; it was
+        // previously read as neither. `unwrap_or("")` on every field turned a
+        // rejection into an empty user code printed to the operator followed by a
+        // poll loop on an empty device code, so the surfaced failure was a
+        // downstream `invalid_grant` that named nothing about the real cause.
+        if let Some(error) = resp["error"].as_str() {
+            let desc = resp["error_description"].as_str().unwrap_or("");
+            return Err(cli_framework::auth::AuthError::Provider {
+                message: if desc.is_empty() {
+                    format!("device authorization request rejected: {error}")
+                } else {
+                    format!("device authorization request rejected: {error}: {desc}")
+                },
+                source: None,
+            });
+        }
+
+        let missing = |field: &str| cli_framework::auth::AuthError::Provider {
+            message: format!("device authorization response missing `{field}`"),
+            source: None,
+        };
+        let verification_uri = resp["verification_uri"]
+            .as_str()
+            .ok_or_else(|| missing("verification_uri"))?;
+        let user_code = resp["user_code"]
+            .as_str()
+            .ok_or_else(|| missing("user_code"))?;
+        let device_code = resp["device_code"]
+            .as_str()
+            .ok_or_else(|| missing("device_code"))?
+            .to_string();
         let interval_secs = resp["interval"].as_u64().unwrap_or(5);
         let expires_in = resp["expires_in"].as_u64().unwrap_or(600);
 
@@ -355,6 +402,7 @@ impl OidcClient {
                 ("client_id", self.client_id.as_str()),
                 ("device_code", device_code.as_str()),
                 ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ("code_verifier", code_verifier.as_str()),
             ];
             let resp: serde_json::Value = self
                 .http
@@ -400,18 +448,10 @@ impl OidcClient {
         discovery: &DiscoveryDoc,
         redirect: &RedirectConfig,
     ) -> Result<(), cli_framework::auth::AuthError> {
-        use base64::Engine;
-        use sha2::{Digest, Sha256};
-
-        // Generate PKCE
-        let code_verifier_bytes: Vec<u8> = (0..32).map(|_| rand_byte()).collect();
-        let code_verifier =
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&code_verifier_bytes);
-        let code_challenge = {
-            let hash = Sha256::digest(code_verifier.as_bytes());
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hash)
-        };
-        let state: String = (0..16).map(|_| format!("{:02x}", rand_byte())).collect();
+        // PKCE + CSRF state, both from the OS CSPRNG (see `crate::pkce`).
+        let code_verifier = crate::pkce::generate_verifier();
+        let code_challenge = crate::pkce::derive_challenge(&code_verifier);
+        let state = crate::pkce::generate_state();
 
         let port = match redirect.port {
             RedirectPort::Fixed(p) => p,
@@ -983,21 +1023,6 @@ async fn fetch_discovery(
             .map(String::from),
         authorization_endpoint: doc["authorization_endpoint"].as_str().map(String::from),
     })
-}
-
-fn rand_byte() -> u8 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
-    let c = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mixed = t
-        .wrapping_mul(6364136223846793005)
-        .wrapping_add(c.wrapping_mul(1442695040888963407));
-    (mixed >> 33) as u8
 }
 
 fn percent_encode(s: &str) -> String {

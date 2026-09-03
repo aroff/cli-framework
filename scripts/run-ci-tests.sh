@@ -104,6 +104,10 @@ cargo test -p cli-framework-oidc --features server --verbose
 # above still proves the crate builds/tests without pulling in test-only
 # surface (rcgen, the promoted helpers) at all.
 cargo test -p cli-framework-oidc --features server,test-support --verbose
+# `browser_validation.rs` is gated on `browser`, which no combo here selected —
+# its suite ran nowhere, locally or in CI, despite covering the encrypted
+# session cookie and the shared PKCE helpers.
+cargo test -p cli-framework-oidc --features browser --verbose
 cargo test -p cli-framework-oidc --features client,server --verbose
 cargo build -p cli-framework-oidc --no-default-features --verbose
 cargo test -p cli-framework --no-default-features --features auth,testkit --verbose

@@ -25,6 +25,9 @@ client = [
     "dep:time",
     "dep:sha2",
     "dep:base64",
+    # PKCE verifier/state entropy. Shared with `browser` via `crate::pkce`; the
+    # device-code flow needs it too, so it is no longer browser-only.
+    "dep:rand",
     "dep:dirs",
 ]
 server = [

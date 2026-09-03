@@ -158,7 +158,13 @@ tar = { version = "0.4", optional = true }
 winreg = { version = "0.55", optional = true }
 
 [dev-dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# `stream` is needed by tests/integration/api_server_versioning.rs, which calls
+# `Response::bytes_stream()` to read the SSE body. Plain `cargo test` compiles
+# without it only because another default feature pulls reqwest's `stream` in
+# transitively; under `--no-default-features --features auth,testkit` (a combo
+# `scripts/run-ci-tests.sh` step 5b runs) that enabler disappears and the test
+# target fails to compile. Declared here so the combo stands on its own.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 wiremock = "0.6"
 env_logger = "0.11"
 log = "0.4"
