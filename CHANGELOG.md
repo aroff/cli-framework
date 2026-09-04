@@ -237,6 +237,32 @@
     `secret` and non-`user`-scoped fields were rejected), closing a path for a
     device-bootstrap-only field to roam to a user's other devices via the server.
 
+- **`ArgSpec::min_occurs`** (`Option<usize>`, defaults to `None`) declares the minimum arity of a
+  `Cardinality::Repeated` argument. `Repeated` alone cannot distinguish `--header` (zero or more)
+  from a `<skill-ids>...` positional (one or more); `min_occurs: Some(1)` or higher now lists the
+  argument in `inputSchema.required` — previously only `Cardinality::Required` reached that array,
+  so a mandatory repeated argument was indistinguishable from an optional one — and adds
+  `minItems` (arrays) / `minimum` (occurrence-count flags). `None` and `Some(0)` both keep the
+  pre-existing zero-or-more behavior, and the field is ignored for `Required` and `Optional`.
+  Schema-level only: CLI parsing arity is unchanged. Also adds `ArgSpec::is_schema_required()`,
+  the single predicate `CommandSpec::to_json_schema` now uses to build `required`.
+  Additive for consumers that construct `ArgSpec` with `..Default::default()` (every site in this
+  repo and in `#[derive(CommandSpec)]` does); a consumer using an exhaustive struct literal with
+  no `..Default::default()` must add the field.
+
+### Fixed
+
+- **MCP tool schemas dropped argument descriptions and never marked one-or-more arguments as
+  required**, which is the half of the MCP surface an agent can actually read.
+  `ArgSpec::to_json_schema_property` returned early for `Cardinality::Repeated`, bypassing the
+  shared `description` insertion at the end of the function, so every repeated argument reached
+  `tools/list` as a bare `{"type":"array","items":{"type":"string"}}` (or `{"type":"integer"}`
+  for a repeated flag) with `ArgSpec.help` discarded. Repeated shapes now build through the same
+  path as scalars, so `help` is emitted as the property `description` for every argument shape.
+  Observed downstream: `fastskill_remove` exposed a `skill-ids` property with no description and
+  no `required` array, so the only way to discover the key (including its casing) was to read the
+  raw schema and guess.
+
 ## [0.5.4] — 2026-06-13
 
 ### Added
