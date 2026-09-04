@@ -128,11 +128,13 @@ OidcFlow::ClientCredentials {
 
 ### File location
 
-The cache file is `oidc-token.json` inside whatever path you pass to `.cache_dir(...)`.
+The cache file is `<app>/oidc/token.json` inside whatever path you pass to `.cache_dir(...)`, where `<app>` comes from `.app_name(...)` (or `default` when unset). Override the key with `.cache_secret_key(...)`.
 
-Recommended: `dirs::cache_dir().unwrap().join("<app-name>")` → `~/.cache/<app-name>/oidc-token.json` on Linux/macOS.
+Recommended: `.app_name("my-app").cache_dir(dirs::cache_dir().unwrap().join("my-app"))` → `~/.cache/my-app/my-app/oidc/token.json` on Linux/macOS. Prefer letting `.app_name(...)` also derive `cache_dir` (`<os-cache>/cli-framework-oidc/<app>/oidc/token.json`).
 
-A sidecar `oidc-token.lock` is created next to it on first write and used for cross-process `flock` serialization — two concurrent CLI invocations won't corrupt the file.
+A sidecar lock file is created next to the cache file (`token.lock`) on first write and used for cross-process `flock` serialization — two concurrent CLI invocations won't corrupt the file.
+
+A legacy flat file `oidc-token.json` in `cache_dir` is still read. The first successful write migrates it to the namespaced key and deletes the legacy file.
 
 On unix the token file and its lock are created with mode `0600` (owner read/write only) under a `0700` parent directory, so other local users cannot read cached bearer/refresh tokens.
 
