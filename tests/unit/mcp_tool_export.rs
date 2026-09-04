@@ -161,6 +161,167 @@ fn test_optional_arg_not_in_required_array() {
     }
 }
 
+/// A repeated positional that must have at least one value — the shape the
+/// `fastskill_remove` `skill-ids` argument has. It reaches `tools/list` as a
+/// mandatory argument, and it says what it is for.
+#[test]
+fn test_mandatory_repeated_arg_is_required_and_described_in_tools_list() {
+    let spec = CommandSpec {
+        args: vec![ArgSpec {
+            name: "skill-ids",
+            kind: ArgKind::Positional,
+            value_type: ArgValueType::String,
+            cardinality: Cardinality::Repeated,
+            min_occurs: Some(1),
+            help: "Skill IDs to remove",
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut registry = CommandRegistry::new();
+    registry.register(make_cmd_with_spec("remove", "Remove skills", spec));
+
+    let tool_registry = McpToolRegistry::from_command_registry(&registry, "myapp");
+    let tools = tool_registry.list_tools();
+    let schema = &tools[0].input_schema;
+
+    assert_eq!(
+        schema["properties"]["skill-ids"]["description"].as_str(),
+        Some("Skill IDs to remove"),
+        "tools/list must tell the agent what skill-ids is, got: {schema}"
+    );
+    let required = schema["required"]
+        .as_array()
+        .unwrap_or_else(|| panic!("required array must exist, got: {schema}"));
+    assert!(
+        required.iter().any(|v| v.as_str() == Some("skill-ids")),
+        "a one-or-more arg must be marked required, got: {schema}"
+    );
+}
+
+/// Sweep every property of every exported tool schema. Presence alone is not
+/// enough — `description: ""` would pass a key-exists check and still leave the
+/// agent guessing — so this asserts non-empty.
+#[test]
+fn test_every_exported_tool_property_has_a_non_empty_description() {
+    fn arg(
+        name: &'static str,
+        kind: ArgKind,
+        value_type: ArgValueType,
+        cardinality: Cardinality,
+        min_occurs: Option<usize>,
+    ) -> ArgSpec {
+        ArgSpec {
+            name,
+            kind,
+            value_type,
+            cardinality,
+            min_occurs,
+            help: "what this argument means",
+            ..Default::default()
+        }
+    }
+
+    let mut registry = CommandRegistry::new();
+    registry.register(make_cmd_with_spec(
+        "remove",
+        "Remove skills",
+        CommandSpec {
+            args: vec![
+                arg(
+                    "skill-ids",
+                    ArgKind::Positional,
+                    ArgValueType::String,
+                    Cardinality::Repeated,
+                    Some(1),
+                ),
+                arg(
+                    "force",
+                    ArgKind::Flag,
+                    ArgValueType::Bool,
+                    Cardinality::Optional,
+                    None,
+                ),
+            ],
+            ..Default::default()
+        },
+    ));
+    registry.register(make_cmd_with_spec(
+        "install",
+        "Install skills",
+        CommandSpec {
+            args: vec![
+                arg(
+                    "header",
+                    ArgKind::Option,
+                    ArgValueType::String,
+                    Cardinality::Repeated,
+                    None,
+                ),
+                arg(
+                    "verbose",
+                    ArgKind::Flag,
+                    ArgValueType::Bool,
+                    Cardinality::Repeated,
+                    None,
+                ),
+                arg(
+                    "target",
+                    ArgKind::Option,
+                    ArgValueType::String,
+                    Cardinality::Required,
+                    None,
+                ),
+                arg(
+                    "retries",
+                    ArgKind::Option,
+                    ArgValueType::Int,
+                    Cardinality::Optional,
+                    None,
+                ),
+                arg(
+                    "format",
+                    ArgKind::Option,
+                    ArgValueType::Enum(vec!["json", "yaml"]),
+                    Cardinality::Optional,
+                    None,
+                ),
+            ],
+            ..Default::default()
+        },
+    ));
+
+    let tool_registry = McpToolRegistry::from_command_registry(&registry, "myapp");
+    let tools = tool_registry.list_tools();
+
+    let mut swept = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for tool in &tools {
+        let Some(properties) = tool.input_schema["properties"].as_object() else {
+            continue;
+        };
+        for (prop_name, prop) in properties {
+            swept += 1;
+            let described = prop
+                .get("description")
+                .and_then(|d| d.as_str())
+                .is_some_and(|d| !d.is_empty());
+            if !described {
+                offenders.push(format!("{}.{}: {}", tool.name, prop_name, prop));
+            }
+        }
+    }
+
+    assert_eq!(swept, 7, "sweep must reach every declared property");
+    assert!(
+        offenders.is_empty(),
+        "{} of {} exported tool properties have a missing or empty description:\n  {}",
+        offenders.len(),
+        swept,
+        offenders.join("\n  ")
+    );
+}
+
 #[test]
 fn test_no_args_command_object_schema() {
     let mut registry = CommandRegistry::new();

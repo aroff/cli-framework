@@ -19,17 +19,29 @@ fn mcp_install_registered_after_build() {
     assert!(found, "mcp/install not registered after build()");
 }
 
-/// mcp/register alias is registered after build().
+/// `register` is a hidden alias on `mcp install`, not a peer command of its own.
 #[test]
-fn mcp_register_alias_registered_after_build() {
+fn mcp_register_is_a_hidden_alias_not_a_peer_command() {
     let app = AppBuilder::new()
         .with_version("testapp", "0.1.0")
         .build(DummyCtx)
         .unwrap();
 
-    let path = CommandPath::new(&["mcp", "register"]).unwrap();
-    let found = app.command_registry().resolve(&path).is_some();
-    assert!(found, "mcp/register not registered after build()");
+    let install = app
+        .command_registry()
+        .resolve(&CommandPath::new(&["mcp", "install"]).unwrap())
+        .expect("mcp/install not registered after build()");
+    assert!(
+        install.spec.hidden_aliases.contains(&"register"),
+        "`register` is not declared as a hidden alias of `mcp install`: {:?}",
+        install.spec.hidden_aliases
+    );
+
+    let peer = CommandPath::new(&["mcp", "register"]).unwrap();
+    assert!(
+        app.command_registry().resolve(&peer).is_none(),
+        "`mcp register` is still registered as a separate command"
+    );
 }
 
 /// mcp/list is registered after build() when mcp-install is enabled.
@@ -185,5 +197,86 @@ async fn mcp_install_stdio_defaults_argv() {
         vec!["mcp", "serve", "--transport", "stdio"],
         "unexpected default argv: {:?}",
         args
+    );
+}
+
+// ── `register` is an alias, not a second primary verb ─────────────────────────
+
+const INSTALL_SUMMARY: &str = "Install this app as an MCP server in an agent configuration";
+
+fn build_test_app() -> cli_framework::app::App<DummyCtx> {
+    AppBuilder::new()
+        .with_version("testapp", "0.1.0")
+        .build(DummyCtx)
+        .unwrap()
+}
+
+async fn run_capture(app: &mut cli_framework::app::App<DummyCtx>, args: &[&str]) -> String {
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    app.stdout_capture = Some(buf.clone());
+    app.run_with_args(args.iter().map(|s| s.to_string()).collect())
+        .await
+        .unwrap();
+    app.stdout_capture = None;
+    let bytes = buf.lock().unwrap().clone();
+    String::from_utf8(bytes).unwrap()
+}
+
+/// The install verb is registered once. `install` and `register` used to be the
+/// same command registered twice, so two `mcp` children carried byte-identical
+/// summaries and `mcp --help` offered two equal-looking primary verbs.
+#[test]
+fn mcp_install_verb_is_registered_exactly_once() {
+    let app = build_test_app();
+
+    let duplicates: Vec<String> = app
+        .command_registry()
+        .all_tree_commands()
+        .filter(|(path, _)| path.starts_with("mcp/") && path.matches('/').count() == 1)
+        .filter(|(_, cmd)| cmd.spec.summary == INSTALL_SUMMARY)
+        .map(|(path, _)| path.to_string())
+        .collect();
+
+    assert_eq!(
+        duplicates.len(),
+        1,
+        "expected exactly one `mcp` subcommand described as {:?}, found {:?}",
+        INSTALL_SUMMARY,
+        duplicates
+    );
+}
+
+/// `register` must not be a peer entry in `mcp --help`.
+#[tokio::test]
+async fn mcp_help_lists_install_list_serve_but_not_register() {
+    let mut app = build_test_app();
+    let help = run_capture(&mut app, &["testapp", "mcp", "--help"]).await;
+
+    for verb in ["install", "list", "serve"] {
+        assert!(
+            help.lines().any(|l| l.trim_start().starts_with(verb)),
+            "`mcp --help` does not list {:?}:\n{}",
+            verb,
+            help
+        );
+    }
+
+    assert!(
+        !help.lines().any(|l| l.trim_start().starts_with("register")),
+        "`mcp --help` still lists `register` as a peer verb:\n{}",
+        help
+    );
+}
+
+/// The alias keeps working: `mcp register --help` still resolves.
+#[tokio::test]
+async fn mcp_register_alias_still_shows_install_help() {
+    let mut app = build_test_app();
+    let help = run_capture(&mut app, &["testapp", "mcp", "register", "--help"]).await;
+
+    assert!(
+        help.contains(INSTALL_SUMMARY),
+        "`mcp register --help` did not render the install help:\n{}",
+        help
     );
 }

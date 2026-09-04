@@ -129,7 +129,7 @@ pub fn create_completion_command(
             let _clap_root = std::sync::Arc::clone(&clap_root);
             Box::pin(async move {
                 use crate::app::builder::{
-                    emit_completion_script, visible_top_level_commands, Shell,
+                    build_completion_model, emit_completion_script, CompletionModel, Shell,
                 };
 
                 // R4a (Enum validation) rejects invalid shell values at parse time,
@@ -158,10 +158,10 @@ pub fn create_completion_command(
                 };
 
                 let registry = ctx.opt_registry();
-                let cmds = if let Some(reg) = registry {
-                    visible_top_level_commands(reg)
+                let model = if let Some(reg) = registry {
+                    build_completion_model(reg)
                 } else {
-                    std::collections::BTreeSet::new()
+                    CompletionModel::default()
                 };
 
                 // Render to an in-memory buffer and emit via framework_println so
@@ -170,7 +170,7 @@ pub fn create_completion_command(
                 // to fd 1 forced tests into process-global dup2 capture, which races
                 // with libtest's own status writes under parallel execution.
                 let mut buf: Vec<u8> = Vec::new();
-                emit_completion_script(app_name, shell, &cmds, &mut buf)?;
+                emit_completion_script(app_name, shell, &model, &mut buf)?;
                 let script = String::from_utf8(buf)
                     .map_err(|e| anyhow::anyhow!("completion script not valid UTF-8: {}", e))?;
                 ctx.framework_println(script.trim_end());

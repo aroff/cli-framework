@@ -594,6 +594,13 @@ path = "tests/integration/spec_command.rs"
 name = "integration_nested_command_routing"
 path = "tests/integration/nested_command_routing.rs"
 
+# Sources the generated bash completion script in a real `bash` and drives the
+# completion function — string-matching the generated text does not prove the
+# script works. Skips itself (does not fail) when no `bash` is on PATH.
+[[test]]
+name = "integration_completion_bash"
+path = "tests/integration/completion_bash.rs"
+
 [[test]]
 name = "unit_mcp_install"
 path = "tests/unit/mcp_install.rs"

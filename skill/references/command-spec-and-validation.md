@@ -57,7 +57,32 @@ let spec = CommandSpec {
 |---------|---------|
 | `Cardinality::Required` | Must be present; appears in `inputSchema.required` |
 | `Cardinality::Optional` | May be omitted |
-| `Cardinality::Multi` | Accepts multiple values; produces a list |
+| `Cardinality::Repeated` | Accepts multiple values; produces a list (or, for a flag, an occurrence count) |
+
+`Repeated` alone says nothing about whether a value is *mandatory* — `--header`
+(zero or more) and a `<skill-ids>...` positional (one or more) are both
+`Repeated`. Set `min_occurs` to say which:
+
+```rust
+ArgSpec {
+    name: "skill-ids",
+    kind: ArgKind::Positional,
+    value_type: ArgValueType::String,
+    cardinality: Cardinality::Repeated,
+    min_occurs: Some(1),           // one or more
+    help: "Skill IDs to remove",   // becomes the property `description`
+    ..Default::default()
+}
+```
+
+`min_occurs: Some(1)` (or more) lists the argument in `inputSchema.required`
+and adds `minItems` (arrays) or `minimum` (count flags). `None` and `Some(0)`
+both mean zero-or-more. It is ignored for `Required` and `Optional`, and it is
+schema-level only — CLI parsing arity is unchanged.
+
+`help` is what an MCP client sees: it is emitted as the property's
+`description` for every argument shape, so an empty `help` leaves an agent with
+nothing but the argument's name and type.
 
 ## Custom `validator`
 

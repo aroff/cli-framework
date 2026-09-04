@@ -237,6 +237,67 @@
     `secret` and non-`user`-scoped fields were rejected), closing a path for a
     device-bootstrap-only field to roam to a user's other devices via the server.
 
+- **`ArgSpec::min_occurs`** (`Option<usize>`, defaults to `None`) declares the minimum arity of a
+  `Cardinality::Repeated` argument. `Repeated` alone cannot distinguish `--header` (zero or more)
+  from a `<skill-ids>...` positional (one or more); `min_occurs: Some(1)` or higher now lists the
+  argument in `inputSchema.required` — previously only `Cardinality::Required` reached that array,
+  so a mandatory repeated argument was indistinguishable from an optional one — and adds
+  `minItems` (arrays) / `minimum` (occurrence-count flags). `None` and `Some(0)` both keep the
+  pre-existing zero-or-more behavior, and the field is ignored for `Required` and `Optional`.
+  Schema-level only: CLI parsing arity is unchanged. Also adds `ArgSpec::is_schema_required()`,
+  the single predicate `CommandSpec::to_json_schema` now uses to build `required`.
+  Additive for consumers that construct `ArgSpec` with `..Default::default()` (every site in this
+  repo and in `#[derive(CommandSpec)]` does); a consumer using an exhaustive struct literal with
+  no `..Default::default()` must add the field.
+
+### Fixed
+
+- **MCP tool schemas dropped argument descriptions and never marked one-or-more arguments as
+  required**, which is the half of the MCP surface an agent can actually read.
+  `ArgSpec::to_json_schema_property` returned early for `Cardinality::Repeated`, bypassing the
+  shared `description` insertion at the end of the function, so every repeated argument reached
+  `tools/list` as a bare `{"type":"array","items":{"type":"string"}}` (or `{"type":"integer"}`
+  for a repeated flag) with `ArgSpec.help` discarded. Repeated shapes now build through the same
+  path as scalars, so `help` is emitted as the property `description` for every argument shape.
+  Observed downstream: `fastskill_remove` exposed a `skill-ids` property with no description and
+  no `required` array, so the only way to discover the key (including its casing) was to read the
+  raw schema and guess.
+
+- **The generated bash completion script was structurally broken and worse than no completion at
+  all.** `emit_completion_script`'s bash branch read `COMP_WORDS[1]` — hardcoded to the *first*
+  argument — where bash requires `COMP_WORDS[COMP_CWORD]`, the index of the word the cursor is
+  actually on. Everything past the first word was therefore matched against word 1, and the only
+  candidate list ever offered was the flat set of top-level verbs: `app repos <TAB>` completed to
+  `repos`, and no subcommand or flag was ever completed. Because the compspec always produced a
+  match, it also suppressed the shell's default filename completion. The bash branch now emits
+  `COMP_WORDS[COMP_CWORD]`, rebuilds the command path from the non-flag words before the cursor,
+  and selects per-level candidates from a registry-derived model (`build_completion_model`) that
+  carries every group's subcommands and every leaf command's own flags (long, short, and
+  `--help`), with hidden commands and hidden groups omitted at every level. Hiding is per node,
+  not per subtree: a hidden group that still contains a visible leaf keeps its own segment
+  completable, which is the pre-existing behaviour pinned by
+  `completion_includes_root_segment_from_visible_leaf_even_when_group_hidden`. The compspec is
+  registered `complete -o default`, so filename
+  completion still applies where the framework has no candidates. `zsh`, `fish` and `powershell`
+  output is unchanged. Internal-only signature change: the `pub(crate)` helpers
+  `emit_completion_script`/`visible_top_level_commands` now take a `CompletionModel`; the public
+  `App::emit_completion` is untouched.
+
+- **`mcp install` and `mcp register` were one command registered twice.** `build()` cloned the
+  install command, rewrote its id to `register`, and registered it a second time at
+  `mcp/register`, so `mcp --help` offered two primary verbs with byte-identical descriptions
+  ("Install this app as an MCP server in an agent configuration") and nothing to choose
+  between them. `register` is now a **hidden alias** declared on the install command's spec
+  (`CommandSpec.hidden_aliases`) rather than a second registration: `mcp register …` keeps
+  working unchanged — clap resolves the alias to `install` — but it is no longer listed in
+  `mcp --help` beside `install`, and the command tree holds one install command instead of
+  two. The alias is **deprecated**; prefer `mcp install`. It is kept for one release so
+  downstream binaries and scripts that already call `mcp register` do not break, and may be
+  removed after that.
+  - Registry-visible consequence: `command_registry().resolve(["mcp", "register"])` now
+    returns `None` (the alias is carried on `mcp/install`'s spec), and the `spec` command's
+    document lists a single install entry instead of two identical ones.
+
 ## [0.5.4] — 2026-06-13
 
 ### Added

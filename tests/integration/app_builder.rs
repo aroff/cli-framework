@@ -632,19 +632,11 @@ async fn completion_bash_stub_shape_and_candidates_are_sorted_and_filtered() {
     );
 
     assert!(
-        out.contains("compgen -W \""),
-        "expected bash stub to contain compgen candidate list; got:\n{}",
+        out.contains("compgen -W \"$candidates\""),
+        "expected bash script to complete from the per-level candidate list; got:\n{}",
         out
     );
-    let candidates = out
-        .lines()
-        .find_map(|l| {
-            let start = l.find("compgen -W \"")?;
-            let rest = &l[start + "compgen -W \"".len()..];
-            let end = rest.find("\" -- ")?;
-            Some(rest[..end].to_string())
-        })
-        .unwrap_or_default();
+    let candidates = root_level_candidates(out);
     let parsed: Vec<&str> = candidates.split_whitespace().collect();
     let mut sorted = parsed.clone();
     sorted.sort();
@@ -662,6 +654,21 @@ async fn completion_bash_stub_shape_and_candidates_are_sorted_and_filtered() {
         );
     }
     assert!(!out.contains("hidden_cmd"));
+}
+
+/// Extract the root-level (`''`) candidate list from a generated bash script.
+///
+/// The script dispatches on the command path rebuilt from the words before the
+/// cursor; the empty path is the first-word case.
+fn root_level_candidates(script: &str) -> String {
+    script
+        .lines()
+        .find_map(|l| {
+            let rest = l.trim().strip_prefix("'') candidates=\"")?;
+            let end = rest.find('"')?;
+            Some(rest[..end].to_string())
+        })
+        .unwrap_or_default()
 }
 
 #[tokio::test]
@@ -724,7 +731,7 @@ async fn completions_hidden_alias_routes_but_does_not_appear_in_help() {
 
     // Alias routes
     let out = run_capture(&mut app, &["myapp", "completions", "bash"]).await;
-    assert!(out.contains("complete -F _myapp myapp"));
+    assert!(out.contains("complete -o default -F _myapp myapp"));
 
     // Alias hidden from help
     let help = run_capture(&mut app, &["myapp", "--help"]).await;
@@ -843,15 +850,7 @@ async fn completion_includes_root_segment_from_visible_leaf_even_when_group_hidd
 
     let mut app = builder.build(DummyCtx).unwrap();
     let out = run_capture(&mut app, &["myapp", "completion", "bash"]).await;
-    let candidates = out
-        .lines()
-        .find_map(|l| {
-            let start = l.find("compgen -W \"")?;
-            let rest = &l[start + "compgen -W \"".len()..];
-            let end = rest.find("\" -- ")?;
-            Some(rest[..end].to_string())
-        })
-        .unwrap_or_default();
+    let candidates = root_level_candidates(&out);
     let parsed: Vec<&str> = candidates.split_whitespace().collect();
     assert!(parsed.contains(&"grp"), "expected 'grp' in {:?}", parsed);
 }
