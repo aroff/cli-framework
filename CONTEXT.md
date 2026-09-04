@@ -465,12 +465,69 @@ The value passed to `AppBuilder::with_telemetry(…)` that controls the OTel
 subsystem. Populated from `OTEL_*` environment variables (via
 `TelemetryConfig::from_env()`) with explicit fields taking precedence.
 Key fields: `enabled`, `endpoint` (absent → whole subsystem is inert),
-`protocol` (`http/protobuf` default or `grpc`), `sample_ratio`,
+`protocol` (`http/protobuf` only — `grpc` is rejected at init), `sample_ratio`,
 per-signal toggles (`traces_enabled`, `metrics_enabled`, `logs_enabled`),
 and `record_arg_values` + `arg_value_allowlist` (security gate — R13).
 `OTEL_SDK_DISABLED=true` is a final veto evaluated at init time and cannot
 be overridden by any builder field.
 _Avoid_: "OTel config", "observability config" — use Telemetry config.
+
+**Deployment** _(spec 025)_:
+How a cli-framework binary is deployed, which decides whose telemetry it
+produces: **end-user** (a person's own device — telemetry requires their
+**Consent**) or **service** (an operator's infrastructure — telemetry is
+configured, never consented). Chosen once by the application author; it is
+not an **Invocation surface** and not a **Profile**.
+_Avoid_: "profile" (ADR 0074's org grouping), "mode", "environment"
+(semconv's prod/staging).
+
+**Install** _(spec 025; ADR 0077)_:
+One application under one user account on one device. The unit at which
+**Consent** is given, the pseudonymous id is minted and the **Telemetry
+notice** is shown; `machine`-**Scope** configuration lives per Install. Two
+accounts on one laptop are two Installs.
+_Avoid_: "installation" (also the act of installing), "device" (may host
+several Installs), bare "machine" (the Scope value `machine` *means* this
+Install).
+
+**Telemetry level** _(spec 025)_:
+How much telemetry leaves the process: `off`, `usage` (what was used —
+command and feature tallies, one root span per command), `diagnostic` (adds
+nested spans, argument names and error classes), `debug` (adds allowlisted
+argument values, messages and logs). Each level strictly includes the one
+below. Always say *telemetry* level — bare "level" collides with log levels
+and with **Scope**.
+_Avoid_: "tier", "verbosity", bare "level".
+
+**Consent** _(spec 025; ADR 0077)_:
+The person's own choice of **Telemetry level**, given per **Install** of an
+end-user **Deployment**. It is the one telemetry setting an organisation may
+recommend but never enforce; nothing may raise the effective Telemetry level
+above it, and it never follows the person to another Install.
+_Avoid_: "opt-in flag", "telemetry enabled".
+
+**Telemetry notice** _(spec 025)_:
+The short stderr message an end-user **Deployment** prints at most once per
+announced **Telemetry level** on an **Install**: when usage statistics are
+off, and whenever the effective level rises without the person choosing it.
+It says what the level is and how to change it; it informs, never asks,
+never blocks, and never appears on a non-interactive surface.
+_Avoid_: "consent prompt", "banner", "opt-in dialog".
+
+**Attribution** _(spec 025)_:
+How linkable exported telemetry is to a subject: `anonymous` (nothing
+persistent), `pseudonymous` (a random id minted per **Install**), `identified` (the
+caller's identity, supplied by the application). Distinct from *identity*,
+which is *who is calling*.
+_Avoid_: "identity", "identification", "user tracking".
+
+**Probe** _(spec 025)_:
+A named point of framework instrumentation — `cli.command`, `http.client`,
+`cli.panic` — that can be switched off individually by the person or by an
+Org Policy. A Probe's id is both the prefix of every signal it emits and its
+configuration key.
+_Avoid_: "operation" (also avoided for Command), "instrument" and "signal"
+(OTel's words for other things), "event".
 
 **Config backend** _(spec 016)_:
 Where a configuration document physically lives — a file in the user profile,
@@ -531,7 +588,8 @@ assignment rule matches), not a Profile and not a **Scope**.
 
 **Scope** _(ADR 0073)_:
 Declared per field in the **Config manifest**, answering *whose value is this*:
-`machine` (this installation — a desktop, a phone, or a server instance),
+`machine` (this **Install** — one app, one account, one desktop, phone or server
+instance),
 `user` (roams with the person across their devices), or `org` (one value
 organisation-wide, delivered only via **Policy**, never authored locally).
 Orthogonal to **Enforced**/**Recommended** for `machine` and `user` fields —
@@ -598,6 +656,13 @@ _Avoid_: "event log", "audit trail" as the canonical term, "event store".
   halves of **cli-framework-oidc**: the client half depends on the `auth`
   feature, the server half (`oidc_validation_layer` / `OidcClaims`) depends on
   `api-server`. A binary that is both client and server uses both.
+
+- A **Probe** emits only when the effective **Telemetry level** reaches the
+  Probe's minimum *and* neither it nor any ancestor Probe is switched off; on
+  an end-user **Deployment** the effective level never exceeds **Consent**.
+- An **Install** holds exactly one **Consent** and at most one pseudonymous id,
+  and neither leaves it: no telemetry setting has `user` **Scope**, so none
+  roams.
 
 ## Example dialogue
 
@@ -696,3 +761,12 @@ _Avoid_: "event log", "audit trail" as the canonical term, "event store".
   different surfaces (command/mutation vs. Policy) and are independently
   chosen. A `protected` field is routinely still `enforced`; a field that must
   be unreachable from *both* surfaces needs both flags, not `protected` alone.
+- **"Level"** has three meanings here — **Telemetry level**, log level, and
+  (avoided) **Scope**. Always qualify.
+- **"Profile"** is also *not* the telemetry **Deployment**; a Profile selects
+  a Policy, a Deployment says whose device the binary runs on.
+- **"Identity"** (who is calling — Caller identity, `OidcClaims`) is not
+  **Attribution** (how linkable the telemetry is). An identified caller can
+  still produce anonymous telemetry.
+- **"Machine"** Scope is not a physical device; it is one **Install**. Two
+  accounts on one laptop hold two Consents and two pseudonymous ids.
