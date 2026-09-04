@@ -273,8 +273,11 @@
   `COMP_WORDS[COMP_CWORD]`, rebuilds the command path from the non-flag words before the cursor,
   and selects per-level candidates from a registry-derived model (`build_completion_model`) that
   carries every group's subcommands and every leaf command's own flags (long, short, and
-  `--help`), with hidden commands and hidden groups — and anything nested under a hidden group —
-  omitted at every level. The compspec is registered `complete -o default`, so filename
+  `--help`), with hidden commands and hidden groups omitted at every level. Hiding is per node,
+  not per subtree: a hidden group that still contains a visible leaf keeps its own segment
+  completable, which is the pre-existing behaviour pinned by
+  `completion_includes_root_segment_from_visible_leaf_even_when_group_hidden`. The compspec is
+  registered `complete -o default`, so filename
   completion still applies where the framework has no candidates. `zsh`, `fish` and `powershell`
   output is unchanged. Internal-only signature change: the `pub(crate)` helpers
   `emit_completion_script`/`visible_top_level_commands` now take a `CompletionModel`; the public
