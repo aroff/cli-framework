@@ -330,7 +330,7 @@ Owned entirely by the OIDC crate — not a concept in cli-framework core. Cache
 directory is supplied explicitly at `OidcClient` construction time (consumer
 knows their app name and XDG paths). When the config manager (ADR 0067) ships, a
 convenience helper will read the path from the config layer instead. Default
-format: JSON file at `<cache_dir>/oidc-token.json`, permissions 0600.
+format: JSON file at `<cache_dir>/<app>/oidc/token.json`, permissions 0600. Legacy `<cache_dir>/oidc-token.json` is read and migrated on the next write.
 _Avoid_: "credential store", "keychain" (those imply OS secret storage, which
 is not in scope for v1). _Distinguish from the **JWKS cache**_ — different side,
 different contents.

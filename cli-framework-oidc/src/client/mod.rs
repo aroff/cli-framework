@@ -9,7 +9,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 mod cache;
-use cache::{cache_secret_key, read_cache, write_cache, CacheEntry};
+pub use cache::{default_cache_secret_key, legacy_cache_secret_key};
+use cache::{read_cache, write_cache, CacheEntry};
 
 // ── Supporting types ────────────────────────────────────────────────────────
 
@@ -100,20 +101,23 @@ pub struct OidcClient {
     discovery: tokio::sync::OnceCell<DiscoveryDoc>,
     http: reqwest::Client,
     /// Where the token cache is stored. Defaults to an
-    /// [`EnvFileSecretStore`] rooted at `cache_dir` — this reproduces the
-    /// crate's historical on-disk `oidc-token.json` behavior exactly (see
-    /// `client/cache.rs` docs). Inject a different backend (e.g.
-    /// OpenBao-backed) via [`OidcClientBuilder::secret_store`] to store
-    /// cached tokens somewhere other than a local file.
+    /// [`EnvFileSecretStore`] rooted at `cache_dir`. Inject a different
+    /// backend (e.g. OpenBao-backed) via [`OidcClientBuilder::secret_store`]
+    /// to store cached tokens somewhere other than a local file.
     secret_store: Arc<dyn SecretStore>,
     cache_secret_key: SecretKey,
 }
 
 impl OidcClient {
-    /// The on-disk directory holding this client's token cache (`oidc-token.json`).
+    /// The on-disk directory holding this client's token cache.
     /// Either the explicit `cache_dir` or the app-name-derived default.
     pub fn cache_dir(&self) -> &std::path::Path {
         &self.cache_dir
+    }
+
+    /// `SecretStore` key for the token cache (`<app>/oidc/token.json` by default).
+    pub fn cache_secret_key(&self) -> &SecretKey {
+        &self.cache_secret_key
     }
 
     /// The normalized issuer URL this client authenticates against.
@@ -628,7 +632,7 @@ impl OidcClient {
         let access_token = access_token.to_string();
         let scopes = self.effective_scopes();
 
-        let lock = lock_cache_dir(&self.cache_dir).await?;
+        let lock = lock_cache_dir(&self.cache_dir, &self.cache_secret_key).await?;
 
         let mut cache = read_cache(self.secret_store.as_ref(), &self.cache_secret_key).await;
         let existing_refresh = cache
@@ -667,7 +671,7 @@ impl cli_framework::auth::TokenProvider for OidcClient {
 
     async fn invalidate(&self) {
         let key = self.cache_key();
-        let lock = match lock_cache_dir(&self.cache_dir).await {
+        let lock = match lock_cache_dir(&self.cache_dir, &self.cache_secret_key).await {
             Ok(l) => l,
             Err(e) => {
                 tracing::warn!("oidc token cache: invalidate lock failed: {e}");
@@ -706,7 +710,7 @@ impl cli_framework::auth::TokenProvider for OidcClient {
 
     async fn logout(&self) -> Result<(), cli_framework::auth::AuthError> {
         let key = self.cache_key();
-        let lock = lock_cache_dir(&self.cache_dir).await?;
+        let lock = lock_cache_dir(&self.cache_dir, &self.cache_secret_key).await?;
         let mut cache = read_cache(self.secret_store.as_ref(), &self.cache_secret_key).await;
         cache.entries.remove(&key);
         if let Err(e) =
@@ -731,6 +735,7 @@ pub struct OidcClientBuilder {
     reporter: Option<Arc<dyn cli_framework::auth::AuthFlowReporter>>,
     refresh_skew: Duration,
     secret_store: Option<Arc<dyn SecretStore>>,
+    cache_secret_key: Option<SecretKey>,
 }
 
 impl OidcClientBuilder {
@@ -745,6 +750,7 @@ impl OidcClientBuilder {
             reporter: None,
             refresh_skew: Duration::from_secs(60),
             secret_store: None,
+            cache_secret_key: None,
         }
     }
 
@@ -863,14 +869,23 @@ impl OidcClientBuilder {
     }
 
     /// Where the token cache is stored. Defaults to an
-    /// [`EnvFileSecretStore`] rooted at `cache_dir`, which reproduces the
-    /// crate's historical zero-config on-disk `oidc-token.json` behavior
-    /// exactly. Inject e.g. `secrets-openbao::OpenBaoSecretStore` here to
-    /// store cached tokens in a real secrets manager instead — when a
-    /// non-file backend is configured, no plaintext token file is ever
-    /// written.
+    /// [`EnvFileSecretStore`] rooted at `cache_dir`. Inject e.g.
+    /// `secrets-openbao::OpenBaoSecretStore` here to store cached tokens in
+    /// a real secrets manager instead — when a non-file backend is
+    /// configured, no plaintext token file is ever written.
     pub fn secret_store(mut self, store: Arc<dyn SecretStore>) -> Self {
         self.secret_store = Some(store);
+        self
+    }
+
+    /// Override the `SecretStore` key used for the token cache.
+    ///
+    /// Default is [`default_cache_secret_key`] from [`Self::app_name`]
+    /// (`<app>/oidc/token.json`). Use this when one process hosts more than
+    /// one OIDC client against the same store (for example management vs
+    /// product sign-in).
+    pub fn cache_secret_key(mut self, key: SecretKey) -> Self {
+        self.cache_secret_key = Some(key);
         self
     }
 
@@ -894,6 +909,9 @@ impl OidcClientBuilder {
         let secret_store = self
             .secret_store
             .unwrap_or_else(|| Arc::new(EnvFileSecretStore::new(cache_dir.clone())));
+        let cache_secret_key = self
+            .cache_secret_key
+            .unwrap_or_else(|| default_cache_secret_key(self.app_name.as_deref()));
 
         Ok(OidcClient {
             issuer_url,
@@ -906,7 +924,7 @@ impl OidcClientBuilder {
             discovery: tokio::sync::OnceCell::new(),
             http: make_http_client(),
             secret_store,
-            cache_secret_key: cache_secret_key(),
+            cache_secret_key,
         })
     }
 }
@@ -923,7 +941,7 @@ fn default_cache_dir(app_name: Option<&str>) -> Result<PathBuf, OidcConfigError>
 }
 
 /// Best-effort cross-process advisory lock guarding the read-modify-write
-/// cycle around the token cache (`<cache_dir>/oidc-token.lock`).
+/// cycle around the token cache (`<cache_dir>/<app>/oidc/token.lock`).
 ///
 /// This is independent of which `SecretStore` backend is configured: it
 /// still serializes concurrent writers *on this host* even when the backend
@@ -933,11 +951,15 @@ fn default_cache_dir(app_name: Option<&str>) -> Result<PathBuf, OidcConfigError>
 /// (`unlock_cache_dir`) is a fast local syscall done inline.
 async fn lock_cache_dir(
     cache_dir: &std::path::Path,
+    key: &SecretKey,
 ) -> Result<std::fs::File, cli_framework::auth::AuthError> {
     let cache_dir = cache_dir.to_path_buf();
+    let lock_rel = cache::cache_lock_relpath(key);
     tokio::task::spawn_blocking(move || {
-        std::fs::create_dir_all(&cache_dir).ok();
-        let lock_path = cache_dir.join("oidc-token.lock");
+        let lock_path = cache_dir.join(lock_rel);
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
         let file = open_lock_file(&lock_path)?;
         use fs2::FileExt;
         file.lock_exclusive()?;

@@ -1,8 +1,10 @@
 //! Tests for the OidcClient cache layer.
 
 use cli_framework::auth::TokenProvider;
-use cli_framework::secrets::InMemorySecretStore;
-use cli_framework_oidc::client::{OidcClient, OidcFlow, TokenAuthMethod};
+use cli_framework::secrets::{InMemorySecretStore, SecretKey};
+use cli_framework_oidc::client::{
+    default_cache_secret_key, legacy_cache_secret_key, OidcClient, OidcFlow, TokenAuthMethod,
+};
 use secrecy::SecretString;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -127,6 +129,53 @@ fn explicit_cache_dir_overrides_default() {
 }
 
 #[test]
+fn cache_secret_key_defaults_from_app_name() {
+    let tmp = TempDir::new().unwrap();
+    let client = OidcClient::builder()
+        .issuer_url("https://auth.example.com")
+        .client_id("my-cli")
+        .flow(OidcFlow::DeviceCode)
+        .app_name("aidesktop")
+        .cache_dir(tmp.path().to_path_buf())
+        .build()
+        .expect("build");
+    assert_eq!(
+        client.cache_secret_key().as_str(),
+        "aidesktop/oidc/token.json"
+    );
+    assert_eq!(
+        client.cache_secret_key(),
+        &default_cache_secret_key(Some("aidesktop"))
+    );
+}
+
+#[test]
+fn cache_secret_key_without_app_name_uses_default_namespace() {
+    let tmp = TempDir::new().unwrap();
+    let client = build_client("https://auth.example.com", "svc", tmp.path().to_path_buf());
+    assert_eq!(
+        client.cache_secret_key().as_str(),
+        "default/oidc/token.json"
+    );
+}
+
+#[test]
+fn cache_secret_key_builder_override_wins() {
+    let tmp = TempDir::new().unwrap();
+    let key = SecretKey::new(["aidesktop", "cogni", "oidc", "token.json"]).unwrap();
+    let client = OidcClient::builder()
+        .issuer_url("https://auth.example.com")
+        .client_id("my-cli")
+        .flow(OidcFlow::DeviceCode)
+        .app_name("aidesktop")
+        .cache_dir(tmp.path().to_path_buf())
+        .cache_secret_key(key.clone())
+        .build()
+        .expect("build");
+    assert_eq!(client.cache_secret_key(), &key);
+}
+
+#[test]
 fn cache_key_is_deterministic() {
     let dir = TempDir::new().unwrap();
     let c1 = build_client(
@@ -233,15 +282,15 @@ async fn cache_file_and_lock_have_0600_permissions() {
     let client = build_client(&base, "svc", dir.path().to_path_buf());
     client.token().await.expect("token");
 
-    let cache_file = dir.path().join("oidc-token.json");
-    let lock_file = dir.path().join("oidc-token.lock");
+    let cache_file = dir.path().join("default/oidc/token.json");
+    let lock_file = dir.path().join("default/oidc/token.lock");
 
     assert!(cache_file.exists(), "cache file must exist after token()");
 
     let cache_mode = std::fs::metadata(&cache_file).unwrap().permissions().mode() & 0o777;
     assert_eq!(
         cache_mode, 0o600,
-        "oidc-token.json must be 0600; got {:o}",
+        "token.json must be 0600; got {:o}",
         cache_mode
     );
 
@@ -249,7 +298,7 @@ async fn cache_file_and_lock_have_0600_permissions() {
         let lock_mode = std::fs::metadata(&lock_file).unwrap().permissions().mode() & 0o777;
         assert_eq!(
             lock_mode, 0o600,
-            "oidc-token.lock must be 0600; got {:o}",
+            "token.lock must be 0600; got {:o}",
             lock_mode
         );
     }
@@ -349,8 +398,8 @@ async fn default_refresh_skew_is_60s_token_expiring_in_45s_triggers_refetch() {
 //
 // PRD-005 story 9 / ADR-0004: the token cache is routed through an injected
 // `SecretStore`. The default backend (used when `.secret_store(..)` isn't
-// called) reproduces the historical on-disk `oidc-token.json` file exactly
-// (proven by `cache_file_and_lock_have_0600_permissions` above). When a
+// called) writes `<cache_dir>/<app>/oidc/token.json` (proven by
+// `cache_file_and_lock_have_0600_permissions` above). When a
 // non-file backend — here `InMemorySecretStore` — is injected instead, no
 // plaintext token file should ever be written to `cache_dir`, and the token
 // flow (acquire, cache-hit, invalidate, logout) must still work end to end
@@ -405,12 +454,16 @@ async fn no_plaintext_file_when_non_file_backend_is_injected() {
 
     // The whole point: no plaintext token file anywhere under cache_dir.
     // (`cache_dir` may still contain the empty, content-free
-    // `oidc-token.lock` advisory-lock file — that's a local-concurrency
+    // `token.lock` advisory-lock file — that's a local-concurrency
     // guard independent of the SecretStore backend, and never holds token
     // bytes, so it doesn't defeat the "no plaintext token" property.)
     assert!(
         !dir.path().join("oidc-token.json").exists(),
         "a non-file SecretStore backend must never produce a plaintext oidc-token.json"
+    );
+    assert!(
+        !dir.path().join("default/oidc/token.json").exists(),
+        "a non-file SecretStore backend must never produce a plaintext token.json"
     );
     for entry in std::fs::read_dir(dir.path())
         .unwrap()
@@ -439,7 +492,7 @@ async fn no_plaintext_file_when_non_file_backend_is_injected() {
 #[tokio::test]
 async fn cache_file_is_not_created_until_token_stored() {
     let dir = TempDir::new().unwrap();
-    let cache_path = dir.path().join("oidc-token.json");
+    let cache_path = dir.path().join("default/oidc/token.json");
     assert!(!cache_path.exists());
 
     let client = build_client(
@@ -450,4 +503,107 @@ async fn cache_file_is_not_created_until_token_stored() {
     // No cache file yet — peek reads it lazily
     let status = client.peek().await;
     assert!(status.is_none());
+}
+
+async fn mock_token_server() -> (MockServer, String) {
+    let mock = MockServer::start().await;
+    let base = mock.uri();
+    Mock::given(method("GET"))
+        .and(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "issuer": base,
+            "token_endpoint": format!("{}/token", base),
+            "jwks_uri": format!("{}/jwks", base),
+        })))
+        .mount(&mock)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "legacy-tok",
+            "refresh_token": "legacy-rt",
+            "token_type": "Bearer",
+            "expires_in": 3600u64,
+        })))
+        .mount(&mock)
+        .await;
+    (mock, base)
+}
+
+#[tokio::test]
+async fn app_name_writes_namespaced_cache_file() {
+    let (_mock, base) = mock_token_server().await;
+    let dir = TempDir::new().unwrap();
+    let client = OidcClient::builder()
+        .issuer_url(&base)
+        .client_id("svc")
+        .flow(OidcFlow::ClientCredentials {
+            client_secret: make_secret("s3cr3t"),
+            token_auth: TokenAuthMethod::Post,
+        })
+        .app_name("aidesktop")
+        .cache_dir(dir.path().to_path_buf())
+        .build()
+        .expect("build");
+    client.token().await.expect("token");
+    assert!(
+        dir.path().join("aidesktop/oidc/token.json").exists(),
+        "namespaced cache file must exist after token()"
+    );
+    assert!(
+        !dir.path().join("oidc-token.json").exists(),
+        "legacy flat filename must not be written for a namespaced client"
+    );
+}
+
+#[tokio::test]
+async fn legacy_oidc_token_json_is_read_and_migrated_on_write() {
+    let (_mock, base) = mock_token_server().await;
+    let dir = TempDir::new().unwrap();
+
+    let legacy = OidcClient::builder()
+        .issuer_url(&base)
+        .client_id("svc")
+        .flow(OidcFlow::ClientCredentials {
+            client_secret: make_secret("s3cr3t"),
+            token_auth: TokenAuthMethod::Post,
+        })
+        .cache_dir(dir.path().to_path_buf())
+        .cache_secret_key(legacy_cache_secret_key())
+        .build()
+        .expect("build legacy");
+    legacy.token().await.expect("seed legacy cache");
+    assert!(dir.path().join("oidc-token.json").exists());
+
+    let migrated = OidcClient::builder()
+        .issuer_url(&base)
+        .client_id("svc")
+        .flow(OidcFlow::ClientCredentials {
+            client_secret: make_secret("s3cr3t"),
+            token_auth: TokenAuthMethod::Post,
+        })
+        .app_name("my-app")
+        .cache_dir(dir.path().to_path_buf())
+        .build()
+        .expect("build namespaced");
+
+    let peeked = migrated
+        .peek()
+        .await
+        .expect("legacy entry must be readable");
+    assert!(peeked.logged_in);
+
+    migrated.invalidate().await;
+
+    assert!(
+        dir.path().join("my-app/oidc/token.json").exists(),
+        "write must land on the namespaced key"
+    );
+    assert!(
+        !dir.path().join("oidc-token.json").exists(),
+        "legacy key must be deleted after migrate-on-write"
+    );
+
+    let after = migrated.peek().await.expect("migrated entry remains");
+    assert!(after.logged_in);
 }
