@@ -75,9 +75,9 @@ tower-http = { version = "0.7", features = ["cors"], optional = true }
 # (de)serialized itself.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"], optional = true }
 # Optional MCP install dependency (aikit-sdk provides add_mcp_server and mcp_supported_agents)
-aikit-sdk = { git = "https://github.com/goaikit/aikit.git", package = "aikit-sdk", rev = "532c5ee389b5dbbbd358f1b44f50979fd4cbcc56", optional = true }
+aikit-sdk = { git = "https://github.com/goaikit/aikit.git", package = "aikit-sdk", rev = "eb50f2c5509d4345cab65af0f7faed012ab0e557", optional = true }
 ## Optional embedded agent dependency (used by `chat` feature)
-aikit-agent = { git = "https://github.com/goaikit/aikit.git", package = "aikit-agent", rev = "532c5ee389b5dbbbd358f1b44f50979fd4cbcc56", optional = true }
+aikit-agent = { git = "https://github.com/goaikit/aikit.git", package = "aikit-agent", rev = "eb50f2c5509d4345cab65af0f7faed012ab0e557", optional = true }
 # Optional Swagger UI dependency for api-swagger feature
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"], optional = true }
 # Optional emulation dependencies
