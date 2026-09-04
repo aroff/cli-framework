@@ -25,6 +25,19 @@ pub struct ArgSpec {
     pub max_f: Option<f64>,
     /// Regex pattern constraint for String args.
     pub pattern: Option<&'static str>,
+    /// Minimum number of occurrences for a [`Cardinality::Repeated`] arg.
+    ///
+    /// `Cardinality::Repeated` on its own says nothing about whether a value is
+    /// mandatory — `--header` (zero or more) and a `<skill-ids>...` positional
+    /// (one or more) are both `Repeated`. This field is how a spec says which:
+    /// `Some(1)` (or more) makes the arg mandatory, so it is listed in the
+    /// generated JSON Schema `required` array and carries `minItems` /
+    /// `minimum`. `None` and `Some(0)` both mean zero-or-more, which is the
+    /// pre-existing behavior and the `Default`.
+    ///
+    /// Ignored for `Required` (already mandatory) and `Optional` cardinalities.
+    /// Schema-level only: CLI parsing arity is unchanged.
+    pub min_occurs: Option<usize>,
 }
 
 /// Argument kind.
@@ -65,20 +78,64 @@ pub enum Cardinality {
 }
 
 impl ArgSpec {
+    /// Whether the generated JSON Schema must list this arg in `required`.
+    ///
+    /// True for [`Cardinality::Required`], and for a [`Cardinality::Repeated`]
+    /// arg that declares a minimum arity of at least one via
+    /// [`ArgSpec::min_occurs`] — a one-or-more argument is mandatory, and an
+    /// agent reading the schema has no other way to tell it apart from a
+    /// zero-or-more one.
+    pub fn is_schema_required(&self) -> bool {
+        match self.cardinality {
+            Cardinality::Required => true,
+            Cardinality::Repeated => self.min_occurs.is_some_and(|min| min >= 1),
+            Cardinality::Optional => false,
+        }
+    }
+
+    /// The declared minimum arity, or `None` when the arg is zero-or-more.
+    fn positive_min_occurs(&self) -> Option<usize> {
+        self.min_occurs.filter(|min| *min >= 1)
+    }
+
     /// Returns (property_name, schema_value).
     pub fn to_json_schema_property(&self) -> (String, Value) {
         let prop_name = self.long.unwrap_or(self.name).to_string();
 
-        if self.cardinality == Cardinality::Repeated {
-            let schema_value = if self.kind == ArgKind::Flag {
-                json!({ "type": "integer" })
+        // NOTE: every branch below falls through to the shared `description`
+        // insertion at the end of this function. Do not `return` early from
+        // one — the repeated shapes used to, and that is exactly how
+        // `ArgSpec.help` went missing from array/count properties.
+        let mut schema_value = if self.cardinality == Cardinality::Repeated {
+            let mut obj = serde_json::Map::new();
+            if self.kind == ArgKind::Flag {
+                // Repeated flag: an occurrence count (`-vvv` -> 3).
+                obj.insert("type".to_string(), json!("integer"));
+                if let Some(min) = self.positive_min_occurs() {
+                    obj.insert("minimum".to_string(), json!(min));
+                }
             } else {
-                json!({ "type": "array", "items": { "type": "string" } })
-            };
-            return (prop_name, schema_value);
+                obj.insert("type".to_string(), json!("array"));
+                obj.insert("items".to_string(), json!({ "type": "string" }));
+                if let Some(min) = self.positive_min_occurs() {
+                    obj.insert("minItems".to_string(), json!(min));
+                }
+            }
+            Value::Object(obj)
+        } else {
+            self.scalar_schema()
+        };
+        if !self.help.is_empty() {
+            if let Some(obj) = schema_value.as_object_mut() {
+                obj.insert("description".to_string(), json!(self.help));
+            }
         }
+        (prop_name, schema_value)
+    }
 
-        let mut schema_value = match &self.value_type {
+    /// The schema for a non-repeated arg, by declared value type.
+    fn scalar_schema(&self) -> Value {
+        match &self.value_type {
             ArgValueType::Bool => json!({ "type": "boolean" }),
             ArgValueType::String => {
                 let mut obj = serde_json::Map::new();
@@ -114,12 +171,6 @@ impl ArgSpec {
                 "type": "string",
                 "enum": variants,
             }),
-        };
-        if !self.help.is_empty() {
-            if let Some(obj) = schema_value.as_object_mut() {
-                obj.insert("description".to_string(), json!(self.help));
-            }
         }
-        (prop_name, schema_value)
     }
 }

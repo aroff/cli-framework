@@ -34,7 +34,11 @@ impl CommandSpec {
         for arg in &self.args {
             let (prop_name, schema_value) = arg.to_json_schema_property();
             properties.insert(prop_name.clone(), schema_value);
-            if arg.cardinality == Cardinality::Required {
+            // Not `cardinality == Required`: a `Repeated` arg with a declared
+            // minimum arity of one (`min_occurs`) is mandatory too, and is
+            // otherwise indistinguishable from an optional one to a caller
+            // reading only this schema.
+            if arg.is_schema_required() {
                 required.push(prop_name);
             }
         }
