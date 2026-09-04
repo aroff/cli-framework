@@ -10,7 +10,7 @@ use crate::spec::arg_spec::ArgSpec;
 use crate::spec::command_tree::{CommandPath, GroupMetadata};
 use crate::spec::value::ArgValue;
 use anyhow::Result;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -1151,8 +1151,8 @@ impl<C: AppContext> App<C> {
         out: &mut dyn std::io::Write,
     ) -> anyhow::Result<()> {
         let app_name = self.meta.as_ref().map(|m| m.name).unwrap_or(self.app_name);
-        let cmds = visible_top_level_commands(self.command_registry.as_ref());
-        emit_completion_script(app_name, shell, &cmds, out)
+        let model = build_completion_model(self.command_registry.as_ref());
+        emit_completion_script(app_name, shell, &model, out)
     }
 
     /// Execute a root-level command by ID with a typed argument map.
@@ -1346,48 +1346,177 @@ pub enum Shell {
     PowerShell,
 }
 
-pub(crate) fn visible_top_level_commands(registry: &CommandRegistry) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
+/// The words that may legally follow one command path.
+///
+/// One of these is produced per reachable node of the command tree — the root
+/// (`""`), every group, and every leaf command — so a shell completion script
+/// can offer the right candidates at the position the cursor is actually on
+/// instead of one flat top-level list.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct CompletionNode {
+    /// Direct child command/group segments registered under this path.
+    pub(crate) subcommands: BTreeSet<String>,
+    /// Flag tokens accepted here (`--long`, and `-s` where a short is declared).
+    pub(crate) flags: BTreeSet<String>,
+}
+
+/// The whole completion surface, keyed by space-joined command path
+/// (`""` for the root, `"mcp"`, `"mcp serve"`, …).
+#[derive(Debug, Default, Clone)]
+pub(crate) struct CompletionModel {
+    pub(crate) nodes: BTreeMap<String, CompletionNode>,
+}
+
+impl CompletionModel {
+    /// Candidates offered when the cursor is on the first word.
+    pub(crate) fn top_level_commands(&self) -> BTreeSet<String> {
+        self.nodes
+            .get("")
+            .map(|n| n.subcommands.clone())
+            .unwrap_or_default()
+    }
+}
+
+/// Build the completion surface from the command registry.
+///
+/// Hidden commands and hidden groups contribute nothing of their own.
+/// Hiding is per node, not per subtree — exactly as `build_clap_root` treats
+/// it: a *visible* leaf under a hidden group is still routable, so its ancestor
+/// segments stay completable (the long-standing contract asserted by
+/// `completion_includes_root_segment_from_visible_leaf_even_when_group_hidden`).
+///
+/// `--help` is added at every level because clap supplies it on every node it
+/// builds.
+pub(crate) fn build_completion_model(registry: &CommandRegistry) -> CompletionModel {
+    let mut model = CompletionModel::default();
+    model.nodes.entry(String::new()).or_default();
 
     for (path_str, meta) in registry.groups() {
         if meta.hidden {
             continue;
         }
-        if let Some(root) = path_str.split('/').next().filter(|s| !s.is_empty()) {
-            out.insert(root.to_string());
-        }
+        insert_completion_path(&mut model, path_str);
     }
 
     for (path_str, cmd) in registry.all_tree_commands() {
         if cmd.spec.hidden {
             continue;
         }
-        if let Some(root) = path_str.split('/').next().filter(|s| !s.is_empty()) {
-            out.insert(root.to_string());
+        insert_completion_path(&mut model, path_str);
+
+        let node = model
+            .nodes
+            .entry(completion_key(path_str))
+            .or_insert_with(CompletionNode::default);
+        for arg in &cmd.spec.args {
+            match arg.kind {
+                crate::spec::arg_spec::ArgKind::Flag | crate::spec::arg_spec::ArgKind::Option => {
+                    // Same derivation clap itself uses (`build_clap_arg`):
+                    // the `long` override when present, else the arg name.
+                    node.flags
+                        .insert(format!("--{}", arg.long.unwrap_or(arg.name)));
+                    if let Some(short) = arg.short {
+                        node.flags.insert(format!("-{}", short));
+                    }
+                }
+                crate::spec::arg_spec::ArgKind::Positional => {}
+            }
         }
     }
 
-    out
+    for node in model.nodes.values_mut() {
+        node.flags.insert("--help".to_string());
+    }
+
+    model
+}
+
+/// Space-joined completion key for a registry path string (`"mcp/serve"` → `"mcp serve"`).
+fn completion_key(path_str: &str) -> String {
+    path_str
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Record `path_str` in the model: every segment becomes a subcommand of its
+/// parent, and every prefix gets a node of its own.
+fn insert_completion_path(model: &mut CompletionModel, path_str: &str) {
+    let mut parent = String::new();
+    for segment in path_str.split('/').filter(|s| !s.is_empty()) {
+        model
+            .nodes
+            .entry(parent.clone())
+            .or_default()
+            .subcommands
+            .insert(segment.to_string());
+        parent = if parent.is_empty() {
+            segment.to_string()
+        } else {
+            format!("{} {}", parent, segment)
+        };
+    }
+    model.nodes.entry(parent).or_default();
 }
 
 pub(crate) fn emit_completion_script(
     app_name: &str,
     shell: Shell,
-    cmds: &BTreeSet<String>,
+    model: &CompletionModel,
     out: &mut dyn std::io::Write,
 ) -> anyhow::Result<()> {
+    let cmds = model.top_level_commands();
+    let cmds = &cmds;
     match shell {
         Shell::Bash => {
             let fn_name = format!("_{}", app_name);
             writeln!(out, "{}() {{", fn_name)?;
-            writeln!(out, "  local cur=\"${{COMP_WORDS[1]}}\"")?;
+            // The word under the cursor — NOT COMP_WORDS[1], which is only ever
+            // the first argument and makes every position past it complete
+            // against the wrong word.
+            writeln!(out, "  local cur=\"${{COMP_WORDS[COMP_CWORD]}}\"")?;
+            writeln!(out, "  local path=\"\" i w")?;
+            // Rebuild the command path from the non-flag words before the
+            // cursor, so candidates are chosen for the level being completed.
+            writeln!(out, "  for (( i=1; i < COMP_CWORD; i++ )); do")?;
+            writeln!(out, "    w=\"${{COMP_WORDS[i]}}\"")?;
+            writeln!(out, "    case \"$w\" in -*) continue ;; esac")?;
             writeln!(
                 out,
-                "  COMPREPLY=( $(compgen -W \"{}\" -- \"$cur\") )",
-                join_space(cmds)
+                "    if [[ -z $path ]]; then path=\"$w\"; else path=\"$path $w\"; fi"
+            )?;
+            writeln!(out, "  done")?;
+            writeln!(out)?;
+            writeln!(out, "  local candidates=\"\"")?;
+            writeln!(out, "  case \"$path\" in")?;
+            for (path, node) in &model.nodes {
+                // One deterministic, sorted list per level: subcommands and flags
+                // are interchangeable candidates to `compgen -W`.
+                let words: BTreeSet<&String> =
+                    node.subcommands.iter().chain(node.flags.iter()).collect();
+                writeln!(
+                    out,
+                    "    {}) candidates=\"{}\" ;;",
+                    bash_single_quote(path),
+                    words
+                        .into_iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )?;
+            }
+            writeln!(out, "    *) candidates=\"\" ;;")?;
+            writeln!(out, "  esac")?;
+            writeln!(out)?;
+            writeln!(
+                out,
+                "  COMPREPLY=( $(compgen -W \"$candidates\" -- \"$cur\") )"
             )?;
             writeln!(out, "}}")?;
-            writeln!(out, "complete -F {} {}", fn_name, app_name)?;
+            // `-o default`: fall back to readline's filename completion when this
+            // function produces nothing, rather than suppressing it outright.
+            writeln!(out, "complete -o default -F {} {}", fn_name, app_name)?;
         }
         Shell::Zsh => {
             let fn_name = format!("_{}", app_name);
@@ -1446,6 +1575,8 @@ pub(crate) fn emit_completion_script(
     Ok(())
 }
 
-fn join_space(cmds: &BTreeSet<String>) -> String {
-    cmds.iter().cloned().collect::<Vec<_>>().join(" ")
+/// Wrap `s` as a bash single-quoted word, so it is matched literally when used
+/// as a `case` pattern (an empty path becomes `''`, bash's empty-string pattern).
+fn bash_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
 }

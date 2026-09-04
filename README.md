@@ -438,7 +438,7 @@ resolver itself still treats them as advisory only, by design.
 `cli-framework` auto-registers a small set of built-ins during `AppBuilder::build()`:
 
 - `spec`: exports the command surface as JSON/YAML/Markdown.
-- `completion <shell>`: emits a simple top-level subcommand completion stub for `bash`, `zsh`, `fish`, or `powershell` (alias: `pwsh`).
+- `completion <shell>`: emits a shell completion script for `bash`, `zsh`, `fish`, or `powershell` (alias: `pwsh`). The `bash` script completes the word under the cursor at every level — nested subcommands and each command's own flags, not just the top-level verbs — and falls back to the shell's filename completion (`complete -o default`) where the framework has no candidates. The other three shells still emit a top-level-only stub.
 - `auth login`, `auth logout`, `auth status`, `auth token`: registered only when `with_token_provider(...)` is called (requires `auth` feature).
 
 If your app already defines a root-level `completion` command, call `AppBuilder::without_completion()` to opt out of auto-registration and avoid a registration collision.

@@ -263,6 +263,23 @@
   no `required` array, so the only way to discover the key (including its casing) was to read the
   raw schema and guess.
 
+- **The generated bash completion script was structurally broken and worse than no completion at
+  all.** `emit_completion_script`'s bash branch read `COMP_WORDS[1]` — hardcoded to the *first*
+  argument — where bash requires `COMP_WORDS[COMP_CWORD]`, the index of the word the cursor is
+  actually on. Everything past the first word was therefore matched against word 1, and the only
+  candidate list ever offered was the flat set of top-level verbs: `app repos <TAB>` completed to
+  `repos`, and no subcommand or flag was ever completed. Because the compspec always produced a
+  match, it also suppressed the shell's default filename completion. The bash branch now emits
+  `COMP_WORDS[COMP_CWORD]`, rebuilds the command path from the non-flag words before the cursor,
+  and selects per-level candidates from a registry-derived model (`build_completion_model`) that
+  carries every group's subcommands and every leaf command's own flags (long, short, and
+  `--help`), with hidden commands and hidden groups — and anything nested under a hidden group —
+  omitted at every level. The compspec is registered `complete -o default`, so filename
+  completion still applies where the framework has no candidates. `zsh`, `fish` and `powershell`
+  output is unchanged. Internal-only signature change: the `pub(crate)` helpers
+  `emit_completion_script`/`visible_top_level_commands` now take a `CompletionModel`; the public
+  `App::emit_completion` is untouched.
+
 ## [0.5.4] — 2026-06-13
 
 ### Added
