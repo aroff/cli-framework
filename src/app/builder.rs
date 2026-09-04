@@ -746,7 +746,7 @@ impl AppBuilder {
             }
         }
 
-        // Auto-register `mcp install` (alias `register`) and `mcp list` when mcp-install enabled.
+        // Auto-register `mcp install` (hidden alias `register`) and `mcp list` when mcp-install enabled.
         #[cfg(feature = "mcp-install")]
         {
             if self.command_registry.get("mcp").is_none() {
@@ -761,17 +761,12 @@ impl AppBuilder {
             if self.command_registry.resolve(&install_path).is_none() {
                 let install_cmd =
                     crate::mcp::commands::create_mcp_install_command(app_name_for_install);
-                let mut register_cmd = install_cmd.clone();
-                register_cmd.id = Arc::from("register");
+                // `register` is a hidden alias declared on the install spec, not a
+                // second registration: registering it separately produced two
+                // equal-looking primary verbs in `mcp --help`.
                 self.command_registry
                     .register_at(&install_path, install_cmd)
                     .expect("mcp install auto-registration");
-                let register_path = CommandPath::new(&["mcp", "register"]).unwrap();
-                if self.command_registry.resolve(&register_path).is_none() {
-                    self.command_registry
-                        .register_at(&register_path, register_cmd)
-                        .expect("mcp register auto-registration");
-                }
             }
 
             let list_path = CommandPath::new(&["mcp", "list"]).unwrap();

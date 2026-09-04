@@ -280,6 +280,21 @@
   `emit_completion_script`/`visible_top_level_commands` now take a `CompletionModel`; the public
   `App::emit_completion` is untouched.
 
+- **`mcp install` and `mcp register` were one command registered twice.** `build()` cloned the
+  install command, rewrote its id to `register`, and registered it a second time at
+  `mcp/register`, so `mcp --help` offered two primary verbs with byte-identical descriptions
+  ("Install this app as an MCP server in an agent configuration") and nothing to choose
+  between them. `register` is now a **hidden alias** declared on the install command's spec
+  (`CommandSpec.hidden_aliases`) rather than a second registration: `mcp register …` keeps
+  working unchanged — clap resolves the alias to `install` — but it is no longer listed in
+  `mcp --help` beside `install`, and the command tree holds one install command instead of
+  two. The alias is **deprecated**; prefer `mcp install`. It is kept for one release so
+  downstream binaries and scripts that already call `mcp register` do not break, and may be
+  removed after that.
+  - Registry-visible consequence: `command_registry().resolve(["mcp", "register"])` now
+    returns `None` (the alias is carried on `mcp/install`'s spec), and the `spec` command's
+    document lists a single install entry instead of two identical ones.
+
 ## [0.5.4] — 2026-06-13
 
 ### Added

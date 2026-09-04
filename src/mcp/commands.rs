@@ -468,6 +468,14 @@ pub fn create_mcp_install_command(app_name: &'static str) -> Command {
                 "mcp install [--agent AGENT] [--scope SCOPE] [--name NAME] [--url URL | --stdio]",
             ),
             category: Some("mcp"),
+            // `register` used to be this same command registered a second time at
+            // `mcp/register`, which put two byte-identical verbs in `mcp --help`.
+            // It is kept as a hidden alias so existing scripts keep working.
+            hidden_aliases: vec!["register"],
+            notes: Some(
+                "`mcp register` is a deprecated alias for `mcp install`; it still runs but is \
+                 hidden from help and may be removed in a future release.",
+            ),
             args: vec![
                 ArgSpec {
                     name: "agent",
