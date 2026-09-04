@@ -69,6 +69,9 @@ impl LlmGateway for RecordingGateway {
             tool_calls: resp.tool_calls,
             finish_reason: Some(resp.finish_reason),
             usage: None,
+            // The double reports no model: nothing answered, so there is
+            // nothing to attribute.
+            model: None,
         })
     }
 
