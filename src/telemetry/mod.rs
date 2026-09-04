@@ -89,3 +89,6 @@ pub use config::TelemetryConfig;
 pub use guard::TelemetryGuard;
 pub use handle::{Counter, Histogram, SpanHandle, Telemetry};
 pub use noop::NoopTelemetry;
+
+pub mod axes;
+pub use axes::{Attribution, Deployment, ParseAxisError, TelemetryLevel};

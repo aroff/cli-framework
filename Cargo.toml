@@ -701,3 +701,8 @@ required-features = ["telemetry"]
 name = "integration_telemetry_version_command_span"
 path = "tests/integration/telemetry_version_command_span.rs"
 required-features = ["telemetry"]
+
+[[test]]
+name = "unit_telemetry_axes"
+path = "tests/unit/telemetry_axes.rs"
+required-features = ["telemetry"]
