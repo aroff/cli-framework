@@ -178,3 +178,12 @@ pub use manifest::{
 pub mod env;
 #[cfg(feature = "telemetry")]
 pub use env::{env_var_name, scan_environment, EnvScan};
+// Gated on `telemetry` for the same reason as `policy`/`store` above:
+// `resource.rs` takes `&TelemetryPolicy` and builds `opentelemetry_sdk::Resource`.
+#[cfg(feature = "telemetry")]
+pub mod resource;
+#[cfg(feature = "telemetry")]
+pub use resource::{
+    apply_env_resource_attributes, metric_resource_attrs, to_resource, trace_resource_attrs,
+    ServiceIdentity,
+};
