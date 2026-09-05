@@ -137,3 +137,12 @@ pub use subscriber::{
 };
 #[cfg(feature = "observability")]
 pub use subscriber::{install_default_logging, LoggingGuard};
+
+// The `cli.panic` probe. Self-contained (only `std::panic`), but scoped to
+// `telemetry` like `policy`/`store` above: it is one of this PR's telemetry
+// probes, not a general-purpose logging utility, and its test target
+// (`unit_telemetry_panic`) is `required-features = ["telemetry"]` too.
+#[cfg(feature = "telemetry")]
+pub mod panic;
+#[cfg(feature = "telemetry")]
+pub use panic::{install_panic_hook, panic_record, PanicRecord};

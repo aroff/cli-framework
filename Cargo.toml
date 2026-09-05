@@ -756,3 +756,12 @@ required-features = ["telemetry"]
 name = "unit_telemetry_logging_guard"
 path = "tests/unit/telemetry_logging_guard.rs"
 required-features = ["telemetry"]
+
+# Own binary: this file mutates the process-global panic hook
+# (std::panic::set_hook/take_hook), and every test in it does so. They are
+# serialized by hand within the one binary (see the file's module doc) since
+# `serial_test` is not a dev-dependency of this crate.
+[[test]]
+name = "unit_telemetry_panic"
+path = "tests/unit/telemetry_panic.rs"
+required-features = ["telemetry"]
