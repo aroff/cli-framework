@@ -95,3 +95,18 @@ pub use axes::{Attribution, Deployment, ParseAxisError, TelemetryLevel};
 
 pub mod probe;
 pub use probe::{feature_outcome, FeatureOutcome, ProbeIdError, ProbeRegistry, ProbeSpec};
+
+// Gated on `telemetry`, unlike `axes`/`probe` above: this module hard-depends
+// on `crate::config::resolution::Layer` (the top-level `config` module,
+// itself behind `#[cfg(feature = "config")]`), which only exists when the
+// `telemetry` feature's widened definition pulls `config` in. Left
+// unconditional, a default build (no `telemetry`, no `config`) fails to
+// compile the whole crate — the same reason `init`/`propagation` above are
+// gated rather than left bare.
+#[cfg(feature = "telemetry")]
+pub mod policy;
+#[cfg(feature = "telemetry")]
+pub use policy::{
+    detect_kill_switch, env_var_prefix, resolve_policy, KillSwitch, LayeredLevel, TelemetryInputs,
+    TelemetryPolicy,
+};
