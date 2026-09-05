@@ -5,6 +5,21 @@
 //! them. This builds a valid policy and lets the caller mutate the fields that
 //! matter, so a new field on the struct does not touch thirty tests.
 
+// Each `tests/unit/*.rs` is its own `[[test]]` binary, and each one that says
+// `mod support;` compiles this file *again*, on its own. "Unused" is therefore
+// decided per binary, not per module: `telemetry_redact` uses only
+// `policy_with`, so the other nine items are dead code *in that binary* while
+// being live in `telemetry_exporter` or `telemetry_resource`. CI runs with
+// `RUSTFLAGS: -D warnings` (`.github/workflows/ci.yml:13`), which turns that
+// into `error: could not compile ... (test "unit_telemetry_redact")`.
+//
+// This is not a warning being silenced: every item below is used by at least
+// one of the four binaries. Deleting anything to satisfy one binary would
+// break another. Removing this attribute means splitting the module per
+// consumer, which is worse -- the point of the fixture is that all four share
+// one definition of a valid policy.
+#![allow(dead_code)]
+
 use cli_framework::telemetry::{
     Attribution, Deployment, ProbeRegistry, TelemetryInputs, TelemetryLevel, TelemetryPolicy,
 };
