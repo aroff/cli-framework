@@ -904,3 +904,8 @@ required-features = ["telemetry", "config", "testkit"]
 name = "unit_telemetry_notice"
 path = "tests/unit/telemetry_notice.rs"
 required-features = ["telemetry"]
+
+[[test]]
+name = "unit_telemetry_doctor"
+path = "tests/unit/telemetry_doctor.rs"
+required-features = ["telemetry"]
