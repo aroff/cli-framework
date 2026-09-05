@@ -69,6 +69,17 @@ pub enum StoreState {
     Unavailable(String),
 }
 
+// Hand-written, not `#[derive(Default)]`: the variant that should be default
+// (`Unavailable`) carries a `String`, and `#[default]` only accepts a unit
+// variant. A default that claimed the store was `Ready` would make an
+// unconfigured `StartupReport` (PR4 Task 16) lie in exactly the direction
+// that hides a bug, so the fallback reason is spelled out here instead.
+impl Default for StoreState {
+    fn default() -> Self {
+        StoreState::Unavailable("not opened".into())
+    }
+}
+
 impl StoreState {
     pub fn is_ready(&self) -> bool {
         matches!(self, Self::Ready(_))

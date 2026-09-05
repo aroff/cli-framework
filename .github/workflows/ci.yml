@@ -90,15 +90,19 @@ jobs:
 
       # The telemetry unit + integration suites are gated behind the `telemetry`
       # feature (their targets also need api-server + testkit + derive; the MCP
-      # span test needs mcp-server), so none of the combos above run them. Scope
-      # to the telemetry targets explicitly, like the MCP step below.
+      # span test needs mcp-server), so none of the combos above run them.
+      #
+      # Deliberately NOT scoped with `--test`. This step used to name three
+      # targets while Cargo.toml declared twenty, and `cargo test --test <name>`
+      # is silent about the ones it was not given: eighteen telemetry suites had
+      # never executed here even once, and every pull request that added one
+      # merged green without it. Enabling the feature union and letting cargo
+      # select targets from `required-features` removes the list that drifts.
+      # `tests/unit/telemetry_ci_targets.rs` fails if either half regresses.
       - name: Test (telemetry)
         run: >
           cargo test
           --features "telemetry,mcp-server,api-server,testkit,derive"
-          --test unit_telemetry
-          --test integration_telemetry_otlp
-          --test unit_mcp_dispatch
           --verbose
 
       - name: Integration tests (mcp-server)

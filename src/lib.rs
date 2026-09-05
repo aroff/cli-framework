@@ -196,14 +196,15 @@ pub mod prelude {
     pub use crate::telemetry::{NoopTelemetry, TelemetryConfig};
 }
 
+/// Install a process-wide `tracing` subscriber and return a guard.
+///
+/// Under the `telemetry` feature the returned [`telemetry::LoggingGuard`]
+/// carries a reload slot that later telemetry startup can attach the OTel
+/// export layer to, so calling this from `main` before building the
+/// application does not forfeit exported traces. See
+/// [`telemetry::subscriber`] for the composition rules and what happens when
+/// a subscriber is already installed.
 #[cfg(feature = "observability")]
-pub fn init_default_logging() {
-    use tracing_subscriber::EnvFilter;
-
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(true)
-        .init();
+pub fn init_default_logging() -> telemetry::LoggingGuard {
+    telemetry::install_default_logging()
 }
