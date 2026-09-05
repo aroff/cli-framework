@@ -87,6 +87,13 @@ pub mod propagation;
 
 pub use config::TelemetryConfig;
 pub use guard::TelemetryGuard;
+// `FlushOutcome`/`flush_within`/`flush_within_for_test` exist only behind
+// `telemetry`: they are `guard.rs` items gated the same way the `TelemetryGuard`
+// methods that use them are (see the `#[cfg(feature = "telemetry")] impl
+// TelemetryGuard` block), unlike the always-present `TelemetryGuard` type
+// itself, which has a no-op stub for a default build.
+#[cfg(feature = "telemetry")]
+pub use guard::{flush_within, flush_within_for_test, FlushOutcome};
 pub use handle::{Counter, Histogram, KeyValue, SpanHandle, Telemetry};
 pub use noop::NoopTelemetry;
 
@@ -204,3 +211,9 @@ pub use redact::{
 pub mod exporter;
 #[cfg(feature = "telemetry")]
 pub use exporter::{redact_span, span_verdict, RedactingExporter, SpanVerdict};
+
+// `init` is already gated above (it hard-depends on the OTLP exporter crates).
+// Re-export the policy-driven pipeline entry points here at the flat
+// `telemetry::` path used by callers and by `tests/unit/telemetry_pipeline.rs`.
+#[cfg(feature = "telemetry")]
+pub use init::{init_from_policy, sampler_for_policy, view_keys_for_test};

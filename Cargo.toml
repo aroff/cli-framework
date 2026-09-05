@@ -99,7 +99,7 @@ zeroize = { version = "1.7", optional = true }
 keyring = { version = "4.1", optional = true }
 
 # Optional OpenTelemetry SDK dependencies (enabled via `telemetry` feature)
-opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"], optional = true }
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "spec_unstable_metrics_views"], optional = true }
 opentelemetry-otlp = { version = "0.31", default-features = false, features = ["http-proto", "reqwest-blocking-client", "reqwest-rustls", "trace", "metrics"], optional = true }
 tracing-opentelemetry = { version = "0.32", optional = true }
 # W3C `traceparent` extraction/injection over `http::HeaderMap`. Already in the
@@ -182,7 +182,7 @@ tokio-tungstenite = "0.21"
 # tests exercise that path the same way a downstream crate would.
 tower-http = { version = "0.7", features = ["cors"] }
 opentelemetry = "0.31"
-opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "testing"] }
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "testing", "spec_unstable_metrics_views"] }
 tracing-opentelemetry = "0.32"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 testcontainers = "0.27"
@@ -822,4 +822,9 @@ required-features = ["telemetry"]
 [[test]]
 name = "unit_telemetry_exporter"
 path = "tests/unit/telemetry_exporter.rs"
+required-features = ["telemetry"]
+
+[[test]]
+name = "unit_telemetry_pipeline"
+path = "tests/unit/telemetry_pipeline.rs"
 required-features = ["telemetry"]

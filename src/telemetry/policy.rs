@@ -89,6 +89,11 @@ pub struct TelemetryInputs {
     pub app_attr_allowlist: Vec<String>,
     /// Extra never-list fragments declared through `with_telemetry_never`.
     pub extra_never: Vec<String>,
+    /// The fraction of traces a `Service` deployment samples. Anything
+    /// outside `(0.0, 1.0]` — including an absent/default `0.0` and `NaN` —
+    /// is normalized to `1.0` by [`resolve_policy`]; end-user Installs and
+    /// `debug` ignore it entirely via [`TelemetryPolicy::sampler_is_always_on`].
+    pub sample_ratio: f64,
 }
 
 /// The decision. Immutable, computed once per process, shared through an
@@ -113,6 +118,9 @@ pub struct TelemetryPolicy {
     pub app_attr_allowlist: Vec<String>,
     /// Extra never-list fragments declared through `with_telemetry_never`.
     pub extra_never: Vec<String>,
+    /// The fraction of traces a `Service` deployment samples, already
+    /// normalized to `(0.0, 1.0]` by [`resolve_policy`].
+    pub sample_ratio: f64,
 }
 
 fn fold_layers(
@@ -177,6 +185,16 @@ pub fn resolve_policy(inputs: TelemetryInputs) -> TelemetryPolicy {
         inputs.install_id
     };
 
+    // Anything outside (0.0, 1.0] normalizes to full sampling: an absent
+    // (default `0.0`) ratio must not silently sample nothing, a negative or
+    // >1.0 value is nonsensical, and NaN compares false against every bound
+    // below so it falls straight through to the `else`.
+    let sample_ratio = if inputs.sample_ratio > 0.0 && inputs.sample_ratio <= 1.0 {
+        inputs.sample_ratio
+    } else {
+        1.0
+    };
+
     TelemetryPolicy {
         app: inputs.app,
         deployment: inputs.deployment,
@@ -194,6 +212,7 @@ pub fn resolve_policy(inputs: TelemetryInputs) -> TelemetryPolicy {
         store_error: inputs.store_error,
         app_attr_allowlist: inputs.app_attr_allowlist,
         extra_never: inputs.extra_never,
+        sample_ratio,
     }
 }
 

@@ -224,3 +224,12 @@ fn the_sampler_is_always_on_for_end_user_installs_and_at_debug() {
     };
     assert!(resolve_policy(service).sampler_is_always_on());
 }
+
+#[test]
+fn an_absent_or_nonsensical_sample_ratio_becomes_full_sampling() {
+    for raw in [0.0, -1.0, 2.0, f64::NAN] {
+        let mut i = inputs(Deployment::Service);
+        i.sample_ratio = raw;
+        assert_eq!(resolve_policy(i).sample_ratio, 1.0, "for {raw}");
+    }
+}

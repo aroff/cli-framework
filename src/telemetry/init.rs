@@ -1,7 +1,14 @@
 use crate::telemetry::{
     config::TelemetryConfig,
+    exporter::RedactingExporter,
     guard::TelemetryGuard,
     handle::{Counter, CounterInner, Histogram, HistogramInner, SpanHandle, SpanInner, Telemetry},
+    policy::TelemetryPolicy,
+    redact::METRIC_LABEL_ALLOWLIST,
+    resource::{
+        apply_env_resource_attributes, metric_resource_attrs, to_resource, trace_resource_attrs,
+        ServiceIdentity,
+    },
 };
 use opentelemetry::KeyValue;
 use opentelemetry_sdk::trace::SdkTracerProvider;
@@ -81,6 +88,20 @@ fn resolve_service<'a>(
 fn sampler_for(config: &TelemetryConfig) -> opentelemetry_sdk::trace::Sampler {
     use opentelemetry_sdk::trace::Sampler;
     Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(config.sample_ratio)))
+}
+
+/// Build the head-sampling `Sampler` for a resolved [`TelemetryPolicy`].
+///
+/// End-user Installs and `debug` always sample everything —
+/// [`TelemetryPolicy::sampler_is_always_on`] is the single place that decides
+/// so; everything else samples by `policy.sample_ratio`, already normalized to
+/// `(0.0, 1.0]` by [`resolve_policy`](crate::telemetry::resolve_policy).
+pub fn sampler_for_policy(policy: &TelemetryPolicy) -> opentelemetry_sdk::trace::Sampler {
+    use opentelemetry_sdk::trace::Sampler;
+    if policy.sampler_is_always_on() {
+        return Sampler::AlwaysOn;
+    }
+    Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(policy.sample_ratio)))
 }
 
 /// Build the `tracing` → OpenTelemetry bridge layer for an existing guard.
@@ -181,6 +202,61 @@ fn build_meter_provider(
             .with_resource(resource)
             .build(),
     )
+}
+
+/// The closed metric-label allowlist as OTel [`Key`](opentelemetry::Key)s, for
+/// [`StreamBuilder::with_allowed_attribute_keys`](opentelemetry_sdk::metrics::Stream).
+///
+/// Built fresh on every call rather than cached: it runs once per instrument
+/// at meter-provider construction time, not per data point, so there is
+/// nothing to optimize and a `OnceLock` would only add a second place this
+/// list could drift from `METRIC_LABEL_ALLOWLIST`.
+fn allowed_view_keys() -> Vec<opentelemetry::Key> {
+    METRIC_LABEL_ALLOWLIST
+        .iter()
+        .map(|k| opentelemetry::Key::from_static_str(k))
+        .collect()
+}
+
+/// Build the metrics pipeline for a resolved policy: the same OTLP
+/// `PeriodicReader` as [`build_meter_provider`], but with a View that closes
+/// every instrument's attribute keys to [`METRIC_LABEL_ALLOWLIST`] — the
+/// metrics half of the export boundary, alongside [`RedactingExporter`] for
+/// spans.
+///
+/// Unlike the span boundary, this has no policy-dependent behaviour: the
+/// label allowlist is a fixed set, not one that varies by telemetry level, so
+/// this takes no `&TelemetryPolicy` parameter.
+fn build_meter_provider_from_policy(
+    resource: opentelemetry_sdk::Resource,
+    exporter: opentelemetry_otlp::MetricExporter,
+) -> opentelemetry_sdk::metrics::SdkMeterProvider {
+    use opentelemetry_sdk::metrics::{Instrument, SdkMeterProvider, Stream};
+    SdkMeterProvider::builder()
+        .with_reader(opentelemetry_sdk::metrics::PeriodicReader::builder(exporter).build())
+        .with_resource(resource)
+        .with_view(move |instrument: &Instrument| {
+            Stream::builder()
+                // `Instrument::name` borrows from the instrument, not
+                // `'static`; `with_name` needs an owned value to satisfy
+                // `Into<Cow<'static, str>>`.
+                .with_name(instrument.name().to_string())
+                .with_allowed_attribute_keys(allowed_view_keys())
+                .build()
+                .ok()
+        })
+        .build()
+}
+
+/// Exercise the metric-label allowlist directly, without building a whole
+/// meter provider.
+#[doc(hidden)]
+pub fn view_keys_for_test(candidates: &[&str]) -> Vec<String> {
+    candidates
+        .iter()
+        .filter(|k| crate::telemetry::redact::metric_label_is_allowed(k))
+        .map(|k| k.to_string())
+        .collect()
 }
 
 /// Wire up globals and hand back the handle + guard.
@@ -391,6 +467,89 @@ pub fn init_with_exporter_config(
         .with_resource(build_resource(svc, ver))
         .build();
     make_handle_and_guard(provider, None, false)
+}
+
+/// Build the OTLP span exporter for a policy's endpoint, wrapped in
+/// [`RedactingExporter`] so a dropped probe's spans and disallowed
+/// attributes never reach the wire. `None` when there is no endpoint to
+/// export to, or the exporter cannot be constructed.
+fn span_exporter_for_policy(
+    policy: &Arc<TelemetryPolicy>,
+) -> Option<RedactingExporter<opentelemetry_otlp::SpanExporter>> {
+    use opentelemetry_otlp::WithExportConfig;
+    let endpoint = policy.endpoint.as_deref()?;
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_http()
+        .with_endpoint(format!("{}/v1/traces", endpoint.trim_end_matches('/')))
+        .build()
+        .ok()?;
+    Some(RedactingExporter::new(exporter, policy.clone()))
+}
+
+/// Build the OTLP metric exporter for a policy's endpoint. `None` under the
+/// same conditions as [`span_exporter_for_policy`].
+fn metric_exporter_for_policy(
+    policy: &TelemetryPolicy,
+) -> Option<opentelemetry_otlp::MetricExporter> {
+    use opentelemetry_otlp::WithExportConfig;
+    let endpoint = policy.endpoint.as_deref()?;
+    opentelemetry_otlp::MetricExporter::builder()
+        .with_http()
+        .with_endpoint(format!("{}/v1/metrics", endpoint.trim_end_matches('/')))
+        .build()
+        .ok()
+}
+
+/// Build the whole OTLP pipeline — traces and metrics — from a resolved
+/// [`TelemetryPolicy`] rather than a [`TelemetryConfig`].
+///
+/// The redacting export boundary is wired in here, not left to the caller:
+/// [`RedactingExporter`] filters spans, and the meter provider's View closes
+/// every instrument's attributes to the metric-label allowlist. A policy
+/// that resolves below [`TelemetryPolicy::exports`] never reaches an
+/// exporter at all, and one that does cannot construct the pipeline a
+/// different way that bypasses the boundary — Approach B, enforced at one
+/// seam instead of at every callsite.
+///
+/// # Does not install a subscriber
+///
+/// Returns with `install: false` composed into the guard, the same choice
+/// [`init_batch_without_subscriber`] makes and for the same reason: every
+/// `#[cfg(test)] mod tests` block in this crate shares one test binary, so an
+/// entry point that unconditionally calls [`install_subscriber`] is not
+/// safely unit-testable without risking a global-subscriber race with
+/// unrelated tests elsewhere in the crate. Compose [`otel_layer`] over the
+/// returned guard into your own subscriber, the same as the other
+/// `_without_subscriber` entry points.
+pub fn init_from_policy(
+    policy: Arc<TelemetryPolicy>,
+    service: ServiceIdentity,
+) -> Option<(Arc<dyn Telemetry + Send + Sync>, TelemetryGuard)> {
+    if !policy.exports() {
+        return None;
+    }
+
+    let raw_env_attrs = std::env::var("OTEL_RESOURCE_ATTRIBUTES").ok();
+
+    let mut trace_attrs = trace_resource_attrs(&policy, &service);
+    apply_env_resource_attributes(&mut trace_attrs, raw_env_attrs.as_deref());
+    let trace_resource = to_resource(trace_attrs);
+
+    let span_exporter = span_exporter_for_policy(&policy)?;
+    let provider = SdkTracerProvider::builder()
+        .with_sampler(sampler_for_policy(&policy))
+        .with_resource(trace_resource)
+        .with_batch_exporter(span_exporter)
+        .build();
+
+    let mut metric_attrs = metric_resource_attrs(&policy, &service);
+    apply_env_resource_attributes(&mut metric_attrs, raw_env_attrs.as_deref());
+    let metric_resource = to_resource(metric_attrs);
+
+    let meter_provider = metric_exporter_for_policy(&policy)
+        .map(|exporter| build_meter_provider_from_policy(metric_resource, exporter));
+
+    Some(make_handle_and_guard(provider, meter_provider, false))
 }
 
 #[cfg(test)]
