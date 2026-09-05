@@ -87,7 +87,7 @@ pub mod propagation;
 
 pub use config::TelemetryConfig;
 pub use guard::TelemetryGuard;
-pub use handle::{Counter, Histogram, SpanHandle, Telemetry};
+pub use handle::{Counter, Histogram, KeyValue, SpanHandle, Telemetry};
 pub use noop::NoopTelemetry;
 
 pub mod axes;
@@ -186,4 +186,14 @@ pub mod resource;
 pub use resource::{
     apply_env_resource_attributes, metric_resource_attrs, to_resource, trace_resource_attrs,
     ServiceIdentity,
+};
+
+// Gated on `telemetry` for the same reason as `resource` above: `redact.rs`
+// takes `&TelemetryPolicy`.
+#[cfg(feature = "telemetry")]
+pub mod redact;
+#[cfg(feature = "telemetry")]
+pub use redact::{
+    attribute_min_level, is_never_listed, metric_label_is_allowed, probe_of, RedactionRules,
+    METRIC_LABEL_ALLOWLIST, NEVER_LIST, PROBE_ATTR_KEY,
 };

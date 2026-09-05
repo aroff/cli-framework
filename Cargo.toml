@@ -809,3 +809,8 @@ required-features = ["telemetry", "config-service"]
 name = "unit_telemetry_resource"
 path = "tests/unit/telemetry_resource.rs"
 required-features = ["telemetry"]
+
+[[test]]
+name = "unit_telemetry_redact"
+path = "tests/unit/telemetry_redact.rs"
+required-features = ["telemetry"]

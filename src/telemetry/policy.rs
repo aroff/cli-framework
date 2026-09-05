@@ -85,6 +85,10 @@ pub struct TelemetryInputs {
     pub disabled_probes: BTreeSet<String>,
     pub store_available: bool,
     pub store_error: Option<String>,
+    /// Application attribute keys declared through `with_telemetry_attrs`.
+    pub app_attr_allowlist: Vec<String>,
+    /// Extra never-list fragments declared through `with_telemetry_never`.
+    pub extra_never: Vec<String>,
 }
 
 /// The decision. Immutable, computed once per process, shared through an
@@ -105,6 +109,10 @@ pub struct TelemetryPolicy {
     pub disabled_probes: BTreeSet<String>,
     pub store_available: bool,
     pub store_error: Option<String>,
+    /// Application attribute keys declared through `with_telemetry_attrs`.
+    pub app_attr_allowlist: Vec<String>,
+    /// Extra never-list fragments declared through `with_telemetry_never`.
+    pub extra_never: Vec<String>,
 }
 
 fn fold_layers(
@@ -184,6 +192,8 @@ pub fn resolve_policy(inputs: TelemetryInputs) -> TelemetryPolicy {
         disabled_probes: inputs.disabled_probes,
         store_available: inputs.store_available,
         store_error: inputs.store_error,
+        app_attr_allowlist: inputs.app_attr_allowlist,
+        extra_never: inputs.extra_never,
     }
 }
 
