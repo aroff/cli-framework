@@ -89,6 +89,25 @@ async fn telemetry_info_lists_the_whole_catalog_with_telemetry_off() {
 }
 
 #[tokio::test]
+async fn telemetry_info_as_json_lists_the_catalog_with_the_documented_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = enduser_harness(dir.path());
+    let out = h.run(&["demo", "telemetry", "info", "--json"]).await;
+    let value: serde_json::Value = serde_json::from_str(&out.stdout)
+        .expect("info --json prints a single JSON document, same contract as status --json");
+    let catalog = value.as_array().expect("the catalog is a JSON array");
+    assert!(!catalog.is_empty(), "an empty catalog cannot be right");
+    let command = catalog
+        .iter()
+        .find(|p| p["id"] == "cli.command")
+        .expect("cli.command missing from the JSON catalog");
+    assert_eq!(command["min_level"], "usage");
+    assert!(command["summary"].is_string());
+    assert!(command["sends"].is_string());
+    assert_eq!(out.exit_code, 0);
+}
+
+#[tokio::test]
 async fn a_service_deployment_has_no_telemetry_command_group_at_all() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(Deployment::Service, dir.path());
@@ -145,6 +164,50 @@ async fn disabling_a_probe_shows_it_disabled_in_status() {
         .unwrap();
     assert_eq!(probe["enabled"], false);
     assert_eq!(probe["effective"], false);
+}
+
+#[tokio::test]
+async fn enabling_a_previously_disabled_probe_shows_it_effective_again_in_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = enduser_harness(dir.path());
+    h.run(&["demo", "telemetry", "set", "diagnostic"]).await;
+    h.run(&["demo", "telemetry", "disable", "cli.command.args"])
+        .await;
+    let out = h
+        .run(&["demo", "telemetry", "enable", "cli.command.args"])
+        .await;
+    assert!(out.stdout.contains("cli.command.args"), "{}", out.stdout);
+    assert!(out.stdout.contains("enabled"), "{}", out.stdout);
+    assert_eq!(out.exit_code, 0);
+    let status = h.run(&["demo", "telemetry", "status", "--json"]).await;
+    let value: serde_json::Value = serde_json::from_str(&status.stdout).unwrap();
+    let probe = value["probes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "cli.command.args")
+        .unwrap();
+    assert_eq!(probe["enabled"], true);
+    assert_eq!(probe["effective"], true);
+}
+
+#[tokio::test]
+async fn enabling_or_disabling_an_unknown_probe_id_is_a_reported_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = enduser_harness(dir.path());
+    for verb in ["disable", "enable"] {
+        let out = h.run(&["demo", "telemetry", verb, "cli.nonexistent"]).await;
+        assert_ne!(
+            out.exit_code, 0,
+            "{verb} on an unknown probe must fail, not silently no-op: {}",
+            out.stdout
+        );
+        assert!(
+            out.stderr.contains("cli.nonexistent"),
+            "{verb}: {}",
+            out.stderr
+        );
+    }
 }
 
 #[tokio::test]

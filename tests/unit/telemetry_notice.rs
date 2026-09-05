@@ -195,3 +195,11 @@ fn the_notice_is_one_line_plus_at_most_the_details_line() {
         "a notice a person scrolls past is a notice a person did not read: {text}"
     );
 }
+
+#[test]
+fn each_surface_reports_its_own_wire_name() {
+    assert_eq!(Surface::Cli.as_str(), "cli");
+    assert_eq!(Surface::Chat.as_str(), "chat");
+    assert_eq!(Surface::Mcp.as_str(), "mcp");
+    assert_eq!(Surface::Api.as_str(), "api");
+}

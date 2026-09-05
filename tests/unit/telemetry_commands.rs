@@ -28,8 +28,8 @@
 
 use cli_framework::config::resolution::Layer;
 use cli_framework::telemetry::{
-    disable_probe, reset, set_level, status_report, Attribution, Deployment, KillSwitch,
-    SetOutcome, TelemetryLevel,
+    disable_probe, enable_probe, reset, set_level, status_report, Attribution, Deployment,
+    KillSwitch, SetOutcome, TelemetryLevel,
 };
 
 mod support;
@@ -217,6 +217,41 @@ fn disabling_a_parent_probe_disables_its_children_without_writing_them() {
         "the subtree rule lives in the resolver, not in the stored document — \
          writing children would freeze today's catalog into a person's config file"
     );
+}
+
+#[test]
+fn enabling_a_probe_that_does_not_exist_is_an_error_not_a_silent_no_op() {
+    let (store, _dir) = temp_store();
+    let err = enable_probe(&store, &registry(), "cli.nonexistent").unwrap_err();
+    assert!(err.to_string().contains("cli.nonexistent"));
+}
+
+#[test]
+fn enabling_a_previously_disabled_probe_removes_its_stored_override() {
+    let (store, _dir) = temp_store();
+    disable_probe(&store, &registry(), "cli.command").unwrap();
+    assert_eq!(store.settings().probes.get("cli.command"), Some(&false));
+    enable_probe(&store, &registry(), "cli.command").unwrap();
+    assert!(
+        !store.settings().probes.contains_key("cli.command"),
+        "enabling clears the stored override rather than writing `true` back — \
+         the resolver already treats \"absent\" as enabled by default, and a \
+         cleared override is what lets a later policy change re-decide the \
+         probe instead of an old choice sticking forever"
+    );
+}
+
+#[test]
+fn an_enforced_organisation_policy_is_named_in_the_status() {
+    let policy = policy_with(
+        Deployment::EndUser { privacy_url: None },
+        TelemetryLevel::Usage,
+        |p| {
+            p.level_source = Layer::Enforced;
+        },
+    );
+    let report = status_report(&policy, &ready_store());
+    assert_eq!(report.policy, "organisation policy: enforced");
 }
 
 #[test]
