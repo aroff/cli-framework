@@ -297,4 +297,16 @@ mod tests {
         let ctx = PlainCtx;
         assert!(ctx.request_identity::<MyIdentity>().is_none());
     }
+
+    /// Mirrors the request-identity default above, for the probe registry
+    /// accessor `mark_feature` depends on: a context that never overrides
+    /// `opt_probe_registry` (every context outside `CliAppContextWrapper`,
+    /// `src/app/dispatch.rs`) yields `None`, not an empty registry — the
+    /// distinction `mark_feature` relies on to fall back to an empty name
+    /// list rather than panicking on a missing registry.
+    #[test]
+    fn default_opt_probe_registry_yields_none() {
+        let ctx = PlainCtx;
+        assert!(ctx.opt_probe_registry().is_none());
+    }
 }

@@ -105,6 +105,35 @@ fn a_feature_name_that_is_not_a_valid_probe_segment_is_rejected_at_registration(
     );
 }
 
+/// `register_feature`'s own pre-check (empty, or already dotted) is a
+/// distinct code path from the one the test above exercises: `"Export PDF"`
+/// fails later, inside `validate_probe_id`, on its uppercase letters and
+/// space — never touching the `name.is_empty() || name.contains('.')` guard
+/// at all. A single-segment name must never be allowed to smuggle in a
+/// second segment (`register_feature("a.b")` would otherwise silently mint
+/// `cli.feature.a.b`, a probe id nobody asked for), so this guard rejects
+/// both malformed shapes before `validate_probe_id` ever runs.
+#[test]
+fn register_feature_rejects_an_empty_or_dotted_name_before_validating_the_probe_id() {
+    use cli_framework::telemetry::ProbeIdError;
+
+    let mut registry = ProbeRegistry::with_builtins();
+    assert!(
+        matches!(
+            registry.register_feature(""),
+            Err(ProbeIdError::Malformed(_))
+        ),
+        "an empty feature name must be rejected by register_feature's own guard"
+    );
+    assert!(
+        matches!(
+            registry.register_feature("export.pdf"),
+            Err(ProbeIdError::Malformed(_))
+        ),
+        "a dotted feature name must be rejected before it can mint an extra probe-id segment"
+    );
+}
+
 // --- Supplementary: the `AppContext::mark_feature` wiring itself. ---
 //
 // None of the plan's six tests above call `mark_feature` — they exercise the

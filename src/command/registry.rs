@@ -411,4 +411,27 @@ mod tests {
         registry.register(make_cmd("deploy"));
         assert!(registry.get("deploy").is_some());
     }
+
+    #[test]
+    fn registered_command_label_is_some_for_a_path_the_registry_resolves() {
+        let mut registry = CommandRegistry::new();
+        registry
+            .register_at(
+                &CommandPath::new(&["cluster", "get"]).unwrap(),
+                make_cmd("get"),
+            )
+            .unwrap();
+        let path = vec!["cluster".to_string(), "get".to_string()];
+        assert_eq!(
+            registered_command_label(&registry, &path),
+            Some("cluster get".to_string())
+        );
+    }
+
+    #[test]
+    fn registered_command_label_is_none_for_a_path_the_registry_does_not_declare() {
+        let registry = CommandRegistry::new();
+        let path = vec!["not".to_string(), "registered".to_string()];
+        assert_eq!(registered_command_label(&registry, &path), None);
+    }
 }
