@@ -765,3 +765,12 @@ required-features = ["telemetry"]
 name = "unit_telemetry_panic"
 path = "tests/unit/telemetry_panic.rs"
 required-features = ["telemetry"]
+
+# Pins the fixed telemetry startup order (Task 16). No process-global state,
+# so unlike the other telemetry test binaries above this one needs no
+# serialization discipline — it is its own `[[test]]` target only to follow
+# this crate's established one-binary-per-telemetry-surface convention.
+[[test]]
+name = "unit_telemetry_startup_order"
+path = "tests/unit/telemetry_startup_order.rs"
+required-features = ["telemetry"]

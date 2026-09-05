@@ -146,3 +146,13 @@ pub use subscriber::{install_default_logging, LoggingGuard};
 pub mod panic;
 #[cfg(feature = "telemetry")]
 pub use panic::{install_panic_hook, panic_record, PanicRecord};
+
+// Gated on `telemetry`, like `policy`/`store`/`panic` above: `startup.rs`
+// names `KillSwitch`, `StoreState` and `SubscriberOutcome`, all of which only
+// exist under this same feature. It only pins the fixed startup order and
+// the `StartupReport` shape — the wiring that actually walks the order lands
+// in PR7.
+#[cfg(feature = "telemetry")]
+pub mod startup;
+#[cfg(feature = "telemetry")]
+pub use startup::{startup_order, StartupReport, StartupStep};
