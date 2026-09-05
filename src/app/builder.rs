@@ -1261,6 +1261,8 @@ impl<C: AppContext> App<C> {
             global_args: &global_args,
             stdout_capture: self.stdout_capture.clone(),
             telemetry: self.active_telemetry.clone(),
+            #[cfg(feature = "telemetry")]
+            probe_registry: &self.telemetry_policy.registry,
             surface,
             #[cfg(feature = "auth")]
             token_provider: self.token_provider.clone(),

@@ -7,6 +7,7 @@
 //! catalog be tested without a provider, a collector or a subscriber.
 
 use super::policy::TelemetryPolicy;
+use super::probe::{FeatureOutcome, ProbeRegistry};
 use super::redact::{is_never_listed, PROBE_ATTR_KEY};
 use crate::app::dispatch::InvocationSurface;
 use opentelemetry::KeyValue;
@@ -143,6 +144,41 @@ pub fn usage_error_attrs(kind: &str, token: Option<&str>) -> Vec<KeyValue> {
     ];
     if let Some(token) = token {
         attrs.push(KeyValue::new("cli.usage_error.token", token.to_string()));
+    }
+    attrs
+}
+
+/// Adapt a [`ProbeRegistry`] into the plain name list [`super::feature_outcome`]
+/// expects.
+///
+/// `feature_outcome` is PR1's pure function and takes `&[&str]`, not a
+/// registry — reused here rather than widened or redefined. This is the seam
+/// that lets a caller holding a `&ProbeRegistry` (as `AppContext::mark_feature`
+/// does) reach it: every registered id of the form `cli.feature.<name>` has
+/// its prefix stripped back off, in registry order (sorted by id, so this is
+/// stable too).
+pub fn registered_feature_names(registry: &ProbeRegistry) -> Vec<&str> {
+    const PREFIX: &str = "cli.feature.";
+    registry
+        .iter()
+        .filter_map(|spec| spec.id.strip_prefix(PREFIX))
+        .collect()
+}
+
+/// Attributes for the `cli.feature` event.
+///
+/// The name always travels as a span attribute. It becomes a *metric label*
+/// only when `outcome` is [`FeatureOutcome::Recorded`], because a label is a
+/// permanent time series and an unregistered name is not necessarily
+/// bounded — `mark_feature(&user_input)` in a loop would otherwise mint one
+/// time series per input.
+pub fn feature_attrs(name: &str, outcome: FeatureOutcome) -> Vec<KeyValue> {
+    let mut attrs = vec![
+        KeyValue::new(PROBE_ATTR_KEY, "cli.feature"),
+        KeyValue::new("cli.feature.name", name.to_string()),
+    ];
+    if outcome == FeatureOutcome::Recorded {
+        attrs.push(KeyValue::new("feature", name.to_string()));
     }
     attrs
 }
