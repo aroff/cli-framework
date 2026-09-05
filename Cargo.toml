@@ -828,3 +828,8 @@ required-features = ["telemetry"]
 name = "unit_telemetry_pipeline"
 path = "tests/unit/telemetry_pipeline.rs"
 required-features = ["telemetry"]
+
+[[test]]
+name = "unit_telemetry_probe_command"
+path = "tests/unit/telemetry_probe_command.rs"
+required-features = ["telemetry"]

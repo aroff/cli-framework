@@ -217,3 +217,14 @@ pub use exporter::{redact_span, span_verdict, RedactingExporter, SpanVerdict};
 // `telemetry::` path used by callers and by `tests/unit/telemetry_pipeline.rs`.
 #[cfg(feature = "telemetry")]
 pub use init::{init_from_policy, sampler_for_policy, view_keys_for_test};
+
+// Gated on `telemetry` for the same reason as `redact`/`resource` above:
+// `probes.rs` takes `&TelemetryPolicy` and reads `PROBE_ATTR_KEY`. This is the
+// probe catalog itself — attribute/label construction for `cli.command` and
+// the instrument and span name tables the rest of the probes are built from.
+#[cfg(feature = "telemetry")]
+pub mod probes;
+#[cfg(feature = "telemetry")]
+pub use probes::{
+    command_metric_labels, command_span_attrs, CommandOutcome, CommandStatus, Surface,
+};

@@ -812,6 +812,10 @@ impl AppBuilder {
             token_provider: self.token_provider,
             telemetry_config: self.telemetry_config,
             active_telemetry: None,
+            #[cfg(feature = "telemetry")]
+            telemetry_policy: Arc::new(crate::telemetry::resolve_policy(
+                crate::telemetry::TelemetryInputs::default(),
+            )),
             #[cfg(feature = "config")]
             config_handle,
             #[cfg(feature = "config")]
@@ -916,6 +920,28 @@ pub struct App<C: AppContext> {
     telemetry_config: Option<crate::telemetry::TelemetryConfig>,
     #[allow(dead_code)]
     pub(crate) active_telemetry: Option<Arc<dyn crate::telemetry::Telemetry + Send + Sync>>,
+    /// A resolved [`TelemetryPolicy`](crate::telemetry::TelemetryPolicy) the
+    /// `cli.command` probe reads for its span attributes (`cli.install.id`,
+    /// `session.id`, `cli.telemetry.level`).
+    ///
+    /// This is a **transitional stopgap**, not the full policy pipeline.
+    /// `App` still runs the pre-existing `TelemetryConfig` → `init_batch`
+    /// export path (see `init_telemetry` below), which never consults
+    /// `TelemetryPolicy` at all. Full `App`-level policy orchestration
+    /// (config file + environment + store + kill switches, via
+    /// `resolve_policy`/`init_from_policy`) is deferred to PR7 — see the note
+    /// on `startup.rs` in `src/telemetry/mod.rs`. Until that lands,
+    /// `init_telemetry` derives a minimal policy straight from the same
+    /// `TelemetryConfig`, using `Deployment::Service` (not the axis's default
+    /// `EndUser`) so the resolved level comes out `Diagnostic` rather than
+    /// falsely claiming `off` while `init_batch` is in fact exporting. When no
+    /// `TelemetryConfig` was supplied, this field stays the inert default
+    /// `resolve_policy` produces for `TelemetryInputs::default()` (`off`, no
+    /// endpoint) — harmlessly unused, since both callsites only build span
+    /// attributes from it inside the `if let Some(telemetry) = ...` guard
+    /// that already requires `active_telemetry` to be populated.
+    #[cfg(feature = "telemetry")]
+    telemetry_policy: Arc<crate::telemetry::TelemetryPolicy>,
     #[cfg(feature = "config")]
     config_handle: Option<Arc<dyn crate::config::ConfigHandle>>,
     #[cfg(feature = "config")]
@@ -924,6 +950,22 @@ pub struct App<C: AppContext> {
     policy_client: Option<Arc<crate::config::managed::PolicyClient>>,
     #[cfg(feature = "config")]
     config_value_erased: Option<Arc<dyn std::any::Any + Send + Sync>>,
+}
+
+/// Record a probe's attributes onto an open `cli.command` span.
+///
+/// `tracing` fixes a callsite's fieldset at compile time (see the limitation
+/// documented on [`SpanHandle::set_attr`](crate::telemetry::handle::SpanHandle::set_attr)):
+/// a field this span's `info_span!` call did not pre-declare as
+/// `tracing::field::Empty` silently drops whatever is recorded for it here.
+/// That silence is intentional, not a bug to guard against — it is exactly
+/// what lets `command_span_attrs`'s optional `cli.install.id` skip recording
+/// for an anonymous install without this function needing to know why.
+#[cfg(feature = "telemetry")]
+fn record_command_span_attrs(span: &tracing::Span, attrs: &[crate::telemetry::handle::KeyValue]) {
+    for kv in attrs {
+        span.record(kv.key.as_str(), kv.value.as_str().as_ref());
+    }
 }
 
 impl<C: AppContext> App<C> {
@@ -1000,12 +1042,19 @@ impl<C: AppContext> App<C> {
                     // item 6), so it must instrument itself here to stay symmetric with
                     // every other command's `cli.command` span and metrics.
                     #[cfg(feature = "telemetry")]
-                    let _span = tracing::info_span!(
+                    let span = tracing::info_span!(
                         "cli.command",
                         "cli.command.path" = "version",
                         "cli.invocation.surface" = InvocationSurface::Cli.as_str(),
                         "cli.command.arg_count" = 0,
                         "cli.command.arg_names" = "",
+                        "cli.probe" = tracing::field::Empty,
+                        "cli.install.id" = tracing::field::Empty,
+                        "session.id" = tracing::field::Empty,
+                        "cli.telemetry.level" = tracing::field::Empty,
+                        "command" = tracing::field::Empty,
+                        "surface" = tracing::field::Empty,
+                        "status" = tracing::field::Empty,
                     )
                     .entered();
 
@@ -1018,19 +1067,27 @@ impl<C: AppContext> App<C> {
                     self.framework_println(&self.version_string());
 
                     #[cfg(feature = "telemetry")]
-                    if let Some(telemetry) = self.active_telemetry.as_ref() {
-                        let attrs = [
-                            crate::telemetry::handle::KeyValue::new("command", "version"),
-                            crate::telemetry::handle::KeyValue::new(
-                                "surface",
-                                InvocationSurface::Cli.as_str(),
+                    {
+                        let probe_outcome = crate::telemetry::CommandOutcome {
+                            command: Some("version".to_string()),
+                            surface: crate::telemetry::Surface::Cli,
+                            status: crate::telemetry::CommandStatus::Ok,
+                            duration_ms: started.elapsed().as_secs_f64() * 1000.0,
+                        };
+                        record_command_span_attrs(
+                            &span,
+                            &crate::telemetry::command_span_attrs(
+                                &self.telemetry_policy,
+                                &probe_outcome,
                             ),
-                            crate::telemetry::handle::KeyValue::new("status", "ok"),
-                        ];
-                        telemetry.counter("cli.command.invocations").add(1, &attrs);
-                        telemetry
-                            .histogram("cli.command.duration_ms")
-                            .record(started.elapsed().as_secs_f64() * 1000.0, &attrs);
+                        );
+                        if let Some(telemetry) = self.active_telemetry.as_ref() {
+                            let attrs = crate::telemetry::command_metric_labels(&probe_outcome);
+                            telemetry.counter("cli.command.invocations").add(1, &attrs);
+                            telemetry
+                                .histogram("cli.command.duration_ms")
+                                .record(probe_outcome.duration_ms, &attrs);
+                        }
                     }
 
                     return Ok(());
@@ -1219,7 +1276,7 @@ impl<C: AppContext> App<C> {
         let cmd_id = command.id.as_ref().to_string();
 
         #[cfg(feature = "telemetry")]
-        let _span = {
+        let span = {
             let arg_names: String = args.keys().cloned().collect::<Vec<_>>().join(",");
             tracing::info_span!(
                 "cli.command",
@@ -1227,6 +1284,13 @@ impl<C: AppContext> App<C> {
                 "cli.invocation.surface" = surface.as_str(),
                 "cli.command.arg_count" = args.len(),
                 "cli.command.arg_names" = arg_names.as_str(),
+                "cli.probe" = tracing::field::Empty,
+                "cli.install.id" = tracing::field::Empty,
+                "session.id" = tracing::field::Empty,
+                "cli.telemetry.level" = tracing::field::Empty,
+                "command" = tracing::field::Empty,
+                "surface" = tracing::field::Empty,
+                "status" = tracing::field::Empty,
             )
             .entered()
         };
@@ -1242,19 +1306,28 @@ impl<C: AppContext> App<C> {
         // Emitted on the error path too — an error-rate metric that only counts
         // successes is worse than no metric at all.
         #[cfg(feature = "telemetry")]
-        if let Some(telemetry) = self.active_telemetry.as_ref() {
-            let attrs = [
-                crate::telemetry::handle::KeyValue::new("command", cmd_id),
-                crate::telemetry::handle::KeyValue::new("surface", surface.as_str().to_string()),
-                crate::telemetry::handle::KeyValue::new(
-                    "status",
-                    if outcome.is_ok() { "ok" } else { "error" },
-                ),
-            ];
-            telemetry.counter("cli.command.invocations").add(1, &attrs);
-            telemetry
-                .histogram("cli.command.duration_ms")
-                .record(started.elapsed().as_secs_f64() * 1000.0, &attrs);
+        {
+            let probe_outcome = crate::telemetry::CommandOutcome {
+                command: Some(cmd_id),
+                surface: surface.into(),
+                status: if outcome.is_ok() {
+                    crate::telemetry::CommandStatus::Ok
+                } else {
+                    crate::telemetry::CommandStatus::Error
+                },
+                duration_ms: started.elapsed().as_secs_f64() * 1000.0,
+            };
+            record_command_span_attrs(
+                &span,
+                &crate::telemetry::command_span_attrs(&self.telemetry_policy, &probe_outcome),
+            );
+            if let Some(telemetry) = self.active_telemetry.as_ref() {
+                let attrs = crate::telemetry::command_metric_labels(&probe_outcome);
+                telemetry.counter("cli.command.invocations").add(1, &attrs);
+                telemetry
+                    .histogram("cli.command.duration_ms")
+                    .record(probe_outcome.duration_ms, &attrs);
+            }
         }
 
         outcome
@@ -1277,6 +1350,25 @@ impl<C: AppContext> App<C> {
                 .as_ref()
                 .map(|m| m.version)
                 .unwrap_or(self.app_version);
+
+            // Transitional: derive a minimal `TelemetryPolicy` from this same
+            // config so the `cli.command` probe below has truthful
+            // `cli.install.id`/`session.id`/`cli.telemetry.level` attributes.
+            // See the field doc on `telemetry_policy` — the real policy
+            // pipeline (config file/environment/store/kill switches) is
+            // PR7's job, not this builder's.
+            self.telemetry_policy = Arc::new(crate::telemetry::resolve_policy(
+                crate::telemetry::TelemetryInputs {
+                    app: svc.to_string(),
+                    deployment: crate::telemetry::Deployment::Service,
+                    endpoint: cfg.endpoint.clone(),
+                    session_id: uuid::Uuid::new_v4().to_string(),
+                    sample_ratio: cfg.sample_ratio,
+                    registry: crate::telemetry::ProbeRegistry::with_builtins(),
+                    ..Default::default()
+                },
+            ));
+
             if let Some((handle, guard)) = crate::telemetry::init::init_batch(cfg, svc, ver) {
                 self.active_telemetry = Some(handle);
                 return guard;

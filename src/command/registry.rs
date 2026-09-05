@@ -165,6 +165,20 @@ impl Default for CommandRegistry {
     }
 }
 
+/// The label a `cli.command` probe attaches for this path, if and only if the
+/// registry actually declares it.
+///
+/// `None` for anything the registry does not resolve — a typo, a plugin that
+/// failed to load, an injected argument — so a caller building metric labels
+/// never has to decide separately whether the path is trustworthy: an
+/// unvalidated path is unbounded cardinality and a potential leak, so it must
+/// never reach a label.
+pub fn registered_command_label(registry: &CommandRegistry, path: &[String]) -> Option<String> {
+    let command_path = CommandPath(path.to_vec());
+    registry.resolve(&command_path)?;
+    Some(path.join(" "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -6,7 +6,7 @@ pub mod typed;
 
 #[cfg(feature = "chat")]
 pub use chat::create_chat_command;
-pub use registry::CommandRegistry;
+pub use registry::{registered_command_label, CommandRegistry};
 pub use typed::{FromArgValueMap, IntoCommandSpec, TypedArgs};
 
 use crate::app::context::AppContext;
