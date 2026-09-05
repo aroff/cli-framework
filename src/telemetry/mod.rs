@@ -144,6 +144,16 @@ pub use commands::{
     StatusReport, TelemetryCommandError,
 };
 
+// Gated on `telemetry` for the same reason as `commands` above: `notice.rs`
+// takes `&TelemetryPolicy`. `Surface` is a minimal stand-in for Task 17's
+// (PR5, `src/telemetry/probes.rs`) type of the same name/shape — see the
+// doc comment on `notice::Surface` for why this module defines its own
+// copy rather than depending on unmerged PR5 work.
+#[cfg(feature = "telemetry")]
+pub mod notice;
+#[cfg(feature = "telemetry")]
+pub use notice::{notice_decision, NoticeDecision, SkipReason, Surface};
+
 // Gated on `observability`, not `telemetry`: `install_default_logging`/
 // `LoggingGuard` replace `init_default_logging`'s old body and must stay
 // reachable under `observability` alone, exactly as `init_default_logging`

@@ -899,3 +899,8 @@ required-features = ["telemetry", "config"]
 name = "telemetry_cli"
 path = "tests/integration/telemetry_cli.rs"
 required-features = ["telemetry", "config", "testkit"]
+
+[[test]]
+name = "unit_telemetry_notice"
+path = "tests/unit/telemetry_notice.rs"
+required-features = ["telemetry"]
