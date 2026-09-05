@@ -1,11 +1,17 @@
 // src/telemetry/store.rs
-//! The framework's own settings file, `<config_dir>/<app>/telemetry.json`.
+//! The framework's own settings file,
+//! `<config_dir>/<app>/telemetry.<json|toml>`.
 //!
 //! Telemetry state is deliberately **not** kept in the application's config
 //! backend: consent has to be readable and writable identically everywhere,
 //! including where the app's own backend is the Windows registry. It is
 //! always a file, written through the crate's [`ConfigStore`] so it gets
 //! atomic write-and-rename and schema versioning for free.
+//!
+//! The *format* still follows the application: an app that declares TOML gets
+//! a `telemetry.toml` next to its own configuration, not a lone JSON file a
+//! user hand-editing that directory would not expect. JSON is the default,
+//! used when an app declares no configuration of its own.
 //!
 //! A store whose directory cannot be created is [`StoreState::Unavailable`].
 //! That is never a startup failure: reads fall back to defaults, Attribution
@@ -84,6 +90,16 @@ impl StoreState {
     }
 }
 
+/// The settings file's name for a given configuration format. Exhaustive on
+/// purpose: a new [`ConfigFormat`] variant has to choose its extension here
+/// rather than silently inheriting `.json`.
+fn settings_file_name(format: ConfigFormat) -> &'static str {
+    match format {
+        ConfigFormat::Json => "telemetry.json",
+        ConfigFormat::Toml => "telemetry.toml",
+    }
+}
+
 /// Reads and writes [`TelemetrySettings`].
 pub struct TelemetryStore {
     state: StoreState,
@@ -91,9 +107,21 @@ pub struct TelemetryStore {
 }
 
 impl TelemetryStore {
-    /// Open under an explicit parent directory. Tests use this; production
-    /// goes through [`Self::open`].
+    /// Open under an explicit parent directory, in JSON — the format an app
+    /// that declares no configuration of its own gets. Tests use this;
+    /// production goes through [`Self::open`] or [`Self::open_with_format`].
     pub fn open_at(config_dir: impl AsRef<Path>, app: &str) -> Self {
+        Self::open_at_with_format(config_dir, app, ConfigFormat::Json)
+    }
+
+    /// Open under an explicit parent directory, in `format`. The file name
+    /// follows the format, so a TOML app's telemetry settings sit beside its
+    /// own TOML configuration rather than in a lone JSON file.
+    pub fn open_at_with_format(
+        config_dir: impl AsRef<Path>,
+        app: &str,
+        format: ConfigFormat,
+    ) -> Self {
         let app_dir = config_dir.as_ref().join(app);
         if let Err(err) = std::fs::create_dir_all(&app_dir) {
             return Self {
@@ -104,22 +132,24 @@ impl TelemetryStore {
                 store: None,
             };
         }
-        let path = app_dir.join("telemetry.json");
+        let path = app_dir.join(settings_file_name(format));
         let backend = Arc::new(FileBackend::new(path.clone()));
         Self {
             state: StoreState::Ready(path),
-            store: Some(ConfigStore::new(
-                backend,
-                ConfigFormat::Json,
-                TELEMETRY_SCHEMA_VERSION,
-            )),
+            store: Some(ConfigStore::new(backend, format, TELEMETRY_SCHEMA_VERSION)),
         }
     }
 
-    /// Open under the platform config directory.
+    /// Open under the platform config directory, in JSON.
     pub fn open(app: &str) -> Self {
+        Self::open_with_format(app, ConfigFormat::Json)
+    }
+
+    /// Open under the platform config directory, in `format`. This is what
+    /// startup calls, passing the format the application declared.
+    pub fn open_with_format(app: &str, format: ConfigFormat) -> Self {
         match dirs::config_dir() {
-            Some(dir) => Self::open_at(dir, app),
+            Some(dir) => Self::open_at_with_format(dir, app, format),
             None => Self {
                 state: StoreState::Unavailable(
                     "this platform has no resolvable configuration directory".to_string(),

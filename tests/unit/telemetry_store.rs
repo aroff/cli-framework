@@ -1,5 +1,5 @@
 // tests/unit/telemetry_store.rs
-use cli_framework::config::VersionedConfig;
+use cli_framework::config::{ConfigFormat, VersionedConfig};
 use cli_framework::telemetry::{
     Attribution, StoreState, TelemetryLevel, TelemetrySettings, TelemetryStore,
 };
@@ -204,4 +204,63 @@ fn open_resolves_a_real_platform_config_directory_when_one_exists() {
             assert!(!reason.is_empty());
         }
     }
+}
+
+#[test]
+fn a_toml_app_stores_its_telemetry_settings_as_toml_beside_it() {
+    // PRD 025: the settings file's extension follows the application's own
+    // configuration format. A TOML app must not get a lone JSON file in a
+    // directory its user hand-edits.
+    let dir = temp_dir("toml-app");
+    let store = TelemetryStore::open_at_with_format(&dir, "demo", ConfigFormat::Toml);
+    let path = dir.join("demo").join("telemetry.toml");
+    assert_eq!(store.state(), &StoreState::Ready(path.clone()));
+
+    store
+        .mutate(|s| {
+            s.level = Some(TelemetryLevel::Diagnostic);
+            s.attribution = Some(Attribution::Anonymous);
+        })
+        .expect("a ready toml store must be writable");
+
+    let raw = std::fs::read_to_string(&path).expect("the toml file must exist");
+    let parsed: toml::Value = toml::from_str(&raw).expect("the bytes on disk must be TOML");
+    assert_eq!(parsed["level"].as_str(), Some("diagnostic"));
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&raw).is_err(),
+        "TOML was expected on disk, but the bytes also parse as JSON: {raw}"
+    );
+    assert!(
+        !dir.join("demo").join("telemetry.json").exists(),
+        "a toml app must not leave a stray telemetry.json behind"
+    );
+
+    let reopened = TelemetryStore::open_at_with_format(&dir, "demo", ConfigFormat::Toml);
+    assert_eq!(reopened.settings().level, Some(TelemetryLevel::Diagnostic));
+    assert_eq!(
+        reopened.settings().attribution,
+        Some(Attribution::Anonymous)
+    );
+}
+
+#[test]
+fn the_two_argument_constructors_are_the_json_default() {
+    // `open_at`/`open` are the "app declares no configuration" case, so they
+    // must stay byte-for-byte the JSON variant rather than drifting from it.
+    let dir = temp_dir("json-default");
+    let defaulted = TelemetryStore::open_at(&dir, "demo");
+    assert_eq!(
+        defaulted.state(),
+        TelemetryStore::open_at_with_format(&dir, "demo", ConfigFormat::Json).state(),
+        "open_at must be exactly the JSON format variant"
+    );
+
+    defaulted
+        .mutate(|s| s.level = Some(TelemetryLevel::Usage))
+        .expect("a ready json store must be writable");
+    let raw = std::fs::read_to_string(dir.join("demo").join("telemetry.json"))
+        .expect("the json file must exist");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&raw).expect("the bytes on disk must be JSON");
+    assert_eq!(parsed["level"].as_str(), Some("usage"));
 }
