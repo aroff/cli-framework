@@ -92,3 +92,6 @@ pub use noop::NoopTelemetry;
 
 pub mod axes;
 pub use axes::{Attribution, Deployment, ParseAxisError, TelemetryLevel};
+
+pub mod probe;
+pub use probe::{feature_outcome, FeatureOutcome, ProbeIdError, ProbeRegistry, ProbeSpec};
