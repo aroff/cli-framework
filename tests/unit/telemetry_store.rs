@@ -1,5 +1,8 @@
 // tests/unit/telemetry_store.rs
-use cli_framework::telemetry::{Attribution, StoreState, TelemetryLevel, TelemetryStore};
+use cli_framework::config::VersionedConfig;
+use cli_framework::telemetry::{
+    Attribution, StoreState, TelemetryLevel, TelemetrySettings, TelemetryStore,
+};
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -132,4 +135,73 @@ fn a_corrupt_settings_file_reads_as_defaults_rather_than_failing_startup() {
 
     let store = TelemetryStore::open_at(&dir, "demo");
     assert_eq!(store.settings().level, None);
+}
+
+#[test]
+fn state_reason_and_describe_distinguish_ready_from_unavailable() {
+    let dir = temp_dir("state-reporting");
+    let ready = TelemetryStore::open_at(&dir, "demo");
+    assert_eq!(ready.state().reason(), None, "a ready store has no reason");
+    let expected_path = dir.join("demo").join("telemetry.json");
+    assert_eq!(
+        ready.state().describe(),
+        expected_path.display().to_string(),
+        "a ready store's one-line description is its file path"
+    );
+
+    let blocker_dir = temp_dir("state-reporting-blocked");
+    std::fs::write(blocker_dir.join("demo"), b"not a directory").unwrap();
+    let unavailable = TelemetryStore::open_at(&blocker_dir, "demo");
+    let reason = unavailable
+        .state()
+        .reason()
+        .expect("an unavailable store must report why through reason()");
+    assert!(!reason.is_empty());
+    assert!(
+        unavailable.state().describe().starts_with("unavailable: "),
+        "got: {}",
+        unavailable.state().describe()
+    );
+}
+
+#[test]
+fn versioned_config_impl_reads_and_writes_the_schema_version_field() {
+    let mut settings = TelemetrySettings {
+        schema_version: 3,
+        ..Default::default()
+    };
+    assert_eq!(
+        VersionedConfig::schema_version(&settings),
+        3,
+        "the getter must read the same field mutate()/load() stamp"
+    );
+    settings.set_schema_version(9);
+    assert_eq!(
+        settings.schema_version, 9,
+        "the setter must write the field the getter reads"
+    );
+}
+
+#[test]
+fn open_resolves_a_real_platform_config_directory_when_one_exists() {
+    // Every other test uses `open_at()` against a temp directory so it stays
+    // hermetic. This is the only one exercising the actual `open()` entry
+    // point production code calls, which goes through `dirs::config_dir()`.
+    // Some sandboxes have no resolvable config directory at all, so both of
+    // `StoreState`'s variants are accepted here — but if one is created, it
+    // is removed again so the smoke test leaves nothing behind.
+    let app = "cli-framework-telemetry-store-open-smoke-test";
+    let store = TelemetryStore::open(app);
+    match store.state() {
+        StoreState::Ready(path) => {
+            assert!(
+                path.ends_with("telemetry.json"),
+                "expected a telemetry.json path, got {path:?}"
+            );
+            let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        }
+        StoreState::Unavailable(reason) => {
+            assert!(!reason.is_empty());
+        }
+    }
 }
