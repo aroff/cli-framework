@@ -71,7 +71,7 @@ mod tests {
             .insert("network.proxy_url".to_string(), json!("http://proxy"));
         policy
             .recommended
-            .insert("telemetry.enabled".to_string(), json!(true));
+            .insert("telemetry.level".to_string(), json!("usage"));
 
         let value = serde_json::to_value(&policy).unwrap();
         let back: Policy = serde_json::from_value(value).unwrap();

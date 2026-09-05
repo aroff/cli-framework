@@ -11,6 +11,16 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   RUSTFLAGS: "-D warnings"
+  # This job compiles the workspace under thirteen different feature
+  # combinations. Incremental artifacts are per-combination, are never reused
+  # across them, and die with the runner -- they buy nothing here and cost
+  # gigabytes (this directory reaches 16 GB in a developer checkout).
+  CARGO_INCREMENTAL: 0
+  # Full DWARF dominates the size of a debug test binary, and this crate's test
+  # targets statically link sqlx, axum, reqwest and testcontainers.
+  # `line-tables-only` keeps the file and line that the `RUST_BACKTRACE: 1`
+  # above asks for, and drops the rest. The `test` profile inherits `dev`.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   ci:
@@ -41,6 +51,24 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # A GitHub-hosted ubuntu runner starts with about 14 GB free on `/`, and
+      # this job compiles the workspace under thirteen feature combinations on
+      # top of a restored `target` cache -- cargo never garbage-collects, so the
+      # tree only grows. Run 33944180133 exhausted the disk during the last
+      # step and reported *no* failed step at all: the runner died while
+      # writing its own diagnostic log, so the IOException surfaced only in the
+      # check-run annotations while the step list looked clean. Deleting
+      # toolchains this repo does not use buys back more room than any amount
+      # of tuning the build, and is the standard remedy for it.
+      - name: Free runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/.ghcup /usr/share/swift \
+                      /usr/local/share/boost /opt/hostedtoolcache/CodeQL || true
+          echo "--- after ---"
+          df -h /
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -76,6 +104,16 @@ jobs:
       - name: Build release (all features)
         run: cargo build --all-features --release
 
+      # Nothing downstream consumes these binaries -- the step above exists to
+      # prove the all-features build compiles -- and an all-features release
+      # tree is several gigabytes sitting beside the debug artifacts that every
+      # test step below adds to.
+      - name: Reclaim the release build tree
+        run: |
+          du -sh target/release || true
+          rm -rf target/release
+          df -h /
+
       - name: Test (default features)
         run: cargo test --verbose
 
@@ -99,10 +137,20 @@ jobs:
       # merged green without it. Enabling the feature union and letting cargo
       # select targets from `required-features` removes the list that drifts.
       # `tests/unit/telemetry_ci_targets.rs` fails if either half regresses.
+      # `config` and `config-service` are named explicitly even though
+      # `telemetry` already implies `config`: `unit_telemetry_ci_targets`
+      # compares this list literally against each target's
+      # `required-features`, so the workflow has to say what its targets
+      # need rather than rely on a reader knowing the feature graph.
+      # `config-service` is not cosmetic — `unit_telemetry_policy_governance`
+      # needs `telemetry` *and* `config-service`, a combination no other step
+      # enables, so before this it executed nowhere. It needs no database;
+      # the three Postgres suites this list now also selects skip on an unset
+      # `DATABASE_URL` and are covered for real by `Test (config-service)`.
       - name: Test (telemetry)
         run: >
           cargo test
-          --features "telemetry,mcp-server,api-server,testkit,derive"
+          --features "telemetry,config,config-service,mcp-server,api-server,testkit,derive"
           --verbose
 
       - name: Integration tests (mcp-server)
@@ -161,3 +209,12 @@ jobs:
           cargo build -p cli-framework-oidc --no-default-features --verbose
           cargo test -p cli-framework --no-default-features --features auth,testkit --verbose
           cargo test -p cli-framework --features auth,testkit --verbose
+
+      # Unconditional: when the disk is the problem, the failing step is the
+      # one that cannot write, which is rarely the one at fault. This puts the
+      # number in the step log instead of leaving it to the annotations.
+      - name: Report disk usage
+        if: always()
+        run: |
+          df -h /
+          du -sh target 2>/dev/null || true

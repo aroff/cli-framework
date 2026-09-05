@@ -39,15 +39,36 @@ pub enum ProbeIdError {
     Reserved(String, &'static str),
     #[error("PB003: duplicate probe id '{0}'")]
     Duplicate(String),
+    #[error(
+        "PB004: probe id '{0}' uses the segment 'enabled' after the first segment; the \
+         framework owns 'telemetry.<probe>.enabled' as every probe's switch, so a probe \
+         may not also be named that. Rename the probe."
+    )]
+    ShadowsEnabledSwitch(String),
 }
 
-/// Check an id against `^[a-z0-9]+(\.[a-z0-9_]+)*$` and the reserved list.
+/// The leaf key the framework writes under *every* probe node
+/// (`telemetry.<probe>.enabled`). A probe id may not use it as a non-first
+/// segment: `a` and `a.enabled` would both want `telemetry.a.enabled`, one as
+/// a boolean switch and one as a section.
+pub const OWNED_PROBE_LEAF: &str = "enabled";
+
+/// Check an id against `^[a-z0-9]+(\.[a-z0-9_]+)*$`, the reserved list, and
+/// the one leaf key the framework owns under every probe.
 ///
 /// The reserved-segment check runs before the first segment's character-class
 /// check: two reserved names (`install_id`, `notice_shown`) contain an
 /// underscore, which the first segment's grammar otherwise forbids, and a
 /// probe author who types one of those must see `Reserved`, not the generic
 /// `Malformed`.
+///
+/// [`OWNED_PROBE_LEAF`] is checked per non-first segment rather than as a
+/// reserved *first* segment, because that is where the collision actually is.
+/// `telemetry.enabled` does not exist — the design has no global switch — so a
+/// probe named `enabled` is merely odd. A probe named `a.enabled`, on the
+/// other hand, wants the exact key `telemetry.a.enabled` that probe `a`'s own
+/// switch already occupies, and the manifest generator has no way to represent
+/// both.
 pub fn validate_probe_id(id: &str) -> Result<(), ProbeIdError> {
     let mut segments = id.split('.');
     let first = segments.next().unwrap_or_default();
@@ -72,6 +93,9 @@ pub fn validate_probe_id(id: &str) -> Result<(), ProbeIdError> {
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
         if !ok {
             return Err(ProbeIdError::Malformed(id.to_string()));
+        }
+        if segment == OWNED_PROBE_LEAF {
+            return Err(ProbeIdError::ShadowsEnabledSwitch(id.to_string()));
         }
     }
     Ok(())

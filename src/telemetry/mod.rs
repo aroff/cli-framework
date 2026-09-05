@@ -94,7 +94,9 @@ pub mod axes;
 pub use axes::{Attribution, Deployment, ParseAxisError, TelemetryLevel};
 
 pub mod probe;
-pub use probe::{feature_outcome, FeatureOutcome, ProbeIdError, ProbeRegistry, ProbeSpec};
+pub use probe::{
+    feature_outcome, FeatureOutcome, ProbeIdError, ProbeRegistry, ProbeSpec, OWNED_PROBE_LEAF,
+};
 
 // Gated on `telemetry`, unlike `axes`/`probe` above: this module hard-depends
 // on `crate::config::resolution::Layer` (the top-level `config` module,
@@ -156,3 +158,23 @@ pub use panic::{install_panic_hook, panic_record, PanicRecord};
 pub mod startup;
 #[cfg(feature = "telemetry")]
 pub use startup::{startup_order, StartupReport, StartupStep};
+
+// Gated on `telemetry` for the same reason as `policy`/`store` above:
+// `manifest.rs` hard-depends on `crate::config::manifest::{ConfigManifest,
+// FieldKind, FieldManifest, Scope}`, which only exists when `config` is
+// enabled.
+#[cfg(feature = "telemetry")]
+pub mod manifest;
+#[cfg(feature = "telemetry")]
+pub use manifest::{
+    merge_telemetry_section, telemetry_only_manifest, telemetry_section, ManifestMergeError,
+    TELEMETRY_SECTION_KEY,
+};
+
+// Gated on `telemetry` for the same reason as `manifest` above: `env.rs`
+// hard-depends on `crate::config::manifest::{ConfigManifest, FieldKind}`,
+// which only exists when `config` is enabled.
+#[cfg(feature = "telemetry")]
+pub mod env;
+#[cfg(feature = "telemetry")]
+pub use env::{env_var_name, scan_environment, EnvScan};

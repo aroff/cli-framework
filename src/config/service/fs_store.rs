@@ -33,7 +33,7 @@
 //! "network.proxy_url" = "http://proxy.example.com"
 //!
 //! [recommended]
-//! "telemetry.enabled" = true
+//! "telemetry.level" = "usage"
 //! ```
 //!
 //! Note the **quoted, dotted** keys under `[enforced]`/`[recommended]` —

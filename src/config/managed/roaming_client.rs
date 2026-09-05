@@ -39,10 +39,13 @@ pub enum RoamingClientError {
     InvalidResponse(String),
 }
 
-/// Restrict `doc` to only the keys the manifest declares `scope: user` for.
-/// Applied unconditionally by [`RoamingConfigClient::put`] — a caller cannot
-/// accidentally (or deliberately) send a `machine`- or `org`-scoped field
-/// over this channel.
+/// Restrict `doc` to only the keys the manifest declares `scope: user` for,
+/// excluding any that are `local_only` or `secret`.
+///
+/// Scope alone is not enough. A `local_only` field is bootstrap state for one
+/// machine — an install identifier, a service address — and roaming it makes
+/// several installations look like one. A `secret` may never leave the
+/// machine at all. Both exclusions are unconditional: a caller cannot opt out.
 pub fn filter_user_scoped(
     manifest: &ConfigManifest,
     doc: &Map<String, Value>,
@@ -50,7 +53,7 @@ pub fn filter_user_scoped(
     let user_paths: std::collections::HashSet<String> = manifest
         .iter_leaves()
         .into_iter()
-        .filter(|l| l.field.scope == Scope::User)
+        .filter(|l| l.field.scope == Scope::User && !l.field.local_only && !l.field.secret)
         .map(|l| l.path)
         .collect();
     doc.iter()

@@ -784,3 +784,23 @@ required-features = ["telemetry"]
 name = "unit_telemetry_startup_order"
 path = "tests/unit/telemetry_startup_order.rs"
 required-features = ["telemetry"]
+
+[[test]]
+name = "unit_telemetry_manifest"
+path = "tests/unit/telemetry_manifest.rs"
+required-features = ["telemetry", "config"]
+
+[[test]]
+name = "unit_telemetry_env"
+path = "tests/unit/telemetry_env.rs"
+required-features = ["telemetry", "config"]
+
+[[test]]
+name = "unit_config_roaming_filter"
+path = "tests/unit/config_roaming_filter.rs"
+required-features = ["config-managed"]
+
+[[test]]
+name = "unit_telemetry_policy_governance"
+path = "tests/unit/telemetry_policy_governance.rs"
+required-features = ["telemetry", "config-service"]

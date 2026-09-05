@@ -72,3 +72,18 @@ fn axes_serialize_as_their_lowercase_wire_names() {
         "\"pseudonymous\""
     );
 }
+
+#[test]
+fn attribution_all_round_trips_through_as_str_and_from_str() {
+    assert_eq!(
+        Attribution::ALL,
+        [
+            Attribution::Anonymous,
+            Attribution::Pseudonymous,
+            Attribution::Identified
+        ]
+    );
+    for a in Attribution::ALL {
+        assert_eq!(a.as_str().parse::<Attribution>().unwrap(), a);
+    }
+}

@@ -67,6 +67,43 @@ fn every_reserved_first_segment_is_refused() {
 }
 
 #[test]
+fn a_probe_may_not_shadow_the_enabled_switch_the_framework_owns() {
+    // `telemetry.<probe>.enabled` is generated for every probe, so `a` and
+    // `a.enabled` both claim `telemetry.a.enabled`. Refused at registration,
+    // which is the earliest point and the only one with a useful message: the
+    // manifest generator that would otherwise hit the collision has nowhere to
+    // put a second field of a different kind under the same key.
+    let mut r = ProbeRegistry::new();
+    assert!(
+        matches!(
+            r.register(spec("cli.enabled", TelemetryLevel::Usage)),
+            Err(ProbeIdError::ShadowsEnabledSwitch(_))
+        ),
+        "'cli.enabled' collides with probe 'cli''s own switch"
+    );
+    assert!(
+        matches!(
+            r.register(spec("cli.enabled.detail", TelemetryLevel::Usage)),
+            Err(ProbeIdError::ShadowsEnabledSwitch(_))
+        ),
+        "the segment is refused wherever it appears after the first, not just last"
+    );
+
+    // The first segment is deliberately still allowed: there is no
+    // `telemetry.enabled` key in this design, so `enabled.thing` collides with
+    // nothing. Narrowing the rule to what actually collides keeps the error
+    // honest.
+    r.register(spec("enabled.thing", TelemetryLevel::Usage))
+        .expect("'enabled' as a first segment shadows no framework key");
+
+    // And the ordinary hierarchical case is untouched.
+    r.register(spec("cli.command", TelemetryLevel::Usage))
+        .expect("a plain child probe is fine");
+    r.register(spec("cli.command.args", TelemetryLevel::Diagnostic))
+        .expect("a grandchild probe is fine");
+}
+
+#[test]
 fn registering_the_same_probe_id_twice_is_an_error() {
     let mut r = ProbeRegistry::new();
     r.register(spec("cli.command", TelemetryLevel::Usage))

@@ -120,6 +120,10 @@ pub enum Attribution {
 }
 
 impl Attribution {
+    /// Every attribution mode. Used to render help text and to generate the
+    /// `telemetry.attribution` manifest field's enumeration.
+    pub const ALL: [Attribution; 3] = [Self::Anonymous, Self::Pseudonymous, Self::Identified];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Anonymous => "anonymous",
