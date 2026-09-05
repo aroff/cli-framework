@@ -1,7 +1,7 @@
 // tests/unit/telemetry_redact.rs
 use cli_framework::telemetry::{
     attribute_min_level, is_never_listed, metric_label_is_allowed, probe_of, Deployment, KeyValue,
-    RedactionRules, TelemetryLevel, NEVER_KEYS, NEVER_LIST_EXEMPT,
+    RedactionRules, TelemetryLevel, NEVER_KEYS, NEVER_LIST_EXEMPT, PROBE_ATTR_KEY,
 };
 
 mod support;
@@ -161,6 +161,28 @@ fn the_probe_attribute_names_the_probe_a_span_belongs_to() {
     let attrs = vec![kv("cli.probe", "cli.command"), kv("command", "build")];
     assert_eq!(probe_of(&attrs), Some("cli.command"));
     assert_eq!(probe_of(&[kv("command", "build")]), None);
+}
+
+#[test]
+fn a_probe_attribute_that_is_not_a_string_names_no_probe() {
+    // The boundary keys every decision off the probe id, so `probe_of` is the
+    // one place where "there is no probe here" gets decided. An instrumentation
+    // site that set `cli.probe` to a number is not naming a probe — the value
+    // has no id grammar, cannot match a `ProbeSpec`, and must therefore leave
+    // the span unprobed so `span_verdict` drops it rather than waving it
+    // through under a probe that does not exist.
+    let numeric = KeyValue::new(PROBE_ATTR_KEY, 7i64);
+    assert_eq!(probe_of(&[numeric]), None);
+
+    let boolean = KeyValue::new(PROBE_ATTR_KEY, true);
+    assert_eq!(probe_of(&[boolean]), None);
+
+    // And the string case still resolves through the very same call, so the
+    // two assertions above are about the value's type and nothing else.
+    assert_eq!(
+        probe_of(&[KeyValue::new(PROBE_ATTR_KEY, "cli.command")]),
+        Some("cli.command")
+    );
 }
 
 #[test]
