@@ -120,3 +120,20 @@ pub use policy::{
 pub mod store;
 #[cfg(feature = "telemetry")]
 pub use store::{StoreState, TelemetrySettings, TelemetryStore, TELEMETRY_SCHEMA_VERSION};
+
+// Gated on `observability`, not `telemetry`: `install_default_logging`/
+// `LoggingGuard` replace `init_default_logging`'s old body and must stay
+// reachable under `observability` alone, exactly as `init_default_logging`
+// was before this module existed. The subscriber-composition items that do
+// need the OTel bridge (`SubscriberOutcome`, `install_telemetry_subscriber`,
+// `foreign_subscriber_finding`, ...) are individually gated on `telemetry`
+// inside `subscriber.rs` and re-exported under that stronger gate below.
+#[cfg(feature = "observability")]
+pub mod subscriber;
+#[cfg(feature = "telemetry")]
+pub use subscriber::{
+    foreign_subscriber_finding, install_subscriber_for_test, install_telemetry_subscriber,
+    warn_once_foreign_subscriber, BoxedLayer, SubscriberOutcome,
+};
+#[cfg(feature = "observability")]
+pub use subscriber::{install_default_logging, LoggingGuard};

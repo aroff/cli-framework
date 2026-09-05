@@ -195,7 +195,11 @@ secrecy = { version = "0.8", features = ["serde"] }
 [features]
 default = ["chat"]
 observability = ["dep:tracing-subscriber"]
-telemetry = ["observability", "config", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry", "dep:opentelemetry-http", "dep:http"]
+# `doctor` is implied so telemetry code can produce `DoctorFinding` values
+# (e.g. the foreign-subscriber finding) without every consumer separately
+# opting into the doctor command surface — `doctor` itself adds no
+# dependency (`doctor = []`), so this only widens which types are in scope.
+telemetry = ["observability", "config", "doctor", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry", "dep:opentelemetry-http", "dep:http"]
 # CLI output utilities optional features
 table-advanced = ["comfy-table"]
 progress = ["indicatif"]
@@ -725,4 +729,30 @@ required-features = ["telemetry"]
 [[test]]
 name = "unit_telemetry_store"
 path = "tests/unit/telemetry_store.rs"
+required-features = ["telemetry"]
+
+[[test]]
+name = "unit_telemetry_subscriber"
+path = "tests/unit/telemetry_subscriber.rs"
+required-features = ["telemetry"]
+
+# Own binary: installing a subscriber is a process-global one-way door, and
+# this test's whole point is the first `try_init` succeeding.
+[[test]]
+name = "unit_telemetry_subscriber_install"
+path = "tests/unit/telemetry_subscriber_install.rs"
+required-features = ["telemetry"]
+
+# Own binary for the same reason: this test installs a foreign subscriber
+# first, so it must not share a process with any test that also installs one.
+[[test]]
+name = "unit_telemetry_subscriber_foreign"
+path = "tests/unit/telemetry_subscriber_foreign.rs"
+required-features = ["telemetry"]
+
+# Own binary for the same reason: `init_default_logging` installs a
+# subscriber too, and this test calls it twice to see both outcomes.
+[[test]]
+name = "unit_telemetry_logging_guard"
+path = "tests/unit/telemetry_logging_guard.rs"
 required-features = ["telemetry"]
