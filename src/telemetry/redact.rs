@@ -166,6 +166,14 @@ pub fn is_never_listed(key: &str, extra: &[String]) -> bool {
 
 /// The lowest telemetry level at which this key may be recorded.
 pub fn attribute_min_level(key: &str) -> TelemetryLevel {
+    // `cli.command.arg_values.<name>` is a dynamic key — one per allowlisted
+    // argument name — so it cannot appear in `ELEVATED` by exact match the
+    // way `cli.usage_error.token` can. Match the prefix instead, before the
+    // table lookup, so every such key inherits its parent probe's debug-only
+    // minimum regardless of which argument name follows the dot.
+    if key.starts_with("cli.command.arg_values.") {
+        return TelemetryLevel::Debug;
+    }
     ELEVATED
         .iter()
         .find(|(k, _)| *k == key)

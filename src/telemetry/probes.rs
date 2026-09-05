@@ -7,7 +7,7 @@
 //! catalog be tested without a provider, a collector or a subscriber.
 
 use super::policy::TelemetryPolicy;
-use super::redact::PROBE_ATTR_KEY;
+use super::redact::{is_never_listed, PROBE_ATTR_KEY};
 use crate::app::dispatch::InvocationSurface;
 use opentelemetry::KeyValue;
 
@@ -105,6 +105,45 @@ pub fn command_span_attrs(policy: &TelemetryPolicy, outcome: &CommandOutcome) ->
     attrs.push(KeyValue::new("session.id", policy.session_id.clone()));
     attrs.push(KeyValue::new("cli.telemetry.level", policy.level.as_str()));
     attrs.extend(command_metric_labels(outcome));
+    attrs
+}
+
+/// The names of the arguments a command received — never their values.
+///
+/// `--output` says a person used the output flag. `--output
+/// /home/alice/tax-2025.csv` says their name and their tax situation.
+pub fn arg_names(names: &[String]) -> Vec<String> {
+    names.to_vec()
+}
+
+/// Values for the arguments the author allowlisted, as
+/// `cli.command.arg_values.<name>` attributes.
+///
+/// The never-list is applied to the generated key, so an author who
+/// allowlists `api_key` by mistake still gets nothing.
+pub fn arg_value_attrs(allowlist: &[String], pairs: &[(String, String)]) -> Vec<KeyValue> {
+    pairs
+        .iter()
+        .filter(|(name, _)| allowlist.iter().any(|a| a == name))
+        .map(|(name, value)| (format!("cli.command.arg_values.{name}"), value.clone()))
+        .filter(|(key, _)| !is_never_listed(key, &[]))
+        .map(|(key, value)| KeyValue::new(key, value))
+        .collect()
+}
+
+/// Attributes for `cli.usage_error` and its `cli.usage_error.token` child.
+///
+/// `kind` is a closed vocabulary token, never the error message: a message
+/// carries the offending value inside it, which is exactly what must not
+/// travel at usage level.
+pub fn usage_error_attrs(kind: &str, token: Option<&str>) -> Vec<KeyValue> {
+    let mut attrs = vec![
+        KeyValue::new(PROBE_ATTR_KEY, "cli.usage_error"),
+        KeyValue::new("cli.usage_error.kind", kind.to_string()),
+    ];
+    if let Some(token) = token {
+        attrs.push(KeyValue::new("cli.usage_error.token", token.to_string()));
+    }
     attrs
 }
 

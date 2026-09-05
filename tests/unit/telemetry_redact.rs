@@ -386,3 +386,11 @@ fn the_never_key_and_exemption_lists_stay_disjoint_and_lower_case() {
         );
     }
 }
+
+#[test]
+fn a_dynamically_named_argument_value_is_debug_only_like_its_parent() {
+    assert_eq!(
+        attribute_min_level("cli.command.arg_values.query"),
+        TelemetryLevel::Debug
+    );
+}
