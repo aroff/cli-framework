@@ -168,3 +168,11 @@ pub use manifest::{
     merge_telemetry_section, telemetry_only_manifest, telemetry_section, ManifestMergeError,
     TELEMETRY_SECTION_KEY,
 };
+
+// Gated on `telemetry` for the same reason as `manifest` above: `env.rs`
+// hard-depends on `crate::config::manifest::{ConfigManifest, FieldKind}`,
+// which only exists when `config` is enabled.
+#[cfg(feature = "telemetry")]
+pub mod env;
+#[cfg(feature = "telemetry")]
+pub use env::{env_var_name, scan_environment, EnvScan};

@@ -789,3 +789,8 @@ required-features = ["telemetry"]
 name = "unit_telemetry_manifest"
 path = "tests/unit/telemetry_manifest.rs"
 required-features = ["telemetry", "config"]
+
+[[test]]
+name = "unit_telemetry_env"
+path = "tests/unit/telemetry_env.rs"
+required-features = ["telemetry", "config"]
