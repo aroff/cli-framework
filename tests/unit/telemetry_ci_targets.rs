@@ -78,7 +78,9 @@ fn telemetry_ci_step() -> (BTreeSet<String>, BTreeSet<String>) {
         .expect("ci.yml has a `Test (telemetry)` step");
     // The step ends at the next step at the same indentation.
     let rest = &ci[start + 1..];
-    let end = rest.find("\n      - name: ").map_or(ci.len(), |i| start + 1 + i);
+    let end = rest
+        .find("\n      - name: ")
+        .map_or(ci.len(), |i| start + 1 + i);
     let step = &ci[start..end];
 
     let mut tests = BTreeSet::new();
