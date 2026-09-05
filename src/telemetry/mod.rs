@@ -156,3 +156,15 @@ pub use panic::{install_panic_hook, panic_record, PanicRecord};
 pub mod startup;
 #[cfg(feature = "telemetry")]
 pub use startup::{startup_order, StartupReport, StartupStep};
+
+// Gated on `telemetry` for the same reason as `policy`/`store` above:
+// `manifest.rs` hard-depends on `crate::config::manifest::{ConfigManifest,
+// FieldKind, FieldManifest, Scope}`, which only exists when `config` is
+// enabled.
+#[cfg(feature = "telemetry")]
+pub mod manifest;
+#[cfg(feature = "telemetry")]
+pub use manifest::{
+    merge_telemetry_section, telemetry_only_manifest, telemetry_section, ManifestMergeError,
+    TELEMETRY_SECTION_KEY,
+};
