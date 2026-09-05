@@ -99,10 +99,20 @@ jobs:
       # merged green without it. Enabling the feature union and letting cargo
       # select targets from `required-features` removes the list that drifts.
       # `tests/unit/telemetry_ci_targets.rs` fails if either half regresses.
+      # `config` and `config-service` are named explicitly even though
+      # `telemetry` already implies `config`: `unit_telemetry_ci_targets`
+      # compares this list literally against each target's
+      # `required-features`, so the workflow has to say what its targets
+      # need rather than rely on a reader knowing the feature graph.
+      # `config-service` is not cosmetic — `unit_telemetry_policy_governance`
+      # needs `telemetry` *and* `config-service`, a combination no other step
+      # enables, so before this it executed nowhere. It needs no database;
+      # the three Postgres suites this list now also selects skip on an unset
+      # `DATABASE_URL` and are covered for real by `Test (config-service)`.
       - name: Test (telemetry)
         run: >
           cargo test
-          --features "telemetry,mcp-server,api-server,testkit,derive"
+          --features "telemetry,config,config-service,mcp-server,api-server,testkit,derive"
           --verbose
 
       - name: Integration tests (mcp-server)
