@@ -191,8 +191,8 @@ pub use env::{env_var_name, scan_environment, EnvScan};
 pub mod resource;
 #[cfg(feature = "telemetry")]
 pub use resource::{
-    apply_env_resource_attributes, metric_resource_attrs, to_resource, trace_resource_attrs,
-    ServiceIdentity,
+    apply_env_resource_attributes, coarse_version_for_test, metric_resource_attrs, to_resource,
+    trace_resource_attrs, ServiceIdentity,
 };
 
 // Gated on `telemetry` for the same reason as `resource` above: `redact.rs`
@@ -202,7 +202,7 @@ pub mod redact;
 #[cfg(feature = "telemetry")]
 pub use redact::{
     attribute_min_level, is_never_listed, metric_label_is_allowed, probe_of, RedactionRules,
-    METRIC_LABEL_ALLOWLIST, NEVER_LIST, PROBE_ATTR_KEY,
+    METRIC_LABEL_ALLOWLIST, NEVER_KEYS, NEVER_LIST, NEVER_LIST_EXEMPT, PROBE_ATTR_KEY,
 };
 
 // Gated on `telemetry` for the same reason as `redact` above: `exporter.rs`

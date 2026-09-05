@@ -10,10 +10,48 @@ use std::time::Duration;
 mod support;
 use support::policy_with;
 
-fn sampler_description(policy: &cli_framework::telemetry::TelemetryPolicy) -> String {
+/// How many of `count` distinct traces the policy's sampler actually samples.
+///
+/// This replaces a `format!("{:?}", sampler)` string match. A `Debug` impl is
+/// not a contract — it belongs to the SDK and can change in a patch release —
+/// and, the reason it matters here, a sampler that *prints* `AlwaysOn` while
+/// dropping every span would have satisfied every assertion in this file.
+/// Sampling is behaviour, so it is asserted by sampling.
+///
+/// Deterministic, not statistical: `TraceIdRatioBased` decides from the trace
+/// id alone, so the same ids always produce the same count and nothing here
+/// can flake.
+fn sampled_out_of(policy: &cli_framework::telemetry::TelemetryPolicy, count: u64) -> usize {
+    use opentelemetry::trace::{SamplingDecision, SpanKind, TraceId};
     use opentelemetry_sdk::trace::ShouldSample;
-    format!("{:?}", sampler_for_policy(policy))
+
+    let sampler = sampler_for_policy(policy);
+    (0..count)
+        .filter(|n| {
+            // The SDK reads the *low* eight bytes of the trace id, so a
+            // sequential counter would put every id in the sampled region and
+            // make any ratio measure 100%. A fixed odd multiplier (the
+            // golden-ratio constant) spreads consecutive counters across the
+            // whole u64 range while staying completely reproducible.
+            let mut bytes = [0u8; 16];
+            bytes[8..].copy_from_slice(&n.wrapping_mul(0x9E37_79B9_7F4A_7C15).to_be_bytes());
+            let result = sampler.should_sample(
+                None,
+                TraceId::from_bytes(bytes),
+                "cli.command",
+                &SpanKind::Internal,
+                &[],
+                &[],
+            );
+            result.decision == SamplingDecision::RecordAndSample
+        })
+        .count()
 }
+
+/// The number of traces every ratio assertion below is measured over. Large
+/// enough that a wrong ratio cannot hide inside the tolerance, small enough to
+/// stay instant.
+const TRACES: u64 = 4_000;
 
 /// `init_from_policy`, `init_with_exporter` and friends all call
 /// `opentelemetry::global::set_tracer_provider`/`set_meter_provider` —
@@ -23,9 +61,60 @@ fn sampler_description(policy: &cli_framework::telemetry::TelemetryPolicy) -> St
 /// provider. Serializing them behind one lock mirrors `support::EnvGuard`'s
 /// rationale for the process environment, applied here to OpenTelemetry's
 /// global state instead of `std::env`.
+///
+/// Callers take it with `unwrap_or_else(|e| e.into_inner())`, never `unwrap()`:
+/// one panicking test would otherwise poison the mutex and make every later
+/// test in this binary fail on the poison instead of on its own assertion,
+/// hiding the failure that actually mattered behind a wall of noise. The
+/// data under the lock is `()` — there is no invariant a panic could have
+/// broken. `support::EnvGuard` takes the same view of its own lock.
 fn otel_global_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// Does the sampler defer to an existing parent decision, rather than
+/// re-rolling the ratio for every child span?
+fn parent_decides(
+    policy: &cli_framework::telemetry::TelemetryPolicy,
+    parent_sampled: bool,
+) -> bool {
+    use opentelemetry::trace::{
+        SamplingDecision, SpanContext, SpanId, SpanKind, TraceContextExt, TraceFlags, TraceId,
+        TraceState,
+    };
+    use opentelemetry_sdk::trace::ShouldSample;
+
+    // A trace id the ratio sampler would reject on its own, so a `true` result
+    // can only have come from the parent.
+    let mut bytes = [0u8; 16];
+    bytes[8..].copy_from_slice(&u64::MAX.to_be_bytes());
+    let trace_id = TraceId::from_bytes(bytes);
+
+    let flags = if parent_sampled {
+        TraceFlags::SAMPLED
+    } else {
+        TraceFlags::default()
+    };
+    let cx = opentelemetry::Context::current().with_remote_span_context(SpanContext::new(
+        trace_id,
+        SpanId::from_bytes([1, 2, 3, 4, 5, 6, 7, 8]),
+        flags,
+        true,
+        TraceState::default(),
+    ));
+
+    sampler_for_policy(policy)
+        .should_sample(
+            Some(&cx),
+            trace_id,
+            "cli.command",
+            &SpanKind::Internal,
+            &[],
+            &[],
+        )
+        .decision
+        == SamplingDecision::RecordAndSample
 }
 
 #[test]
@@ -35,11 +124,11 @@ fn an_end_user_install_samples_every_trace() {
         TelemetryLevel::Usage,
         |_| {},
     );
-    assert!(
-        sampler_description(&policy).contains("AlwaysOn"),
+    assert_eq!(
+        sampled_out_of(&policy, TRACES),
+        TRACES as usize,
         "one person's handful of invocations is not a volume problem, and a \
-         sampled-away trace is a support case nobody can answer: {}",
-        sampler_description(&policy)
+         sampled-away trace is a support case nobody can answer"
     );
 }
 
@@ -48,9 +137,36 @@ fn a_service_samples_by_ratio() {
     let policy = policy_with(Deployment::Service, TelemetryLevel::Diagnostic, |p| {
         p.sample_ratio = 0.25;
     });
-    let described = sampler_description(&policy);
-    assert!(described.contains("ParentBased"), "got {described}");
-    assert!(described.contains("0.25"), "got {described}");
+    let sampled = sampled_out_of(&policy, TRACES);
+    let fraction = sampled as f64 / TRACES as f64;
+    assert!(
+        (0.22..=0.28).contains(&fraction),
+        "a service asked for a quarter of its traces and got {sampled}/{TRACES} ({fraction:.3})"
+    );
+
+    // And the ratio has to be the *policy's*, not a constant that happens to
+    // look plausible: a different ratio must produce a different count.
+    let tenth = policy_with(Deployment::Service, TelemetryLevel::Diagnostic, |p| {
+        p.sample_ratio = 0.1;
+    });
+    let tenth_sampled = sampled_out_of(&tenth, TRACES);
+    assert!(
+        tenth_sampled < sampled,
+        "0.1 sampled {tenth_sampled} and 0.25 sampled {sampled}; the sampler is ignoring the \
+         policy's ratio"
+    );
+
+    // A parent that already decided wins over the ratio — that is what
+    // `ParentBased` is for, and a bare `TraceIdRatioBased` would break trace
+    // continuity by dropping children of sampled parents.
+    assert!(
+        parent_decides(&policy, true),
+        "a child of a sampled parent must be sampled regardless of the ratio"
+    );
+    assert!(
+        !parent_decides(&policy, false),
+        "a child of an unsampled parent must not be sampled"
+    );
 }
 
 #[test]
@@ -58,8 +174,9 @@ fn debug_forces_full_sampling_even_on_a_service_with_a_low_ratio() {
     let policy = policy_with(Deployment::Service, TelemetryLevel::Debug, |p| {
         p.sample_ratio = 0.01;
     });
-    assert!(
-        sampler_description(&policy).contains("AlwaysOn"),
+    assert_eq!(
+        sampled_out_of(&policy, TRACES),
+        TRACES as usize,
         "a debug session that drops the trace being debugged is worse than useless"
     );
 }
@@ -151,7 +268,7 @@ fn init_from_policy_returns_none_when_the_policy_does_not_export() {
 async fn init_from_policy_builds_a_working_handle_that_flushes_within_budget() {
     use tracing_subscriber::layer::SubscriberExt;
 
-    let _lock = otel_global_lock().lock().unwrap();
+    let _lock = otel_global_lock().lock().unwrap_or_else(|e| e.into_inner());
     let policy = Arc::new(policy_with(
         Deployment::Service,
         TelemetryLevel::Usage,
@@ -194,7 +311,7 @@ async fn init_from_policy_builds_a_working_handle_that_flushes_within_budget() {
 fn init_with_exporter_delivers_a_span_named_by_the_fixed_otel_convention() {
     use tracing_subscriber::layer::SubscriberExt;
 
-    let _lock = otel_global_lock().lock().unwrap();
+    let _lock = otel_global_lock().lock().unwrap_or_else(|e| e.into_inner());
     let exporter = CapturingExporter::default();
     let span_names = exporter.span_names.clone();
 
@@ -222,7 +339,7 @@ fn init_with_exporter_delivers_a_span_named_by_the_fixed_otel_convention() {
 fn init_with_exporter_config_builds_a_resource_from_the_configured_service_identity() {
     use tracing_subscriber::layer::SubscriberExt;
 
-    let _lock = otel_global_lock().lock().unwrap();
+    let _lock = otel_global_lock().lock().unwrap_or_else(|e| e.into_inner());
     let exporter = CapturingExporter::default();
     let resources = exporter.resources.clone();
     let span_names = exporter.span_names.clone();
@@ -275,7 +392,7 @@ fn init_with_exporter_config_builds_a_resource_from_the_configured_service_ident
 
 #[tokio::test]
 async fn init_batch_without_subscriber_builds_a_handle_and_leaves_the_subscriber_alone() {
-    let _lock = otel_global_lock().lock().unwrap();
+    let _lock = otel_global_lock().lock().unwrap_or_else(|e| e.into_inner());
     let config = TelemetryConfig {
         endpoint: Some("http://localhost:14318".to_string()),
         ..Default::default()
@@ -292,7 +409,7 @@ async fn init_batch_without_subscriber_builds_a_handle_and_leaves_the_subscriber
 
 #[test]
 fn init_simple_builds_a_handle_with_a_simple_span_processor() {
-    let _lock = otel_global_lock().lock().unwrap();
+    let _lock = otel_global_lock().lock().unwrap_or_else(|e| e.into_inner());
     let config = TelemetryConfig {
         endpoint: Some("http://localhost:14318".to_string()),
         ..Default::default()

@@ -1,7 +1,7 @@
 // tests/unit/telemetry_redact.rs
 use cli_framework::telemetry::{
     attribute_min_level, is_never_listed, metric_label_is_allowed, probe_of, Deployment, KeyValue,
-    RedactionRules, TelemetryLevel,
+    RedactionRules, TelemetryLevel, NEVER_KEYS, NEVER_LIST_EXEMPT,
 };
 
 mod support;
@@ -198,4 +198,169 @@ fn retaining_leaves_the_surviving_values_untouched() {
     rules(TelemetryLevel::Usage).retain_attributes(&mut attrs);
     assert_eq!(attrs.len(), 1);
     assert_eq!(attrs[0].value.as_str(), "build");
+}
+
+#[test]
+fn the_usage_error_token_survives_at_debug_and_is_dropped_below_it() {
+    // `cli.usage_error.token` is the one framework key the built-in never-list
+    // would otherwise swallow whole: it contains the substring `token`, the
+    // never-list is checked first and returns immediately, so before the
+    // exemption existed this attribute could never be emitted at any level and
+    // its entry in the level table was dead code that no test noticed.
+    //
+    // The specification puts it on the usage-error event at `debug`, and says
+    // the boundary "clears `exception.message` and `cli.usage_error.token`
+    // below `debug`" — a sentence that only means anything if the key is kept
+    // *at* `debug`.
+    assert!(
+        !is_never_listed("cli.usage_error.token", &[]),
+        "the framework's own reviewed key must not be caught by the *token* glob"
+    );
+    assert!(
+        rules(TelemetryLevel::Debug).keeps_attribute("cli.usage_error.token"),
+        "at debug the offending token is exactly what makes a usage-error report actionable"
+    );
+    for level in [
+        TelemetryLevel::Off,
+        TelemetryLevel::Usage,
+        TelemetryLevel::Diagnostic,
+    ] {
+        assert!(
+            !rules(level).keeps_attribute("cli.usage_error.token"),
+            "below debug the token is a fragment of the user's command line, so {level:?} \
+             must drop it"
+        );
+    }
+}
+
+#[test]
+fn the_exemption_is_exact_and_does_not_widen_the_token_glob() {
+    // The exemption is a list of whole keys, not a prefix or a substring. If it
+    // were loose, every one of these would ride in behind it — which is the
+    // failure mode that makes carve-outs in a redaction rule dangerous.
+    for key in [
+        "cli.usage_error.token.value",
+        "cli.usage_error.tokens",
+        "xcli.usage_error.token",
+        "CLI.USAGE_ERROR.TOKEN",
+        "usage_error.token",
+        "token",
+    ] {
+        assert!(
+            is_never_listed(key, &[]),
+            "{key} is not the exempted key and must still be dropped"
+        );
+    }
+}
+
+#[test]
+fn an_author_who_extends_the_never_list_outranks_the_exemption() {
+    // Extending the never-list is a deliberate decision by someone who has
+    // concluded their product cannot carry a class of value. This crate's
+    // judgement about its own key does not survive that.
+    let extra = vec!["token".to_string()];
+    assert!(
+        is_never_listed("cli.usage_error.token", &extra),
+        "an author's own never-list entry must win over the framework exemption"
+    );
+    let narrower = vec!["cli.usage_error".to_string()];
+    assert!(
+        is_never_listed("cli.usage_error.token", &narrower),
+        "the author's entries are substrings, so a prefix they added catches it too"
+    );
+}
+
+#[test]
+fn an_empty_never_list_entry_does_not_drop_every_attribute() {
+    // `"".contains("")` is true, and so is `anything.contains("")`. One stray
+    // empty string in `with_telemetry_never` — a trailing comma in a config
+    // list, a variable that resolved to nothing — used to strip every
+    // attribute from every span in the product, leaving telemetry that looks
+    // alive and carries nothing at all. Blanks are ignored instead.
+    for blank in ["", " ", "\t", "\n  "] {
+        let extra = vec![blank.to_string()];
+        assert!(
+            !is_never_listed("cli.command", &extra),
+            "a blank never-list entry ({blank:?}) must not match every key"
+        );
+        let rules = RedactionRules {
+            level: TelemetryLevel::Usage,
+            app_attr_allowlist: Vec::new(),
+            extra_never: vec![blank.to_string()],
+        };
+        assert!(
+            rules.keeps_attribute("cli.command"),
+            "and it must not reach the boundary either ({blank:?})"
+        );
+    }
+
+    // A real entry alongside a blank still works — ignoring blanks must not
+    // turn into ignoring the list.
+    let mixed = vec![String::new(), "internal_id".to_string()];
+    assert!(is_never_listed("app.internal_id", &mixed));
+    assert!(!is_never_listed("cli.command", &mixed));
+}
+
+#[test]
+fn keys_the_specification_forbids_at_any_level_are_dropped_at_every_level() {
+    // The specification's never-at-any-level list names raw URLs and paths,
+    // host names and command lines, and says the redacting exporter is the only
+    // place these rules live. Without this the framework prefix `url.` would
+    // have carried `url.full` at plain `usage`, on the strength of nothing more
+    // than "no instrumentation site sets it *today*".
+    for key in NEVER_KEYS {
+        assert!(
+            is_never_listed(key, &[]),
+            "{key} is forbidden at any telemetry level"
+        );
+        for level in [
+            TelemetryLevel::Usage,
+            TelemetryLevel::Diagnostic,
+            TelemetryLevel::Debug,
+        ] {
+            assert!(
+                !rules(level).keeps_attribute(key),
+                "{key} must not survive the boundary at {level:?}"
+            );
+        }
+        // Not even by being allowlisted: the never-list wins over the allowlist.
+        let permissive = RedactionRules {
+            level: TelemetryLevel::Debug,
+            app_attr_allowlist: vec![key.to_string()],
+            extra_never: Vec::new(),
+        };
+        assert!(
+            !permissive.keeps_attribute(key),
+            "{key} must not be reachable by adding it to the app allowlist"
+        );
+    }
+
+    // The bounded alternative stays: a matched route template is a fixed set of
+    // strings the author wrote, not user data.
+    assert!(rules(TelemetryLevel::Usage).keeps_attribute("http.route"));
+    // And the address the specification does permit, at diagnostic, is not
+    // caught by the host-name rule.
+    assert!(rules(TelemetryLevel::Diagnostic).keeps_attribute("server.address"));
+}
+
+#[test]
+fn the_never_key_and_exemption_lists_stay_disjoint_and_lower_case() {
+    // A key on both lists would make the outcome depend on evaluation order,
+    // which is exactly the kind of thing that survives review and then decides
+    // whether a credential ships.
+    for exempt in NEVER_LIST_EXEMPT {
+        assert!(
+            !NEVER_KEYS.contains(exempt),
+            "{exempt} cannot be both forbidden outright and exempt"
+        );
+    }
+    // `is_never_listed` lower-cases the key before comparing against
+    // NEVER_KEYS, so an upper-case entry there would silently never match.
+    for key in NEVER_KEYS {
+        assert_eq!(
+            *key,
+            key.to_ascii_lowercase(),
+            "NEVER_KEYS entries are compared against a lower-cased key"
+        );
+    }
 }

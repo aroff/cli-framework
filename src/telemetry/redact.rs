@@ -10,7 +10,10 @@
 //!    `password`, `secret`, `token`, `authorization`, `cookie` or `api_key` —
 //!    case-insensitive substring, plus whatever the author added — is dropped
 //!    at every telemetry level including debug. No allowlist entry overrides
-//!    it.
+//!    it. [`NEVER_KEYS`] adds the whole keys the specification forbids at any
+//!    level — raw URLs, host name, command line — and [`NEVER_LIST_EXEMPT`]
+//!    carves out the one framework key the substring rule would otherwise make
+//!    unreachable.
 //! 2. **A key has a minimum telemetry level.** `exception.message` is
 //!    debug-only, `error.type` is diagnostic-and-up, everything else the
 //!    framework declares is usage-and-up.
@@ -30,6 +33,46 @@ pub const NEVER_LIST: &[&str] = &[
     "cookie",
     "api_key",
 ];
+
+/// Keys spec 025 forbids "at any level", independently of the level table.
+///
+/// The specification's never-at-any-level list (§"Attribute rules") names raw
+/// URLs and paths, host names and command lines. The redacting exporter is
+/// "the only place these rules live", so the boundary enforces them here
+/// rather than trusting every present and future instrumentation site never to
+/// have set them. `url.*` is on the list because a raw URL carries a path and
+/// a query string; `http.route` — the matched template, which is bounded and
+/// carries no user data — is the alternative and is unaffected.
+///
+/// Exact matches, lower-cased. Unlike [`NEVER_LIST`] these are whole keys, not
+/// fragments: `url.` as a fragment would also catch a hypothetical
+/// `cli.url.scheme`, and guessing at keys that do not exist is how a
+/// never-list starts dropping things nobody intended.
+pub const NEVER_KEYS: &[&str] = &[
+    "url.full",
+    "url.path",
+    "url.query",
+    "host.name",
+    "process.command_line",
+];
+
+/// Keys this crate declares and reviews itself, exempt from [`NEVER_LIST`]'s
+/// substring match.
+///
+/// The never-list is a heuristic over *unknown* key names: a key called
+/// `access_token` is almost certainly a credential, so `*token*` is the right
+/// default. But `cli.usage_error.token` is a parse token — the offending word
+/// on a mistyped command line — and spec 025 requires it on the usage-error
+/// event at `debug`, then says the boundary "clears `exception.message` and
+/// `cli.usage_error.token` below `debug`", which is only meaningful if it
+/// keeps them *at* `debug`. Without this exemption the substring rule makes
+/// that probe permanently unreachable and its [`ELEVATED`] entry dead code.
+///
+/// Exact matches only, and only against the built-in list: an author who
+/// extends the never-list with `token` still drops this key, because extending
+/// it is a deliberate act by someone who has decided their product cannot
+/// carry the value.
+pub const NEVER_LIST_EXEMPT: &[&str] = &["cli.usage_error.token"];
 
 pub const METRIC_LABEL_ALLOWLIST: &[&str] = &[
     "command",
@@ -92,10 +135,33 @@ const ELEVATED: &[(&str, TelemetryLevel)] = &[
 /// Is this key on the never-list, built-in or author-extended?
 pub fn is_never_listed(key: &str, extra: &[String]) -> bool {
     let lowered = key.to_ascii_lowercase();
+
+    // Whole keys the specification forbids outright. First, because nothing
+    // below — not the exemption, not a level — may reach past them.
+    if NEVER_KEYS.contains(&lowered.as_str()) {
+        return true;
+    }
+
+    // The author's own additions, before the exemption: extending the
+    // never-list is a deliberate decision about this product, and it outranks
+    // this crate's judgement about its own keys.
+    if extra
+        .iter()
+        // An empty fragment makes `contains` true for every key, so a single
+        // stray `""` in `with_telemetry_never` would silently strip every
+        // attribute in the product — telemetry that looks alive and carries
+        // nothing. Ignore blanks instead.
+        .filter(|f| !f.trim().is_empty())
+        .any(|f| lowered.contains(&f.to_ascii_lowercase()))
+    {
+        return true;
+    }
+
+    if NEVER_LIST_EXEMPT.contains(&key) {
+        return false;
+    }
+
     NEVER_LIST.iter().any(|f| lowered.contains(f))
-        || extra
-            .iter()
-            .any(|f| lowered.contains(&f.to_ascii_lowercase()))
 }
 
 /// The lowest telemetry level at which this key may be recorded.

@@ -19,6 +19,7 @@
 //! name; on a server it is a fleet inventory nobody asked us to publish.
 
 use super::policy::TelemetryPolicy;
+use opentelemetry_sdk::resource::{ResourceDetector, TelemetryResourceDetector};
 
 /// What the application calls itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,13 +53,16 @@ pub fn metric_resource_attrs(
     push(&mut attrs, "cli.telemetry.level", policy.level.as_str());
     push(&mut attrs, "os.type", std::env::consts::OS);
     push(&mut attrs, "host.arch", std::env::consts::ARCH);
-    push(&mut attrs, "telemetry.sdk.language", "rust");
-    push(&mut attrs, "telemetry.sdk.name", "opentelemetry");
-    push(
-        &mut attrs,
-        "telemetry.sdk.version",
-        env!("CARGO_PKG_VERSION"),
-    );
+    // The SDK triple comes from the SDK. Writing it out by hand meant
+    // `telemetry.sdk.version` carried *this crate's* version while
+    // `telemetry.sdk.name` said `opentelemetry`, so a backend keying
+    // behaviour off the pair was told something false, and the value drifted
+    // every time cli-framework released. `TelemetryResourceDetector` emits
+    // `telemetry.sdk.{name,language,version}` from `opentelemetry_sdk`'s own
+    // `CARGO_PKG_VERSION`; an SDK bump now updates it with no edit here.
+    for (key, value) in TelemetryResourceDetector.detect().iter() {
+        push(&mut attrs, key.as_str(), value.as_str().into_owned());
+    }
     attrs
 }
 
@@ -72,14 +76,60 @@ pub fn trace_resource_attrs(
         push(&mut attrs, "cli.install.id", id.clone());
     }
     push(&mut attrs, "session.id", policy.session_id.clone());
-    push(&mut attrs, "os.version", os_version());
+    if let Some(version) = os_version() {
+        push(&mut attrs, "os.version", version);
+    }
     attrs
 }
 
-/// A coarse OS version. Deliberately coarse: a precise build number is close
-/// to a fingerprint on a small population.
-fn os_version() -> String {
-    std::env::consts::FAMILY.to_string()
+/// A coarse OS version, or `None` where this crate cannot obtain one.
+///
+/// Deliberately coarse — `6.8`, not `6.8.0-136-generic`. A precise build
+/// number is close to a fingerprint on a small population, and the question
+/// this attribute answers ("which OS generation is this cohort on") needs two
+/// components at most.
+///
+/// Returning `None` is the point of the signature. This used to return
+/// `std::env::consts::FAMILY` — `unix` or `windows` — which is not a version,
+/// is strictly coarser than the `os.type` already on Resource A, and reported
+/// something false under a semantic-convention key. An absent attribute is
+/// honest; a wrong one is not.
+///
+/// Linux is the only platform the standard library can answer for: `/proc` is
+/// an ordinary file read, while macOS and Windows each need a syscall this
+/// crate has no dependency for. See
+/// `specs/028-telemetry-os-version-coverage.md`.
+fn os_version() -> Option<String> {
+    let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").ok()?;
+    let coarse = coarse_version(&release);
+    (!coarse.is_empty()).then_some(coarse)
+}
+
+/// Keep at most the `major.minor` of a version string, and nothing that is not
+/// a number.
+///
+/// Separate from [`os_version`] so it can be tested without a `/proc` — the
+/// truncation is the part with the privacy requirement on it, and it must not
+/// be reachable only on the platform that happens to have the file.
+fn coarse_version(raw: &str) -> String {
+    let numeric = |p: &&str| p.chars().all(|c| c.is_ascii_digit());
+    let mut parts = raw
+        .trim()
+        .split(['.', '-', '_'])
+        .filter(|p| !p.is_empty())
+        .take_while(numeric);
+    match (parts.next(), parts.next()) {
+        (Some(major), Some(minor)) => format!("{major}.{minor}"),
+        (Some(major), None) => major.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Test-only view of [`coarse_version`], which is private because nothing
+/// outside this module should be truncating version strings.
+#[doc(hidden)]
+pub fn coarse_version_for_test(raw: &str) -> String {
+    coarse_version(raw)
 }
 
 /// Apply `OTEL_RESOURCE_ATTRIBUTES`, honoured on both Resources.
