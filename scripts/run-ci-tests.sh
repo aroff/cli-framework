@@ -67,10 +67,24 @@ cargo test --features mcp-server --verbose
 cargo test --features "chat,mcp-server" --verbose
 # Telemetry tests are gated behind the `telemetry` feature (and its targets also
 # need api-server + testkit + derive; the MCP span test needs mcp-server), so
-# none of the combos above execute them. Scope to the telemetry targets
-# explicitly (like the MCP step below) to avoid load-flake in unrelated servers.
-cargo test --features "telemetry,mcp-server,api-server,testkit,derive" \
-    --test unit_telemetry --test integration_telemetry_otlp --test unit_mcp_dispatch --verbose
+# none of the combos above execute them.
+#
+# Deliberately NOT scoped with `--test`, and kept identical to the workflow's
+# `Test (telemetry)` step. This line used to name three targets while
+# Cargo.toml declared twenty-two; because this script's whole promise is to
+# replicate CI, that made a clean local run mean almost nothing for the suites
+# it forgot. Enabling the feature union and letting cargo select targets from
+# `required-features` removes the list that drifts.
+#
+# `config` and `config-service` are spelled out for the same reason the workflow
+# spells them out: `telemetry` already implies `config`, but the guard compares
+# this list literally against each target's `required-features`. `config-service`
+# is not cosmetic — `unit_telemetry_policy_governance` needs `telemetry` *and*
+# `config-service`, a pair no other line here enables.
+#
+# `tests/unit/telemetry_ci_targets.rs` fails if this line and the workflow's
+# diverge from the manifest, or from each other.
+cargo test --features "telemetry,config,config-service,mcp-server,api-server,testkit,derive" --verbose
 # `config` and `config-managed` are additive features exercised only by
 # `--all-features` clippy/build above, never actually `cargo test`'d by any
 # combo above — same gap the telemetry comment describes, closed the same way.
