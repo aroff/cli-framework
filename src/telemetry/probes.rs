@@ -250,3 +250,159 @@ pub mod spans {
         HTTP_SERVER_REQUEST,
     ];
 }
+
+// The remaining fourteen probes (Task 20). Each function is pure, follows the
+// shape Tasks 17-19 established — a `cli.probe` attribute first, then the
+// probe's own keys, then `Option` fields pushed only when present — and is
+// exercised without a provider, a collector or a subscriber in
+// `tests/unit/telemetry_probe_surfaces.rs`.
+
+/// Attributes for the `http.client` probe.
+///
+/// Deliberately no URL, in any form. A URL is the one place the never-list
+/// cannot help: the secret is in the value, not in a key named `token`. Query
+/// strings carry API keys, paths carry account identifiers, and both are
+/// routinely pasted into a CLI by a person who has not thought about it.
+/// `server_address` is a separate diagnostic probe, span-only, so an operator
+/// debugging a connection can see the host without it becoming a metric label.
+pub fn http_client_attrs(
+    method: &str,
+    status: Option<u16>,
+    server_address: Option<&str>,
+) -> Vec<KeyValue> {
+    let mut attrs = vec![
+        KeyValue::new(PROBE_ATTR_KEY, "http.client"),
+        KeyValue::new("http.request.method", method.to_string()),
+    ];
+    if let Some(status) = status {
+        attrs.push(KeyValue::new(
+            "http.response.status_code",
+            status.to_string(),
+        ));
+    }
+    if let Some(address) = server_address {
+        attrs.push(KeyValue::new(
+            "http.client.server_address",
+            address.to_string(),
+        ));
+    }
+    attrs
+}
+
+/// Attributes for the `http.server` probe.
+///
+/// `route` must already be the matched template (`/v1/users/{id}`), never the
+/// concrete path — this function trusts its caller on that point exactly as
+/// `command_span_attrs` trusts `outcome.command` to already be a registered
+/// path, because a route template is bounded (the application declares its
+/// routes) while a concrete path is not.
+pub fn http_server_attrs(route: &str, method: &str, status: u16) -> Vec<KeyValue> {
+    vec![
+        KeyValue::new(PROBE_ATTR_KEY, "http.server"),
+        KeyValue::new("http.route", route.to_string()),
+        KeyValue::new("http.request.method", method.to_string()),
+        KeyValue::new("http.response.status_code", status.to_string()),
+    ]
+}
+
+/// Attributes for the `mcp.session` probe.
+///
+/// `tool` comes from the server's own declared tool list — bounded the same
+/// way a registered command path is — so unlike a free-text argument it is
+/// safe as a metric label.
+pub fn mcp_session_attrs(tool: Option<&str>) -> Vec<KeyValue> {
+    let mut attrs = vec![KeyValue::new(PROBE_ATTR_KEY, "mcp.session")];
+    if let Some(tool) = tool {
+        attrs.push(KeyValue::new("tool", tool.to_string()));
+    }
+    attrs
+}
+
+/// Attributes for the `cli.chat` probe.
+///
+/// There is no attribute here under which prompt or reply text could travel,
+/// at any telemetry level including debug: only the turn count. Debug is a
+/// troubleshooting level, not a bypass, and a prompt is the single
+/// highest-value piece of personal data a CLI touches.
+pub fn chat_attrs(turns: u64) -> Vec<KeyValue> {
+    vec![
+        KeyValue::new(PROBE_ATTR_KEY, "cli.chat"),
+        KeyValue::new("cli.chat.turns", turns.to_string()),
+    ]
+}
+
+/// Attributes for the `cli.doctor` probe.
+///
+/// `check` is the check's own id (a closed, author-defined vocabulary, like a
+/// command path), `severity` its finding's severity — never the check's
+/// free-text explanation.
+pub fn doctor_attrs(check: &str, severity: &str) -> Vec<KeyValue> {
+    vec![
+        KeyValue::new(PROBE_ATTR_KEY, "cli.doctor"),
+        KeyValue::new("check", check.to_string()),
+        KeyValue::new("severity", severity.to_string()),
+    ]
+}
+
+/// Attributes for the `cli.plugin` probe.
+///
+/// `plugin` is the plugin's own declared name, `kind` a closed vocabulary
+/// token (e.g. `load`, `unload`) — never a file path or an error message.
+pub fn plugin_attrs(plugin: &str, kind: &str) -> Vec<KeyValue> {
+    vec![
+        KeyValue::new(PROBE_ATTR_KEY, "cli.plugin"),
+        KeyValue::new("plugin", plugin.to_string()),
+        KeyValue::new("kind", kind.to_string()),
+    ]
+}
+
+/// Attributes for the `cli.auth` probe.
+///
+/// `kind` (login, logout, refresh) and `status` (ok, error) are both closed
+/// vocabulary tokens — never a credential, a username or a token value.
+pub fn auth_attrs(kind: &str, status: &str) -> Vec<KeyValue> {
+    vec![
+        KeyValue::new(PROBE_ATTR_KEY, "cli.auth"),
+        KeyValue::new("kind", kind.to_string()),
+        KeyValue::new("status", status.to_string()),
+    ]
+}
+
+/// Attributes for the `cli.config` probe.
+///
+/// `kind` names which operation touched configuration (e.g. `get`, `set`,
+/// `load`) — never the setting's value.
+pub fn config_attrs(kind: &str) -> Vec<KeyValue> {
+    vec![
+        KeyValue::new(PROBE_ATTR_KEY, "cli.config"),
+        KeyValue::new("kind", kind.to_string()),
+    ]
+}
+
+/// Attributes for the `cli.secrets` probe.
+///
+/// `kind` names which backend or operation ran — never the secret itself.
+pub fn secrets_attrs(kind: &str) -> Vec<KeyValue> {
+    vec![
+        KeyValue::new(PROBE_ATTR_KEY, "cli.secrets"),
+        KeyValue::new("kind", kind.to_string()),
+    ]
+}
+
+/// Attributes for the `cli.help` probe.
+///
+/// `command` is `Some` only for a path the command registry actually
+/// declares, mirroring [`CommandOutcome::command`]'s same rule: an unbounded
+/// string here would be both unbounded metric cardinality and a leak.
+pub fn help_attrs(command: Option<&str>) -> Vec<KeyValue> {
+    let mut attrs = vec![KeyValue::new(PROBE_ATTR_KEY, "cli.help")];
+    if let Some(command) = command {
+        attrs.push(KeyValue::new("command", command.to_string()));
+    }
+    attrs
+}
+
+/// Attributes for the `cli.process` probe.
+pub fn process_attrs() -> Vec<KeyValue> {
+    vec![KeyValue::new(PROBE_ATTR_KEY, "cli.process")]
+}

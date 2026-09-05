@@ -682,9 +682,15 @@ fn with_tracing(router: Router, label: &'static str) -> Router {
                 http.route = tracing::field::Empty,
                 http.response.status_code = tracing::field::Empty,
                 api.surface = label,
+                cli.probe = tracing::field::Empty,
             );
             match &pattern {
                 Some(p) => {
+                    // Under `telemetry`, `http.route` is recorded once, later,
+                    // by the unified `http_server_attrs` loop below — the same
+                    // place that already knows the final response status —
+                    // rather than here and again there.
+                    #[cfg(not(feature = "telemetry"))]
                     span.record("http.route", p.as_str());
                     span.record("otel.name", format!("{method} {p}").as_str());
                 }
@@ -710,6 +716,27 @@ fn with_tracing(router: Router, label: &'static str) -> Router {
             // executor schedules on the thread meanwhile.
             let resp: axum::response::Response = next.run(req).instrument(span.clone()).await;
 
+            // `http.server` probe (Task 20): one `record` call per attribute the
+            // probe declares, mirroring the loop `src/mcp/mod.rs` and
+            // `src/app/builder.rs` use for their own probes. No matched route
+            // means the path is caller-controlled input (a 404 or the fallback
+            // tree — see the comment above `pattern`), so `http.route` is
+            // skipped here rather than echoing a URL a scanner invented.
+            #[cfg(feature = "telemetry")]
+            {
+                let route_for_probe = pattern.as_deref().unwrap_or("");
+                for kv in crate::telemetry::http_server_attrs(
+                    route_for_probe,
+                    method.as_str(),
+                    resp.status().as_u16(),
+                ) {
+                    if kv.key.as_str() == "http.route" && pattern.is_none() {
+                        continue;
+                    }
+                    span.record(kv.key.as_str(), kv.value.as_str().as_ref());
+                }
+            }
+            #[cfg(not(feature = "telemetry"))]
             span.record("http.response.status_code", resp.status().as_u16());
             // Only 5xx marks the span failed. A 4xx is the caller's error and a
             // correctly-served response; marking those ERROR makes every trace

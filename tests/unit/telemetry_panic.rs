@@ -13,18 +13,23 @@
 //! Three of the plan's seven given tests
 //! (`the_location_is_reported_at_usage_but_the_message_is_not`,
 //! `the_message_is_reported_at_debug`,
-//! `a_panic_message_that_quotes_a_secret_is_still_dropped_at_debug`) are
-//! deferred to PR5 per the plan's explicit instruction: they assert against
-//! `RedactionRules`, which lives in `redact.rs`. PR3 (a sibling branch) has
-//! not merged into this branch's base — confirmed by `ls src/telemetry/
-//! redact.rs` (not found) and a `mod.rs` grep (no `RedactionRules`) before
-//! writing this file — so `redact.rs` does not exist here and this file
-//! cannot import `RedactionRules`. Panic attribute levels are asserted in
-//! PR5, which is the first branch where both `panic.rs` and `redact.rs`
-//! exist.
+//! `a_panic_message_that_quotes_a_secret_is_still_dropped_at_debug`) were
+//! deferred to PR5 by PR4 per the plan's explicit instruction: they assert
+//! against `RedactionRules`, which lives in `redact.rs`. PR3 (a sibling
+//! branch) had not merged into PR4's base — confirmed there by `ls
+//! src/telemetry/redact.rs` (not found) and a `mod.rs` grep (no
+//! `RedactionRules`) — so `redact.rs` did not exist there and that file could
+//! not import `RedactionRules`. This branch (PR5, Task 20) is the first where
+//! both `panic.rs` and `redact.rs` exist, so the three tests are restored
+//! below exactly as PR4 Task 15 Step 1 wrote them, using the same
+//! `support::policy_with` fixture the redaction-boundary test files already
+//! share.
 
-use cli_framework::telemetry::PanicRecord;
+use cli_framework::telemetry::{Deployment, PanicRecord, RedactionRules, TelemetryLevel};
 use std::sync::{Arc, Mutex};
+
+mod support;
+use support::policy_with;
 
 /// Serializes every test in this file: two tests each swapping the same
 /// global panic hook in and out at once would race, since the hook is
@@ -83,6 +88,45 @@ fn a_panic_record_carries_the_message_separately_from_the_location() {
     let _guard = lock_hook();
     let record = record_of("index out of bounds");
     assert_eq!(record.message.as_deref(), Some("index out of bounds"));
+}
+
+#[test]
+fn the_location_is_reported_at_usage_but_the_message_is_not() {
+    let rules = RedactionRules::from_policy(&policy_with(
+        Deployment::EndUser { privacy_url: None },
+        TelemetryLevel::Usage,
+        |_| {},
+    ));
+    assert!(rules.keeps_attribute("panic.location"));
+    assert!(
+        !rules.keeps_attribute("panic.message"),
+        "a panic message is formatted from program data and routinely quotes a \
+         file path or a value verbatim"
+    );
+}
+
+#[test]
+fn the_message_is_reported_at_debug() {
+    let rules = RedactionRules::from_policy(&policy_with(
+        Deployment::EndUser { privacy_url: None },
+        TelemetryLevel::Debug,
+        |_| {},
+    ));
+    assert!(rules.keeps_attribute("panic.message"));
+}
+
+#[test]
+fn a_panic_message_that_quotes_a_secret_is_still_dropped_at_debug() {
+    // The attribute key is what the never-list matches on, so a secret inside
+    // the *value* is not caught by it. This test documents that limit
+    // deliberately: the mitigation is that the message is debug-only, not that
+    // it is scrubbed.
+    let rules = RedactionRules::from_policy(&policy_with(
+        Deployment::EndUser { privacy_url: None },
+        TelemetryLevel::Usage,
+        |_| {},
+    ));
+    assert!(!rules.keeps_attribute("panic.message"));
 }
 
 #[test]

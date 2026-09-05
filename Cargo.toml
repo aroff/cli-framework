@@ -843,3 +843,8 @@ required-features = ["telemetry"]
 name = "unit_telemetry_probe_feature"
 path = "tests/unit/telemetry_probe_feature.rs"
 required-features = ["telemetry"]
+
+[[test]]
+name = "unit_telemetry_probe_surfaces"
+path = "tests/unit/telemetry_probe_surfaces.rs"
+required-features = ["telemetry"]

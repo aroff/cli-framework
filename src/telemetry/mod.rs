@@ -226,6 +226,8 @@ pub use init::{init_from_policy, sampler_for_policy, view_keys_for_test};
 pub mod probes;
 #[cfg(feature = "telemetry")]
 pub use probes::{
-    arg_names, arg_value_attrs, command_metric_labels, command_span_attrs, feature_attrs,
-    registered_feature_names, usage_error_attrs, CommandOutcome, CommandStatus, Surface,
+    arg_names, arg_value_attrs, auth_attrs, chat_attrs, command_metric_labels, command_span_attrs,
+    config_attrs, doctor_attrs, feature_attrs, help_attrs, http_client_attrs, http_server_attrs,
+    mcp_session_attrs, metrics, plugin_attrs, process_attrs, registered_feature_names,
+    secrets_attrs, spans, usage_error_attrs, CommandOutcome, CommandStatus, Surface,
 };
