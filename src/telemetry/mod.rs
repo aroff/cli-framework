@@ -128,7 +128,21 @@ pub use policy::{
 #[cfg(feature = "telemetry")]
 pub mod store;
 #[cfg(feature = "telemetry")]
-pub use store::{StoreState, TelemetrySettings, TelemetryStore, TELEMETRY_SCHEMA_VERSION};
+pub use store::{
+    StoreState, TelemetrySettings, TelemetryStore, TelemetryStoreLocation, TELEMETRY_SCHEMA_VERSION,
+};
+
+// Gated on `telemetry` for the same reason as `store` above: `commands.rs`
+// registers the built-in `telemetry` command group, which only exists in a
+// `telemetry` build, and consumes `TelemetryStore`/`TelemetryPolicy`/
+// `ProbeRegistry`, all themselves gated the same way.
+#[cfg(feature = "telemetry")]
+pub mod commands;
+#[cfg(feature = "telemetry")]
+pub use commands::{
+    disable_probe, enable_probe, reset, set_level, status_report, ProbeStatus, SetOutcome,
+    StatusReport, TelemetryCommandError,
+};
 
 // Gated on `observability`, not `telemetry`: `install_default_logging`/
 // `LoggingGuard` replace `init_default_logging`'s old body and must stay

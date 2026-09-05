@@ -230,4 +230,41 @@ impl TelemetryStore {
         })
         .map(|_| ())
     }
+
+    /// A store that was never opened against a real path — reads fall back to
+    /// defaults and every write fails with `reason`.
+    ///
+    /// Test-only constructor: production always goes through [`Self::open`],
+    /// [`Self::open_with_format`], [`Self::open_at`] or
+    /// [`Self::open_at_with_format`], which compute their own reason when the
+    /// platform or directory is unavailable.
+    #[doc(hidden)]
+    pub fn unavailable(reason: impl Into<String>) -> Self {
+        Self {
+            state: StoreState::Unavailable(reason.into()),
+            store: None,
+        }
+    }
+}
+
+/// Where a process's telemetry settings file lives.
+///
+/// `dir: None` means the platform configuration directory, which is what
+/// every real application uses. A test sets it to a `TempDir` so it never
+/// touches the person's own consent file. `format` is JSON until PR7's
+/// Task 27 teaches the builder to report the application's declared
+/// configuration format (PRD line 258) — do not try to resolve it here.
+#[derive(Debug, Clone, Default)]
+pub struct TelemetryStoreLocation {
+    pub dir: Option<PathBuf>,
+    pub format: ConfigFormat,
+}
+
+impl TelemetryStoreLocation {
+    pub fn open(&self, app: &str) -> TelemetryStore {
+        match &self.dir {
+            Some(dir) => TelemetryStore::open_at_with_format(dir, app, self.format),
+            None => TelemetryStore::open_with_format(app, self.format),
+        }
+    }
 }

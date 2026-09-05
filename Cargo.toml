@@ -889,3 +889,13 @@ required-features = ["telemetry"]
 name = "unit_telemetry_probe_surfaces"
 path = "tests/unit/telemetry_probe_surfaces.rs"
 required-features = ["telemetry"]
+
+[[test]]
+name = "unit_telemetry_commands"
+path = "tests/unit/telemetry_commands.rs"
+required-features = ["telemetry", "config"]
+
+[[test]]
+name = "telemetry_cli"
+path = "tests/integration/telemetry_cli.rs"
+required-features = ["telemetry", "config", "testkit"]

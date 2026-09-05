@@ -64,6 +64,16 @@ pub struct AppBuilder {
     #[cfg(feature = "auth")]
     token_provider: Option<Arc<dyn crate::auth::TokenProvider>>,
     telemetry_config: Option<crate::telemetry::TelemetryConfig>,
+    /// The application's deployment shape (spec 025). Ungated: `Deployment`
+    /// lives in `telemetry::axes`, which compiles unconditionally, and this
+    /// field is read outside the `telemetry` feature too (it will gate
+    /// startup behaviour PR7 adds). Defaults to `EndUser { privacy_url: None
+    /// }`, the PRD's default for an app that never calls `with_deployment`.
+    deployment: crate::telemetry::Deployment,
+    /// Test-only override for where the `telemetry` settings file lives; see
+    /// [`Self::with_telemetry_config_dir`].
+    #[cfg(feature = "telemetry")]
+    telemetry_store_dir: Option<PathBuf>,
     #[cfg(feature = "config")]
     config_backend: Option<Arc<dyn crate::config::ConfigBackend>>,
     #[cfg(feature = "config")]
@@ -128,6 +138,9 @@ impl AppBuilder {
             #[cfg(feature = "auth")]
             token_provider: None,
             telemetry_config: None,
+            deployment: crate::telemetry::Deployment::EndUser { privacy_url: None },
+            #[cfg(feature = "telemetry")]
+            telemetry_store_dir: None,
             #[cfg(feature = "config")]
             config_backend: None,
             #[cfg(feature = "config")]
@@ -557,6 +570,37 @@ impl AppBuilder {
         self
     }
 
+    /// Declare this application's deployment shape (spec 025).
+    ///
+    /// `Deployment::EndUser` (the default — an app that never calls this
+    /// still gets it) is a program a person installs and runs themselves; it
+    /// is what auto-registers the built-in `telemetry` command group so that
+    /// person has somewhere to see and change what is sent. `Deployment::
+    /// Service` is a program an operator runs as a server, where the
+    /// telemetry level is a config decision made the same way every other
+    /// config decision is, and a runtime toggle command would be a second
+    /// source of truth `telemetry status` on one replica could not answer
+    /// for the fleet — so no command group is registered there at all.
+    pub fn with_deployment(mut self, deployment: crate::telemetry::Deployment) -> Self {
+        self.deployment = deployment;
+        self
+    }
+
+    /// The deployment shape configured via [`Self::with_deployment`].
+    pub fn deployment(&self) -> &crate::telemetry::Deployment {
+        &self.deployment
+    }
+
+    /// Point telemetry's settings file at `dir` instead of the platform
+    /// configuration directory. Test-only: an application has no reason to move
+    /// a person's consent file somewhere unexpected.
+    #[cfg(feature = "telemetry")]
+    #[doc(hidden)]
+    pub fn with_telemetry_config_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.telemetry_store_dir = Some(dir.into());
+        self
+    }
+
     /// Opt-in build metadata to include a short git commit id in version output.
     ///
     /// - `None` clears the value.
@@ -664,6 +708,31 @@ impl AppBuilder {
             } else {
                 tracing::warn!(
                     "'config' command already registered; skipping built-in config commands"
+                );
+            }
+        }
+
+        // Auto-register `telemetry` command group (spec 025) on an EndUser
+        // deployment only. A service's telemetry level is an operator's
+        // config decision, made the same way every other config decision is
+        // made; a runtime toggle command there would be a second source of
+        // truth that `telemetry status` on one replica could not answer for
+        // the fleet, so no group is registered for `Deployment::Service`.
+        #[cfg(feature = "telemetry")]
+        if self.deployment.is_end_user() {
+            if self.command_registry.get("telemetry").is_none() {
+                let location = crate::telemetry::TelemetryStoreLocation {
+                    dir: self.telemetry_store_dir.take(),
+                    format: crate::config::ConfigFormat::default(),
+                };
+                crate::telemetry::commands::register_telemetry_commands(
+                    &mut self.command_registry,
+                    self.app_name,
+                    location,
+                )?;
+            } else {
+                tracing::warn!(
+                    "'telemetry' command already registered; skipping built-in telemetry commands"
                 );
             }
         }
@@ -811,6 +880,7 @@ impl AppBuilder {
             #[cfg(feature = "auth")]
             token_provider: self.token_provider,
             telemetry_config: self.telemetry_config,
+            deployment: self.deployment,
             active_telemetry: None,
             #[cfg(feature = "telemetry")]
             telemetry_policy: Arc::new(crate::telemetry::resolve_policy(
@@ -918,6 +988,9 @@ pub struct App<C: AppContext> {
     token_provider: Option<Arc<dyn crate::auth::TokenProvider>>,
     #[allow(dead_code)]
     telemetry_config: Option<crate::telemetry::TelemetryConfig>,
+    /// The application's deployment shape (spec 025); see
+    /// [`AppBuilder::with_deployment`].
+    deployment: crate::telemetry::Deployment,
     #[allow(dead_code)]
     pub(crate) active_telemetry: Option<Arc<dyn crate::telemetry::Telemetry + Send + Sync>>,
     /// A resolved [`TelemetryPolicy`](crate::telemetry::TelemetryPolicy) the
@@ -1394,6 +1467,11 @@ impl<C: AppContext> App<C> {
     /// Return the global flags registered on this app.
     pub fn global_flags(&self) -> &[ArgSpec] {
         &self.global_flags
+    }
+
+    /// The deployment shape configured via [`AppBuilder::with_deployment`].
+    pub fn deployment(&self) -> &crate::telemetry::Deployment {
+        &self.deployment
     }
 
     pub fn ailoop_client(&self) -> Option<&AiloopClient> {
