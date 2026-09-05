@@ -137,3 +137,59 @@ fn a_default_startup_report_records_nothing_happened_yet() {
     assert!(report.unmatched_env.is_empty());
     assert!(report.findings.is_empty());
 }
+
+// Three orderings carry a stated reason on their `StartupStep` variant but
+// were pinned by nothing: each of the three was verified to survive a swap of
+// the two steps involved before these were written, which is the only reason
+// to add a test to a suite that already has eight.
+#[test]
+fn the_notice_is_shown_after_the_subscriber_exists_to_log_it() {
+    let order = startup_order();
+    let subscriber = order
+        .iter()
+        .position(|s| *s == StartupStep::InstallSubscriber)
+        .unwrap();
+    let notice = order
+        .iter()
+        .position(|s| *s == StartupStep::ShowNotice)
+        .unwrap();
+    assert!(
+        subscriber < notice,
+        "the notice is emitted through tracing; shown first it would be swallowed \
+         by a subscriber that does not exist yet"
+    );
+}
+
+#[test]
+fn the_store_is_opened_before_resolution_needs_its_stored_consent() {
+    let order = startup_order();
+    let store = order
+        .iter()
+        .position(|s| *s == StartupStep::OpenStore)
+        .unwrap();
+    let resolve = order
+        .iter()
+        .position(|s| *s == StartupStep::Resolve)
+        .unwrap();
+    assert!(
+        store < resolve,
+        "resolution reads the stored telemetry.level; resolving first would clamp \
+         against an absent config_file layer and silently ignore a person's choice"
+    );
+}
+
+#[test]
+fn the_panic_hook_is_the_last_thing_installed_before_dispatch() {
+    let order = startup_order();
+    let hook = order
+        .iter()
+        .position(|s| *s == StartupStep::InstallPanicHook)
+        .unwrap();
+    assert_eq!(
+        hook,
+        order.len() - 2,
+        "a panic during startup must be reported by whatever hook was already \
+         installed, not by a half-built one that references providers that do \
+         not exist yet: {order:?}"
+    );
+}
