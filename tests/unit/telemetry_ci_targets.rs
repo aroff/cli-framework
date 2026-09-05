@@ -206,3 +206,32 @@ fn the_telemetry_steps_enable_every_feature_their_targets_require() {
         );
     }
 }
+
+/// The two invocations must not merely each be sufficient — they must agree.
+/// Every check above compares one invocation against the manifest, which leaves
+/// room for the workflow to gain a feature no telemetry target happens to
+/// require while the script keeps the old list: both stay "sufficient", and
+/// `run-ci-tests.sh` quietly stops replicating CI, which is the one thing its
+/// header promises. Anti-vacuity for this one is `the_manifest_and_both_\
+/// invocations_parse`: two blind parsers would agree on nothing and pass here.
+#[test]
+fn the_two_telemetry_steps_stay_identical() {
+    let invocations = telemetry_invocations();
+    let (base_label, base_tests, base_features) = &invocations[0];
+
+    for (label, tests, features) in &invocations[1..] {
+        let only_base: BTreeSet<&String> = base_features.difference(features).collect();
+        let only_other: BTreeSet<&String> = features.difference(base_features).collect();
+
+        assert!(
+            only_base.is_empty() && only_other.is_empty(),
+            "{base_label} and {label} must enable the same features, or a clean \
+             local run stops meaning CI will pass. Only in the first: \
+             {only_base:?}. Only in the second: {only_other:?}"
+        );
+        assert_eq!(
+            base_tests, tests,
+            "{base_label} and {label} must select their targets the same way"
+        );
+    }
+}
