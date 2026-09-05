@@ -794,3 +794,8 @@ required-features = ["telemetry", "config"]
 name = "unit_telemetry_env"
 path = "tests/unit/telemetry_env.rs"
 required-features = ["telemetry", "config"]
+
+[[test]]
+name = "unit_config_roaming_filter"
+path = "tests/unit/config_roaming_filter.rs"
+required-features = ["config-managed"]
