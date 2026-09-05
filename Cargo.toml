@@ -739,6 +739,11 @@ required-features = ["telemetry"]
 # Own binary: installing a subscriber is a process-global one-way door, and
 # this test's whole point is the first `try_init` succeeding.
 [[test]]
+name = "unit_telemetry_subscriber_otel"
+path = "tests/unit/telemetry_subscriber_otel.rs"
+required-features = ["telemetry"]
+
+[[test]]
 name = "unit_telemetry_subscriber_install"
 path = "tests/unit/telemetry_subscriber_install.rs"
 required-features = ["telemetry"]
