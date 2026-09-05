@@ -1,10 +1,61 @@
 // tests/unit/telemetry_exporter.rs
 use cli_framework::telemetry::{
-    redact_span, span_verdict, Deployment, KeyValue, SpanVerdict, TelemetryLevel,
+    redact_span, span_verdict, Deployment, RedactingExporter, SpanVerdict, TelemetryLevel,
 };
+use opentelemetry_sdk::trace::SpanExporter;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 mod support;
 use support::{policy_with, span_named};
+
+/// A `SpanExporter` that records how many times each trait method was called,
+/// so a test can prove `RedactingExporter` actually delegates to its inner
+/// exporter — rather than merely compiling against the trait — and can tell
+/// "never called" apart from "called with nothing to do", which a
+/// names-only recorder like `support::RecordingExporter` cannot.
+#[derive(Debug, Default)]
+struct ProbeExporter {
+    export_calls: Arc<Mutex<u32>>,
+    shutdown_with_timeout_calls: Arc<Mutex<Vec<Duration>>>,
+    shutdown_calls: Arc<Mutex<u32>>,
+    force_flush_calls: Arc<Mutex<u32>>,
+    set_resource_calls: Arc<Mutex<u32>>,
+}
+
+impl SpanExporter for ProbeExporter {
+    fn export(
+        &self,
+        _batch: Vec<opentelemetry_sdk::trace::SpanData>,
+    ) -> impl std::future::Future<Output = opentelemetry_sdk::error::OTelSdkResult> + Send {
+        let calls = self.export_calls.clone();
+        async move {
+            *calls.lock().unwrap() += 1;
+            Ok(())
+        }
+    }
+    fn shutdown_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> opentelemetry_sdk::error::OTelSdkResult {
+        self.shutdown_with_timeout_calls
+            .lock()
+            .unwrap()
+            .push(timeout);
+        Ok(())
+    }
+    fn shutdown(&mut self) -> opentelemetry_sdk::error::OTelSdkResult {
+        *self.shutdown_calls.lock().unwrap() += 1;
+        Ok(())
+    }
+    fn force_flush(&mut self) -> opentelemetry_sdk::error::OTelSdkResult {
+        *self.force_flush_calls.lock().unwrap() += 1;
+        Ok(())
+    }
+    fn set_resource(&mut self, _resource: &opentelemetry_sdk::Resource) {
+        *self.set_resource_calls.lock().unwrap() += 1;
+    }
+}
 
 #[test]
 fn a_span_whose_probe_is_below_the_telemetry_level_is_dropped_whole() {
@@ -138,9 +189,6 @@ fn an_events_attributes_are_redacted_by_the_same_rules_as_a_spans() {
 
 #[test]
 fn the_exporter_forwards_only_what_survives() {
-    use cli_framework::telemetry::RedactingExporter;
-    use std::sync::{Arc, Mutex};
-
     let policy = Arc::new(policy_with(
         Deployment::Service,
         TelemetryLevel::Usage,
@@ -158,4 +206,65 @@ fn the_exporter_forwards_only_what_survives() {
     support::export_blocking(&exporter, batch);
 
     assert_eq!(&*seen.lock().unwrap(), &vec!["kept".to_string()]);
+}
+
+#[test]
+fn an_empty_surviving_batch_never_reaches_the_inner_exporter() {
+    let policy = Arc::new(policy_with(
+        Deployment::Service,
+        TelemetryLevel::Usage,
+        |_| {},
+    ));
+    let probe = ProbeExporter::default();
+    let export_calls = probe.export_calls.clone();
+    let exporter = RedactingExporter::new(probe, policy);
+
+    // Every span here is below the telemetry level, so the boundary drops
+    // the whole batch. The inner exporter must never be called at all — not
+    // even once with an empty `Vec` — because a real OTLP exporter turns
+    // every call into an HTTP request, and "send nothing" is not the same
+    // as "send an empty batch" from a collector's point of view.
+    let batch = vec![span_named("dropped", &[("cli.probe", "cli.config")])];
+    support::export_blocking(&exporter, batch);
+
+    assert_eq!(
+        *export_calls.lock().unwrap(),
+        0,
+        "every span was dropped by the boundary, so the inner exporter's \
+         export() must never run"
+    );
+}
+
+#[test]
+fn the_exporter_delegates_shutdown_flush_and_resource_calls_to_the_inner_exporter() {
+    let policy = Arc::new(policy_with(
+        Deployment::Service,
+        TelemetryLevel::Usage,
+        |_| {},
+    ));
+    let probe = ProbeExporter::default();
+    let shutdown_with_timeout_calls = probe.shutdown_with_timeout_calls.clone();
+    let shutdown_calls = probe.shutdown_calls.clone();
+    let force_flush_calls = probe.force_flush_calls.clone();
+    let set_resource_calls = probe.set_resource_calls.clone();
+    let mut exporter = RedactingExporter::new(probe, policy);
+
+    assert!(exporter
+        .shutdown_with_timeout(Duration::from_secs(3))
+        .is_ok());
+    assert_eq!(
+        &*shutdown_with_timeout_calls.lock().unwrap(),
+        &vec![Duration::from_secs(3)],
+        "the timeout must reach the inner exporter unchanged"
+    );
+
+    assert!(exporter.shutdown().is_ok());
+    assert_eq!(*shutdown_calls.lock().unwrap(), 1);
+
+    assert!(exporter.force_flush().is_ok());
+    assert_eq!(*force_flush_calls.lock().unwrap(), 1);
+
+    let resource = opentelemetry_sdk::Resource::builder_empty().build();
+    exporter.set_resource(&resource);
+    assert_eq!(*set_resource_calls.lock().unwrap(), 1);
 }
