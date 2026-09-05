@@ -226,7 +226,7 @@ impl OidcClient {
             }
         }
 
-        // Client credentials can acquire directly
+        // Client credentials can acquire a new grant without a user.
         match &self.flow {
             OidcFlow::ClientCredentials {
                 client_secret,
@@ -240,7 +240,20 @@ impl OidcClient {
                 at.map(|s| cli_framework::auth::AccessToken::new(s, exp))
                     .ok_or(cli_framework::auth::AuthError::NotAuthenticated)
             }
-            _ => Err(cli_framework::auth::AuthError::NotAuthenticated),
+            _ => {
+                // Interactive flows cannot re-prompt here. A just-issued
+                // access token is often already inside `refresh_skew` of
+                // expiry (Keycloak access TTL of 60s vs the 60s default
+                // skew). Returning NotAuthenticated after a successful
+                // login() is wrong: the user just authenticated.
+                if let Some(at) = access_token {
+                    let not_expired = expires_at.is_none_or(|exp| SystemTime::now() < exp);
+                    if not_expired {
+                        return Ok(cli_framework::auth::AccessToken::new(at, expires_at));
+                    }
+                }
+                Err(cli_framework::auth::AuthError::NotAuthenticated)
+            }
         }
     }
 
@@ -649,12 +662,12 @@ impl OidcClient {
         };
         cache.entries.insert(key, entry);
 
-        if let Err(e) =
-            write_cache(self.secret_store.as_ref(), &self.cache_secret_key, &cache).await
-        {
-            tracing::warn!("oidc token cache: write failed: {e}");
-        }
+        let write = write_cache(self.secret_store.as_ref(), &self.cache_secret_key, &cache).await;
         unlock_cache_dir(lock);
+        write.map_err(|e| cli_framework::auth::AuthError::Provider {
+            message: format!("token cache write failed: {e}"),
+            source: None,
+        })?;
         Ok(())
     }
 }
@@ -1151,5 +1164,105 @@ mod flow_selection_tests {
             pick_interactive_flow(false, false),
             OidcFlow::DeviceCode
         ));
+    }
+}
+
+#[cfg(test)]
+mod token_cache_tests {
+    use super::*;
+    use cli_framework::auth::TokenProvider;
+    use cli_framework::secrets::{InMemorySecretStore, SecretError, SecretValue};
+
+    struct FailPutStore;
+
+    #[async_trait]
+    impl SecretStore for FailPutStore {
+        async fn get(&self, _key: &SecretKey) -> Result<SecretValue, SecretError> {
+            Err(SecretError::NotFound)
+        }
+        async fn put(&self, _key: &SecretKey, _value: SecretValue) -> Result<(), SecretError> {
+            Err(SecretError::backend("blob too large"))
+        }
+        async fn delete(&self, _key: &SecretKey) -> Result<(), SecretError> {
+            Ok(())
+        }
+        async fn rotate(&self, _key: &SecretKey) -> Result<SecretValue, SecretError> {
+            Err(SecretError::NotSupported("rotate"))
+        }
+    }
+
+    fn pkce_client(dir: &std::path::Path, store: Arc<dyn SecretStore>) -> OidcClient {
+        OidcClient::builder()
+            .issuer_url("https://auth.example.com")
+            .client_id("aidesktop")
+            .flow(OidcFlow::AuthCodePkce {
+                redirect: RedirectConfig::default(),
+            })
+            .cache_dir(dir.to_path_buf())
+            .secret_store(store)
+            .refresh_skew(Duration::from_secs(60))
+            .build()
+            .expect("build")
+    }
+
+    #[tokio::test]
+    async fn pkce_token_returns_unexpired_access_inside_refresh_skew() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::new());
+        let client = pkce_client(dir.path(), store);
+        client
+            .store_token_response(&serde_json::json!({
+                "access_token": "just-issued",
+                "token_type": "Bearer",
+                "expires_in": 45u64,
+            }))
+            .await
+            .expect("store");
+
+        let token = client
+            .token()
+            .await
+            .expect("just-issued PKCE token must not become NotAuthenticated");
+        assert_eq!(token.as_bearer(), "just-issued");
+    }
+
+    #[tokio::test]
+    async fn pkce_token_is_not_authenticated_when_access_has_expired() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::new());
+        let client = pkce_client(dir.path(), store);
+        client
+            .store_token_response(&serde_json::json!({
+                "access_token": "stale",
+                "token_type": "Bearer",
+                "expires_in": 0u64,
+            }))
+            .await
+            .expect("store");
+
+        let err = client.token().await.expect_err("expired PKCE token");
+        assert!(
+            matches!(err, cli_framework::auth::AuthError::NotAuthenticated),
+            "got {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn store_token_response_fails_when_cache_write_fails() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let client = pkce_client(dir.path(), Arc::new(FailPutStore));
+        let err = client
+            .store_token_response(&serde_json::json!({
+                "access_token": "x",
+                "token_type": "Bearer",
+                "expires_in": 3600u64,
+            }))
+            .await
+            .expect_err("write failure must fail login, not succeed silently");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("token cache write failed"),
+            "expected cache-write error, got {msg}"
+        );
     }
 }
