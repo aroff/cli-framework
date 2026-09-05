@@ -195,6 +195,16 @@ cli-framework-oidc = { path = "cli-framework-oidc", features = ["client", "serve
 # part of cli-framework-oidc's public API, so constructing one from this
 # crate's own tests needs the same `secrecy` type directly.
 secrecy = { version = "0.8", features = ["serde"] }
+# tests/integration/telemetry_end_to_end.rs decodes the raw OTLP/HTTP
+# protobuf body a real exporter puts on the wire, rather than stopping at the
+# in-memory `Vec<KeyValue>` every other telemetry test asserts on. Version
+# matched to the `opentelemetry` stack above — a mismatched proto crate
+# compiles and then fails to decode.
+opentelemetry-proto = { version = "0.31", default-features = false, features = ["gen-tonic-messages", "trace", "metrics"] }
+# `ExportTraceServiceRequest::decode` is inherent to `prost::Message`. Already
+# a transitive dependency (of opentelemetry-proto itself); declared directly
+# because the test imports it by name, matching the version already locked.
+prost = "0.14"
 
 [features]
 default = ["chat"]
