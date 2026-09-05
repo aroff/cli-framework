@@ -168,3 +168,145 @@ pub fn feature_outcome(registered: &[&str], name: &str) -> FeatureOutcome {
         FeatureOutcome::Unregistered
     }
 }
+
+use TelemetryLevel::{Debug as Dbg, Diagnostic, Usage};
+
+/// The framework's own probes. An application adds to this list through
+/// `AppBuilder::with_telemetry_ops`; it cannot remove from it, but a person or
+/// an administrator can disable any of them.
+pub const BUILTIN_PROBES: &[ProbeSpec] = &[
+    ProbeSpec {
+        id: "cli.process",
+        min_level: Usage,
+        summary: "Process start and exit",
+        sends: "That the app ran, its version, and the exit status class",
+    },
+    ProbeSpec {
+        id: "cli.command",
+        min_level: Usage,
+        summary: "Which command ran",
+        sends: "The registered command path, the invocation surface, duration and status",
+    },
+    ProbeSpec {
+        id: "cli.command.args",
+        min_level: Diagnostic,
+        summary: "Which arguments were supplied",
+        sends: "Argument names and how many there were, never their values",
+    },
+    ProbeSpec {
+        id: "cli.command.arg_values",
+        min_level: Dbg,
+        summary: "Argument values",
+        sends: "Values of arguments the author explicitly allowlisted, and no others",
+    },
+    ProbeSpec {
+        id: "cli.usage_error",
+        min_level: Usage,
+        summary: "Commands that were typed wrongly",
+        sends: "The kind of mistake: unknown command, unknown flag, missing argument, \
+                invalid value or failed validation",
+    },
+    ProbeSpec {
+        id: "cli.usage_error.token",
+        min_level: Dbg,
+        summary: "The text that was not understood",
+        sends: "The offending token itself",
+    },
+    ProbeSpec {
+        id: "cli.panic",
+        min_level: Usage,
+        summary: "Crashes",
+        sends: "That the app panicked and the source location, never the message",
+    },
+    ProbeSpec {
+        id: "cli.panic.message",
+        min_level: Dbg,
+        summary: "Crash messages",
+        sends: "The panic message text",
+    },
+    ProbeSpec {
+        id: "cli.help",
+        min_level: Usage,
+        summary: "Help lookups",
+        sends: "Which command's help was asked for",
+    },
+    ProbeSpec {
+        id: "cli.feature",
+        min_level: Usage,
+        summary: "Named features the app marks",
+        sends: "The name of a feature the author registered, and nothing else",
+    },
+    ProbeSpec {
+        id: "cli.auth",
+        min_level: Usage,
+        summary: "Sign-in activity",
+        sends: "That a login, logout, refresh or failure happened, never a credential",
+    },
+    ProbeSpec {
+        id: "cli.config",
+        min_level: Diagnostic,
+        summary: "Configuration reads and writes",
+        sends: "Which setting was touched and whether it succeeded, never the value",
+    },
+    ProbeSpec {
+        id: "cli.secrets",
+        min_level: Diagnostic,
+        summary: "Secret-store activity",
+        sends: "Which backend was used and whether it succeeded, never a secret",
+    },
+    ProbeSpec {
+        id: "cli.doctor",
+        min_level: Usage,
+        summary: "Diagnostic runs",
+        sends: "Which checks ran and how severe their findings were",
+    },
+    ProbeSpec {
+        id: "cli.plugin",
+        min_level: Diagnostic,
+        summary: "Plugin activity",
+        sends: "Which plugin loaded or failed to load",
+    },
+    ProbeSpec {
+        id: "cli.chat",
+        min_level: Usage,
+        summary: "Chat sessions",
+        sends: "That a chat session ran and how long it lasted, never prompt text",
+    },
+    ProbeSpec {
+        id: "http.client",
+        min_level: Diagnostic,
+        summary: "Outbound requests",
+        sends: "Method, status and duration, never the URL path or query",
+    },
+    ProbeSpec {
+        id: "http.client.server_address",
+        min_level: Diagnostic,
+        summary: "Which host was called",
+        sends: "The destination host name, on the span only",
+    },
+    ProbeSpec {
+        id: "http.server",
+        min_level: Usage,
+        summary: "Requests served",
+        sends: "The matched route template, method, status and duration",
+    },
+    ProbeSpec {
+        id: "mcp.session",
+        min_level: Usage,
+        summary: "Agent sessions",
+        sends: "That an MCP session ran, which tools it called and how long it lasted",
+    },
+];
+
+impl ProbeRegistry {
+    /// A registry preloaded with [`BUILTIN_PROBES`].
+    pub fn with_builtins() -> Self {
+        let mut registry = Self::new();
+        for spec in BUILTIN_PROBES {
+            registry
+                .register(*spec)
+                .expect("the built-in probe catalog is valid by construction");
+        }
+        registry
+    }
+}
