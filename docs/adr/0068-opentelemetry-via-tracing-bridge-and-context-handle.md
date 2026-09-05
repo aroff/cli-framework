@@ -94,7 +94,11 @@ whole subsystem is inert.
   `App`.
 - `init_default_logging()` is deprecated; subscriber setup (fmt layer ± OTel bridge layer) is
   owned by the run entry-point so all layers are composed once into a single
-  `tracing::subscriber::set_global_default` call.
+  `tracing::subscriber::set_global_default` call. **Superseded by ADR 0078**: deprecating it
+  left an application that wants console logging in `main` with no way to also export traces,
+  since whichever of the two installed first locked the other out. It is no longer deprecated —
+  it returns a `LoggingGuard` carrying a reload slot the run entry-point attaches the OTel
+  bridge layer to, which composes both without a second `set_global_default`.
 - `with_tracing()` (api/mod.rs) upgrades to real server spans with inbound W3C extraction + HTTP
   metrics. **Corrected**: this and outbound propagation did not land with this ADR — inbound
   extraction shipped later, in the server span rework; outbound is `TracedRequestBuilder`

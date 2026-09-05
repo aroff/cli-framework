@@ -2,7 +2,8 @@
 
 - Date: 2026-09-04
 - Status: Accepted
-- Relates to: ADR 0068 (tracing-bridge substrate), ADR 0076 (probe ids); specs 017, 020, 025
+- Relates to: ADR 0068 (tracing-bridge substrate; this ADR supersedes its deprecation of
+  `init_default_logging()`), ADR 0076 (probe ids); specs 017, 020, 025
 
 ## Context
 
