@@ -195,7 +195,7 @@ secrecy = { version = "0.8", features = ["serde"] }
 [features]
 default = ["chat"]
 observability = ["dep:tracing-subscriber"]
-telemetry = ["observability", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry", "dep:opentelemetry-http", "dep:http"]
+telemetry = ["observability", "config", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry", "dep:opentelemetry-http", "dep:http"]
 # CLI output utilities optional features
 table-advanced = ["comfy-table"]
 progress = ["indicatif"]
@@ -700,4 +700,29 @@ required-features = ["telemetry"]
 [[test]]
 name = "integration_telemetry_version_command_span"
 path = "tests/integration/telemetry_version_command_span.rs"
+required-features = ["telemetry"]
+
+[[test]]
+name = "unit_telemetry_axes"
+path = "tests/unit/telemetry_axes.rs"
+required-features = ["telemetry"]
+
+[[test]]
+name = "unit_telemetry_probe"
+path = "tests/unit/telemetry_probe.rs"
+required-features = ["telemetry"]
+
+[[test]]
+name = "unit_telemetry_probe_catalog"
+path = "tests/unit/telemetry_probe_catalog.rs"
+required-features = ["telemetry"]
+
+[[test]]
+name = "unit_telemetry_policy"
+path = "tests/unit/telemetry_policy.rs"
+required-features = ["telemetry"]
+
+[[test]]
+name = "unit_telemetry_store"
+path = "tests/unit/telemetry_store.rs"
 required-features = ["telemetry"]
