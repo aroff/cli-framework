@@ -94,7 +94,9 @@ pub mod axes;
 pub use axes::{Attribution, Deployment, ParseAxisError, TelemetryLevel};
 
 pub mod probe;
-pub use probe::{feature_outcome, FeatureOutcome, ProbeIdError, ProbeRegistry, ProbeSpec};
+pub use probe::{
+    feature_outcome, FeatureOutcome, ProbeIdError, ProbeRegistry, ProbeSpec, OWNED_PROBE_LEAF,
+};
 
 // Gated on `telemetry`, unlike `axes`/`probe` above: this module hard-depends
 // on `crate::config::resolution::Layer` (the top-level `config` module,

@@ -159,7 +159,19 @@ fn probe_switches(registry: &ProbeRegistry) -> Vec<FieldManifest> {
             };
             match &mut cursor[index].kind {
                 FieldKind::Section { fields } => cursor = fields,
-                _ => unreachable!("probe path segments are always sections"),
+                // Genuinely unreachable, and only because of
+                // `ProbeIdError::ShadowsEnabledSwitch`: the sole non-section
+                // node this walk ever creates is the `enabled` leaf pushed
+                // below, and `validate_probe_id` refuses any id whose
+                // non-first segment is `enabled`. Without that rule, probes
+                // `a` and `a.enabled` both reach `telemetry.a.enabled` and
+                // this arm fires — `ProbeRegistry` sorts, so `a` is always
+                // walked first and the panic is deterministic.
+                _ => unreachable!(
+                    "a probe path segment collided with the framework-owned '{}' switch; \
+                     validate_probe_id should have refused this id",
+                    crate::telemetry::probe::OWNED_PROBE_LEAF
+                ),
             }
         }
         cursor.push(FieldManifest {

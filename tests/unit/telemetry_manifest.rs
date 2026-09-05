@@ -2,7 +2,7 @@
 use cli_framework::config::manifest::{ConfigManifest, FieldKind, FieldManifest, Scope};
 use cli_framework::telemetry::{
     merge_telemetry_section, telemetry_only_manifest, telemetry_section, ManifestMergeError,
-    ProbeRegistry,
+    ProbeRegistry, ProbeSpec, TelemetryLevel,
 };
 
 fn registry() -> ProbeRegistry {
@@ -185,4 +185,77 @@ fn the_section_is_a_section_named_telemetry() {
     let section = telemetry_section(&registry(), None);
     assert_eq!(section.key, "telemetry");
     assert!(matches!(section.kind, FieldKind::Section { .. }));
+}
+
+/// Every key at every node of the generated section, so a collision shows up
+/// as a duplicate rather than as a silently-shadowed field.
+fn keys_by_node(fields: &[FieldManifest], prefix: &str, out: &mut Vec<String>) {
+    for f in fields {
+        let path = if prefix.is_empty() {
+            f.key.clone()
+        } else {
+            format!("{prefix}.{}", f.key)
+        };
+        out.push(path.clone());
+        if let FieldKind::Section { fields } = &f.kind {
+            keys_by_node(fields, &path, out);
+        }
+    }
+}
+
+#[test]
+fn the_generated_section_has_no_duplicate_key_at_any_node() {
+    // The generator walks each dotted probe id creating a `Section` per
+    // segment and pushing an `enabled` `Bool` at the end. Two probes whose
+    // paths meet at a node where one wants a section and the other a boolean
+    // would either panic or silently produce two fields with the same key.
+    // `ProbeIdError::ShadowsEnabledSwitch` is what makes that impossible, so
+    // this asserts the property that rule exists to protect, across the
+    // shapes that come closest to breaking it.
+    let mut registry = ProbeRegistry::with_builtins();
+    for id in [
+        "app",              // a root that is also a parent
+        "app.thing",        // its child
+        "app.thing.detail", // and grandchild
+        "enabled",          // legal: no `telemetry.enabled` key exists
+        "enabled.thing",    // and its child
+    ] {
+        registry
+            .register(ProbeSpec {
+                id,
+                min_level: TelemetryLevel::Usage,
+                summary: "s",
+                sends: "nothing",
+            })
+            .unwrap_or_else(|e| panic!("'{id}' should be a legal probe id: {e}"));
+    }
+
+    let manifest = telemetry_only_manifest("demo", &registry, None);
+    let mut keys = Vec::new();
+    keys_by_node(&manifest.fields, "", &mut keys);
+
+    let mut sorted = keys.clone();
+    sorted.sort();
+    let before = sorted.len();
+    sorted.dedup();
+    assert_eq!(
+        sorted.len(),
+        before,
+        "the generated section has a duplicate key; full key list: {keys:#?}"
+    );
+
+    // Anti-vacuity: the shapes above must actually be in the output, or the
+    // dedup assertion is checking an empty-ish tree.
+    for expected in [
+        "telemetry.app.enabled",
+        "telemetry.app.thing.enabled",
+        "telemetry.app.thing.detail.enabled",
+        "telemetry.enabled.enabled",
+        "telemetry.enabled.thing.enabled",
+    ] {
+        assert!(
+            keys.iter().any(|k| k == expected),
+            "expected '{expected}' among {keys:#?}"
+        );
+    }
 }
