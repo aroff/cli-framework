@@ -197,3 +197,10 @@ pub use redact::{
     attribute_min_level, is_never_listed, metric_label_is_allowed, probe_of, RedactionRules,
     METRIC_LABEL_ALLOWLIST, NEVER_LIST, PROBE_ATTR_KEY,
 };
+
+// Gated on `telemetry` for the same reason as `redact` above: `exporter.rs`
+// takes `&TelemetryPolicy` and implements `opentelemetry_sdk::trace::SpanExporter`.
+#[cfg(feature = "telemetry")]
+pub mod exporter;
+#[cfg(feature = "telemetry")]
+pub use exporter::{redact_span, span_verdict, RedactingExporter, SpanVerdict};

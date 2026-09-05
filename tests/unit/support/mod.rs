@@ -8,7 +8,12 @@
 use cli_framework::telemetry::{
     Attribution, Deployment, ProbeRegistry, TelemetryInputs, TelemetryLevel, TelemetryPolicy,
 };
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use opentelemetry::trace::{SpanContext, SpanKind, Status};
+use opentelemetry::KeyValue;
+use opentelemetry_sdk::trace::{SpanData, SpanEvents, SpanLinks};
+use std::borrow::Cow;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::time::SystemTime;
 
 pub fn policy_with(
     deployment: Deployment,
@@ -89,4 +94,71 @@ impl Drop for EnvGuard {
             None => std::env::remove_var(&self.key),
         }
     }
+}
+
+pub fn attrs(pairs: &[(&str, &str)]) -> Vec<KeyValue> {
+    pairs
+        .iter()
+        .map(|(k, v)| KeyValue::new(k.to_string(), v.to_string()))
+        .collect()
+}
+
+/// A minimal `SpanData` — enough for the boundary, which only reads the name,
+/// the attributes and the events.
+pub fn span_named(name: &str, pairs: &[(&str, &str)]) -> SpanData {
+    SpanData {
+        span_context: SpanContext::empty_context(),
+        parent_span_id: opentelemetry::trace::SpanId::INVALID,
+        // Not in the plan's snippet: opentelemetry_sdk 0.31's `SpanData` adds
+        // this field, and omitting it is a missing-field compile error.
+        parent_span_is_remote: false,
+        span_kind: SpanKind::Internal,
+        name: Cow::Owned(name.to_string()),
+        start_time: SystemTime::UNIX_EPOCH,
+        end_time: SystemTime::UNIX_EPOCH,
+        attributes: attrs(pairs),
+        dropped_attributes_count: 0,
+        events: SpanEvents::default(),
+        links: SpanLinks::default(),
+        status: Status::Unset,
+        instrumentation_scope: opentelemetry::InstrumentationScope::builder("test").build(),
+    }
+}
+
+pub fn event(name: &str, pairs: &[(&str, &str)]) -> opentelemetry::trace::Event {
+    opentelemetry::trace::Event::new(name.to_string(), SystemTime::UNIX_EPOCH, attrs(pairs), 0)
+}
+
+/// An in-memory `SpanExporter` that records the names it was handed.
+#[derive(Debug)]
+pub struct RecordingExporter {
+    seen: Arc<Mutex<Vec<String>>>,
+}
+
+impl RecordingExporter {
+    pub fn new(seen: Arc<Mutex<Vec<String>>>) -> Self {
+        Self { seen }
+    }
+}
+
+impl opentelemetry_sdk::trace::SpanExporter for RecordingExporter {
+    fn export(
+        &self,
+        batch: Vec<SpanData>,
+    ) -> impl std::future::Future<Output = opentelemetry_sdk::error::OTelSdkResult> + Send {
+        let seen = self.seen.clone();
+        async move {
+            let mut seen = seen.lock().unwrap_or_else(|e| e.into_inner());
+            seen.extend(batch.into_iter().map(|span| span.name.to_string()));
+            Ok(())
+        }
+    }
+}
+
+/// Drive one `export` call to completion without a Tokio runtime.
+pub fn export_blocking<E: opentelemetry_sdk::trace::SpanExporter>(
+    exporter: &E,
+    batch: Vec<SpanData>,
+) {
+    futures_executor::block_on(exporter.export(batch)).expect("export must not fail in a test");
 }

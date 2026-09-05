@@ -54,6 +54,7 @@ const FRAMEWORK_PREFIXES: &[&str] = &[
     "mcp.",
     "otel.",
     "exception.",
+    "panic.",
     "error.",
     "session.",
     "service.",

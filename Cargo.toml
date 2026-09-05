@@ -173,6 +173,10 @@ libc = "0.2"
 insta = { version = "1", features = ["json"] }
 axum = { version = "0.8" }
 futures-util = "0.3"
+# `tests/unit/support/mod.rs::export_blocking` drives one `SpanExporter::export`
+# call to completion without spinning a Tokio runtime. Already a transitive
+# dependency of the OTel SDK; declared directly because tests import it.
+futures-executor = "0.3"
 tokio-tungstenite = "0.21"
 # Consumers configuring `ApiServerBuilder::cors(...)` supply their own `tower_http::cors::CorsLayer`;
 # tests exercise that path the same way a downstream crate would.
@@ -813,4 +817,9 @@ required-features = ["telemetry"]
 [[test]]
 name = "unit_telemetry_redact"
 path = "tests/unit/telemetry_redact.rs"
+required-features = ["telemetry"]
+
+[[test]]
+name = "unit_telemetry_exporter"
+path = "tests/unit/telemetry_exporter.rs"
 required-features = ["telemetry"]
