@@ -87,7 +87,14 @@ pub mod propagation;
 
 pub use config::TelemetryConfig;
 pub use guard::TelemetryGuard;
-pub use handle::{Counter, Histogram, SpanHandle, Telemetry};
+// `FlushOutcome`/`flush_within`/`flush_within_for_test` exist only behind
+// `telemetry`: they are `guard.rs` items gated the same way the `TelemetryGuard`
+// methods that use them are (see the `#[cfg(feature = "telemetry")] impl
+// TelemetryGuard` block), unlike the always-present `TelemetryGuard` type
+// itself, which has a no-op stub for a default build.
+#[cfg(feature = "telemetry")]
+pub use guard::{flush_within, flush_within_for_test, FlushOutcome};
+pub use handle::{Counter, Histogram, KeyValue, SpanHandle, Telemetry};
 pub use noop::NoopTelemetry;
 
 pub mod axes;
@@ -178,3 +185,35 @@ pub use manifest::{
 pub mod env;
 #[cfg(feature = "telemetry")]
 pub use env::{env_var_name, scan_environment, EnvScan};
+// Gated on `telemetry` for the same reason as `policy`/`store` above:
+// `resource.rs` takes `&TelemetryPolicy` and builds `opentelemetry_sdk::Resource`.
+#[cfg(feature = "telemetry")]
+pub mod resource;
+#[cfg(feature = "telemetry")]
+pub use resource::{
+    apply_env_resource_attributes, coarse_version_for_test, metric_resource_attrs, to_resource,
+    trace_resource_attrs, ServiceIdentity,
+};
+
+// Gated on `telemetry` for the same reason as `resource` above: `redact.rs`
+// takes `&TelemetryPolicy`.
+#[cfg(feature = "telemetry")]
+pub mod redact;
+#[cfg(feature = "telemetry")]
+pub use redact::{
+    attribute_min_level, is_never_listed, metric_label_is_allowed, probe_of, RedactionRules,
+    METRIC_LABEL_ALLOWLIST, NEVER_KEYS, NEVER_LIST, NEVER_LIST_EXEMPT, PROBE_ATTR_KEY,
+};
+
+// Gated on `telemetry` for the same reason as `redact` above: `exporter.rs`
+// takes `&TelemetryPolicy` and implements `opentelemetry_sdk::trace::SpanExporter`.
+#[cfg(feature = "telemetry")]
+pub mod exporter;
+#[cfg(feature = "telemetry")]
+pub use exporter::{redact_span, span_verdict, RedactingExporter, SpanVerdict};
+
+// `init` is already gated above (it hard-depends on the OTLP exporter crates).
+// Re-export the policy-driven pipeline entry points here at the flat
+// `telemetry::` path used by callers and by `tests/unit/telemetry_pipeline.rs`.
+#[cfg(feature = "telemetry")]
+pub use init::{init_from_policy, sampler_for_policy, view_keys_for_test};

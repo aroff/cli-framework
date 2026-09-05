@@ -40,6 +40,23 @@ impl TelemetryGuard {
         use opentelemetry::trace::TracerProvider;
         self.tracer_provider.tracer(name)
     }
+
+    /// Flush both providers, but never wait longer than `budget`.
+    ///
+    /// A collector that stops responding must not hang the process on exit:
+    /// the flush runs on its own thread, and a timed-out flush leaves that
+    /// thread to finish (or not) on its own rather than blocking the caller
+    /// for it.
+    pub fn flush_within(&self, budget: std::time::Duration) -> FlushOutcome {
+        let tracer_provider = self.tracer_provider.clone();
+        let meter_provider = self.meter_provider.clone();
+        flush_within(budget, move || {
+            let _ = tracer_provider.force_flush();
+            if let Some(mp) = &meter_provider {
+                let _ = mp.force_flush();
+            }
+        })
+    }
 }
 
 #[cfg(feature = "telemetry")]
@@ -54,6 +71,50 @@ impl Drop for TelemetryGuard {
         let _ = self.tracer_provider.force_flush();
         let _ = self.tracer_provider.shutdown();
     }
+}
+
+/// Whether a bounded flush finished on its own or was cut off by its budget.
+#[cfg(feature = "telemetry")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlushOutcome {
+    /// The flush closure returned before the budget elapsed.
+    Completed,
+    /// The budget elapsed first; the flush may still be running in the
+    /// background, unobserved.
+    TimedOut,
+}
+
+/// Run `flush` on its own thread and wait for it, but never longer than
+/// `budget`.
+///
+/// Exit and shutdown paths must not hang the whole process on a collector
+/// that stopped responding, so the wait itself — not just the export call —
+/// is bounded. A timed-out flush is abandoned: its thread is detached and may
+/// finish (or keep blocking) after this function has already returned.
+#[cfg(feature = "telemetry")]
+pub fn flush_within(
+    budget: std::time::Duration,
+    flush: impl FnOnce() + Send + 'static,
+) -> FlushOutcome {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        flush();
+        let _ = tx.send(());
+    });
+    match rx.recv_timeout(budget) {
+        Ok(()) => FlushOutcome::Completed,
+        Err(_) => FlushOutcome::TimedOut,
+    }
+}
+
+/// Test-only hook exercising [`flush_within`] without a real provider pair.
+#[cfg(feature = "telemetry")]
+#[doc(hidden)]
+pub fn flush_within_for_test(
+    budget: std::time::Duration,
+    flush: impl FnOnce() + Send + 'static,
+) -> FlushOutcome {
+    flush_within(budget, flush)
 }
 
 #[cfg(not(feature = "telemetry"))]
