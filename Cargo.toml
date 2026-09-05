@@ -721,3 +721,8 @@ required-features = ["telemetry"]
 name = "unit_telemetry_policy"
 path = "tests/unit/telemetry_policy.rs"
 required-features = ["telemetry"]
+
+[[test]]
+name = "unit_telemetry_store"
+path = "tests/unit/telemetry_store.rs"
+required-features = ["telemetry"]

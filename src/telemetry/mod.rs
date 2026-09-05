@@ -110,3 +110,13 @@ pub use policy::{
     detect_kill_switch, env_var_prefix, resolve_policy, KillSwitch, LayeredLevel, TelemetryInputs,
     TelemetryPolicy,
 };
+
+// Gated on `telemetry` for the same reason as `policy` above: `store.rs`
+// hard-depends on `crate::config::{ConfigStore, ConfigFormat, FileBackend,
+// VersionedConfig}`, which only exists when `config` is enabled. Left
+// unconditional, a default build fails the same way the un-gated plan
+// snippet for `policy` did.
+#[cfg(feature = "telemetry")]
+pub mod store;
+#[cfg(feature = "telemetry")]
+pub use store::{StoreState, TelemetrySettings, TelemetryStore, TELEMETRY_SCHEMA_VERSION};
