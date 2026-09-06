@@ -22,37 +22,7 @@
 use crate::config::resolution::Layer;
 use crate::telemetry::axes::{Deployment, TelemetryLevel};
 use crate::telemetry::policy::TelemetryPolicy;
-
-/// The interface a command was invoked through.
-///
-/// This is Task 17's type (`src/telemetry/probes.rs`, PR5 — "the root span
-/// and the command probe"), not this PR's. PR5 has not landed yet, so this
-/// module — which legitimately belongs to this PR (Task 24) — cannot
-/// compile without *some* definition of `Surface`. A minimal stand-in is
-/// defined here instead, matching the plan's Task 17 shape exactly (same
-/// derives, same four variants, same `as_str` mapping), so that when PR5
-/// merges `probes.rs`'s real definition, the conflict is a duplicate `enum
-/// Surface` the reviewing session resolves by deleting this copy and
-/// re-exporting PR5's from here instead. See the PR6 final report for the
-/// full disclosure of this deviation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Surface {
-    Cli,
-    Chat,
-    Mcp,
-    Api,
-}
-
-impl Surface {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Cli => "cli",
-            Self::Chat => "chat",
-            Self::Mcp => "mcp",
-            Self::Api => "api",
-        }
-    }
-}
+use crate::telemetry::probes::Surface;
 
 /// Why no notice was shown. Every variant is a deliberate case, not a
 /// fall-through.

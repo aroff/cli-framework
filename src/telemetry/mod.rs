@@ -145,14 +145,14 @@ pub use commands::{
 };
 
 // Gated on `telemetry` for the same reason as `commands` above: `notice.rs`
-// takes `&TelemetryPolicy`. `Surface` is a minimal stand-in for Task 17's
-// (PR5, `src/telemetry/probes.rs`) type of the same name/shape — see the
-// doc comment on `notice::Surface` for why this module defines its own
-// copy rather than depending on unmerged PR5 work.
+// takes `&TelemetryPolicy`. It also names `Surface`, which it imports from
+// `probes` (PR5, Task 17) — the module carried a stand-in copy of that enum
+// while PR5 was unmerged, and the copy was deleted when this branch was
+// rebased onto it. `Surface` is re-exported once, from `probes` below.
 #[cfg(feature = "telemetry")]
 pub mod notice;
 #[cfg(feature = "telemetry")]
-pub use notice::{notice_decision, NoticeDecision, SkipReason, Surface};
+pub use notice::{notice_decision, NoticeDecision, SkipReason};
 
 // Gated on `observability`, not `telemetry`: `install_default_logging`/
 // `LoggingGuard` replace `init_default_logging`'s old body and must stay
