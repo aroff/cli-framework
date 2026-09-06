@@ -119,7 +119,9 @@ impl RetryableHttpClient {
         // comment for why. `RetryableHttpClient` carries no `AppContext` or
         // `Telemetry` handle, so unlike the command, MCP and HTTP-server
         // probes this one is span-only: there is no reachable instrument to
-        // record `http.client.request.duration` onto from here.
+        // record `http.client.request.duration` onto from here. That
+        // reservation is recorded, and enforced, in `METRIC_EMISSION` in
+        // `src/telemetry/probes.rs`.
         #[cfg(feature = "telemetry")]
         let (method, server_address, server_port) = match request_builder().build() {
             Ok(req) => (
