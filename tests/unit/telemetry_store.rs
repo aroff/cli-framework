@@ -210,6 +210,35 @@ fn resetting_a_store_with_no_usable_directory_reports_the_reason() {
 }
 
 #[test]
+fn reset_names_the_file_when_it_cannot_be_deleted() {
+    // `reset`'s third arm: `remove_file` failed for a reason that is not
+    // "already gone". Returning `Ok` there would be the worst outcome the
+    // command has — `telemetry reset` would print "the next run starts over
+    // as a new install" while the id it promised to destroy is still on disk.
+    //
+    // A directory at the settings path drives that arm deterministically:
+    // `unlink(2)` refuses to remove a directory whatever the caller's
+    // privileges, so this does not depend on who runs the suite — unlike a
+    // read-only parent directory, which root sails straight through and which
+    // would therefore pass vacuously in a root container.
+    let dir = temp_dir("reset-undeletable");
+    let store = TelemetryStore::open_at(&dir, "demo");
+    let path = dir.join("demo").join("telemetry.json");
+    std::fs::create_dir(&path).unwrap();
+
+    let err = store.reset().unwrap_err();
+
+    assert!(
+        err.to_string().contains("telemetry.json"),
+        "the failure must name the file that is still there: {err}"
+    );
+    assert!(
+        path.exists(),
+        "the fixture proves nothing once the path is gone"
+    );
+}
+
+#[test]
 fn a_store_with_no_usable_directory_is_unavailable_and_names_the_reason() {
     let dir = temp_dir("blocked");
     let blocker = dir.join("demo");
