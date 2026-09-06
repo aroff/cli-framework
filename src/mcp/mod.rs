@@ -647,16 +647,31 @@ pub async fn dispatch_tool_call_with_identity(
     let arguments_value = arguments.map(Value::Object).unwrap_or(Value::Null);
     let mut ctx = McpAppContext::new(tool_registry.telemetry.clone(), identity);
 
-    let res = {
-        #[cfg(feature = "telemetry")]
+    // The span is created here, outside `res`'s block, and kept alive via
+    // `span.clone()` below rather than moved into `.instrument`: `status`
+    // (mcp.session probe, PRD 336) is not known until the outcome is computed
+    // further down, so the still-open span must survive past the `.await` to
+    // receive it. Declaring it as `tracing::field::Empty` at creation and
+    // recording it only once known avoids fabricating a status up front.
+    #[cfg(feature = "telemetry")]
+    let span = {
         let span = tracing::info_span!(
             "cli.command",
             "cli.command.path" = tool_name,
             "cli.invocation.surface" = "mcp",
+            "cli.probe" = tracing::field::Empty,
+            "mcp.tool" = tracing::field::Empty,
+            "status" = tracing::field::Empty,
         );
-        #[cfg(not(feature = "telemetry"))]
-        let span = tracing::Span::none();
+        for kv in crate::telemetry::mcp_session_attrs(Some(tool_name), None) {
+            span.record(kv.key.as_str(), kv.value.as_str().as_ref());
+        }
+        span
+    };
+    #[cfg(not(feature = "telemetry"))]
+    let span = tracing::Span::none();
 
+    let res = {
         use tracing::Instrument;
         bridge
             .invoke_structured(
@@ -668,11 +683,11 @@ pub async fn dispatch_tool_call_with_identity(
                     mode: crate::command_surface::tool_bridge::BridgeMode::Mcp,
                 },
             )
-            .instrument(span)
+            .instrument(span.clone())
             .await
     };
 
-    match res {
+    let outcome = match res {
         Ok(output) => {
             let text = if output.text.is_empty() {
                 "OK"
@@ -707,7 +722,33 @@ pub async fn dispatch_tool_call_with_identity(
             -32003,
             format!("MCP_EXECUTION_FAILED: {}", other),
         )),
+    };
+
+    // `mcp.session` probe (Task 20): one increment per dispatched call, tagged
+    // with the tool name (bounded — it comes from the server's own declared
+    // tool list) and a closed ok/error vocabulary. `ctx.telemetry()` is the
+    // same handle `McpAppContext` already carries (falls back to a no-op when
+    // no provider is configured), matching how `src/app/builder.rs`'s command
+    // dispatch pairs a span with a counter at the same callsite.
+    #[cfg(feature = "telemetry")]
+    {
+        use crate::app::AppContext as _;
+        let status = if outcome.is_ok() { "ok" } else { "error" };
+        for kv in crate::telemetry::mcp_session_attrs(None, Some(status)) {
+            span.record(kv.key.as_str(), kv.value.as_str().as_ref());
+        }
+        ctx.telemetry()
+            .counter(crate::telemetry::metrics::MCP_TOOL_CALLS)
+            .add(
+                1,
+                &[
+                    crate::telemetry::KeyValue::new("tool", tool_name.to_string()),
+                    crate::telemetry::KeyValue::new("status", status),
+                ],
+            );
     }
+
+    outcome
 }
 
 /// Dispatches a tool call in a separate tokio task (§4.7).

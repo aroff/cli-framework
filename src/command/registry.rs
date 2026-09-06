@@ -165,6 +165,20 @@ impl Default for CommandRegistry {
     }
 }
 
+/// The label a `cli.command` probe attaches for this path, if and only if the
+/// registry actually declares it.
+///
+/// `None` for anything the registry does not resolve — a typo, a plugin that
+/// failed to load, an injected argument — so a caller building metric labels
+/// never has to decide separately whether the path is trustworthy: an
+/// unvalidated path is unbounded cardinality and a potential leak, so it must
+/// never reach a label.
+pub fn registered_command_label(registry: &CommandRegistry, path: &[String]) -> Option<String> {
+    let command_path = CommandPath(path.to_vec());
+    registry.resolve(&command_path)?;
+    Some(path.join(" "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,5 +410,28 @@ mod tests {
         let mut registry = CommandRegistry::new();
         registry.register(make_cmd("deploy"));
         assert!(registry.get("deploy").is_some());
+    }
+
+    #[test]
+    fn registered_command_label_is_some_for_a_path_the_registry_resolves() {
+        let mut registry = CommandRegistry::new();
+        registry
+            .register_at(
+                &CommandPath::new(&["cluster", "get"]).unwrap(),
+                make_cmd("get"),
+            )
+            .unwrap();
+        let path = vec!["cluster".to_string(), "get".to_string()];
+        assert_eq!(
+            registered_command_label(&registry, &path),
+            Some("cluster get".to_string())
+        );
+    }
+
+    #[test]
+    fn registered_command_label_is_none_for_a_path_the_registry_does_not_declare() {
+        let registry = CommandRegistry::new();
+        let path = vec!["not".to_string(), "registered".to_string()];
+        assert_eq!(registered_command_label(&registry, &path), None);
     }
 }

@@ -165,6 +165,83 @@ pub trait AppContext: Send + Sync {
     fn opt_policy_client(&self) -> Option<std::sync::Arc<crate::config::managed::PolicyClient>> {
         None
     }
+
+    /// Return the registered feature-probe catalog for the current
+    /// invocation, if one is available.
+    ///
+    /// The default returns `None`. The dispatch wrapper overrides this with
+    /// the app's [`ProbeRegistry`][crate::telemetry::ProbeRegistry] — the
+    /// same registry [`AppBuilder::with_telemetry_ops`][crate::app::AppBuilder]
+    /// extends — so [`mark_feature`](Self::mark_feature) can tell a
+    /// registered feature name from one nobody declared. The method itself is
+    /// not gated on the `telemetry` feature — `ProbeRegistry` is an
+    /// always-compiled type (see its module doc), so the signature costs
+    /// nothing to keep available in every build. The dispatch wrapper's
+    /// override *is* gated (there is no live registry to hand back without
+    /// `telemetry`), so a build with the feature off simply keeps the `None`
+    /// default here, same as any other context that never wires this up.
+    fn opt_probe_registry(&self) -> Option<&crate::telemetry::ProbeRegistry> {
+        None
+    }
+
+    /// Record that a named, author-defined feature ran.
+    ///
+    /// `name` becomes a `cli.feature` event unconditionally. It becomes a
+    /// `feature` metric label too, but only when `name` was registered via
+    /// `AppBuilder::with_telemetry_ops` — an unregistered name is unbounded
+    /// cardinality as a label (`mark_feature(&user_input)` in a loop would
+    /// mint one time series per input) but stays useful as an event, which
+    /// is bounded by the trace it sits in.
+    ///
+    /// An unregistered name also warns once per distinct name — not once per
+    /// process, so a second, different mistyped name still gets its own
+    /// warning — and trips a `debug_assert!`, so the framework's own test
+    /// suites catch an unregistered `mark_feature` call before it ships. The
+    /// warning state lives in a function-local `static`, one per concrete
+    /// `Self` (the usual trait-default-method monomorphization), which is
+    /// exactly "once per distinct name for as long as this context type is
+    /// in use" — the same process, in every case this framework builds
+    /// today.
+    #[cfg(feature = "telemetry")]
+    fn mark_feature(&self, name: &str) {
+        let registered: Vec<&str> = self
+            .opt_probe_registry()
+            .map(crate::telemetry::registered_feature_names)
+            .unwrap_or_default();
+        let outcome = crate::telemetry::feature_outcome(&registered, name);
+
+        if outcome == crate::telemetry::FeatureOutcome::Unregistered {
+            static WARNED: std::sync::OnceLock<
+                std::sync::Mutex<std::collections::HashSet<String>>,
+            > = std::sync::OnceLock::new();
+            let warned =
+                WARNED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+            let is_new_name = warned
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(name.to_string());
+            if is_new_name {
+                tracing::warn!(
+                    feature = name,
+                    "telemetry: this feature name is not registered, so it will not \
+                     appear as a metric label. Register it with \
+                     AppBuilder::with_telemetry_ops."
+                );
+            }
+            debug_assert!(false, "unregistered telemetry feature name: {name}");
+        }
+
+        self.telemetry().event(
+            "cli.feature",
+            &crate::telemetry::feature_attrs(name, outcome),
+        );
+    }
+
+    /// `mark_feature` without the `telemetry` feature: still callable so
+    /// handler code never needs to `cfg`-gate the call, but there is no
+    /// probe catalog and no handle worth warning through, so it is a no-op.
+    #[cfg(not(feature = "telemetry"))]
+    fn mark_feature(&self, _name: &str) {}
 }
 
 /// Typed accessor over [`AppContext::opt_request_identity`].
@@ -219,5 +296,17 @@ mod tests {
     fn default_opt_request_identity_yields_none_via_typed_accessor() {
         let ctx = PlainCtx;
         assert!(ctx.request_identity::<MyIdentity>().is_none());
+    }
+
+    /// Mirrors the request-identity default above, for the probe registry
+    /// accessor `mark_feature` depends on: a context that never overrides
+    /// `opt_probe_registry` (every context outside `CliAppContextWrapper`,
+    /// `src/app/dispatch.rs`) yields `None`, not an empty registry — the
+    /// distinction `mark_feature` relies on to fall back to an empty name
+    /// list rather than panicking on a missing registry.
+    #[test]
+    fn default_opt_probe_registry_yields_none() {
+        let ctx = PlainCtx;
+        assert!(ctx.opt_probe_registry().is_none());
     }
 }

@@ -110,7 +110,39 @@ impl RetryableHttpClient {
                 .unwrap_or(false)
         });
 
-        executor
+        // `http.client` probe (Task 20): one child span per logical call, not
+        // per retry attempt — mirroring how the `cli.command` root span covers
+        // a whole dispatch rather than opening one per internal retry. Method
+        // and host come from building (never sending) one extra request off
+        // the same factory every attempt already calls fresh; deliberately no
+        // full URL travels in any attribute — see `http_client_attrs`'s doc
+        // comment for why. `RetryableHttpClient` carries no `AppContext` or
+        // `Telemetry` handle, so unlike the command, MCP and HTTP-server
+        // probes this one is span-only: there is no reachable instrument to
+        // record `http.client.request.duration` onto from here.
+        #[cfg(feature = "telemetry")]
+        let (method, server_address, server_port) = match request_builder().build() {
+            Ok(req) => (
+                req.method().as_str().to_string(),
+                req.url().host_str().map(|h| h.to_string()),
+                req.url().port_or_known_default(),
+            ),
+            Err(_) => ("UNKNOWN".to_string(), None, None),
+        };
+        #[cfg(feature = "telemetry")]
+        let span = tracing::info_span!(
+            "http.client.request",
+            cli.probe = tracing::field::Empty,
+            http.request.method = tracing::field::Empty,
+            http.response.status_code = tracing::field::Empty,
+            server.address = tracing::field::Empty,
+            server.port = tracing::field::Empty,
+        );
+        #[cfg(not(feature = "telemetry"))]
+        let span = tracing::Span::none();
+
+        use tracing::Instrument as _;
+        let outcome = executor
             .execute(|| async {
                 let resp = request_builder()
                     .send()
@@ -131,7 +163,23 @@ impl RetryableHttpClient {
                     Ok(resp)
                 }
             })
-            .await
+            .instrument(span.clone())
+            .await;
+
+        #[cfg(feature = "telemetry")]
+        {
+            let status = outcome.as_ref().ok().map(|r| r.status().as_u16());
+            for kv in crate::telemetry::http_client_attrs(
+                &method,
+                status,
+                server_address.as_deref(),
+                server_port,
+            ) {
+                span.record(kv.key.as_str(), kv.value.as_str().as_ref());
+            }
+        }
+
+        outcome
     }
 
     pub async fn get(&self, url: &str) -> Result<Response> {

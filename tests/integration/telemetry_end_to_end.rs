@@ -56,6 +56,29 @@ fn probe_command() -> Command {
 const TRACES: &str = "/v1/traces";
 const METRICS: &str = "/v1/metrics";
 
+/// Decode an OTLP/HTTP protobuf trace body into the span names and attribute
+/// keys it carries.
+///
+/// Every assertion elsewhere in this crate stops at a `Vec<KeyValue>` in
+/// memory. This is the only place that decodes the actual bytes an exporter
+/// put on the wire, which is the only way to check the protobuf encoding
+/// itself — not just the in-memory value the encoder was handed — is correct.
+fn decode_spans(body: &[u8]) -> Vec<(String, Vec<String>)> {
+    use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+    use prost::Message;
+    let request = ExportTraceServiceRequest::decode(body).expect("valid OTLP protobuf");
+    request
+        .resource_spans
+        .into_iter()
+        .flat_map(|rs| rs.scope_spans)
+        .flat_map(|ss| ss.spans)
+        .map(|span| {
+            let keys = span.attributes.into_iter().map(|kv| kv.key).collect();
+            (span.name, keys)
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn app_builder_run_exports_spans_and_metrics() {
     let server = MockServer::start().await;
@@ -97,13 +120,8 @@ async fn app_builder_run_exports_spans_and_metrics() {
     // both pipelines; the batch worker still needs a beat to land the POST.
     tokio::time::sleep(std::time::Duration::from_millis(750)).await;
 
-    let hits: Vec<String> = server
-        .received_requests()
-        .await
-        .unwrap_or_default()
-        .iter()
-        .map(|r| r.url.path().to_string())
-        .collect();
+    let requests = server.received_requests().await.unwrap_or_default();
+    let hits: Vec<String> = requests.iter().map(|r| r.url.path().to_string()).collect();
 
     // Assertion 2: the `cli.command` span reached the collector.
     // Before the bridge landed this saw zero requests — the library never
@@ -122,4 +140,52 @@ async fn app_builder_run_exports_spans_and_metrics() {
         "AppBuilder::run_with_args exported no metrics — no MeterProvider is \
          installed, so counters/histograms are discarded. Collector saw: {hits:?}"
     );
+
+    // Assertion 4: decode the actual protobuf bytes rather than merely
+    // counting the request — proof that a real span survives OTLP/HTTP
+    // protobuf encoding with the attribute this crate's own instrumentation
+    // put on it, not just the in-memory `KeyValue` the encoder was handed.
+    let trace_bodies: Vec<&[u8]> = requests
+        .iter()
+        .filter(|r| r.url.path() == TRACES)
+        .map(|r| r.body.as_slice())
+        .collect();
+    assert!(
+        !trace_bodies.is_empty(),
+        "a request hit {TRACES} but carried no body to decode"
+    );
+    let spans: Vec<(String, Vec<String>)> =
+        trace_bodies.iter().flat_map(|b| decode_spans(b)).collect();
+    let (_, keys) = spans
+        .iter()
+        .find(|(name, _)| name == "cli.command")
+        .unwrap_or_else(|| panic!("no cli.command span among decoded spans: {spans:?}"));
+    assert!(
+        keys.contains(&"command".to_string()),
+        "the decoded span carries no command attribute: {keys:?}"
+    );
+
+    // Deliberately NOT asserted here: that `cli.probe` is absent from the
+    // wire. It is not — this run puts it on the wire for real, and this
+    // assertion caught that live rather than assuming the boundary applies.
+    //
+    // `AppBuilder::init_telemetry` (src/app/builder.rs) calls
+    // `telemetry::init::init_batch`, whose span exporter comes from
+    // `build_tracer_provider` -> `span_exporter(config)`
+    // (src/telemetry/init.rs): a bare `opentelemetry_otlp::SpanExporter`,
+    // never wrapped in `RedactingExporter`. The wrapped, policy-aware
+    // pipeline exists and is unit-tested (`init_from_policy` /
+    // `span_exporter_for_policy`, same file) but nothing outside its own
+    // `#[cfg(test)]` module calls it. `AppBuilder`'s own field doc says so
+    // directly (the `telemetry_policy` field, src/app/builder.rs:927-942):
+    // "`App` still runs the pre-existing `TelemetryConfig` -> `init_batch`
+    // export path ..., which never consults `TelemetryPolicy` at all. Full
+    // `App`-level policy orchestration ... is deferred to PR7." The same
+    // gap holds for metrics: `build_meter_provider` (config-based, what
+    // `init_batch` uses) attaches no View, so the metric-label allowlist
+    // `build_meter_provider_from_policy` applies is equally unenforced here.
+    // Wiring either fix means editing `src/app/builder.rs` and/or
+    // `src/telemetry/init.rs`'s production callsites, both outside this
+    // task's file list and squarely PR7/Task 26's job per that same field
+    // doc — reported in full rather than silently patched around.
 }

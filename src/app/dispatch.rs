@@ -33,6 +33,8 @@ pub(crate) struct DispatchEnv<'a> {
     pub(crate) global_args: &'a HashMap<String, ArgValue>,
     pub(crate) stdout_capture: Option<Arc<Mutex<Vec<u8>>>>,
     pub(crate) telemetry: Option<Arc<dyn crate::telemetry::Telemetry + Send + Sync>>,
+    #[cfg(feature = "telemetry")]
+    pub(crate) probe_registry: &'a crate::telemetry::ProbeRegistry,
     #[allow(dead_code)]
     pub(crate) surface: InvocationSurface,
     #[cfg(feature = "auth")]
@@ -106,6 +108,11 @@ impl<'a> AppContext for CliAppContextWrapper<'a> {
         &self,
     ) -> Option<std::sync::Arc<dyn crate::telemetry::Telemetry + Send + Sync>> {
         self.env.telemetry.clone()
+    }
+
+    #[cfg(feature = "telemetry")]
+    fn opt_probe_registry(&self) -> Option<&crate::telemetry::ProbeRegistry> {
+        Some(self.env.probe_registry)
     }
 
     #[cfg(feature = "config")]
@@ -189,12 +196,16 @@ mod tests {
         let ailoop_client: Option<AiloopClient> = None;
         let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
         let global_args_map: HashMap<String, ArgValue> = HashMap::new();
+        #[cfg(feature = "telemetry")]
+        let probe_registry = crate::telemetry::ProbeRegistry::with_builtins();
         let env = DispatchEnv {
             command_registry: &registry,
             ailoop_client: &ailoop_client,
             global_args: &global_args_map,
             stdout_capture: Some(buf.clone()),
             telemetry: None,
+            #[cfg(feature = "telemetry")]
+            probe_registry: &probe_registry,
             surface: InvocationSurface::Cli,
             #[cfg(feature = "auth")]
             token_provider: None,

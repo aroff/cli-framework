@@ -143,6 +143,38 @@ impl ProbeRegistry {
     pub fn is_empty(&self) -> bool {
         self.probes.is_empty()
     }
+
+    /// Register a dynamically-named feature as a child of the built-in
+    /// `cli.feature` probe (`cli.feature.<name>`), so an author can disable
+    /// one feature's marking without disabling feature marking altogether.
+    ///
+    /// `name` must be a single probe-id segment — lower-case ASCII letters,
+    /// digits and underscores, no dots — the same grammar every other
+    /// non-first segment already follows. Rejecting a dotted `name` here,
+    /// before it ever reaches [`validate_probe_id`], keeps the error about
+    /// the name the caller actually passed rather than the `cli.feature.`
+    /// id this method builds from it.
+    ///
+    /// `id` and `summary` are leaked to get the `'static` lifetime
+    /// [`ProbeSpec`] requires (the same trade `src/api/swagger.rs` makes for
+    /// build-time strings): acceptable because a feature is registered at
+    /// most once per distinct name, at startup, for the process's lifetime —
+    /// not once per invocation.
+    pub fn register_feature(&mut self, name: &str) -> Result<(), ProbeIdError> {
+        if name.is_empty() || name.contains('.') {
+            return Err(ProbeIdError::Malformed(name.to_string()));
+        }
+        let id = format!("cli.feature.{name}");
+        validate_probe_id(&id)?;
+        let id: &'static str = Box::leak(id.into_boxed_str());
+        let summary: &'static str = Box::leak(format!("The '{name}' feature").into_boxed_str());
+        self.register(ProbeSpec {
+            id,
+            min_level: TelemetryLevel::Usage,
+            summary,
+            sends: "The feature name, and nothing else",
+        })
+    }
 }
 
 /// `effective(probe) = telemetry level >= probe.min_level && every
