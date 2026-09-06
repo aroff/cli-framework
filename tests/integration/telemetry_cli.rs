@@ -104,6 +104,18 @@ async fn telemetry_info_as_json_lists_the_catalog_with_the_documented_fields() {
     assert_eq!(command["min_level"], "usage");
     assert!(command["summary"].is_string());
     assert!(command["sends"].is_string());
+    // Spec 025 line 492 documents six fields, not four: `enabled` and
+    // `effective now` must be present alongside id/min_level/summary/sends,
+    // computed the same way `telemetry status`'s catalog is.
+    assert_eq!(
+        command["enabled"], true,
+        "no probe has been disabled in this fixture"
+    );
+    assert_eq!(
+        command["effective"], false,
+        "this is a fresh install: telemetry defaults to off, and cli.command \
+         needs usage, so it is enabled but not currently effective"
+    );
     assert_eq!(out.exit_code, 0);
 }
 

@@ -140,8 +140,8 @@ pub use store::{
 pub mod commands;
 #[cfg(feature = "telemetry")]
 pub use commands::{
-    disable_probe, enable_probe, reset, set_level, status_report, ProbeStatus, SetOutcome,
-    StatusReport, TelemetryCommandError,
+    disable_probe, enable_probe, info_catalog, reset, set_level, status_report, ProbeInfo,
+    ProbeStatus, SetOutcome, StatusReport, TelemetryCommandError,
 };
 
 // Gated on `telemetry` for the same reason as `commands` above: `notice.rs`

@@ -403,25 +403,48 @@ fn render_status_text(report: &StatusReport) -> String {
     lines.join("\n")
 }
 
-/// A catalog entry as printed by `telemetry info` — the probe's static
-/// description, with no reference to whether it is currently enabled. This
-/// deliberately works even when the store is unavailable or telemetry is
-/// off: the catalog is a property of the binary, not of the current
-/// configuration.
+/// A catalog entry as printed by `telemetry info` — mirrors [`ProbeStatus`]
+/// (`telemetry status`'s per-probe entry) but is generated straight from the
+/// registry plus the resolved policy, so `info` and `status` can never
+/// disagree about a probe's enabled/effective state. Previously this carried
+/// only the probe's static description (id/min_level/summary/sends) on the
+/// theory that the catalog is "a property of the binary, not of the current
+/// configuration" — that rationale did not survive spec 025 line 492, which
+/// documents `enabled` and `effective now` as two of the six fields `info`
+/// must report.
+///
+/// Still resilient to a store that could not be opened: [`build_policy`]
+/// already tolerates [`StoreState::Unavailable`] (`store_available: false`
+/// plus a reason, with `resolve_policy` still returning a usable policy), so
+/// this stays available precisely when it matters most — before an install
+/// has configured anything.
 #[derive(Debug, Clone, Serialize)]
-struct ProbeInfo {
-    id: String,
-    min_level: String,
-    summary: String,
-    sends: String,
+pub struct ProbeInfo {
+    pub id: String,
+    pub min_level: String,
+    /// Whether this exact probe id has been disabled (directly, not by an
+    /// ancestor). Absent from the store means enabled — see [`ProbeStatus`].
+    pub enabled: bool,
+    /// Whether the probe actually fires right now, computed exactly the way
+    /// `status_report` computes [`ProbeStatus::effective`].
+    pub effective: bool,
+    pub summary: String,
+    pub sends: String,
 }
 
-fn info_catalog() -> Vec<ProbeInfo> {
-    ProbeRegistry::with_builtins()
+/// Build the full probe catalog from `policy`'s own registry (never a fresh
+/// [`ProbeRegistry::with_builtins()`]) so `info` and `status` read the exact
+/// same set of probes and the exact same enabled/effective computation as
+/// [`status_report`].
+pub fn info_catalog(policy: &TelemetryPolicy) -> Vec<ProbeInfo> {
+    policy
+        .registry
         .iter()
         .map(|probe| ProbeInfo {
             id: probe.id.to_string(),
             min_level: probe.min_level.as_str().to_string(),
+            enabled: !policy.disabled_probes.contains(probe.id),
+            effective: policy.effective(probe.id),
             summary: probe.summary.to_string(),
             sends: probe.sends.to_string(),
         })
@@ -431,9 +454,14 @@ fn info_catalog() -> Vec<ProbeInfo> {
 fn render_info_text(catalog: &[ProbeInfo]) -> String {
     let mut lines = vec!["telemetry probe catalog:".to_string()];
     for probe in catalog {
+        let state = match (probe.enabled, probe.effective) {
+            (false, _) => "disabled".to_string(),
+            (true, true) => "effective".to_string(),
+            (true, false) => "enabled, not currently effective".to_string(),
+        };
         lines.push(format!(
-            "  {} (min level {}): {}\n    sends: {}",
-            probe.id, probe.min_level, probe.summary, probe.sends
+            "  {} (min level {}): {} -- {}\n    sends: {}",
+            probe.id, probe.min_level, state, probe.summary, probe.sends
         ));
     }
     lines.join("\n")
@@ -554,7 +582,7 @@ fn build_set_command(app_name: &'static str, location: TelemetryStoreLocation) -
     }
 }
 
-fn build_info_command() -> Command {
+fn build_info_command(app_name: &'static str, location: TelemetryStoreLocation) -> Command {
     Command {
         id: Arc::from("info"),
         spec: Arc::new(CommandSpec {
@@ -575,8 +603,11 @@ fn build_info_command() -> Command {
         visibility: Some(vec!["app".to_string()]),
         meta: None,
         execute: Arc::new(move |ctx, args| {
+            let location = location.clone();
             Box::pin(async move {
-                let catalog = info_catalog();
+                let store = location.open(app_name);
+                let policy = build_policy(app_name, &store);
+                let catalog = info_catalog(&policy);
                 if wants_json(&args) {
                     ctx.framework_println(&serde_json::to_string(&catalog)?);
                 } else {
@@ -766,7 +797,7 @@ pub(crate) fn register_telemetry_commands(
     registry
         .register_at(
             &CommandPath::new(&["telemetry", "info"]).unwrap(),
-            build_info_command(),
+            build_info_command(app_name, location.clone()),
         )
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     registry

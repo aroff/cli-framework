@@ -28,8 +28,8 @@
 
 use cli_framework::config::resolution::Layer;
 use cli_framework::telemetry::{
-    disable_probe, enable_probe, reset, set_level, status_report, Attribution, Deployment,
-    KillSwitch, SetOutcome, TelemetryLevel,
+    disable_probe, enable_probe, info_catalog, reset, set_level, status_report, Attribution,
+    Deployment, KillSwitch, SetOutcome, TelemetryLevel,
 };
 
 mod support;
@@ -148,6 +148,75 @@ fn every_probe_appears_in_the_status_with_its_effective_state() {
         .unwrap();
     assert!(!args.effective, "cli.command.args needs diagnostic");
     assert_eq!(args.min_level, "diagnostic", "and the status says why");
+}
+
+#[test]
+fn info_catalog_reports_enabled_and_effective_exactly_as_status_does() {
+    let policy = policy_with(
+        Deployment::EndUser { privacy_url: None },
+        TelemetryLevel::Usage,
+        |p| {
+            p.disabled_probes.insert("cli.command".to_string());
+        },
+    );
+    let catalog = info_catalog(&policy);
+    assert_eq!(
+        catalog.len(),
+        policy.registry.len(),
+        "info must list every probe in the registry, not a hand-picked subset"
+    );
+    let command = catalog.iter().find(|p| p.id == "cli.command").unwrap();
+    assert!(!command.enabled, "cli.command was explicitly disabled");
+    assert!(
+        !command.effective,
+        "a disabled probe is never effective regardless of level"
+    );
+    let args = catalog.iter().find(|p| p.id == "cli.command.args").unwrap();
+    assert!(args.enabled, "cli.command.args itself was never disabled");
+    assert!(
+        !args.effective,
+        "cli.command.args needs diagnostic; usage level leaves it ineffective"
+    );
+    assert_eq!(
+        args.min_level, "diagnostic",
+        "and info says why, same as status"
+    );
+}
+
+#[test]
+fn info_lists_the_full_catalog_even_when_the_store_is_unavailable() {
+    // The one true thing in the old "the catalog is a property of the binary"
+    // rationale: `info` must still work before an install has configured
+    // anything, i.e. when the store could not even be opened. Wire a real
+    // `unavailable_store()` the same way `build_policy` does
+    // (`store_available: store.state().is_ready()`,
+    // `store_error: store.state().reason()...`) and confirm `info_catalog`
+    // does not drop a single probe because of it.
+    let store = unavailable_store("config directory could not be created");
+    let policy = policy_with(
+        Deployment::EndUser { privacy_url: None },
+        TelemetryLevel::Off,
+        |p| {
+            p.store_available = store.state().is_ready();
+            p.store_error = store.state().reason().map(str::to_string);
+        },
+    );
+    assert!(
+        !policy.store_available,
+        "the fixture must actually simulate an unavailable store"
+    );
+    let catalog = info_catalog(&policy);
+    assert_eq!(
+        catalog.len(),
+        policy.registry.len(),
+        "the catalog must be the full registry regardless of store health"
+    );
+    for probe in ["cli.command", "cli.panic", "http.client", "mcp.session"] {
+        assert!(
+            catalog.iter().any(|p| p.id == probe),
+            "{probe} missing from info's catalog when the store is unavailable"
+        );
+    }
 }
 
 #[test]
