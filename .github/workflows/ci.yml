@@ -22,6 +22,15 @@ env:
   # above asks for, and drops the rest. The `test` profile inherits `dev`.
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
+  # Fail closed on the build-time github.com fetch. `utoipa-swagger-ui`'s build
+  # script only reads this when the `vendored` feature is off, and Cargo.toml
+  # keeps it on, so this value is printed to the build-script log and then
+  # ignored -- which is exactly what makes the log line evidence. If `vendored`
+  # is ever dropped, the build stops here with an unresolvable path instead of
+  # quietly reaching the network again and reintroducing the run 34021441768
+  # flake. Never point this at a real URL or a real file.
+  SWAGGER_UI_DOWNLOAD_URL: file:///nonexistent/swagger-ui-must-come-from-the-vendored-feature.zip
+
 jobs:
   ci:
     name: Check / Lint / Test
@@ -110,43 +119,52 @@ jobs:
       # under test (run 34021441768: `curl: (28) Failed to connect to
       # github.com port 443 after 135310 ms`; a plain re-run cleared it).
       # Cargo.toml enables `vendored` so the archive comes from crates.io
-      # instead.
+      # instead. The workflow-level `SWAGGER_UI_DOWNLOAD_URL` above makes a
+      # regression fail closed; this step is what makes it legible.
       #
-      # This step is what keeps that true. `cargo build` prints a build
-      # script's stdout only when the script FAILS, so the green step above is
-      # NOT evidence that the download was skipped -- the download usually
-      # succeeds, and when it does the log says nothing at all. Cargo does
-      # persist that stdout next to the build output, so read it back and fail
-      # if the vendored branch was not the one taken. Without this, dropping
-      # `vendored` from the dependency silently restores the network fetch and
-      # CI stays green until the next blip.
+      # `cargo build` prints a build script's stdout only when the script
+      # FAILS, so the green step above is NOT evidence that the download was
+      # skipped -- the download usually succeeds, and when it does the log
+      # says nothing at all. Cargo does persist that stdout next to the build
+      # output, so read it back and fail if the vendored branch was not the
+      # one taken.
       #
       # Must stay ahead of `Reclaim the release build tree`, which deletes the
       # directory this reads.
       - name: Assert the Swagger UI archive was vendored, not downloaded
         run: |
-          # Every matching directory is checked, not just the first one found:
-          # a feature change gives the crate a new fingerprint and therefore a
-          # second `<pkg>-<hash>` directory beside the old one, and `find` does
-          # not order its results, so testing only one can read a stale
-          # directory and pass on a tree that actually downloaded.
-          list="${RUNNER_TEMP:-/tmp}/swagger-build-outputs.txt"
-          find target/release/build -maxdepth 2 -name output \
-               -path '*/utoipa-swagger-ui-*' \
-               ! -path '*/utoipa-swagger-ui-vendored-*' > "$list"
-          found=0
-          stale=0
-          while IFS= read -r out; do
-            found=1
-            echo "--- $out ---"
-            cat "$out"
-            grep -qF 'using vendored Swagger UI' "$out" || stale=1
-          done < "$list"
-          if [ "$found" -eq 0 ]; then
-            echo "::error::no utoipa-swagger-ui build-script output under target/release/build -- the assertion below would be vacuous"
+          # `target` is restored wholesale from actions/cache, so
+          # `target/release/build` also holds fossil `utoipa-swagger-ui-<hash>`
+          # directories left by older dependency resolutions, and those
+          # legitimately record a download. Scanning every directory on disk is
+          # therefore wrong -- run 34029460782 failed here on such a fossil
+          # while the build under test was correctly vendored. Ask cargo which
+          # OUT_DIR *this* build used instead of guessing: re-invoking it with
+          # `--message-format=json` recompiles nothing (every unit is already
+          # fresh) but still replays the `build-script-executed` message that
+          # names the directory.
+          json="${RUNNER_TEMP:-/tmp}/cargo-build-graph.json"
+          cargo build --all-features --release --message-format=json > "$json"
+
+          # `#utoipa-swagger-ui@` anchors on the package-id separator, so the
+          # sibling `utoipa-swagger-ui-vendored` crate cannot match.
+          out_dir=$(grep '"reason":"build-script-executed"' "$json" \
+                    | grep -F '#utoipa-swagger-ui@' \
+                    | sed -n 's/.*"out_dir":"\([^"]*\)".*/\1/p') || true
+          count=$(printf '%s\n' "$out_dir" | grep -c .) || true
+          if [ "$count" -ne 1 ]; then
+            echo "::error::expected exactly one utoipa-swagger-ui build script in the release graph, found $count -- this assertion would be vacuous or ambiguous"
             exit 1
           fi
-          if [ "$stale" -ne 0 ]; then
+
+          output="$(dirname "$out_dir")/output"
+          if [ ! -f "$output" ]; then
+            echo "::error::cargo named $out_dir but $output does not exist -- nothing to assert against"
+            exit 1
+          fi
+          echo "--- $output ---"
+          cat "$output"
+          if ! grep -qF 'using vendored Swagger UI' "$output"; then
             echo "::error::utoipa-swagger-ui resolved its archive from SWAGGER_UI_DOWNLOAD_URL instead of the vendored crate, which puts a live github.com fetch back in the build; re-add the 'vendored' feature to the utoipa-swagger-ui dependency in Cargo.toml"
             exit 1
           fi
