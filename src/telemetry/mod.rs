@@ -272,3 +272,11 @@ pub use probes::{
 pub mod doctor;
 #[cfg(feature = "telemetry")]
 pub use doctor::telemetry_checks;
+
+// What an app author declares: transport defaults, the identity resolver and
+// the two attribute lists. Gated on `telemetry` because `TelemetryDefaults`
+// names `secrecy::SecretString`, an optional dependency of that feature.
+#[cfg(feature = "telemetry")]
+pub mod author;
+#[cfg(feature = "telemetry")]
+pub use author::{Identity, IdentityResolver, TelemetryDefaults};

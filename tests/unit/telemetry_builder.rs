@@ -24,6 +24,10 @@ fn expose(s: &cli_framework::SecretString) -> String {
 
 #[test]
 fn an_app_that_configures_nothing_is_an_end_user_app_with_telemetry_off() {
+    // Pin the precondition and take the same process-wide lock the
+    // env-setting tests below hold, so none of them can run alongside
+    // this one and make the assertion below about their variable.
+    let _g = EnvGuard::unset("OTEL_EXPORTER_OTLP_ENDPOINT");
     let app = AppBuilder::new()
         .with_version("demo", "0.0.0")
         .build_for_test();
@@ -46,6 +50,10 @@ fn a_standalone_api_server_defaults_to_a_service_deployment() {
 
 #[test]
 fn a_service_with_an_endpoint_defaults_to_diagnostic_and_without_one_to_off() {
+    // Pin the precondition and take the same process-wide lock the
+    // env-setting tests below hold, so none of them can run alongside
+    // this one and make the assertion below about their variable.
+    let _g = EnvGuard::unset("OTEL_EXPORTER_OTLP_ENDPOINT");
     let with = AppBuilder::new()
         .with_version("demo", "0.0.0")
         .with_deployment(Deployment::Service)
@@ -249,6 +257,128 @@ fn an_invalid_probe_id_in_with_telemetry_ops_fails_the_build_rather_than_being_d
 }
 
 #[test]
+fn an_empty_endpoint_variable_is_not_an_endpoint() {
+    // An operator who exports the variable but leaves it blank has nowhere to
+    // send to. Reading that as "an endpoint exists" would flip a service from
+    // `off` to `diagnostic` and then fail every export.
+    let _g = EnvGuard::set("OTEL_EXPORTER_OTLP_ENDPOINT", "");
+    let app = AppBuilder::new()
+        .with_version("demo", "0.0.0")
+        .with_deployment(Deployment::Service)
+        .build_for_test();
+    assert!(app.telemetry_policy().endpoint.is_none());
+    assert_eq!(app.telemetry_policy().level.as_str(), "off");
+}
+
+#[test]
+fn an_empty_headers_variable_leaves_the_authors_headers_alone() {
+    let _g = EnvGuard::set("OTEL_EXPORTER_OTLP_HEADERS", "");
+    let app = AppBuilder::new()
+        .with_version("demo", "0.0.0")
+        .with_deployment(Deployment::Service)
+        .with_telemetry_defaults(TelemetryDefaults {
+            endpoint: Some("http://collector:4318".into()),
+            headers: Some("authorization=Bearer author-token".to_string().into()),
+            ..Default::default()
+        })
+        .build_for_test();
+    assert_eq!(
+        app.telemetry_policy().headers.as_ref().map(expose),
+        Some("authorization=Bearer author-token".to_string()),
+        "an exported-but-blank variable is not an override, and treating it as \
+         one would silently drop the author's authentication"
+    );
+}
+
+#[test]
+fn a_kill_switch_in_the_environment_beats_an_endpoint_the_author_configured() {
+    let _g = EnvGuard::set("DO_NOT_TRACK", "1");
+    let app = AppBuilder::new()
+        .with_version("demo", "0.0.0")
+        .with_deployment(Deployment::Service)
+        .with_telemetry_defaults(TelemetryDefaults {
+            endpoint: Some("http://collector:4318".into()),
+            ..Default::default()
+        })
+        .build_for_test();
+    let policy = app.telemetry_policy();
+    assert_eq!(policy.level.as_str(), "off");
+    assert!(policy.kill_switch.is_some());
+    assert!(
+        !policy.exports(),
+        "a kill switch that still built an exporter would be a kill switch in name only"
+    );
+}
+
+#[test]
+fn the_telemetry_file_follows_the_apps_own_configuration_format() {
+    use cli_framework::config::{ConfigFormat, ConfigOptions};
+
+    let builder = AppBuilder::new()
+        .with_version("demo", "0.0.0")
+        .with_config(ConfigOptions::<Demo>::new(1).with_format(ConfigFormat::Toml));
+    assert_eq!(
+        builder.config_format(),
+        ConfigFormat::Toml,
+        "a TOML app must not get one lone JSON file in an otherwise-TOML directory"
+    );
+    assert_eq!(
+        AppBuilder::new()
+            .with_version("demo", "0.0.0")
+            .config_format(),
+        ConfigFormat::Json,
+        "an app that declares no configuration still needs somewhere to keep consent"
+    );
+}
+
+#[test]
+fn registering_the_same_probe_id_twice_fails_the_build() {
+    static ONCE: &[cli_framework::telemetry::ProbeSpec] = &[cli_framework::telemetry::ProbeSpec {
+        id: "app.sync",
+        min_level: cli_framework::telemetry::TelemetryLevel::Usage,
+        summary: "a sync ran",
+        sends: "the outcome",
+    }];
+    assert!(
+        AppBuilder::new()
+            .with_version("demo", "0.0.0")
+            .with_telemetry_ops(ONCE)
+            .with_telemetry_ops(ONCE)
+            .try_build_for_test()
+            .is_err(),
+        "two registrations of one id would put two switches on one probe in \
+         the manifest, and only one of them would work"
+    );
+}
+
+#[test]
+fn the_published_manifest_keeps_the_apps_own_fields_beside_the_telemetry_section() {
+    let app = AppBuilder::new()
+        .with_version("demo", "0.0.0")
+        .with_config_manifest(app_manifest("theme"))
+        .build_for_test();
+    let published = app.config_manifest();
+    assert!(
+        published.leaf_by_path("theme").is_some(),
+        "merging the framework's section must not drop the app's own fields"
+    );
+    assert!(published.leaf_by_path("telemetry.level").is_some());
+}
+
+#[test]
+fn an_app_that_owns_a_top_level_telemetry_key_fails_the_build() {
+    assert!(
+        AppBuilder::new()
+            .with_version("demo", "0.0.0")
+            .with_config_manifest(app_manifest("telemetry"))
+            .try_build_for_test()
+            .is_err(),
+        "silently shadowing the app's key would leave two meanings for one \
+         path and an administrator no way to tell which one they set"
+    );
+}
+
+#[test]
 fn a_probe_id_that_collides_with_a_reserved_first_segment_is_rejected() {
     static RESERVED: &[cli_framework::telemetry::ProbeSpec] =
         &[cli_framework::telemetry::ProbeSpec {
@@ -262,4 +392,46 @@ fn a_probe_id_that_collides_with_a_reserved_first_segment_is_rejected() {
         .with_telemetry_ops(RESERVED)
         .try_build_for_test()
         .is_err());
+}
+
+/// A minimal typed configuration, so `with_config` has something to register.
+/// Hand-written rather than derived on purpose: this binary's
+/// `required-features` are `telemetry` and `config`, not `derive`.
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
+struct Demo {
+    schema_version: u32,
+}
+
+impl cli_framework::config::VersionedConfig for Demo {
+    fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+    fn set_schema_version(&mut self, version: u32) {
+        self.schema_version = version;
+    }
+}
+
+/// An application manifest holding exactly one string field, named `key`.
+fn app_manifest(key: &str) -> cli_framework::config::manifest::ConfigManifest {
+    use cli_framework::config::manifest::{ConfigManifest, FieldKind, FieldManifest, Scope};
+    ConfigManifest::new(
+        "demo",
+        vec![FieldManifest {
+            key: key.to_string(),
+            kind: FieldKind::Str,
+            default: None,
+            label: None,
+            description: None,
+            group: None,
+            scope: Scope::User,
+            platforms: vec![],
+            secret: false,
+            local_only: false,
+            protected: false,
+            manageable: true,
+            enforceable: true,
+            restart_required: false,
+            constraints: None,
+        }],
+    )
 }

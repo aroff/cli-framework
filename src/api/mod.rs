@@ -174,6 +174,15 @@ pub struct ApiServerBuilder {
     service_name: String,
     #[cfg_attr(not(feature = "telemetry"), allow(dead_code))]
     service_version: String,
+    /// The deployment shape this server reports (spec 025).
+    ///
+    /// Unlike [`AppBuilder`](crate::app::AppBuilder), which defaults to
+    /// `EndUser`, a standalone API server defaults to
+    /// [`Deployment::Service`](crate::telemetry::Deployment::Service): it runs
+    /// on infrastructure its operator owns, so there is no end user in front
+    /// of it to consent on anyone's behalf and no clamp to apply.
+    #[cfg_attr(not(feature = "telemetry"), allow(dead_code))]
+    deployment: crate::telemetry::Deployment,
 }
 
 impl Default for ApiServerBuilder {
@@ -201,6 +210,7 @@ impl Default for ApiServerBuilder {
             telemetry_config: None,
             service_name: String::new(),
             service_version: String::new(),
+            deployment: crate::telemetry::Deployment::Service,
         }
     }
 }
@@ -208,6 +218,13 @@ impl Default for ApiServerBuilder {
 impl ApiServerBuilder {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The deployment shape this server reports (spec 025) — always
+    /// [`Deployment::Service`](crate::telemetry::Deployment::Service) for a
+    /// standalone API server.
+    pub fn deployment(&self) -> &crate::telemetry::Deployment {
+        &self.deployment
     }
 
     /// Enable batch OTel telemetry for the server process.
