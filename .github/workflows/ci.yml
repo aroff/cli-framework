@@ -91,7 +91,21 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          # `Cargo.lock` is gitignored here (.gitignore:8, normal for a library
+          # crate) and this step runs before any cargo command, so nothing
+          # matches the glob and `hashFiles` returns the EMPTY string -- the key
+          # collapses to the constant `Linux-cargo-`. Every run is then an exact
+          # hit on the primary key, and actions/cache skips the post-job save on
+          # an exact hit. Run 34030714752 says so outright:
+          #   key: Linux-cargo-
+          #   Cache hit for: Linux-cargo-
+          #   Cache hit occurred on the primary key Linux-cargo-, not saving cache.
+          # so the entry was frozen at whatever the first successful job wrote
+          # (~3902 MB) and could never pick up a dependency change. Hash the
+          # manifests instead: they are committed, so they exist at checkout
+          # time, and they change when the dependency set changes. Do not put
+          # Cargo.lock back here unless it is committed.
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install cargo-audit
