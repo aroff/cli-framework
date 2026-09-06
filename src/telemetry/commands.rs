@@ -722,7 +722,7 @@ fn build_reset_command(app_name: &'static str, location: TelemetryStoreLocation)
     Command {
         id: Arc::from("reset"),
         spec: Arc::new(CommandSpec {
-            summary: "Forget every stored telemetry choice (the install id is kept)",
+            summary: "Delete the stored telemetry settings and start over as a new install",
             category: Some("Telemetry"),
             exit_codes: vec![
                 ExitCodeEntry {
@@ -731,7 +731,7 @@ fn build_reset_command(app_name: &'static str, location: TelemetryStoreLocation)
                 },
                 ExitCodeEntry {
                     code: 1,
-                    description: "The settings file could not be written",
+                    description: "The settings file could not be deleted",
                 },
             ],
             ..Default::default()
@@ -747,8 +747,13 @@ fn build_reset_command(app_name: &'static str, location: TelemetryStoreLocation)
                 let store = location.open(app_name);
                 match reset(&store) {
                     Ok(()) => {
+                        // Says "new install" rather than "reset" because that
+                        // is the part a person cannot see and would otherwise
+                        // get wrong: the id they were sending under is gone,
+                        // and the next run introduces itself again.
                         ctx.framework_println(
-                            "telemetry settings reset; nothing has been chosen yet",
+                            "telemetry settings deleted; the next run starts over as a new \
+                             install, with a new id",
                         );
                         Ok(())
                     }

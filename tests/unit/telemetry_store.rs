@@ -2,7 +2,7 @@
 use cli_framework::config::{ConfigFormat, VersionedConfig};
 use cli_framework::telemetry::{
     Attribution, StoreState, TelemetryLevel, TelemetrySettings, TelemetryStore,
-    TelemetryStoreLocation,
+    TelemetryStoreLocation, TELEMETRY_SCHEMA_VERSION,
 };
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {
@@ -134,7 +134,7 @@ fn the_install_id_is_minted_once_and_then_reused() {
 }
 
 #[test]
-fn reset_clears_the_stored_choice_but_keeps_the_install_id() {
+fn reset_makes_the_machine_a_new_install_with_a_new_id() {
     let dir = temp_dir("reset");
     let store = TelemetryStore::open_at(&dir, "demo");
     let id = store.ensure_install_id().unwrap();
@@ -144,16 +144,68 @@ fn reset_clears_the_stored_choice_but_keeps_the_install_id() {
             s.notice_shown = Some(TelemetryLevel::Debug);
         })
         .unwrap();
+    let path = dir.join("demo").join("telemetry.json");
+    assert!(
+        path.exists(),
+        "the fixture must have written a file to delete"
+    );
 
     store.reset().unwrap();
 
-    let after = TelemetryStore::open_at(&dir, "demo").settings();
+    assert!(
+        !path.exists(),
+        "ADR 0077: reset deletes the framework-owned telemetry file, it does \
+         not leave a defaults-shaped one behind"
+    );
+    let reopened = TelemetryStore::open_at(&dir, "demo");
+    let after = reopened.settings();
     assert_eq!(after.level, None);
     assert_eq!(after.notice_shown, None);
     assert_eq!(
-        after.install_id,
-        Some(id),
-        "reset returns the Install to no-choice; it does not make it a new Install"
+        after.install_id, None,
+        "ADR 0077: level, id, notice marker and probe switches go together"
+    );
+    assert_ne!(
+        reopened.ensure_install_id().unwrap(),
+        id,
+        "reset means \"fresh install\": a person who asked to be forgotten must \
+         not stay joinable to everything the old id already sent"
+    );
+}
+
+#[test]
+fn resetting_an_install_that_stored_nothing_succeeds() {
+    // `reset` promises "nothing is stored"; on a fresh install that already
+    // holds. Reporting an error because the file happens not to exist would
+    // make `telemetry reset` fail on exactly the machines with nothing to
+    // hide, and would turn a second `reset` into a failure after the first.
+    let dir = temp_dir("reset-empty");
+    let store = TelemetryStore::open_at(&dir, "demo");
+    store.reset().unwrap();
+    store.reset().unwrap();
+    // Not `TelemetrySettings::default()`: reading an absent file goes through
+    // `ConfigStore::load`, which stamps the defaults it hands back with the
+    // store's current schema version. Everything a person can choose is
+    // still unset, which is what "nothing is stored" means.
+    assert_eq!(
+        store.settings(),
+        TelemetrySettings {
+            schema_version: TELEMETRY_SCHEMA_VERSION,
+            ..Default::default()
+        }
+    );
+}
+
+#[test]
+fn resetting_a_store_with_no_usable_directory_reports_the_reason() {
+    // The mirror of `a_store_with_no_usable_directory_is_unavailable_...`:
+    // an unavailable store must fail loudly here too. Silently reporting
+    // success would tell a person their id was deleted when it was not.
+    let store = TelemetryStore::unavailable("config directory could not be created");
+    let err = store.reset().unwrap_err();
+    assert!(
+        err.to_string().contains("config directory"),
+        "the reason must reach the person running the command: {err}"
     );
 }
 

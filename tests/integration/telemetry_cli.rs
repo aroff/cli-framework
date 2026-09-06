@@ -16,7 +16,7 @@
 //! harness construction differs.
 
 use cli_framework::app::{AppBuilder, AppContext};
-use cli_framework::telemetry::Deployment;
+use cli_framework::telemetry::{Deployment, TelemetryStore};
 use cli_framework::testkit::CliTestHarness;
 use std::path::Path;
 
@@ -223,15 +223,41 @@ async fn enabling_or_disabling_an_unknown_probe_id_is_a_reported_error() {
 }
 
 #[tokio::test]
-async fn reset_returns_a_configured_install_to_the_default() {
+async fn reset_returns_a_configured_install_to_a_brand_new_one() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = enduser_harness(dir.path());
     h.run(&["demo", "telemetry", "set", "debug"]).await;
-    h.run(&["demo", "telemetry", "reset"]).await;
+    // Startup mints the id (PR7 wires that); nothing inside the `telemetry`
+    // group does, so this test stands in for the run that would have minted
+    // one. Without it there is no id for `reset` to have to forget, and the
+    // assertion below would pass against a `reset` that kept it.
+    let before = TelemetryStore::open_at(dir.path(), "demo")
+        .ensure_install_id()
+        .unwrap();
+
+    let reset_out = h.run(&["demo", "telemetry", "reset"]).await;
+    assert_eq!(reset_out.exit_code, 0, "{}", reset_out.stderr);
+
     let out = h.run(&["demo", "telemetry", "status", "--json"]).await;
     let value: serde_json::Value = serde_json::from_str(&out.stdout).unwrap();
     assert_eq!(value["level"], "off");
     assert_eq!(value["level_source"], "default");
+    assert!(
+        value["install_id"].is_null(),
+        "status must not still report the id reset deleted: {}",
+        out.stdout
+    );
+    assert!(
+        !dir.path().join("demo").join("telemetry.json").exists(),
+        "ADR 0077: reset deletes the framework-owned telemetry file"
+    );
+    assert_ne!(
+        TelemetryStore::open_at(dir.path(), "demo")
+            .ensure_install_id()
+            .unwrap(),
+        before,
+        "the next run is a new Install with a new id, not the old one restored"
+    );
 }
 
 // ── appended to tests/integration/telemetry_cli.rs ────────────────────────────

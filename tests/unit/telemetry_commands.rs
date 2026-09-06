@@ -325,17 +325,36 @@ fn an_enforced_organisation_policy_is_named_in_the_status() {
 }
 
 #[test]
-fn reset_removes_the_stored_choices_but_never_the_install_id() {
+fn reset_removes_the_stored_choices_and_the_install_id() {
     let (store, _dir) = temp_store();
     set_level(&store, "demo", TelemetryLevel::Debug).unwrap();
-    let id_before = store.settings().install_id.clone();
+    let id_before = store.ensure_install_id().unwrap();
     reset(&store).unwrap();
     let after = store.settings();
     assert_eq!(after.level, None);
     assert_eq!(
-        after.install_id, id_before,
-        "reset returns to defaults; minting a new identifier would make one \
-         person look like two installs in every dashboard"
+        after.install_id, None,
+        "ADR 0077 makes reset mean \"fresh install\"; keeping the id would leave \
+         a person who asked to be forgotten joinable to everything it already sent"
+    );
+    assert_ne!(
+        store.ensure_install_id().unwrap(),
+        id_before,
+        "the next run mints a new id rather than resurrecting the old one"
+    );
+}
+
+#[test]
+fn resetting_with_no_writable_store_fails_with_the_reason() {
+    // Same contract as `setting_a_level_with_no_writable_store_...`: a
+    // mutating command that cannot reach the file must say so. A `reset`
+    // that reported success would tell a person their id was deleted when
+    // it is still on disk.
+    let store = unavailable_store("config directory could not be created");
+    let err = reset(&store).unwrap_err();
+    assert!(
+        err.to_string().contains("config directory"),
+        "reset must name the reason it could not forget anything: {err}"
     );
 }
 

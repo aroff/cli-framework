@@ -725,6 +725,37 @@ tracing_subscriber::registry()
     .init();
 ```
 
+### The `telemetry` command group (end-user deployments)
+
+An application whose deployment is `EndUser` — the default, and what
+`AppBuilder::with_deployment` selects explicitly — gets a built-in `telemetry`
+command group so the person running the CLI can see and change what it sends.
+A `Service` deployment never registers the group at all: on a server the level
+is an operator's decision, not an interactive one.
+
+```text
+myapp telemetry status [--json]     # resolved level, attribution, endpoint, probe states
+myapp telemetry info   [--json]     # every probe this build can emit, and what it sends
+myapp telemetry set <level>         # off | usage | diagnostic | debug
+myapp telemetry disable <probe-id>  # and, implicitly, everything under it
+myapp telemetry enable  <probe-id>
+myapp telemetry reset               # delete the settings file: new install, new id
+```
+
+The choice is stored by the framework itself, in
+`<config_dir>/<app>/telemetry.<json|toml>` — deliberately *not* in the
+application's own configuration backend, so consent reads and writes the same
+way on every platform (ADR 0077). The file's format follows the app's; JSON
+when the app declares no configuration of its own. `AppBuilder::with_telemetry_config_dir`
+points it somewhere else, which is how tests isolate it.
+
+`telemetry reset` deletes that file outright. It means "fresh install", not
+"clear my preferences": the stored level, the install id, the notice marker and
+the probe switches go together, and the next run mints a new id and introduces
+itself again. A store whose directory cannot be created is never a startup
+error — reads fall back to defaults and mutating commands fail loudly with the
+reason, rather than silently discarding a consent change.
+
 ### Known limitations
 
 - **`http/protobuf` only.** It is the sole protocol this crate can export with.
@@ -738,6 +769,10 @@ tracing_subscriber::registry()
   `SdkLoggerProvider` yet, so the field is reader-visible intent only.
   `record_arg_values` / `arg_value_allowlist` are likewise reserved.
   `traces_enabled` and `metrics_enabled` **are** honoured.
+- **The first-run notice and the telemetry `doctor` checks are built but not
+  yet wired.** `telemetry::notice_decision` and `telemetry::telemetry_checks`
+  are public and tested, but nothing in `AppBuilder::build` calls them yet, so
+  no notice is printed and `doctor` does not report the six telemetry checks.
 
 ## Chat Command (default feature)
 
