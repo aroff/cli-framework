@@ -479,28 +479,60 @@ fn every_instrument_label_is_in_the_metric_label_allowlist() {
     }
 }
 
+/// The probe that owns a span, derived from the span's name.
+fn span_owner(span: &str) -> &'static str {
+    match span {
+        s if s.starts_with("cli.command") => "cli.command",
+        s if s.starts_with("cli.config") => "cli.config",
+        s if s.starts_with("cli.secrets") => "cli.secrets",
+        s if s.starts_with("cli.plugin") => "cli.plugin",
+        s if s.starts_with("http.client") => "http.client",
+        "http.request" => "http.server",
+        other => panic!("no probe owns the span {other}; add one to this mapping"),
+    }
+}
+
 #[test]
 fn only_diagnostic_probes_own_child_spans() {
     // The spec's rule: a usage probe adds to the root span; a child span is
     // diagnostic or above. This is the mechanical form of that sentence.
     use cli_framework::telemetry::{spans, ProbeRegistry, TelemetryLevel};
     let registry = ProbeRegistry::with_builtins();
+    assert!(!spans::CHILDREN.is_empty());
     for span in spans::CHILDREN {
-        let owner = match *span {
-            s if s.starts_with("cli.config") => "cli.config",
-            s if s.starts_with("cli.secrets") => "cli.secrets",
-            s if s.starts_with("cli.plugin") => "cli.plugin",
-            s if s.starts_with("http.client") => "http.client",
-            _ => "http.server",
-        };
+        let owner = span_owner(span);
         let probe = registry.get(owner).unwrap();
-        if owner == "http.server" {
-            continue; // the pre-existing root span for the API surface, not a child
-        }
         assert!(
             probe.min_level >= TelemetryLevel::Diagnostic,
-            "{span} is a child span owned by {owner}, which is {:?}; at usage              a trace must be exactly one span",
+            "{span} is a child span owned by {owner}, which is {:?}; at usage \
+             a trace must be exactly one span",
             probe.min_level
+        );
+    }
+}
+
+/// The other half of the same sentence, and the reason `http.request` is no
+/// longer in `CHILDREN`.
+///
+/// A root span is what a usage-level probe is allowed to have: `cli.command`
+/// for the CLI, `http.request` for the API surface. The child-span test above
+/// used to carry `if owner == "http.server" { continue; }` so that
+/// `http.request` — a root span that had been listed as a child — would not
+/// fail it. Splitting `spans::ROOTS` out lets both halves be asserted
+/// positively, with no entry exempted from the rule it belongs to.
+#[test]
+fn root_spans_are_owned_by_usage_level_probes() {
+    use cli_framework::telemetry::{spans, ProbeRegistry, TelemetryLevel};
+    let registry = ProbeRegistry::with_builtins();
+    assert!(!spans::ROOTS.is_empty());
+    for span in spans::ROOTS {
+        let owner = span_owner(span);
+        let probe = registry.get(owner).unwrap();
+        assert_eq!(
+            probe.min_level,
+            TelemetryLevel::Usage,
+            "{span} starts a trace, so its owner {owner} must be visible at the \
+             default level; a root span nobody at usage can see is not a root span"
         );
     }
 }
