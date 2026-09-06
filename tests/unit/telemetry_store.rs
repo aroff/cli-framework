@@ -2,6 +2,7 @@
 use cli_framework::config::{ConfigFormat, VersionedConfig};
 use cli_framework::telemetry::{
     Attribution, StoreState, TelemetryLevel, TelemetrySettings, TelemetryStore,
+    TelemetryStoreLocation, TELEMETRY_SCHEMA_VERSION,
 };
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {
@@ -16,6 +17,62 @@ fn temp_dir(tag: &str) -> std::path::PathBuf {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// Serialises every test in this binary that resolves the platform config
+/// directory, and puts `$XDG_CONFIG_HOME` back afterwards.
+///
+/// `dirs::config_dir()` reads the process environment, which libtest shares
+/// across the threads it runs these tests on. Construction takes a
+/// process-wide lock held for the guard's whole lifetime, so a test that
+/// redirects the variable and one that merely reads through it cannot
+/// overlap — which is why the read-only [`observe`](Self::observe)
+/// constructor exists at all, rather than only the writer taking a lock.
+///
+/// `Drop` restores exactly what was there before, including "absent", so a
+/// failing assertion cannot leak a redirect into the next test.
+///
+/// `unwrap_or_else(|e| e.into_inner())` deliberately ignores poisoning: a
+/// panic in one of these tests must not turn every later one into a second,
+/// misleading failure.
+struct ConfigHomeGuard {
+    prior: Option<std::ffi::OsString>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl ConfigHomeGuard {
+    /// Take the lock and change nothing — for a test that only *reads*
+    /// through `dirs::config_dir()`.
+    fn observe() -> Self {
+        let lock = env_lock();
+        Self {
+            prior: std::env::var_os("XDG_CONFIG_HOME"),
+            _lock: lock,
+        }
+    }
+
+    /// Take the lock and point `$XDG_CONFIG_HOME` at `dir`.
+    fn redirect_to(dir: &std::path::Path) -> Self {
+        let guard = Self::observe();
+        std::env::set_var("XDG_CONFIG_HOME", dir);
+        guard
+    }
+}
+
+impl Drop for ConfigHomeGuard {
+    fn drop(&mut self) {
+        match &self.prior {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
 }
 
 #[test]
@@ -77,7 +134,7 @@ fn the_install_id_is_minted_once_and_then_reused() {
 }
 
 #[test]
-fn reset_clears_the_stored_choice_but_keeps_the_install_id() {
+fn reset_makes_the_machine_a_new_install_with_a_new_id() {
     let dir = temp_dir("reset");
     let store = TelemetryStore::open_at(&dir, "demo");
     let id = store.ensure_install_id().unwrap();
@@ -87,16 +144,97 @@ fn reset_clears_the_stored_choice_but_keeps_the_install_id() {
             s.notice_shown = Some(TelemetryLevel::Debug);
         })
         .unwrap();
+    let path = dir.join("demo").join("telemetry.json");
+    assert!(
+        path.exists(),
+        "the fixture must have written a file to delete"
+    );
 
     store.reset().unwrap();
 
-    let after = TelemetryStore::open_at(&dir, "demo").settings();
+    assert!(
+        !path.exists(),
+        "ADR 0077: reset deletes the framework-owned telemetry file, it does \
+         not leave a defaults-shaped one behind"
+    );
+    let reopened = TelemetryStore::open_at(&dir, "demo");
+    let after = reopened.settings();
     assert_eq!(after.level, None);
     assert_eq!(after.notice_shown, None);
     assert_eq!(
-        after.install_id,
-        Some(id),
-        "reset returns the Install to no-choice; it does not make it a new Install"
+        after.install_id, None,
+        "ADR 0077: level, id, notice marker and probe switches go together"
+    );
+    assert_ne!(
+        reopened.ensure_install_id().unwrap(),
+        id,
+        "reset means \"fresh install\": a person who asked to be forgotten must \
+         not stay joinable to everything the old id already sent"
+    );
+}
+
+#[test]
+fn resetting_an_install_that_stored_nothing_succeeds() {
+    // `reset` promises "nothing is stored"; on a fresh install that already
+    // holds. Reporting an error because the file happens not to exist would
+    // make `telemetry reset` fail on exactly the machines with nothing to
+    // hide, and would turn a second `reset` into a failure after the first.
+    let dir = temp_dir("reset-empty");
+    let store = TelemetryStore::open_at(&dir, "demo");
+    store.reset().unwrap();
+    store.reset().unwrap();
+    // Not `TelemetrySettings::default()`: reading an absent file goes through
+    // `ConfigStore::load`, which stamps the defaults it hands back with the
+    // store's current schema version. Everything a person can choose is
+    // still unset, which is what "nothing is stored" means.
+    assert_eq!(
+        store.settings(),
+        TelemetrySettings {
+            schema_version: TELEMETRY_SCHEMA_VERSION,
+            ..Default::default()
+        }
+    );
+}
+
+#[test]
+fn resetting_a_store_with_no_usable_directory_reports_the_reason() {
+    // The mirror of `a_store_with_no_usable_directory_is_unavailable_...`:
+    // an unavailable store must fail loudly here too. Silently reporting
+    // success would tell a person their id was deleted when it was not.
+    let store = TelemetryStore::unavailable("config directory could not be created");
+    let err = store.reset().unwrap_err();
+    assert!(
+        err.to_string().contains("config directory"),
+        "the reason must reach the person running the command: {err}"
+    );
+}
+
+#[test]
+fn reset_names_the_file_when_it_cannot_be_deleted() {
+    // `reset`'s third arm: `remove_file` failed for a reason that is not
+    // "already gone". Returning `Ok` there would be the worst outcome the
+    // command has — `telemetry reset` would print "the next run starts over
+    // as a new install" while the id it promised to destroy is still on disk.
+    //
+    // A directory at the settings path drives that arm deterministically:
+    // `unlink(2)` refuses to remove a directory whatever the caller's
+    // privileges, so this does not depend on who runs the suite — unlike a
+    // read-only parent directory, which root sails straight through and which
+    // would therefore pass vacuously in a root container.
+    let dir = temp_dir("reset-undeletable");
+    let store = TelemetryStore::open_at(&dir, "demo");
+    let path = dir.join("demo").join("telemetry.json");
+    std::fs::create_dir(&path).unwrap();
+
+    let err = store.reset().unwrap_err();
+
+    assert!(
+        err.to_string().contains("telemetry.json"),
+        "the failure must name the file that is still there: {err}"
+    );
+    assert!(
+        path.exists(),
+        "the fixture proves nothing once the path is gone"
     );
 }
 
@@ -184,6 +322,9 @@ fn versioned_config_impl_reads_and_writes_the_schema_version_field() {
 
 #[test]
 fn open_resolves_a_real_platform_config_directory_when_one_exists() {
+    // Read-only, but it still resolves `$XDG_CONFIG_HOME`, so it takes the
+    // same lock as the test below that redirects it.
+    let _env = ConfigHomeGuard::observe();
     // Every other test uses `open_at()` against a temp directory so it stays
     // hermetic. This is the only one exercising the actual `open()` entry
     // point production code calls, which goes through `dirs::config_dir()`.
@@ -263,4 +404,64 @@ fn the_two_argument_constructors_are_the_json_default() {
     let parsed: serde_json::Value =
         serde_json::from_str(&raw).expect("the bytes on disk must be JSON");
     assert_eq!(parsed["level"].as_str(), Some("usage"));
+}
+
+// `TelemetryStoreLocation::open` is the seam the whole `telemetry` command
+// group resolves its settings file through. `dir: Some(_)` is what those
+// tests inject; `dir: None` is what every real application gets, and nothing
+// reached it — the fallback was trusted because the arm beside it worked.
+//
+// `$XDG_CONFIG_HOME` is redirected so it resolves into a temp directory
+// instead of the person's real profile, following the pattern in
+// `tests/unit/config_backend_file.rs`.
+#[test]
+fn a_location_without_a_directory_falls_back_to_the_platform_config_dir() {
+    let home = temp_dir("location-fallback");
+    let _env = ConfigHomeGuard::redirect_to(&home);
+
+    let location = TelemetryStoreLocation::default();
+    assert_eq!(
+        location.dir, None,
+        "the default location names no directory"
+    );
+
+    let store = location.open("demo-fallback");
+    let expected = home.join("demo-fallback").join("telemetry.json");
+    assert_eq!(
+        store.state(),
+        &StoreState::Ready(expected.clone()),
+        "`dir: None` must resolve under the platform configuration directory"
+    );
+
+    // Resolving to the right path is not the same as being usable there.
+    store
+        .mutate(|s| s.level = Some(TelemetryLevel::Usage))
+        .expect("the fallback store must be writable");
+    assert_eq!(
+        TelemetryStore::open_at(&home, "demo-fallback")
+            .settings()
+            .level,
+        Some(TelemetryLevel::Usage),
+        "the fallback must have written where it said it would"
+    );
+}
+
+// The other arm: an explicit directory is used verbatim, and `format` is
+// threaded through rather than defaulted — a store that silently reverted to
+// JSON would leave a TOML app with a stray file its user never edits.
+#[test]
+fn a_location_with_a_directory_opens_there_in_the_declared_format() {
+    let dir = temp_dir("location-explicit");
+    let location = TelemetryStoreLocation {
+        dir: Some(dir.clone()),
+        format: ConfigFormat::Toml,
+    };
+
+    let store = location.open("demo-explicit");
+
+    assert_eq!(
+        store.state(),
+        &StoreState::Ready(dir.join("demo-explicit").join("telemetry.toml")),
+        "an explicit directory must be used verbatim, in the declared format"
+    );
 }

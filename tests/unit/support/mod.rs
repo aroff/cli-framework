@@ -21,7 +21,8 @@
 #![allow(dead_code)]
 
 use cli_framework::telemetry::{
-    Attribution, Deployment, ProbeRegistry, TelemetryInputs, TelemetryLevel, TelemetryPolicy,
+    Attribution, Deployment, ProbeRegistry, StoreState, TelemetryInputs, TelemetryLevel,
+    TelemetryPolicy, TelemetryStore,
 };
 use opentelemetry::trace::{SpanContext, SpanKind, Status};
 use opentelemetry::KeyValue;
@@ -176,4 +177,37 @@ pub fn export_blocking<E: opentelemetry_sdk::trace::SpanExporter>(
     batch: Vec<SpanData>,
 ) {
     futures_executor::block_on(exporter.export(batch)).expect("export must not fail in a test");
+}
+
+// ── telemetry command fixtures (Task 22) ────────────────────────────────────
+
+/// A `StoreState` that is ready, for the pure `status_report` tests. The
+/// path is never opened: `status_report` only renders it.
+pub fn ready_store() -> StoreState {
+    StoreState::Ready(std::path::PathBuf::from("/nonexistent/demo/telemetry.json"))
+}
+
+pub fn registry() -> ProbeRegistry {
+    ProbeRegistry::with_builtins()
+}
+
+/// A real store over a fresh temporary directory. Returns the `TempDir`
+/// alongside it: dropping the `TempDir` deletes the file, so a test that
+/// keeps only the store reads an empty directory on its second call.
+pub fn temp_store() -> (TelemetryStore, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let store = TelemetryStore::open_at(dir.path(), "demo");
+    (store, dir)
+}
+
+pub fn temp_store_with_kill_switch(var: &str) -> (TelemetryStore, tempfile::TempDir, EnvGuard) {
+    let guard = EnvGuard::set(var, "true");
+    let (store, dir) = temp_store();
+    (store, dir, guard)
+}
+
+/// A store whose directory cannot be created, for the "mutating command must
+/// fail loudly" test.
+pub fn unavailable_store(reason: &str) -> TelemetryStore {
+    TelemetryStore::unavailable(reason)
 }

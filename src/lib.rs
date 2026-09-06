@@ -131,6 +131,12 @@ pub mod __private {
 /// Re-export the exit-code marker for parse/usage errors (spec 012 §R5).
 pub use app::UsageError;
 
+/// Re-export the deployment-shape axis (spec 025). Ungated: `Deployment`
+/// lives in `telemetry::axes`, which compiles unconditionally regardless of
+/// which telemetry features are enabled, and `AppBuilder` carries this field
+/// on every build — so the re-export must not be gated either.
+pub use telemetry::Deployment;
+
 /// Re-export the `#[derive(CommandSpec)]` macro when the `derive` feature is enabled.
 #[cfg(feature = "derive")]
 pub use cli_framework_macros::CommandSpec;

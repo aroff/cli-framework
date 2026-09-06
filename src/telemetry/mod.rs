@@ -128,7 +128,31 @@ pub use policy::{
 #[cfg(feature = "telemetry")]
 pub mod store;
 #[cfg(feature = "telemetry")]
-pub use store::{StoreState, TelemetrySettings, TelemetryStore, TELEMETRY_SCHEMA_VERSION};
+pub use store::{
+    StoreState, TelemetrySettings, TelemetryStore, TelemetryStoreLocation, TELEMETRY_SCHEMA_VERSION,
+};
+
+// Gated on `telemetry` for the same reason as `store` above: `commands.rs`
+// registers the built-in `telemetry` command group, which only exists in a
+// `telemetry` build, and consumes `TelemetryStore`/`TelemetryPolicy`/
+// `ProbeRegistry`, all themselves gated the same way.
+#[cfg(feature = "telemetry")]
+pub mod commands;
+#[cfg(feature = "telemetry")]
+pub use commands::{
+    disable_probe, enable_probe, info_catalog, reset, set_level, status_report, ProbeInfo,
+    ProbeStatus, SetOutcome, StatusReport, TelemetryCommandError,
+};
+
+// Gated on `telemetry` for the same reason as `commands` above: `notice.rs`
+// takes `&TelemetryPolicy`. It also names `Surface`, which it imports from
+// `probes` (PR5, Task 17) — the module carried a stand-in copy of that enum
+// while PR5 was unmerged, and the copy was deleted when this branch was
+// rebased onto it. `Surface` is re-exported once, from `probes` below.
+#[cfg(feature = "telemetry")]
+pub mod notice;
+#[cfg(feature = "telemetry")]
+pub use notice::{notice_decision, NoticeDecision, SkipReason};
 
 // Gated on `observability`, not `telemetry`: `install_default_logging`/
 // `LoggingGuard` replace `init_default_logging`'s old body and must stay
@@ -231,3 +255,19 @@ pub use probes::{
     mcp_session_attrs, metrics, plugin_attrs, process_attrs, registered_feature_names,
     secrets_attrs, spans, usage_error_attrs, CommandOutcome, CommandStatus, Surface,
 };
+
+// Gated on `telemetry` for the same reason as every other submodule above:
+// `doctor.rs` names `TelemetryPolicy`, `StoreState` and `SubscriberOutcome`,
+// all themselves gated on this feature, and implements
+// `crate::doctor::check::DoctorCheck` (the framework's top-level `doctor`
+// module, `src/doctor/`, unrelated to and not gated by this one — it exists
+// in every build). Wiring `telemetry_checks`'s output into
+// `AppBuilder::build` via `push_doctor_checks` is PR7's job: PR7's own
+// preamble says the startup wiring lands there because it depends on both
+// this PR and PR5 (the probe catalog) being merged first. This PR only
+// produces the six checks in the `Vec<Arc<dyn DoctorCheck>>` shape that hook
+// already expects.
+#[cfg(feature = "telemetry")]
+pub mod doctor;
+#[cfg(feature = "telemetry")]
+pub use doctor::telemetry_checks;

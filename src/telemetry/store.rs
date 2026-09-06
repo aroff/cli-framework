@@ -217,17 +217,75 @@ impl TelemetryStore {
         .and_then(|s| s.install_id)
     }
 
-    /// Forget every stored choice. The Install id is deliberately kept: reset
-    /// returns the Install to "has not chosen", it does not fabricate a new
-    /// Install.
+    /// Delete the settings file, so the next run starts over as a new
+    /// Install: new id, no stored consent, notice shown again.
+    ///
+    /// ADR 0077 makes this a privacy affordance, not a "clear my preferences"
+    /// convenience — `telemetry reset` *means* "fresh install", and the ADR
+    /// leans on that meaning to justify keeping the whole `telemetry` subtree
+    /// out of roaming ("it cannot mean that if the next sync brings the old
+    /// level back"). Carrying the id across a reset would defeat it: a person
+    /// who asked to be forgotten would stay joinable to everything the old id
+    /// had already sent.
+    ///
+    /// Removing the file rather than writing defaults over it is the same
+    /// decision: ADR 0077 has "level, id, notice marker and probe switches go
+    /// together", and a file left behind is residue on a disk the person just
+    /// asked to clear. No reader needs changing — an absent file already
+    /// reads as defaults (see [`Self::settings`]).
+    ///
+    /// Resetting an Install that stored nothing succeeds rather than erroring:
+    /// the post-condition it promises already holds.
     pub fn reset(&self) -> Result<(), ConfigError> {
-        self.mutate(|s| {
-            let install_id = s.install_id.take();
-            *s = TelemetrySettings {
-                install_id,
-                ..Default::default()
-            };
-        })
-        .map(|_| ())
+        let StoreState::Ready(path) = &self.state else {
+            return Err(ConfigError::ReadOnly {
+                backend: self.state.describe(),
+            });
+        };
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(ConfigError::BackendWrite {
+                backend: path.display().to_string(),
+                source: Box::new(err),
+            }),
+        }
+    }
+
+    /// A store that was never opened against a real path — reads fall back to
+    /// defaults and every write fails with `reason`.
+    ///
+    /// Test-only constructor: production always goes through [`Self::open`],
+    /// [`Self::open_with_format`], [`Self::open_at`] or
+    /// [`Self::open_at_with_format`], which compute their own reason when the
+    /// platform or directory is unavailable.
+    #[doc(hidden)]
+    pub fn unavailable(reason: impl Into<String>) -> Self {
+        Self {
+            state: StoreState::Unavailable(reason.into()),
+            store: None,
+        }
+    }
+}
+
+/// Where a process's telemetry settings file lives.
+///
+/// `dir: None` means the platform configuration directory, which is what
+/// every real application uses. A test sets it to a `TempDir` so it never
+/// touches the person's own consent file. `format` is JSON until PR7's
+/// Task 27 teaches the builder to report the application's declared
+/// configuration format (PRD line 258) — do not try to resolve it here.
+#[derive(Debug, Clone, Default)]
+pub struct TelemetryStoreLocation {
+    pub dir: Option<PathBuf>,
+    pub format: ConfigFormat,
+}
+
+impl TelemetryStoreLocation {
+    pub fn open(&self, app: &str) -> TelemetryStore {
+        match &self.dir {
+            Some(dir) => TelemetryStore::open_at_with_format(dir, app, self.format),
+            None => TelemetryStore::open_with_format(app, self.format),
+        }
     }
 }

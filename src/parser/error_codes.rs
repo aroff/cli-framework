@@ -79,3 +79,20 @@ pub const CFG003: &str = "CFG003";
 /// underlying condition as a non-fatal warning rather than this code, since it
 /// can still proceed on local/default values.
 pub const CFG004: &str = "CFG004";
+
+/// Telemetry commands: `telemetry set` given a value that is not `off`,
+/// `usage`, `diagnostic`, or `debug` (or a required positional arg was
+/// somehow absent despite `Cardinality::Required` — defense in depth, since
+/// typed-arg validation already rejects both cases before the command body
+/// runs). Also used by `telemetry disable`/`enable` for a missing
+/// `probe_id`.
+pub const TEL001: &str = "TEL001";
+/// Telemetry commands: `telemetry disable`/`enable` given a probe id that is
+/// not in the built-in registry (`ProbeRegistry::with_builtins`).
+pub const TEL002: &str = "TEL002";
+/// Telemetry commands: the telemetry settings file could not be written —
+/// either the store is `StoreState::Unavailable` (see `TelemetryStore`'s
+/// module docs: a directory that could not be created, or an unresolvable
+/// platform config directory), or the underlying `ConfigStore` write itself
+/// failed for some other `ConfigError` reason.
+pub const TEL003: &str = "TEL003";
