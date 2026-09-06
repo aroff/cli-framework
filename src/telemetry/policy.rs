@@ -120,6 +120,13 @@ pub struct TelemetryInputs {
     /// is normalized to `1.0` by [`resolve_policy`]; end-user Installs and
     /// `debug` ignore it entirely via [`TelemetryPolicy::sampler_is_always_on`].
     pub sample_ratio: f64,
+    /// OTLP headers, off the config tree. A pure pass-through: nothing in
+    /// [`resolve_policy`] inspects this value, because a header is transport
+    /// configuration, not a telemetry-level decision — `AppBuilder::build`
+    /// resolves it (author default, then `OTEL_EXPORTER_OTLP_HEADERS`) the
+    /// same way it resolves `endpoint`, and this field only carries the
+    /// result through to the exporter.
+    pub headers: Option<secrecy::SecretString>,
 }
 
 /// The decision. Immutable, computed once per process, shared through an
@@ -150,6 +157,10 @@ pub struct TelemetryPolicy {
     /// The fraction of traces a `Service` deployment samples, already
     /// normalized to `(0.0, 1.0]` by [`resolve_policy`].
     pub sample_ratio: f64,
+    /// OTLP headers, off the config tree. Carried through from
+    /// [`TelemetryInputs::headers`] unchanged — that field's doc comment
+    /// explains why no resolution rule in this module inspects it.
+    pub headers: Option<secrecy::SecretString>,
 }
 
 fn fold_layers(
@@ -243,6 +254,7 @@ pub fn resolve_policy(inputs: TelemetryInputs) -> TelemetryPolicy {
         app_attr_allowlist: inputs.app_attr_allowlist,
         extra_never: inputs.extra_never,
         sample_ratio,
+        headers: inputs.headers,
     }
 }
 

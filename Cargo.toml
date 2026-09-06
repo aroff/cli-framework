@@ -129,6 +129,12 @@ tracing-opentelemetry = { version = "0.32", optional = true }
 # `HeaderExtractor`/`HeaderInjector` instead of re-implementing header casing
 # and multi-value rules ourselves.
 opentelemetry-http = { version = "0.31", default-features = false, optional = true }
+# `TelemetryDefaults.headers` (an OTLP header, usually a bearer token) must
+# never appear in a `Debug` line of the builder. Was a dev-dependency only
+# (below, for this crate's own oidc tests); promoted to a real, optional
+# dependency because it now appears in a public `src/` API type. Pinned to
+# 0.8 to match `cli-framework-oidc`'s own usage — do not bump in isolation.
+secrecy = { version = "0.8", features = ["serde"], optional = true }
 
 # Postgres access for the `config-service` feature (spec 022). `sqlx-core` +
 # `sqlx-postgres` directly — never the `sqlx` facade crate, which pulls a
@@ -234,7 +240,7 @@ observability = ["dep:tracing-subscriber"]
 # (e.g. the foreign-subscriber finding) without every consumer separately
 # opting into the doctor command surface — `doctor` itself adds no
 # dependency (`doctor = []`), so this only widens which types are in scope.
-telemetry = ["observability", "config", "doctor", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry", "dep:opentelemetry-http", "dep:http"]
+telemetry = ["observability", "config", "doctor", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry", "dep:opentelemetry-http", "dep:http", "dep:secrecy"]
 # CLI output utilities optional features
 table-advanced = ["comfy-table"]
 progress = ["indicatif"]
@@ -914,3 +920,8 @@ required-features = ["telemetry"]
 name = "unit_telemetry_doctor"
 path = "tests/unit/telemetry_doctor.rs"
 required-features = ["telemetry"]
+
+[[test]]
+name = "unit_telemetry_builder"
+path = "tests/unit/telemetry_builder.rs"
+required-features = ["telemetry", "config"]
