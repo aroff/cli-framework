@@ -78,8 +78,29 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 aikit-sdk = { git = "https://github.com/goaikit/aikit.git", package = "aikit-sdk", rev = "eb50f2c5509d4345cab65af0f7faed012ab0e557", optional = true }
 ## Optional embedded agent dependency (used by `chat` feature)
 aikit-agent = { git = "https://github.com/goaikit/aikit.git", package = "aikit-agent", rev = "eb50f2c5509d4345cab65af0f7faed012ab0e557", optional = true }
-# Optional Swagger UI dependency for api-swagger feature
-utoipa-swagger-ui = { version = "9.0.2", features = ["axum"], optional = true }
+# Optional Swagger UI dependency for api-swagger feature.
+#
+# `vendored` is load-bearing for CI, not a preference. Without it this crate's
+# build script fetches
+# https://github.com/swagger-api/swagger-ui/archive/refs/tags/v5.17.14.zip at
+# build time, and any runner-network blip fails the build with a panic that
+# names none of the code under test -- run 34021441768 lost `Build release (all
+# features)` to `curl: (28) Failed to connect to github.com port 443 after
+# 135310 ms`, and a plain re-run cleared it. The fetch happens once per profile,
+# so `Clippy (workspace, all features)` is exposed to it too.
+#
+# `vendored` pulls the same archive from crates.io as `utoipa-swagger-ui-vendored`
+# and hands it to the build script as bytes, so there is no github.com request at
+# all. crates.io is already a hard prerequisite of every build here and is already
+# covered by the `~/.cargo/registry` cache, so this adds no new failure domain.
+# The archive is byte-identical to the downloaded one (both sha256
+# 481244d0812097b11fbaeef79f71d942b171617f9c9f9514e63acbe13e71ccdc, Swagger UI
+# 5.17.14) -- the served UI does not change.
+#
+# Note that `vendored` takes priority over `SWAGGER_UI_DOWNLOAD_URL` in the build
+# script: with it enabled that variable is read and printed but ignored, so the
+# `file://` override used for local builds is no longer needed.
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum", "vendored"], optional = true }
 # Optional emulation dependencies
 mockall = { version = "0.13", optional = true }
 

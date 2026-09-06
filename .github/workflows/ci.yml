@@ -104,6 +104,53 @@ jobs:
       - name: Build release (all features)
         run: cargo build --all-features --release
 
+      # `utoipa-swagger-ui`'s build script fetches its asset archive from
+      # github.com unless the `vendored` feature is on, and a runner-network
+      # blip there fails this job with a panic that names none of the code
+      # under test (run 34021441768: `curl: (28) Failed to connect to
+      # github.com port 443 after 135310 ms`; a plain re-run cleared it).
+      # Cargo.toml enables `vendored` so the archive comes from crates.io
+      # instead.
+      #
+      # This step is what keeps that true. `cargo build` prints a build
+      # script's stdout only when the script FAILS, so the green step above is
+      # NOT evidence that the download was skipped -- the download usually
+      # succeeds, and when it does the log says nothing at all. Cargo does
+      # persist that stdout next to the build output, so read it back and fail
+      # if the vendored branch was not the one taken. Without this, dropping
+      # `vendored` from the dependency silently restores the network fetch and
+      # CI stays green until the next blip.
+      #
+      # Must stay ahead of `Reclaim the release build tree`, which deletes the
+      # directory this reads.
+      - name: Assert the Swagger UI archive was vendored, not downloaded
+        run: |
+          # Every matching directory is checked, not just the first one found:
+          # a feature change gives the crate a new fingerprint and therefore a
+          # second `<pkg>-<hash>` directory beside the old one, and `find` does
+          # not order its results, so testing only one can read a stale
+          # directory and pass on a tree that actually downloaded.
+          list="${RUNNER_TEMP:-/tmp}/swagger-build-outputs.txt"
+          find target/release/build -maxdepth 2 -name output \
+               -path '*/utoipa-swagger-ui-*' \
+               ! -path '*/utoipa-swagger-ui-vendored-*' > "$list"
+          found=0
+          stale=0
+          while IFS= read -r out; do
+            found=1
+            echo "--- $out ---"
+            cat "$out"
+            grep -qF 'using vendored Swagger UI' "$out" || stale=1
+          done < "$list"
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no utoipa-swagger-ui build-script output under target/release/build -- the assertion below would be vacuous"
+            exit 1
+          fi
+          if [ "$stale" -ne 0 ]; then
+            echo "::error::utoipa-swagger-ui resolved its archive from SWAGGER_UI_DOWNLOAD_URL instead of the vendored crate, which puts a live github.com fetch back in the build; re-add the 'vendored' feature to the utoipa-swagger-ui dependency in Cargo.toml"
+            exit 1
+          fi
+
       # Nothing downstream consumes these binaries -- the step above exists to
       # prove the all-features build compiles -- and an all-features release
       # tree is several gigabytes sitting beside the debug artifacts that every
