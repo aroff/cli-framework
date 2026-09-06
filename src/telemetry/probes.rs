@@ -263,12 +263,14 @@ pub mod spans {
 /// cannot help: the secret is in the value, not in a key named `token`. Query
 /// strings carry API keys, paths carry account identifiers, and both are
 /// routinely pasted into a CLI by a person who has not thought about it.
-/// `server_address` is a separate diagnostic probe, span-only, so an operator
-/// debugging a connection can see the host without it becoming a metric label.
+/// `server.address` (+ `server.port`) is the PRD's separate `http.client.server_address`
+/// diagnostic probe, span-only, so an operator debugging a connection can see
+/// the host and port without either becoming a metric label.
 pub fn http_client_attrs(
     method: &str,
     status: Option<u16>,
     server_address: Option<&str>,
+    server_port: Option<u16>,
 ) -> Vec<KeyValue> {
     let mut attrs = vec![
         KeyValue::new(PROBE_ATTR_KEY, "http.client"),
@@ -281,10 +283,10 @@ pub fn http_client_attrs(
         ));
     }
     if let Some(address) = server_address {
-        attrs.push(KeyValue::new(
-            "http.client.server_address",
-            address.to_string(),
-        ));
+        attrs.push(KeyValue::new("server.address", address.to_string()));
+    }
+    if let Some(port) = server_port {
+        attrs.push(KeyValue::new("server.port", port.to_string()));
     }
     attrs
 }
@@ -307,13 +309,18 @@ pub fn http_server_attrs(route: &str, method: &str, status: u16) -> Vec<KeyValue
 
 /// Attributes for the `mcp.session` probe.
 ///
-/// `tool` comes from the server's own declared tool list — bounded the same
-/// way a registered command path is — so unlike a free-text argument it is
-/// safe as a metric label.
-pub fn mcp_session_attrs(tool: Option<&str>) -> Vec<KeyValue> {
+/// `mcp.tool` comes from the server's own declared tool list — bounded the
+/// same way a registered command path is. `status` is not known when the
+/// span is created (the call has not run yet): callers pass `None` at
+/// creation and call this again with `Some(status)` once the outcome is
+/// known, recording only the newly-known field onto the still-open span.
+pub fn mcp_session_attrs(tool: Option<&str>, status: Option<&str>) -> Vec<KeyValue> {
     let mut attrs = vec![KeyValue::new(PROBE_ATTR_KEY, "mcp.session")];
     if let Some(tool) = tool {
-        attrs.push(KeyValue::new("tool", tool.to_string()));
+        attrs.push(KeyValue::new("mcp.tool", tool.to_string()));
+    }
+    if let Some(status) = status {
+        attrs.push(KeyValue::new("status", status.to_string()));
     }
     attrs
 }
@@ -321,13 +328,14 @@ pub fn mcp_session_attrs(tool: Option<&str>) -> Vec<KeyValue> {
 /// Attributes for the `cli.chat` probe.
 ///
 /// There is no attribute here under which prompt or reply text could travel,
-/// at any telemetry level including debug: only the turn count. Debug is a
-/// troubleshooting level, not a bypass, and a prompt is the single
-/// highest-value piece of personal data a CLI touches.
-pub fn chat_attrs(turns: u64) -> Vec<KeyValue> {
+/// at any telemetry level including debug: only the turn count and the
+/// session's duration. Debug is a troubleshooting level, not a bypass, and a
+/// prompt is the single highest-value piece of personal data a CLI touches.
+pub fn chat_attrs(turn_count: u64, duration_ms: f64) -> Vec<KeyValue> {
     vec![
         KeyValue::new(PROBE_ATTR_KEY, "cli.chat"),
-        KeyValue::new("cli.chat.turns", turns.to_string()),
+        KeyValue::new("cli.chat.turn_count", turn_count.to_string()),
+        KeyValue::new("cli.chat.duration_ms", duration_ms.to_string()),
     ]
 }
 
@@ -335,12 +343,14 @@ pub fn chat_attrs(turns: u64) -> Vec<KeyValue> {
 ///
 /// `check` is the check's own id (a closed, author-defined vocabulary, like a
 /// command path), `severity` its finding's severity — never the check's
-/// free-text explanation.
-pub fn doctor_attrs(check: &str, severity: &str) -> Vec<KeyValue> {
+/// free-text explanation. `findings_count` is a root-span attribute (the
+/// total findings from the run), not a per-check metric label.
+pub fn doctor_attrs(check: &str, severity: &str, findings_count: u64) -> Vec<KeyValue> {
     vec![
         KeyValue::new(PROBE_ATTR_KEY, "cli.doctor"),
         KeyValue::new("check", check.to_string()),
         KeyValue::new("severity", severity.to_string()),
+        KeyValue::new("cli.doctor.findings_count", findings_count.to_string()),
     ]
 }
 
@@ -370,22 +380,33 @@ pub fn auth_attrs(kind: &str, status: &str) -> Vec<KeyValue> {
 
 /// Attributes for the `cli.config` probe.
 ///
-/// `kind` names which operation touched configuration (e.g. `get`, `set`,
-/// `load`) — never the setting's value.
-pub fn config_attrs(kind: &str) -> Vec<KeyValue> {
+/// Which operation ran (load, migrate, policy refresh) is already carried by
+/// the child span's own name (see [`spans::CONFIG_LOAD`] and friends), so
+/// unlike the other probes here there is no `kind`/operation attribute.
+/// `schema_version` is the config schema's own version number, `backend`
+/// names where it was read from (`file` or `registry`) and `policy_state`
+/// whether an org policy governs it (`managed` or `not_managed`) — never the
+/// setting's value.
+pub fn config_attrs(schema_version: u32, backend: &str, policy_state: &str) -> Vec<KeyValue> {
     vec![
         KeyValue::new(PROBE_ATTR_KEY, "cli.config"),
-        KeyValue::new("kind", kind.to_string()),
+        KeyValue::new("config.schema_version", schema_version.to_string()),
+        KeyValue::new("config.backend", backend.to_string()),
+        KeyValue::new("config.policy.state", policy_state.to_string()),
     ]
 }
 
 /// Attributes for the `cli.secrets` probe.
 ///
-/// `kind` names which backend or operation ran — never the secret itself.
-pub fn secrets_attrs(kind: &str) -> Vec<KeyValue> {
+/// `backend` names which store handled the operation, `op` is a closed
+/// vocabulary token (`get`, `set`, `delete`), and `status` is the outcome
+/// (`ok`, `error`) — never the secret itself.
+pub fn secrets_attrs(backend: &str, op: &str, status: &str) -> Vec<KeyValue> {
     vec![
         KeyValue::new(PROBE_ATTR_KEY, "cli.secrets"),
-        KeyValue::new("kind", kind.to_string()),
+        KeyValue::new("secrets.backend", backend.to_string()),
+        KeyValue::new("secrets.op", op.to_string()),
+        KeyValue::new("status", status.to_string()),
     ]
 }
 
@@ -403,6 +424,12 @@ pub fn help_attrs(command: Option<&str>) -> Vec<KeyValue> {
 }
 
 /// Attributes for the `cli.process` probe.
-pub fn process_attrs() -> Vec<KeyValue> {
-    vec![KeyValue::new(PROBE_ATTR_KEY, "cli.process")]
+///
+/// `exit_code` is a root-span attribute: the process's own exit status,
+/// never a value derived from command output.
+pub fn process_attrs(exit_code: i32) -> Vec<KeyValue> {
+    vec![
+        KeyValue::new(PROBE_ATTR_KEY, "cli.process"),
+        KeyValue::new("process.exit.code", exit_code.to_string()),
+    ]
 }

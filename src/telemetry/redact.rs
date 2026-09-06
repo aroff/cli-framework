@@ -72,7 +72,18 @@ pub const NEVER_KEYS: &[&str] = &[
 /// extends the never-list with `token` still drops this key, because extending
 /// it is a deliberate act by someone who has decided their product cannot
 /// carry the value.
-pub const NEVER_LIST_EXEMPT: &[&str] = &["cli.usage_error.token"];
+pub const NEVER_LIST_EXEMPT: &[&str] = &[
+    "cli.usage_error.token",
+    // `secrets.backend` is a backend *name* (`keychain`, `file`) and
+    // `secrets.op` is one of `get`, `set`, `delete`. Neither is a secret, a
+    // secret's name, or a secret's value — spec 025 row `cli.secrets` asks
+    // for exactly these two keys and then says "never names or values",
+    // which is the distinction. The substring rule fires on the probe
+    // family's own name, so without this carve-out the whole `cli.secrets`
+    // probe is catalogued, instrumented, and permanently unreachable.
+    "secrets.backend",
+    "secrets.op",
+];
 
 pub const METRIC_LABEL_ALLOWLIST: &[&str] = &[
     "command",
@@ -105,6 +116,24 @@ const FRAMEWORK_PREFIXES: &[&str] = &[
     "url.",
     "rpc.",
     "server.",
+    // Bare namespaces spec 025 puts on framework spans: `process.exit.code`
+    // on the root span (row `cli.process`), `config.schema_version` /
+    // `config.backend` / `config.policy.state` on the `cli.config.*` child
+    // spans (row `cli.config`), and `secrets.backend` / `secrets.op` on
+    // `cli.secrets.op` (row `cli.secrets`). They carry no `cli.` prefix
+    // because the specification wrote them without one, so rule 3 would
+    // otherwise treat the framework's own normative attributes as
+    // application attributes and require every app to allowlist them.
+    //
+    // Widening a prefix widens it for applications too: an app key called
+    // `config.tier` now reaches the boundary without `with_telemetry_attrs`.
+    // That is the same trade already made for `cli.`, `http.` and `server.`,
+    // and it is bounded by the never-list, which runs first and is
+    // unaffected — `process.command_line` stays dropped by `NEVER_KEYS`
+    // regardless of this list.
+    "process.",
+    "config.",
+    "secrets.",
 ];
 
 const FRAMEWORK_BARE_KEYS: &[&str] = &[

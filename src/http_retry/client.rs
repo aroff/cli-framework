@@ -121,12 +121,13 @@ impl RetryableHttpClient {
         // probes this one is span-only: there is no reachable instrument to
         // record `http.client.request.duration` onto from here.
         #[cfg(feature = "telemetry")]
-        let (method, server_address) = match request_builder().build() {
+        let (method, server_address, server_port) = match request_builder().build() {
             Ok(req) => (
                 req.method().as_str().to_string(),
                 req.url().host_str().map(|h| h.to_string()),
+                req.url().port_or_known_default(),
             ),
-            Err(_) => ("UNKNOWN".to_string(), None),
+            Err(_) => ("UNKNOWN".to_string(), None, None),
         };
         #[cfg(feature = "telemetry")]
         let span = tracing::info_span!(
@@ -134,7 +135,8 @@ impl RetryableHttpClient {
             cli.probe = tracing::field::Empty,
             http.request.method = tracing::field::Empty,
             http.response.status_code = tracing::field::Empty,
-            http.client.server_address = tracing::field::Empty,
+            server.address = tracing::field::Empty,
+            server.port = tracing::field::Empty,
         );
         #[cfg(not(feature = "telemetry"))]
         let span = tracing::Span::none();
@@ -167,9 +169,12 @@ impl RetryableHttpClient {
         #[cfg(feature = "telemetry")]
         {
             let status = outcome.as_ref().ok().map(|r| r.status().as_u16());
-            for kv in
-                crate::telemetry::http_client_attrs(&method, status, server_address.as_deref())
-            {
+            for kv in crate::telemetry::http_client_attrs(
+                &method,
+                status,
+                server_address.as_deref(),
+                server_port,
+            ) {
                 span.record(kv.key.as_str(), kv.value.as_str().as_ref());
             }
         }

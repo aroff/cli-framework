@@ -647,24 +647,31 @@ pub async fn dispatch_tool_call_with_identity(
     let arguments_value = arguments.map(Value::Object).unwrap_or(Value::Null);
     let mut ctx = McpAppContext::new(tool_registry.telemetry.clone(), identity);
 
-    let res = {
-        #[cfg(feature = "telemetry")]
-        let span = {
-            let span = tracing::info_span!(
-                "cli.command",
-                "cli.command.path" = tool_name,
-                "cli.invocation.surface" = "mcp",
-                "cli.probe" = tracing::field::Empty,
-                "tool" = tracing::field::Empty,
-            );
-            for kv in crate::telemetry::mcp_session_attrs(Some(tool_name)) {
-                span.record(kv.key.as_str(), kv.value.as_str().as_ref());
-            }
-            span
-        };
-        #[cfg(not(feature = "telemetry"))]
-        let span = tracing::Span::none();
+    // The span is created here, outside `res`'s block, and kept alive via
+    // `span.clone()` below rather than moved into `.instrument`: `status`
+    // (mcp.session probe, PRD 336) is not known until the outcome is computed
+    // further down, so the still-open span must survive past the `.await` to
+    // receive it. Declaring it as `tracing::field::Empty` at creation and
+    // recording it only once known avoids fabricating a status up front.
+    #[cfg(feature = "telemetry")]
+    let span = {
+        let span = tracing::info_span!(
+            "cli.command",
+            "cli.command.path" = tool_name,
+            "cli.invocation.surface" = "mcp",
+            "cli.probe" = tracing::field::Empty,
+            "mcp.tool" = tracing::field::Empty,
+            "status" = tracing::field::Empty,
+        );
+        for kv in crate::telemetry::mcp_session_attrs(Some(tool_name), None) {
+            span.record(kv.key.as_str(), kv.value.as_str().as_ref());
+        }
+        span
+    };
+    #[cfg(not(feature = "telemetry"))]
+    let span = tracing::Span::none();
 
+    let res = {
         use tracing::Instrument;
         bridge
             .invoke_structured(
@@ -676,7 +683,7 @@ pub async fn dispatch_tool_call_with_identity(
                     mode: crate::command_surface::tool_bridge::BridgeMode::Mcp,
                 },
             )
-            .instrument(span)
+            .instrument(span.clone())
             .await
     };
 
@@ -727,6 +734,9 @@ pub async fn dispatch_tool_call_with_identity(
     {
         use crate::app::AppContext as _;
         let status = if outcome.is_ok() { "ok" } else { "error" };
+        for kv in crate::telemetry::mcp_session_attrs(None, Some(status)) {
+            span.record(kv.key.as_str(), kv.value.as_str().as_ref());
+        }
         ctx.telemetry()
             .counter(crate::telemetry::metrics::MCP_TOOL_CALLS)
             .add(
