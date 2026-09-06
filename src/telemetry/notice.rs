@@ -19,6 +19,7 @@
 //! write failure is a warning, not an error: re-showing a notice is a small
 //! annoyance, failing to start because the notice bookkeeping failed is not.
 
+use crate::config::resolution::Layer;
 use crate::telemetry::axes::{Deployment, TelemetryLevel};
 use crate::telemetry::policy::TelemetryPolicy;
 
@@ -62,6 +63,11 @@ pub enum SkipReason {
     NotAHumanSurface,
     ServiceDeployment,
     KillSwitch,
+    /// The winning layer is `config_file`: this level is the person's
+    /// own recorded choice, so announcing it would be telling them
+    /// something they just said. Distinct from `AlreadyShown`, which
+    /// means *we* told them; here nobody did, and nobody needs to.
+    ConfiguredLocally,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,33 +103,91 @@ pub fn notice_decision(
     if !stderr_is_tty {
         return NoticeDecision::Skip(SkipReason::NotInteractive);
     }
-    if notice_shown == Some(policy.level) {
+
+    // Template 1 is "shown when the effective level is `off` and
+    // `notice_shown` is empty". An unavailable store can never record a
+    // level, so `None` is also what makes the spec's "printed every run"
+    // case fall out here without a branch of its own.
+    if policy.level == TelemetryLevel::Off {
+        return match notice_shown {
+            None => NoticeDecision::Show {
+                text: notice_text(policy),
+                announced_level: TelemetryLevel::Off,
+            },
+            Some(_) => NoticeDecision::Skip(SkipReason::AlreadyShown),
+        };
+    }
+
+    // Template 2 requires "the winning layer is not `config_file`". Above
+    // `off` with `config_file` winning, the level came from this person's
+    // own settings file — they turned it on themselves.
+    if policy.level_source == Layer::ConfigFile {
+        return NoticeDecision::Skip(SkipReason::ConfiguredLocally);
+    }
+
+    // "above the stored `notice_shown`". Absent is below every level, so a
+    // first run announces; equal or lower never does, which is the spec's
+    // "a lowered level never triggers a notice" with no separate test.
+    //
+    // `matches!` rather than `Option::is_some_and`, which needs a newer
+    // Rust than this crate's floor.
+    if matches!(notice_shown, Some(shown) if policy.level <= shown) {
         return NoticeDecision::Skip(SkipReason::AlreadyShown);
     }
+
     NoticeDecision::Show {
         text: notice_text(policy),
         announced_level: policy.level,
     }
 }
 
+/// The notice body: two lines, the wording fixed by the spec.
+///
+/// The spec prints both templates as a single run of prose and calls them
+/// "two lines"; the break is at the sentence boundary, which is also what
+/// makes "a third clause `Details: <url>` is appended to the second line"
+/// mean anything. `Details:` therefore joins line two with a space — a
+/// third *line* would contradict the two-line rule directly above it.
 fn notice_text(policy: &TelemetryPolicy) -> String {
-    let mut text = if policy.level == TelemetryLevel::Off {
-        format!(
-            "{}: telemetry is off. Run `{} telemetry set usage` to help improve it.",
-            policy.app, policy.app
+    let app = &policy.app;
+    let (first, second) = if policy.level == TelemetryLevel::Off {
+        (
+            format!("{app}: usage statistics are off."),
+            format!(
+                "Turn them on with `{app} telemetry set usage`; see what would be sent \
+                 with `{app} telemetry info`."
+            ),
         )
     } else {
-        format!(
-            "{}: anonymous usage telemetry is on. Run `{} telemetry status` to see what is sent, \
-             or `{} telemetry set off` to turn it off.",
-            policy.app, policy.app, policy.app
+        // No policy name means no policy client (see
+        // `TelemetryInputs::policy_name`). Naming a policy we cannot read
+        // would be an invention in a notice whose entire purpose is not
+        // misleading people about what their machine is doing.
+        let who = match &policy.policy_name {
+            Some(name) => format!("policy {name:?}"),
+            None => "an organisation policy".to_string(),
+        };
+        // Same reasoning: an anonymous Install carries no install id, so
+        // the clause announcing one would be false on it.
+        let tagged = if policy.install_id.is_some() {
+            ", tagged with a random install id"
+        } else {
+            ""
+        };
+        (
+            format!("{app}: {who} turned on {} telemetry{tagged}.", policy.level),
+            format!(
+                "Review with `{app} telemetry status`; opt out with \
+                 `{app} telemetry set off`."
+            ),
         )
     };
+    let mut text = format!("{first}\n{second}");
     if let Deployment::EndUser {
         privacy_url: Some(url),
     } = &policy.deployment
     {
-        text.push_str(&format!("\nDetails: {url}"));
+        text.push_str(&format!(" Details: {url}"));
     }
     text
 }

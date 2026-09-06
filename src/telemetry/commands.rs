@@ -217,7 +217,7 @@ pub fn status_report(policy: &TelemetryPolicy, store: &StoreState) -> StatusRepo
         endpoint: policy.endpoint.clone(),
         endpoint_source: policy.endpoint_source.map(layer_label),
         policy: policy_line(policy),
-        kill_switch: policy.kill_switch.map(|ks| ks.as_str().to_string()),
+        kill_switch: policy.kill_switch.map(|ks| ks.env_var(&policy.app)),
         probes,
         store: store.describe(),
     }
@@ -228,30 +228,29 @@ pub fn status_report(policy: &TelemetryPolicy, store: &StoreState) -> StatusRepo
 /// succeeded (a later unset of the kill switch takes effect immediately,
 /// with no need to run `set` again), only the *effective* level is clamped.
 ///
-/// The kill-switch check here necessarily uses an empty app name
-/// (`detect_kill_switch("", ..)`, matching only the switch-agnostic
-/// `OTEL_SDK_DISABLED`/`DO_NOT_TRACK` variables, never the app-prefixed
-/// `<APP>_TELEMETRY_DISABLED` one) because this function's signature — fixed
-/// by the unit tests that call it directly as `set_level(&store, level)` —
-/// carries no application name. `telemetry status`, which does have the real
-/// app name via `build_policy`, sees the app-prefixed switch too. This is a
-/// known, narrow gap: flagged in the PR report rather than worked around by
-/// widening the tested signature.
+/// `app_name` is the application whose kill switches to check. It is a
+/// parameter rather than a constant because the first switch
+/// [`detect_kill_switch`] tests is the app-prefixed
+/// `<APP>_TELEMETRY_DISABLED`; an empty name silently narrows the check to
+/// the two app-agnostic variables and reports plain success on an install
+/// where telemetry is in fact off. `build_set_command` passes the same name
+/// it opened the store with, so `set` and `status` answer the same question.
 pub fn set_level(
     store: &TelemetryStore,
+    app_name: &str,
     level: TelemetryLevel,
 ) -> Result<SetOutcome, TelemetryCommandError> {
     store
         .mutate(|s| s.level = Some(level))
         .map_err(map_store_error)?;
 
-    match detect_kill_switch("", &|k| std::env::var(k).ok()) {
+    match detect_kill_switch(app_name, &|k| std::env::var(k).ok()) {
         Some(switch) => Ok(SetOutcome::AppliedButClamped {
             effective: TelemetryLevel::Off,
             reason: format!(
                 "the {} environment variable is set; telemetry stays off regardless of the \
                  configured level",
-                switch.as_str()
+                switch.env_var(app_name)
             ),
         }),
         None => Ok(SetOutcome::Applied),
@@ -561,7 +560,7 @@ fn build_set_command(app_name: &'static str, location: TelemetryStoreLocation) -
                 };
 
                 let store = location.open(app_name);
-                match set_level(&store, level) {
+                match set_level(&store, app_name, level) {
                     Ok(SetOutcome::Applied) => {
                         ctx.framework_println(&format!("telemetry level set to {level}"));
                         Ok(())

@@ -222,7 +222,8 @@ fn info_lists_the_full_catalog_even_when_the_store_is_unavailable() {
 #[test]
 fn setting_a_level_writes_it_and_reports_it_applied() {
     // `set_level`'s own kill-switch check reads the real process environment
-    // (`commands.rs`'s `detect_kill_switch("", ...)`), the same ambient state
+    // (`commands.rs` calls `detect_kill_switch(app_name, ...)`), the same
+    // ambient state
     // `setting_a_level_that_a_kill_switch_overrides_...` mutates below via
     // `temp_store_with_kill_switch`. Rust's default test harness runs both in
     // parallel threads of one process, so without this guard the two race:
@@ -236,7 +237,7 @@ fn setting_a_level_writes_it_and_reports_it_applied() {
     let _guard = EnvGuard::unset("OTEL_SDK_DISABLED");
     let (store, _dir) = temp_store();
     assert_eq!(
-        set_level(&store, TelemetryLevel::Usage).unwrap(),
+        set_level(&store, "demo", TelemetryLevel::Usage).unwrap(),
         SetOutcome::Applied
     );
     assert_eq!(store.settings().level, Some(TelemetryLevel::Usage));
@@ -245,7 +246,7 @@ fn setting_a_level_writes_it_and_reports_it_applied() {
 #[test]
 fn setting_a_level_that_a_kill_switch_overrides_says_so_instead_of_reporting_success() {
     let (store, _dir, _guard) = temp_store_with_kill_switch("OTEL_SDK_DISABLED");
-    match set_level(&store, TelemetryLevel::Debug).unwrap() {
+    match set_level(&store, "demo", TelemetryLevel::Debug).unwrap() {
         SetOutcome::AppliedButClamped { effective, reason } => {
             assert_eq!(effective, TelemetryLevel::Off);
             assert!(reason.contains("OTEL_SDK_DISABLED"));
@@ -260,7 +261,7 @@ fn setting_a_level_that_a_kill_switch_overrides_says_so_instead_of_reporting_suc
 #[test]
 fn setting_a_level_with_no_writable_store_fails_with_the_reason() {
     let store = unavailable_store("config directory could not be created");
-    let err = set_level(&store, TelemetryLevel::Usage).unwrap_err();
+    let err = set_level(&store, "demo", TelemetryLevel::Usage).unwrap_err();
     assert!(
         err.to_string().contains("config directory"),
         "a mutating command must fail loudly when the store is unavailable — \
@@ -326,7 +327,7 @@ fn an_enforced_organisation_policy_is_named_in_the_status() {
 #[test]
 fn reset_removes_the_stored_choices_but_never_the_install_id() {
     let (store, _dir) = temp_store();
-    set_level(&store, TelemetryLevel::Debug).unwrap();
+    set_level(&store, "demo", TelemetryLevel::Debug).unwrap();
     let id_before = store.settings().install_id.clone();
     reset(&store).unwrap();
     let after = store.settings();
@@ -335,5 +336,54 @@ fn reset_removes_the_stored_choices_but_never_the_install_id() {
         after.install_id, id_before,
         "reset returns to defaults; minting a new identifier would make one \
          person look like two installs in every dashboard"
+    );
+}
+
+#[test]
+fn setting_a_level_sees_the_app_prefixed_kill_switch_not_only_the_generic_ones() {
+    // `<APP>_TELEMETRY_DISABLED` is the switch `detect_kill_switch` tests
+    // *first* and the only one whose name depends on the application. A
+    // `set_level` that passed no app name would skip it entirely and report
+    // plain success, while `telemetry status` on the very same install
+    // reported telemetry off — two commands disagreeing about one machine.
+    let _guard = EnvGuard::set("DEMO_TELEMETRY_DISABLED", "1");
+    let (store, _dir) = temp_store();
+    match set_level(&store, "demo", TelemetryLevel::Debug).unwrap() {
+        SetOutcome::AppliedButClamped { effective, reason } => {
+            assert_eq!(effective, TelemetryLevel::Off);
+            assert!(
+                reason.contains("DEMO_TELEMETRY_DISABLED"),
+                "the reason has to name the variable the person must unset, \
+                 expanded for this app; got: {reason}"
+            );
+            assert!(
+                !reason.contains("<APP>"),
+                "an unexpanded placeholder is not a variable anyone can \
+                 search their shell profile for; got: {reason}"
+            );
+        }
+        SetOutcome::Applied => panic!(
+            "DEMO_TELEMETRY_DISABLED=1 is set, so the stored level has no \
+             effect; reporting plain success is the lie this test exists to \
+             catch"
+        ),
+    }
+}
+
+#[test]
+fn the_status_names_the_kill_switch_variable_expanded_for_this_app() {
+    let mut policy = policy_with(
+        Deployment::EndUser { privacy_url: None },
+        TelemetryLevel::Off,
+        |p| p.kill_switch = Some(KillSwitch::AppDisabled),
+    );
+    policy.app = "demo-app".to_string();
+    let report = status_report(&policy, &ready_store());
+    assert_eq!(
+        report.kill_switch.as_deref(),
+        Some("DEMO_APP_TELEMETRY_DISABLED"),
+        "status is where a person goes to find out why telemetry is off; \
+         printing the literal `<APP>_TELEMETRY_DISABLED` tells them to unset \
+         a variable that does not exist"
     );
 }

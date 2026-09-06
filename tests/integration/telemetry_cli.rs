@@ -233,3 +233,174 @@ async fn reset_returns_a_configured_install_to_the_default() {
     assert_eq!(value["level"], "off");
     assert_eq!(value["level_source"], "default");
 }
+
+// ── appended to tests/integration/telemetry_cli.rs ────────────────────────────
+// Second pass (PR6-5 / PR6-6). Everything above drives the `telemetry` command
+// group; nothing above ever touches the builder surface that *creates* it. The
+// four tests below close that gap:
+//
+//   * `App::deployment()` and `AppBuilder::deployment()` — both added by this
+//     PR with zero call sites anywhere in `src/`, `tests/` or `examples/`, so
+//     neither `clippy -D warnings` (they are `pub`, so no dead-code lint) nor
+//     line coverage (nothing calls them) could report them.
+//   * the PRD's default deployment, asserted nowhere today.
+//   * the "app already owns `telemetry`" guard, whose `else` arm had no test —
+//     and which, as written, only catches one of the two shapes an app can own
+//     that name in.
+
+use cli_framework::command::Command;
+use cli_framework::spec::command_tree::{CommandPath, CommandSpec, GroupMetadata};
+use cli_framework::spec::value::ArgValue;
+use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
+type Execute = Arc<
+    dyn for<'a> Fn(
+            &'a mut dyn AppContext,
+            HashMap<String, ArgValue>,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>
+        + Send
+        + Sync,
+>;
+
+fn noop_execute() -> Execute {
+    Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) }))
+}
+
+/// A command an app author registered themselves, under a name the framework
+/// also wants.
+fn app_command(id: &str, summary: &'static str) -> Command {
+    Command {
+        id: Arc::from(id),
+        spec: Arc::new(CommandSpec {
+            summary,
+            ..Default::default()
+        }),
+        validator: None,
+        expose_mcp: false,
+        expose_chat: false,
+        meta: None,
+        visibility: None,
+        execute: noop_execute(),
+    }
+}
+
+#[test]
+fn the_default_deployment_is_end_user_so_a_derived_app_gets_the_surface_for_free() {
+    let dir = tempfile::tempdir().unwrap();
+    // Deliberately no `.with_deployment(..)` — this asserts the default.
+    let app = AppBuilder::new()
+        .with_version("demo", "0.0.0")
+        .with_telemetry_config_dir(dir.path())
+        .build(TestCtx)
+        .unwrap();
+    assert_eq!(
+        app.deployment(),
+        &Deployment::EndUser { privacy_url: None },
+        "spec 025: EndUser is the default. An author opts *into* Service; a CLI \
+         that forgets to call with_deployment must still get the consent surface"
+    );
+    assert!(
+        app.command_registry()
+            .resolve(&CommandPath::new(&["telemetry", "status"]).unwrap())
+            .is_some(),
+        "and the default must actually produce the end-user command group"
+    );
+}
+
+#[test]
+fn the_builder_reads_back_the_deployment_it_was_given() {
+    let builder = AppBuilder::new().with_version("demo", "0.0.0");
+    assert_eq!(
+        builder.deployment(),
+        &Deployment::EndUser { privacy_url: None },
+        "the builder's default must match the App's"
+    );
+
+    let builder = builder.with_deployment(Deployment::EndUser {
+        privacy_url: Some("https://example.invalid/privacy".to_string()),
+    });
+    assert_eq!(
+        builder.deployment().privacy_url(),
+        Some("https://example.invalid/privacy"),
+        "the first-run notice renders `Details: <url>` from exactly this value"
+    );
+
+    let builder = builder.with_deployment(Deployment::Service);
+    assert_eq!(
+        builder.deployment(),
+        &Deployment::Service,
+        "with_deployment replaces rather than merges"
+    );
+}
+
+#[test]
+fn an_app_that_already_owns_a_telemetry_command_keeps_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = AppBuilder::new()
+        .with_version("demo", "0.0.0")
+        .with_telemetry_config_dir(dir.path())
+        .register_command(app_command("telemetry", "the app's own telemetry surface"))
+        .unwrap()
+        .build(TestCtx)
+        .expect("an app that already owns `telemetry` must still build");
+
+    assert_eq!(
+        app.command_registry()
+            .get("telemetry")
+            .map(|c| c.spec.summary),
+        Some("the app's own telemetry surface"),
+        "the framework must not overwrite a command the author registered"
+    );
+    assert!(
+        app.command_registry()
+            .resolve(&CommandPath::new(&["telemetry", "status"]).unwrap())
+            .is_none(),
+        "nor graft its six subcommands underneath the author's command"
+    );
+}
+
+#[test]
+fn an_app_that_already_owns_a_telemetry_group_keeps_its_own() {
+    // The shape an author is *most likely* to have: not a root command called
+    // `telemetry`, but a group, because that is what `myapp telemetry export`
+    // is. `CommandRegistry::get` reads only `tree_commands`, so the guard in
+    // `AppBuilder::build` does not see a group and the framework tries to
+    // register its own group on top — `register_group` collides on either map
+    // and `build()` fails. Both shapes must reach the same warn-and-skip path.
+    let dir = tempfile::tempdir().unwrap();
+    let group = CommandPath::root_for("telemetry");
+    let export = CommandPath::new(&["telemetry", "export"]).unwrap();
+
+    let app = AppBuilder::new()
+        .with_version("demo", "0.0.0")
+        .with_telemetry_config_dir(dir.path())
+        .register_group(
+            &group,
+            GroupMetadata {
+                summary: "the app's own telemetry surface",
+                hidden: false,
+            },
+        )
+        .unwrap()
+        .register_command_at(&export, app_command("export", "export collected telemetry"))
+        .unwrap()
+        .build(TestCtx)
+        .expect(
+            "an app whose own `telemetry` surface is a group must still build: \
+             the framework stands down, it does not collide",
+        );
+
+    assert!(
+        app.command_registry().resolve(&export).is_some(),
+        "the author's own subcommand must survive"
+    );
+    assert!(
+        app.command_registry()
+            .resolve(&CommandPath::new(&["telemetry", "status"]).unwrap())
+            .is_none(),
+        "and the framework's must not appear beside it"
+    );
+}

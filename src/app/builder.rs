@@ -720,7 +720,20 @@ impl AppBuilder {
         // the fleet, so no group is registered for `Deployment::Service`.
         #[cfg(feature = "telemetry")]
         if self.deployment.is_end_user() {
-            if self.command_registry.get("telemetry").is_none() {
+            // `CommandRegistry::get` reads only `tree_commands`, but
+            // `register_telemetry_commands` registers a *group*, and
+            // `register_group` collides on either map. An app whose own
+            // `telemetry` surface is a group -- the usual shape, because that
+            // is what `myapp telemetry export` is -- would slip past a
+            // `get`-only guard and then fail the build with a bare
+            // "command path 'telemetry' is already occupied". Check both
+            // namespaces so either shape reaches the same stand-down path.
+            let already_owned = self.command_registry.get("telemetry").is_some()
+                || self
+                    .command_registry
+                    .group_metadata_for("telemetry")
+                    .is_some();
+            if !already_owned {
                 let location = crate::telemetry::TelemetryStoreLocation {
                     dir: self.telemetry_store_dir.take(),
                     format: crate::config::ConfigFormat::default(),

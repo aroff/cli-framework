@@ -23,12 +23,27 @@ pub enum KillSwitch {
 }
 
 impl KillSwitch {
-    /// The variable that fired, for `telemetry status` and the doctor.
+    /// The variable that fired, in its documentation form. `AppDisabled`
+    /// answers with the unexpanded `<APP>_TELEMETRY_DISABLED`, so this is
+    /// the right shape for prose that describes the switches in general and
+    /// the wrong one for telling a person what to unset — use
+    /// [`Self::env_var`] for that.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::AppDisabled => "<APP>_TELEMETRY_DISABLED",
             Self::OtelSdkDisabled => "OTEL_SDK_DISABLED",
             Self::DoNotTrack => "DO_NOT_TRACK",
+        }
+    }
+
+    /// The variable that fired, expanded for `app`: the name a person can
+    /// actually search their shell profile for. Only `AppDisabled` differs
+    /// from [`Self::as_str`]; the other two switches are app-agnostic and
+    /// render identically.
+    pub fn env_var(&self, app: &str) -> String {
+        match self {
+            Self::AppDisabled => format!("{}_TELEMETRY_DISABLED", env_var_prefix(app)),
+            other => other.as_str().to_string(),
         }
     }
 }
@@ -75,6 +90,17 @@ pub struct TelemetryInputs {
     pub app: String,
     pub deployment: Deployment,
     pub level: LayeredLevel,
+    /// The name of the organisation policy behind this resolution, when a
+    /// policy client supplied one.
+    ///
+    /// `None` means *no policy client*. A client that supplied a policy
+    /// recommending nothing is `Some(name)` with `level.recommended`
+    /// absent; the two states are distinct and must not be conflated.
+    /// Nothing populates this yet — see
+    /// `specs/029-telemetry-deferred-wiring.md` item 3 — but the notice
+    /// and `telemetry status` both need somewhere to read the name from,
+    /// and inventing one at the render site would be a fabrication.
+    pub policy_name: Option<String>,
     pub endpoint: Option<String>,
     pub endpoint_source: Option<Layer>,
     pub attribution: Attribution,
@@ -104,6 +130,9 @@ pub struct TelemetryPolicy {
     pub deployment: Deployment,
     pub level: TelemetryLevel,
     pub level_source: Layer,
+    /// Carried through from [`TelemetryInputs::policy_name`]; `None`
+    /// means no policy client.
+    pub policy_name: Option<String>,
     pub attribution: Attribution,
     pub endpoint: Option<String>,
     pub endpoint_source: Option<Layer>,
@@ -200,6 +229,7 @@ pub fn resolve_policy(inputs: TelemetryInputs) -> TelemetryPolicy {
         deployment: inputs.deployment,
         level,
         level_source,
+        policy_name: inputs.policy_name,
         attribution,
         endpoint: inputs.endpoint,
         endpoint_source: inputs.endpoint_source,
