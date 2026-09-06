@@ -21,6 +21,111 @@ fn noop_execute() -> Arc<
     Arc::new(|_ctx, _args| Box::pin(async { Ok(()) }))
 }
 
+/// Serialises "reserve a port, then start a server on it".
+///
+/// The servers under test are started from an argument list
+/// (`mcp serve --port N`) and cannot be handed an already-bound socket, so a
+/// port must be chosen, released, and then re-bound by somebody else. That
+/// window is unavoidable. All this lock does is keep two tests from being
+/// inside it on the same port number at the same time; [`reserve_port`] handles
+/// the harder half -- making sure nothing *else* can be handed the port while
+/// the window is open.
+///
+/// This is a `tokio` mutex rather than a `std` one because every holder awaits
+/// while holding it, which `clippy::await_holding_lock` rightly rejects for a
+/// `std::sync::MutexGuard`.
+fn port_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Reserves a free TCP port from a range the kernel never assigns on its own.
+///
+/// The obvious way to pick a port -- `bind("127.0.0.1:0")`, read
+/// `local_addr()`, drop the listener -- draws from `ip_local_port_range`
+/// (`32768 60999` on this box), which is the same pool the kernel draws
+/// outbound source ports from. libtest runs every test in a binary on threads
+/// of one process, so while one test sits in the release-then-rebind window
+/// another test's `reqwest` connection can be assigned that exact port, and the
+/// server's bind then fails with `EADDRINUSE`. Nor is it a
+/// one-in-thirty-thousand coincidence: the kernel scans that pool from a
+/// rotating offset, so the port just released is frequently the very next one
+/// handed out.
+///
+/// This was observed, not theorised. Serialising the *allocation* with
+/// [`port_lock`] was tried first and was not enough -- the suite still failed
+/// with
+///
+/// ```text
+/// Server did not become HTTP-ready within 10s at http://127.0.0.1:40629.
+/// Background server exits: mcp serve: MCP_BIND_FAILED: address
+/// 127.0.0.1:40629 already in use: Address already in use (os error 98)
+/// ```
+///
+/// because a lock over this file's allocations has no authority over another
+/// test's outbound connections. Choosing from 20000-30000 removes the mechanism
+/// rather than narrowing its window: that range sits below Linux's default
+/// ephemeral floor (32768) and below macOS's (49152), so nothing is given one
+/// of these ports unless it asks for that number. Only this helper asks, and
+/// [`port_lock`] serialises it.
+///
+/// The probe bind proves the candidate is free right now; a listening socket
+/// that never accepted anything leaves no `TIME_WAIT` behind, so the server can
+/// take it immediately. Ports stay held for the life of the process -- the
+/// servers these tests start are detached and never shut down -- so the scan
+/// walks past them, and the per-call counter plus the pid offset keep
+/// concurrently running test binaries from starting their scans in the same
+/// place.
+fn reserve_port() -> u16 {
+    use std::sync::atomic::{AtomicU16, Ordering};
+
+    const BASE: u32 = 20_000;
+    const SPAN: u32 = 10_000;
+    static NEXT: AtomicU16 = AtomicU16::new(0);
+
+    let seed = std::process::id() as u32 + NEXT.fetch_add(1, Ordering::Relaxed) as u32;
+    for offset in 0..SPAN {
+        let candidate = (BASE + (seed + offset) % SPAN) as u16;
+        if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", candidate)) {
+            drop(listener);
+            return candidate;
+        }
+    }
+    panic!("no free TCP port in {}..{}", BASE, BASE + SPAN);
+}
+
+/// Why a background server exited, when one did.
+///
+/// The servers in this file run detached -- on a `tokio` task or on an OS
+/// thread -- so their `Result` has nowhere to return to and used to be dropped
+/// with `let _ =`. That is what turned "the port was taken, so bind failed"
+/// into a bare ten-second readiness timeout with no cause attached. Recording
+/// the error here lets [`wait_for_http_server`] report it, so a future
+/// occurrence is diagnosed from its own output instead of by inference. It
+/// earned its keep immediately: it is what showed that serialising allocation
+/// alone did not fix the flake, which is the finding [`reserve_port`] rests on.
+static SERVER_EXITS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn record_server_exit<T, E: std::fmt::Display>(label: &str, result: Result<T, E>) {
+    if let Err(err) = result {
+        SERVER_EXITS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(format!("{}: {}", label, err));
+    }
+}
+
+fn server_exits() -> String {
+    let exits = SERVER_EXITS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if exits.is_empty() {
+        "none recorded (no background server returned an error)".to_string()
+    } else {
+        exits.join("; ")
+    }
+}
+
 /// Wait until the server is ready at the HTTP level, not just TCP level.
 /// Returns the session ID from the initialize handshake.
 ///
@@ -28,8 +133,17 @@ fn noop_execute() -> Arc<
 /// kernel accepts the SYN before axum has finished wiring its router, so a
 /// subsequent HTTP request can still get "Connection refused".  Probing with an
 /// actual HTTP initialize avoids that window entirely.
+///
+/// The probe request carries its own 500 ms timeout, and the loop is bounded by
+/// wall-clock rather than by an attempt count. Both matter: a port that is bound
+/// but never answers -- the kernel completes the TCP handshake out of the listen
+/// backlog whether or not anything ever calls `accept` -- leaves an untimed
+/// `send()` awaiting a response that never arrives, so the ten-second bound
+/// never gets a chance to fire and the test hangs until the harness kills it.
+/// An attempt count is not a time bound when a single attempt can block forever.
 async fn wait_for_http_server(client: &reqwest::Client, base_url: &str) -> Option<String> {
-    for attempt in 0..100 {
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline {
         match client
             .post(format!("{}/mcp", base_url))
             .header("Content-Type", "application/json")
@@ -44,6 +158,7 @@ async fn wait_for_http_server(client: &reqwest::Client, base_url: &str) -> Optio
                     "clientInfo": {"name": "probe", "version": "0"}
                 }
             }))
+            .timeout(std::time::Duration::from_millis(500))
             .send()
             .await
         {
@@ -59,14 +174,13 @@ async fn wait_for_http_server(client: &reqwest::Client, base_url: &str) -> Optio
             _ => {}
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        if attempt == 99 {
-            panic!(
-                "Server did not become HTTP-ready within 10s at {}",
-                base_url
-            );
-        }
     }
-    unreachable!()
+    panic!(
+        "Server did not become HTTP-ready within 10s at {}. \
+         Background server exits: {}",
+        base_url,
+        server_exits()
+    );
 }
 
 fn parse_sse_data(body: &str) -> serde_json::Value {
@@ -147,10 +261,9 @@ async fn test_tools_list_over_http() {
 
     let registry = Arc::new(registry);
 
-    // Find ephemeral port
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
+    // The guard is held until the server owns the port; see `port_lock`.
+    let port_guard = port_lock().lock().await;
+    let port = reserve_port();
 
     let args = McpServerArgs {
         host: "127.0.0.1".to_string(),
@@ -161,20 +274,25 @@ async fn test_tools_list_over_http() {
     let registry_clone = Arc::clone(&registry);
     let args_clone = args.clone();
     tokio::spawn(async move {
-        let _ = serve_mcp_with_gate(
-            registry_clone,
-            "testapp",
-            args_clone,
-            CommandRiskPolicy::default(),
-            McpToolExportPolicy::AllCommands,
-            None,
-        )
-        .await;
+        record_server_exit(
+            "serve_mcp_with_gate",
+            serve_mcp_with_gate(
+                registry_clone,
+                "testapp",
+                args_clone,
+                CommandRiskPolicy::default(),
+                McpToolExportPolicy::AllCommands,
+                None,
+            )
+            .await,
+        );
     });
 
     let client = reqwest::Client::new();
     let base_url = format!("http://127.0.0.1:{}", port);
     let session_id = wait_for_http_server(&client, &base_url).await;
+    // The server owns the port now; the next test may allocate.
+    drop(port_guard);
 
     // Send tools/list
     let mut req = client
@@ -247,9 +365,8 @@ async fn test_tool_call_success_over_http() {
 
     let registry = Arc::new(registry);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
+    let port_guard = port_lock().lock().await;
+    let port = reserve_port();
 
     let args = McpServerArgs {
         host: "127.0.0.1".to_string(),
@@ -260,20 +377,25 @@ async fn test_tool_call_success_over_http() {
     let registry_clone = Arc::clone(&registry);
     let args_clone = args.clone();
     tokio::spawn(async move {
-        let _ = serve_mcp_with_gate(
-            registry_clone,
-            "testapp",
-            args_clone,
-            CommandRiskPolicy::default(),
-            McpToolExportPolicy::AllCommands,
-            None,
-        )
-        .await;
+        record_server_exit(
+            "serve_mcp_with_gate",
+            serve_mcp_with_gate(
+                registry_clone,
+                "testapp",
+                args_clone,
+                CommandRiskPolicy::default(),
+                McpToolExportPolicy::AllCommands,
+                None,
+            )
+            .await,
+        );
     });
 
     let client = reqwest::Client::new();
     let base_url = format!("http://127.0.0.1:{}", port);
     let session_id = wait_for_http_server(&client, &base_url).await;
+    // The server owns the port now; the next test may allocate.
+    drop(port_guard);
 
     // Call the tool
     let mut req = client
@@ -322,9 +444,8 @@ async fn test_tool_call_success_over_http() {
 async fn test_mcp_serve_subcommand_tools_list() {
     let _ = env_logger::try_init();
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
+    let port_guard = port_lock().lock().await;
+    let port = reserve_port();
 
     // Construct and start the app via `mcp serve` subcommand in a background thread
     // so the blocking serve call does not stall the test.
@@ -356,15 +477,17 @@ async fn test_mcp_serve_subcommand_tools_list() {
                 .build(Ctx)
                 .unwrap();
 
-            let _ = app
-                .run_with_args(vec![
+            record_server_exit(
+                "mcp serve",
+                app.run_with_args(vec![
                     "testapp".to_string(),
                     "mcp".to_string(),
                     "serve".to_string(),
                     "--port".to_string(),
                     port.to_string(),
                 ])
-                .await;
+                .await,
+            );
         });
     });
 
@@ -373,6 +496,8 @@ async fn test_mcp_serve_subcommand_tools_list() {
     // wait_for_http_server combines the TCP wait + initialize in one HTTP retry loop,
     // eliminating the TOCTOU race between TCP-ready and HTTP-handler-ready.
     let session_id = wait_for_http_server(&client, &base_url).await;
+    // The server owns the port now; the next test may allocate.
+    drop(port_guard);
 
     let mut req = client
         .post(format!("{}/mcp", base_url))
@@ -420,7 +545,10 @@ async fn test_mcp_serve_subcommand_tools_list() {
 async fn test_bind_failure() {
     let _ = env_logger::try_init();
 
-    // Bind a port to occupy it
+    // Bind a port to occupy it. This test keeps its listener for the whole test,
+    // so it never enters the release-then-rebind window `reserve_port` exists to
+    // avoid, and takes no part in that protocol: the port it holds is precisely
+    // the port the server under test must fail to bind.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
 
@@ -847,11 +975,11 @@ fn bearer_authenticator() -> cli_framework::mcp::McpRequestAuthenticator {
 }
 
 /// Spawns `testapp mcp serve --port <port>` on a background thread, optionally
-/// with `bearer_authenticator()` installed, and returns the bound port.
-fn spawn_whoami_server(install_authenticator: bool) -> u16 {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
+/// with `bearer_authenticator()` installed, waits for it to answer HTTP, and
+/// returns the bound port.
+async fn spawn_whoami_server(install_authenticator: bool) -> u16 {
+    let port_guard = port_lock().lock().await;
+    let port = reserve_port();
 
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -871,17 +999,26 @@ fn spawn_whoami_server(install_authenticator: bool) -> u16 {
             }
             let mut app = builder.build(Ctx).unwrap();
 
-            let _ = app
-                .run_with_args(vec![
+            record_server_exit(
+                "mcp serve",
+                app.run_with_args(vec![
                     "testapp".to_string(),
                     "mcp".to_string(),
                     "serve".to_string(),
                     "--port".to_string(),
                     port.to_string(),
                 ])
-                .await;
+                .await,
+            );
         });
     });
+
+    // Wait here, holding the allocation lock, so the port is bound before any
+    // other test is allowed to allocate. The caller runs its own `initialize`
+    // to get the session it will use.
+    let base_url = format!("http://127.0.0.1:{}", port);
+    wait_for_http_server(&reqwest::Client::new(), &base_url).await;
+    drop(port_guard);
 
     port
 }
@@ -935,7 +1072,7 @@ async fn call_whoami(client: &reqwest::Client, base_url: &str, bearer: Option<&s
 #[tokio::test]
 async fn test_mcp_request_authenticator_identity_visible_and_missing_header_yields_none() {
     let _ = env_logger::try_init();
-    let port = spawn_whoami_server(true);
+    let port = spawn_whoami_server(true).await;
     let client = reqwest::Client::new();
     let base_url = format!("http://127.0.0.1:{}", port);
 
@@ -953,7 +1090,7 @@ async fn test_mcp_request_authenticator_identity_visible_and_missing_header_yiel
 #[tokio::test]
 async fn test_mcp_no_authenticator_installed_yields_none() {
     let _ = env_logger::try_init();
-    let port = spawn_whoami_server(false);
+    let port = spawn_whoami_server(false).await;
     let client = reqwest::Client::new();
     let base_url = format!("http://127.0.0.1:{}", port);
 
