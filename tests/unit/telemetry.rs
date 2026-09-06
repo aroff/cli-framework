@@ -24,6 +24,44 @@ fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
+/// Serialises the tests that install OpenTelemetry's process-wide providers.
+///
+/// `init_with_exporter`, `init_with_exporter_config`, `init_simple` and
+/// `init_batch` all reach `make_handle_and_guard`, which calls
+/// `opentelemetry::global::set_tracer_provider` and `set_meter_provider` and
+/// then reads `global::meter(..)` back. Those globals are one per process, and
+/// libtest runs every test in this binary on threads of a single process, so
+/// two such tests overlapping can have one installing a provider while another
+/// is dropping its guard and shutting the previous one down. Observed as ten
+/// tests in this file sitting in `futex_wait` at zero CPU for 48 minutes in a
+/// CI-parity run, against 790 later attempts that never reproduced it — the
+/// signature of a schedule-dependent race, not of a code path.
+///
+/// The sibling file `telemetry_pipeline.rs` already takes a lock for exactly
+/// this reason — `otel_global_lock`, five acquisitions — and this file was
+/// simply never given one. The two are deliberately *not* spelled identically:
+/// that one hands back the `Mutex` and each caller locks it, whereas this one
+/// follows the convention already set by [`env_lock`] one function above and
+/// hands back the guard, so both locks in this file are taken the same way.
+/// Same invariant, local spelling.
+///
+/// Take it only in tests that actually construct a provider. The four
+/// `*_returns_none_*` tests below pass an inactive config and return before
+/// `make_handle_and_guard`, so they never touch a global and are deliberately
+/// left unlocked — the lock's contract is "installs a provider", not "mentions
+/// an init function".
+///
+/// `unwrap_or_else(|e| e.into_inner())` deliberately ignores poisoning, for the
+/// same reason [`env_lock`] does: the data under the lock is `()`, so a panic
+/// cannot have broken an invariant, and honouring the poison would bury the one
+/// real failure under a cascade of unrelated ones.
+fn otel_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 #[test]
 fn noop_telemetry_is_zero_cost() {
     let t = NoopTelemetry;
@@ -166,6 +204,7 @@ impl TestExporter {
 
 #[tokio::test]
 async fn init_with_exporter_captures_spans() {
+    let _otel = otel_lock();
     use tracing_subscriber::prelude::*;
     let exporter = TestExporter::default();
     let (_handle, guard) =
@@ -188,6 +227,7 @@ async fn init_with_exporter_captures_spans() {
 
 #[tokio::test]
 async fn live_telemetry_counter_add_exercises_live_variant() {
+    let _otel = otel_lock();
     let exporter = TestExporter::default();
     let (handle, guard) = cli_framework::telemetry::init::init_with_exporter(exporter, "test");
     let tracer = guard.tracer("cli-framework");
@@ -204,6 +244,7 @@ async fn live_telemetry_counter_add_exercises_live_variant() {
 
 #[tokio::test]
 async fn live_telemetry_histogram_record_exercises_live_variant() {
+    let _otel = otel_lock();
     let exporter = TestExporter::default();
     let (handle, guard) = cli_framework::telemetry::init::init_with_exporter(exporter, "test");
     let tracer = guard.tracer("cli-framework");
@@ -219,6 +260,7 @@ async fn live_telemetry_histogram_record_exercises_live_variant() {
 
 #[tokio::test]
 async fn live_telemetry_event_emits() {
+    let _otel = otel_lock();
     let exporter = TestExporter::default();
     let (handle, guard) = cli_framework::telemetry::init::init_with_exporter(exporter, "test");
     let tracer = guard.tracer("cli-framework");
@@ -234,6 +276,7 @@ async fn live_telemetry_event_emits() {
 
 #[tokio::test]
 async fn live_telemetry_span_set_attr_exercises_live_variant() {
+    let _otel = otel_lock();
     let exporter = TestExporter::default();
     let (handle, guard) = cli_framework::telemetry::init::init_with_exporter(exporter, "test");
     let tracer = guard.tracer("cli-framework");
@@ -264,6 +307,7 @@ fn init_batch_returns_none_without_endpoint() {
 
 #[tokio::test]
 async fn init_batch_builds_provider_with_active_config() {
+    let _otel = otel_lock();
     // Exercises the live path of init_batch; no actual export needed
     let cfg = TelemetryConfig {
         endpoint: Some("http://localhost:14318".into()),
@@ -403,6 +447,7 @@ fn app_context_default_returns_noop_telemetry() {
 
 #[tokio::test]
 async fn telemetry_guard_flush_is_safe() {
+    let _otel = otel_lock();
     let exporter = TestExporter::default();
     let (_, guard) = cli_framework::telemetry::init::init_with_exporter(exporter, "test");
     guard.flush();
@@ -413,6 +458,7 @@ async fn telemetry_guard_flush_is_safe() {
 
 #[tokio::test]
 async fn span_handle_record_error_does_not_panic() {
+    let _otel = otel_lock();
     use tracing_subscriber::prelude::*;
     let exporter = TestExporter::default();
     let (handle, guard) = cli_framework::telemetry::init::init_with_exporter(exporter, "test");
@@ -437,6 +483,7 @@ async fn span_handle_record_error_does_not_panic() {
 
 #[test]
 fn init_simple_exports_span_synchronously() {
+    let _otel = otel_lock();
     use tracing_subscriber::prelude::*;
     let exporter = TestExporter::default();
     let (_handle, guard) =
@@ -530,6 +577,7 @@ fn init_batch_returns_none_when_inactive() {
 
 #[tokio::test]
 async fn record_error_sets_span_status_to_error() {
+    let _otel = otel_lock();
     use opentelemetry::trace::Status;
     use tracing_subscriber::prelude::*;
 
@@ -571,6 +619,7 @@ async fn record_error_sets_span_status_to_error() {
 
 #[tokio::test]
 async fn sample_ratio_zero_drops_root_spans() {
+    let _otel = otel_lock();
     use tracing_subscriber::prelude::*;
 
     let exporter = TestExporter::default();
@@ -601,6 +650,7 @@ async fn sample_ratio_zero_drops_root_spans() {
 
 #[tokio::test]
 async fn sample_ratio_one_keeps_root_spans() {
+    let _otel = otel_lock();
     use tracing_subscriber::prelude::*;
 
     let exporter = TestExporter::default();
