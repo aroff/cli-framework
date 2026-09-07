@@ -79,6 +79,9 @@ fn decode_spans(body: &[u8]) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
+// Exercises the deprecated `with_telemetry` shim on purpose: it has to keep
+// working until it is removed in v0.8.0.
+#[allow(deprecated)]
 #[tokio::test]
 async fn app_builder_run_exports_spans_and_metrics() {
     let server = MockServer::start().await;

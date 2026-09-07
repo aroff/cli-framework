@@ -131,6 +131,9 @@ fn otel_sdk_disabled_env_vetoes_active_config() {
 // ── 4. from_env reads OTEL_* vars ────────────────────────────────────────
 
 #[test]
+// `TelemetryConfig::from_env` is deprecated in v0.6.0 and removed in
+// v0.8.0. These are its tests, so they call it.
+#[allow(deprecated)]
 fn from_env_reads_endpoint() {
     let _env = env_lock();
     unsafe {
@@ -144,6 +147,9 @@ fn from_env_reads_endpoint() {
 }
 
 #[test]
+// `TelemetryConfig::from_env` is deprecated in v0.6.0 and removed in
+// v0.8.0. These are its tests, so they call it.
+#[allow(deprecated)]
 fn from_env_reads_service_name() {
     let _env = env_lock();
     unsafe {
@@ -157,6 +163,9 @@ fn from_env_reads_service_name() {
 }
 
 #[test]
+// `TelemetryConfig::from_env` is deprecated in v0.6.0 and removed in
+// v0.8.0. These are its tests, so they call it.
+#[allow(deprecated)]
 fn from_env_reads_sample_ratio() {
     let _env = env_lock();
     unsafe {
@@ -342,6 +351,9 @@ fn init_simple_returns_none_without_endpoint() {
 // ── config.rs uncovered branches ──────────────────────────────────────────
 
 #[test]
+// `TelemetryConfig::from_env` is deprecated in v0.6.0 and removed in
+// v0.8.0. These are its tests, so they call it.
+#[allow(deprecated)]
 fn from_env_empty_endpoint_is_ignored() {
     let _env = env_lock();
     unsafe {
@@ -358,6 +370,9 @@ fn from_env_empty_endpoint_is_ignored() {
 }
 
 #[test]
+// `TelemetryConfig::from_env` is deprecated in v0.6.0 and removed in
+// v0.8.0. These are its tests, so they call it.
+#[allow(deprecated)]
 fn from_env_empty_service_name_is_ignored() {
     let _env = env_lock();
     unsafe {
@@ -371,6 +386,9 @@ fn from_env_empty_service_name_is_ignored() {
 }
 
 #[test]
+// `TelemetryConfig::from_env` is deprecated in v0.6.0 and removed in
+// v0.8.0. These are its tests, so they call it.
+#[allow(deprecated)]
 fn from_env_reads_protocol() {
     let _env = env_lock();
     unsafe {
@@ -384,6 +402,9 @@ fn from_env_reads_protocol() {
 }
 
 #[test]
+// `TelemetryConfig::from_env` is deprecated in v0.6.0 and removed in
+// v0.8.0. These are its tests, so they call it.
+#[allow(deprecated)]
 fn from_env_empty_protocol_is_ignored() {
     let _env = env_lock();
     unsafe {
@@ -400,6 +421,9 @@ fn from_env_empty_protocol_is_ignored() {
 }
 
 #[test]
+// `TelemetryConfig::from_env` is deprecated in v0.6.0 and removed in
+// v0.8.0. These are its tests, so they call it.
+#[allow(deprecated)]
 fn from_env_invalid_sample_ratio_is_ignored() {
     let _env = env_lock();
     unsafe {

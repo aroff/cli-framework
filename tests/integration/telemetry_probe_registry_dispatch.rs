@@ -92,6 +92,9 @@ fn registry_reading_command(seen: Arc<Mutex<Option<bool>>>) -> Command {
     }
 }
 
+// Exercises the deprecated `with_telemetry` shim on purpose: it has to keep
+// working until it is removed in v0.8.0.
+#[allow(deprecated)]
 #[tokio::test]
 async fn a_real_dispatch_hands_the_command_context_the_builtin_probe_registry() {
     let seen = Arc::new(Mutex::new(None));

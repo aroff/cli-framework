@@ -171,6 +171,30 @@ impl TelemetryConfig {
     /// `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_HEADERS`, and
     /// `OTEL_TRACES_SAMPLER_ARG`. Unset or empty variables leave the [`Default`]
     /// value in place.
+    ///
+    /// # Migrating
+    ///
+    /// The framework reads `OTEL_EXPORTER_OTLP_ENDPOINT` and
+    /// `OTEL_EXPORTER_OTLP_HEADERS` itself now, as the environment layer of
+    /// the one telemetry resolution, so an app no longer has to. Declare the
+    /// shape of the deployment and any author defaults instead:
+    ///
+    /// ```rust,no_run
+    /// use cli_framework::app::AppBuilder;
+    /// use cli_framework::{Deployment, TelemetryDefaults};
+    ///
+    /// let builder = AppBuilder::new()
+    ///     .with_version("svc", "1.0.0")
+    ///     .with_deployment(Deployment::Service)
+    ///     .with_telemetry_defaults(TelemetryDefaults::default());
+    /// ```
+    ///
+    /// An author default is a *default*: the environment still wins over it,
+    /// which is the behaviour `from_env` had to be called to get.
+    #[deprecated(
+        since = "0.6.0",
+        note = "the framework reads OTEL_* itself; use with_deployment and with_telemetry_defaults; removed in 0.8.0"
+    )]
     pub fn from_env() -> Self {
         let mut cfg = Self::default();
         if let Ok(v) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {

@@ -47,6 +47,9 @@ const METRICS: &str = "/v1/metrics";
 /// *value* is the crate/app version number, not the word "version".
 const STRING_VALUE_VERSION: &[u8] = b"\x0a\x07version";
 
+// Exercises the deprecated `with_telemetry` shim on purpose: it has to keep
+// working until it is removed in v0.8.0.
+#[allow(deprecated)]
 #[tokio::test]
 async fn version_command_exports_span_and_metrics() {
     let server = MockServer::start().await;

@@ -41,6 +41,9 @@ async fn find_free_port() -> u16 {
     port
 }
 
+// Exercises the deprecated `with_telemetry` shim on purpose: it has to keep
+// working until it is removed in v0.8.0.
+#[allow(deprecated)]
 #[tokio::test]
 async fn api_request_exports_a_server_span() {
     // Stands in for an OTel collector. Metrics is mocked too: the meter

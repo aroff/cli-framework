@@ -73,6 +73,13 @@ pub struct AppBuilder {
     /// startup behaviour PR7 adds). Defaults to `EndUser { privacy_url: None
     /// }`, the PRD's default for an app that never calls `with_deployment`.
     deployment: crate::telemetry::Deployment,
+    /// Whether [`Self::with_deployment`] was called at all.
+    ///
+    /// The default deployment and a deliberately-chosen `EndUser` are the
+    /// same value, and the deprecated `with_telemetry` shim has to tell them
+    /// apart: it infers `Service` for an app that never declared a shape, and
+    /// must not overrule one that did.
+    deployment_explicit: bool,
     /// Test-only override for where the `telemetry` settings file lives; see
     /// [`Self::with_telemetry_config_dir`].
     #[cfg(feature = "telemetry")]
@@ -171,6 +178,7 @@ impl AppBuilder {
             token_provider: None,
             telemetry_config: None,
             deployment: crate::telemetry::Deployment::EndUser { privacy_url: None },
+            deployment_explicit: false,
             #[cfg(feature = "telemetry")]
             telemetry_store_dir: None,
             #[cfg(feature = "telemetry")]
@@ -222,6 +230,35 @@ impl AppBuilder {
     /// When set and `TelemetryConfig::is_active()` returns `true`, the framework will
     /// initialise an OTLP exporter on every `run()` call and attach a telemetry handle
     /// to the command dispatch context.
+    ///
+    /// # Migrating
+    ///
+    /// The replacement is two calls that separate the two decisions this one
+    /// conflated -- *what shape of program is this* and *where does it send*:
+    ///
+    /// ```rust,no_run
+    /// # use cli_framework::app::AppBuilder;
+    /// # use cli_framework::{Deployment, TelemetryDefaults};
+    /// AppBuilder::new()
+    ///     .with_version("myapp", "0.1.0")
+    ///     .with_deployment(Deployment::Service)
+    ///     .with_telemetry_defaults(TelemetryDefaults {
+    ///         endpoint: Some("http://collector:4318".into()),
+    ///         ..Default::default()
+    ///     });
+    /// ```
+    ///
+    /// Until it is removed, an app that calls this and never calls
+    /// [`with_deployment`](Self::with_deployment) is read as
+    /// [`Deployment::Service`][crate::telemetry::Deployment::Service].
+    /// Configuring an endpoint by hand is what a server does, and it is what
+    /// every caller of this method did; reading such an app as an end-user
+    /// install would apply the end-user clamp, pin its telemetry level to
+    /// `off`, and stop a working collector feed with no error anywhere.
+    #[deprecated(
+        since = "0.6.0",
+        note = "use with_deployment and with_telemetry_defaults; removed in 0.8.0"
+    )]
     pub fn with_telemetry(mut self, config: crate::telemetry::TelemetryConfig) -> Self {
         self.telemetry_config = Some(config);
         self
@@ -667,6 +704,7 @@ impl AppBuilder {
     /// for the fleet — so no command group is registered there at all.
     pub fn with_deployment(mut self, deployment: crate::telemetry::Deployment) -> Self {
         self.deployment = deployment;
+        self.deployment_explicit = true;
         self
     }
 
@@ -875,7 +913,19 @@ impl AppBuilder {
         let (endpoint, endpoint_source) = match read_env("OTEL_EXPORTER_OTLP_ENDPOINT") {
             Some(from_env) => (Some(from_env), Some(Layer::Environment)),
             None => {
-                let author = self.telemetry_defaults.endpoint.clone();
+                // The deprecated `with_telemetry` shim is the last fallback.
+                // The endpoint it carries is an author default like any
+                // other, and folding it in here is what lets an app still on
+                // the shim be described by the same policy as one that has
+                // migrated: `telemetry status`, the doctor checks and the
+                // export boundary all read the policy, and a policy that
+                // said "no endpoint" about a process exporting to a
+                // collector would be worse than no answer at all.
+                let author = self.telemetry_defaults.endpoint.clone().or_else(|| {
+                    self.telemetry_config
+                        .as_ref()
+                        .and_then(|shim| shim.endpoint.clone())
+                });
                 let source = author.as_ref().map(|_| Layer::Default);
                 (author, source)
             }
@@ -896,6 +946,15 @@ impl AppBuilder {
             registry,
             app_attr_allowlist: self.telemetry_attrs.clone(),
             extra_never: self.telemetry_never.clone(),
+            // Same reason as the endpoint above. An absent shim leaves the
+            // field at `0.0`, which `resolve_policy` normalizes to full
+            // sampling -- exactly what `..Default::default()` supplied here
+            // before.
+            sample_ratio: self
+                .telemetry_config
+                .as_ref()
+                .map(|shim| shim.sample_ratio)
+                .unwrap_or_default(),
             ..Default::default()
         }
     }
@@ -932,6 +991,15 @@ impl AppBuilder {
     }
 
     pub fn build<C: AppContext + 'static>(mut self, ctx: C) -> Result<App<C>> {
+        // The deprecated `with_telemetry` shim's deployment inference, made
+        // here rather than inside `with_telemetry` so it does not depend on
+        // the order the two setters are written in. Everything downstream --
+        // the one telemetry resolution, the `telemetry` command group, the
+        // built `App` -- reads `self.deployment` after this point.
+        if self.telemetry_config.is_some() && !self.deployment_explicit {
+            self.deployment = crate::telemetry::Deployment::Service;
+        }
+
         // Resolve config first (mirrors registry freezing / telemetry config capture
         // below in spirit: a framework-owned service is finalized exactly once here).
         #[cfg(feature = "config")]
@@ -1268,6 +1336,8 @@ impl AppBuilder {
             #[cfg(feature = "telemetry")]
             telemetry_policy,
             #[cfg(feature = "telemetry")]
+            startup_report: None,
+            #[cfg(feature = "telemetry")]
             published_manifest,
             #[cfg(feature = "telemetry")]
             telemetry_identity: self.telemetry_identity,
@@ -1394,13 +1464,15 @@ pub struct App<C: AppContext> {
     /// same `Arc`, so no two of them can disagree about what was consented
     /// to.
     ///
-    /// Settled at build time, with one exception, and it is deprecated:
-    /// [`AppBuilder::with_telemetry`] replaces this whole resolution at
-    /// startup with one derived from its `TelemetryConfig`
-    /// (see `init_telemetry`). That path predates spec 025 and honours
-    /// none of it — no kill switches, no deployment shape, no author probes.
-    /// It is scheduled for removal in v0.8.0; once it is gone this field is
-    /// written exactly once, by [`AppBuilder::build`].
+    /// Written exactly once, by [`AppBuilder::build`]. The deprecated
+    /// [`AppBuilder::with_telemetry`] shim used to overwrite the whole
+    /// resolution at startup with one derived from its `TelemetryConfig`,
+    /// which honoured no part of spec 025 — no kill switches, no deployment
+    /// shape, no author probes. It no longer does: `build` folds the shim's
+    /// endpoint and sample ratio in as author defaults and infers
+    /// [`Deployment::Service`](crate::telemetry::Deployment::Service) from
+    /// its presence, so an app still on the shim is described by the same
+    /// policy as one that has migrated. The shim is removed in v0.8.0.
     ///
     /// The stored consent file is not folded in here — that happens in the
     /// startup sequence, which opens the framework-owned telemetry store and
@@ -1409,6 +1481,17 @@ pub struct App<C: AppContext> {
     /// that has not yet read anybody's choice.
     #[cfg(feature = "telemetry")]
     telemetry_policy: Arc<crate::telemetry::TelemetryPolicy>,
+    /// What the spec 025 startup sequence *observed*, as opposed to what it
+    /// decided — the subscriber outcome, the store state, the kill switch,
+    /// the unmatched `<APP>_TELEMETRY_*` variables and the doctor findings.
+    ///
+    /// `None` until [`App::run_with_args`] has started telemetry, and still
+    /// `None` afterwards for an app on the deprecated
+    /// [`AppBuilder::with_telemetry`] shim whose own export pipeline ran
+    /// instead of the sequence. Which of those two happened is not a detail:
+    /// it decides whether the doctor checks have anything to report.
+    #[cfg(feature = "telemetry")]
+    startup_report: Option<Arc<crate::telemetry::StartupReport>>,
     /// The one published manifest (spec 025): the application's own config
     /// manifest with the framework's generated `telemetry` section merged in,
     /// or a telemetry-only manifest when the application publishes none.
@@ -1852,7 +1935,24 @@ impl<C: AppContext> App<C> {
     /// CLI process still delivers its spans.
     #[cfg(feature = "telemetry")]
     fn init_telemetry(&mut self) -> crate::telemetry::TelemetryGuard {
-        if let Some(ref cfg) = self.telemetry_config {
+        // A kill switch wins over every layer, and a shim that predates
+        // the switches is still a layer. `OTEL_SDK_DISABLED` already stopped
+        // the shim, through `TelemetryConfig::is_active`; the other two are
+        // new in spec 025, so honouring them here takes nothing away from a
+        // deployment that works today -- nobody sets a variable the
+        // framework has never read -- while a shim that defeated them would
+        // be a hole in the very switch it exists to obey.
+        //
+        // Read the same way the sequence reads it (`run_startup` step 1):
+        // the environment now, falling back to what `build` saw, so a
+        // variable set after the builder ran still counts.
+        let app_name = self.meta.as_ref().map(|m| m.name).unwrap_or(self.app_name);
+        let kill_switched =
+            crate::telemetry::detect_kill_switch(app_name, &|k| std::env::var(k).ok())
+                .or(self.telemetry_policy.kill_switch)
+                .is_some();
+
+        if let Some(cfg) = self.telemetry_config.as_ref().filter(|_| !kill_switched) {
             let svc = self.meta.as_ref().map(|m| m.name).unwrap_or(self.app_name);
             let ver = self
                 .meta
@@ -1860,27 +1960,21 @@ impl<C: AppContext> App<C> {
                 .map(|m| m.version)
                 .unwrap_or(self.app_version);
 
-            // Overwrite the resolution `build` made. This is a regression on
-            // paper — the replacement honours no kill switch, no deployment
-            // shape and no author-registered probe — and it is deliberate:
-            // an app still on the deprecated `with_telemetry` shim has always
-            // exported unconditionally to its configured endpoint, and
-            // quietly turning that off underneath it would be a behaviour
-            // change smuggled in under a compatibility shim. The shim is
-            // deprecated in v0.6.0 and removed in v0.8.0; the resolution
-            // `build` made is what survives it.
-            self.telemetry_policy = Arc::new(crate::telemetry::resolve_policy(
-                crate::telemetry::TelemetryInputs {
-                    app: svc.to_string(),
-                    deployment: crate::telemetry::Deployment::Service,
-                    endpoint: cfg.endpoint.clone(),
-                    session_id: uuid::Uuid::new_v4().to_string(),
-                    sample_ratio: cfg.sample_ratio,
-                    registry: crate::telemetry::ProbeRegistry::with_builtins(),
-                    ..Default::default()
-                },
-            ));
-
+            // The resolution `build` made already describes this app: it
+            // read the shim's endpoint and its sample ratio, and inferred
+            // `Deployment::Service` unless the author declared otherwise. It
+            // is not replaced here, so the shim keeps the kill switches, the
+            // author-registered probes and the deployment shape that the
+            // rest of the framework already reports -- an app on the shim
+            // and an app that has migrated answer `telemetry status` the
+            // same way.
+            //
+            // Export itself still runs through `init_batch` rather than the
+            // policy's own pipeline. That is the shim's contract: it has
+            // always exported unconditionally to its configured endpoint,
+            // and routing it through the redacting boundary would change
+            // what a working collector receives, under a compatibility shim,
+            // in a patch release. The shim is removed in v0.8.0.
             if let Some((handle, guard)) = crate::telemetry::init::init_batch(cfg, svc, ver) {
                 self.active_telemetry = Some(handle);
                 return guard;
@@ -1897,6 +1991,7 @@ impl<C: AppContext> App<C> {
         // notice, the panic hook, dispatch -- and returns what each produced.
         let result = crate::telemetry::run_startup(self.startup_inputs());
         self.telemetry_policy = result.policy.clone();
+        self.startup_report = Some(result.report.clone());
         self.active_telemetry = result.handle.clone();
         if let Some(notice) = result.notice.as_deref() {
             // Straight to stderr, not through `tracing`: the notice is a
@@ -2011,6 +2106,16 @@ impl<C: AppContext> App<C> {
     #[cfg(feature = "telemetry")]
     pub fn telemetry_policy(&self) -> &crate::telemetry::TelemetryPolicy {
         &self.telemetry_policy
+    }
+
+    /// What the spec 025 startup sequence observed, or `None` if it has not
+    /// run in this process — either because no command has been dispatched
+    /// yet, or because the deprecated [`AppBuilder::with_telemetry`] shim
+    /// exported through its own pipeline instead.
+    #[cfg(feature = "telemetry")]
+    #[doc(hidden)]
+    pub fn startup_report(&self) -> Option<&crate::telemetry::StartupReport> {
+        self.startup_report.as_deref()
     }
 
     /// The published config manifest — the app's own fields plus the
