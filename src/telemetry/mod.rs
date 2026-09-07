@@ -258,7 +258,7 @@ pub use probes::{
     config_attrs, doctor_attrs, feature_attrs, help_attrs, http_client_attrs, http_server_attrs,
     mcp_session_attrs, metrics, plugin_attrs, process_attrs, registered_feature_names,
     secrets_attrs, spans, usage_error_attrs, CommandOutcome, CommandStatus, Emission, Surface,
-    BUILDER_EMISSION, METRIC_EMISSION, RESERVED_PENDING_REDACTION, SPAN_EMISSION,
+    BUILDER_EMISSION, METRIC_EMISSION, RESERVED_PENDING_INSTRUMENTATION, SPAN_EMISSION,
 };
 
 // Gated on `telemetry` for the same reason as every other submodule above:

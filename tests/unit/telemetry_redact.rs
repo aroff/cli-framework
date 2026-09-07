@@ -388,6 +388,107 @@ fn the_never_key_and_exemption_lists_stay_disjoint_and_lower_case() {
 }
 
 #[test]
+fn the_argument_fields_the_root_span_records_are_diagnostic_not_usage() {
+    // `src/app/builder.rs` opens the root `cli.command` span with these two
+    // fields set unconditionally. That is correct -- PRD 025 puts redaction at
+    // the export boundary and nowhere else, so instrumentation records and the
+    // boundary decides. The decision is `ELEVATED`, and it matches keys
+    // exactly: the probe id `cli.command.args` being listed there does nothing
+    // for the concrete keys below. Without their own entries an install at
+    // `usage` -- the level a person gets from the first-run notice -- exports
+    // the name of every argument they typed, which PRD 025 reserves for
+    // `diagnostic`.
+    for key in ["cli.command.arg_names", "cli.command.arg_count"] {
+        assert_eq!(
+            attribute_min_level(key),
+            TelemetryLevel::Diagnostic,
+            "{key} is recorded on the root span at every level; only \
+             attribute_min_level holds it back"
+        );
+    }
+
+    // The command path and the invocation surface are what the `cli.command`
+    // probe is *for* at usage, so they must survive alongside the drop.
+    let supplied = [
+        ("cli.command.path", "deploy"),
+        ("cli.invocation.surface", "cli"),
+        ("cli.command.arg_count", "3"),
+        ("cli.command.arg_names", "region,cluster,dry_run"),
+    ];
+
+    assert_eq!(
+        kept(&rules(TelemetryLevel::Usage), &supplied),
+        vec!["cli.command.path", "cli.invocation.surface"],
+        "an install at usage must not learn which arguments were supplied"
+    );
+
+    for level in [TelemetryLevel::Diagnostic, TelemetryLevel::Debug] {
+        assert_eq!(
+            kept(&rules(level), &supplied).len(),
+            4,
+            "{level:?} is at or above the minimum for both argument fields"
+        );
+    }
+}
+
+#[test]
+fn every_command_field_the_root_span_records_is_known_to_the_redaction_table() {
+    // The regression above was not that someone got a level wrong; it was that
+    // a key existed at the instrumentation site with no counterpart in
+    // `ELEVATED`, and an exact-match table is silent about keys it has never
+    // heard of -- `attribute_min_level` answers `Usage` for them. Pinning the
+    // two known keys would leave the third one free to repeat it, so read the
+    // call site instead.
+    let builder = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/builder.rs"),
+    )
+    .expect("src/app/builder.rs is readable from the crate root");
+
+    // `tracing`'s span macros spell a quoted field as `"key" = value`, which is
+    // syntax no prose can accidentally produce.
+    let mut fields: Vec<String> = Vec::new();
+    for (i, _) in builder.match_indices("\"cli.command.") {
+        let rest = &builder[i + 1..];
+        let Some(end) = rest.find('"') else { continue };
+        let key = &rest[..end];
+        if rest[end + 1..].trim_start().starts_with('=')
+            && !rest[end + 1..].trim_start().starts_with("==")
+        {
+            fields.push(key.to_string());
+        }
+    }
+    fields.sort();
+    fields.dedup();
+
+    assert!(
+        !fields.is_empty(),
+        "no `\"cli.command.*\" =` span field was found in src/app/builder.rs; \
+         the scan is broken, and a scan that reads nothing passes vacuously"
+    );
+
+    // The only `cli.command.*` key PRD 025 places at usage: the `cli.command`
+    // probe's summary is "the registered command path, the invocation surface,
+    // duration and status".
+    const USAGE_SAFE: &[&str] = &["cli.command.path"];
+
+    for key in &fields {
+        if USAGE_SAFE.contains(&key.as_str()) {
+            continue;
+        }
+        assert!(
+            attribute_min_level(key) >= TelemetryLevel::Diagnostic,
+            "src/app/builder.rs records {key} on the root span, but ELEVATED \
+             (src/telemetry/redact.rs) has no entry for it, so \
+             attribute_min_level answers {:?} and the export boundary ships it \
+             to an install that only consented to usage. Add it to ELEVATED at \
+             the level PRD 025 gives its probe, or add it to USAGE_SAFE here \
+             with the sentence from the PRD that says it is safe.",
+            attribute_min_level(key)
+        );
+    }
+}
+
+#[test]
 fn a_dynamically_named_argument_value_is_debug_only_like_its_parent() {
     assert_eq!(
         attribute_min_level("cli.command.arg_values.query"),

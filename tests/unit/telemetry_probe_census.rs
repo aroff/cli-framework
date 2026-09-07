@@ -26,7 +26,7 @@
 //! So: strip comments first, then match on a call *expression*, never on the
 //! name merely appearing in the file.
 use cli_framework::telemetry::{
-    metrics, spans, Emission, BUILDER_EMISSION, METRIC_EMISSION, RESERVED_PENDING_REDACTION,
+    metrics, spans, Emission, BUILDER_EMISSION, METRIC_EMISSION, RESERVED_PENDING_INSTRUMENTATION,
     SPAN_EMISSION,
 };
 use std::path::{Path, PathBuf};
@@ -389,8 +389,9 @@ fn opens_span(text: &str, name: &str) -> bool {
         })
 }
 
-/// The one production source that would have to change for any `Reserved`
-/// entry to become wirable: does `init_from_policy` have a caller in `src/`?
+/// Which production sources call `init_from_policy` -- the only constructor of
+/// either half of the export boundary (the redacting span exporter, and the
+/// meter provider's per-instrument Views)?
 ///
 /// Definitions and re-exports are not calls, so `fn init_from_policy(` and
 /// `pub use init::{init_from_policy, ...}` are both excluded.
@@ -917,50 +918,45 @@ fn every_reserved_entry_gives_a_reason() {
 // The tripwire on the reservation's premise.
 // ---------------------------------------------------------------------------
 
-/// Every reservation above is gated on one fact, stated once in
-/// [`RESERVED_PENDING_REDACTION`]: the redacting export boundary is not on the
-/// production startup path. Redaction is enforced at the export boundary and
-/// nowhere else — never at the instrumentation call site — so that fact is
-/// what makes "catalogued but not emitted" a dormant gap instead of a live
-/// leak.
+/// The export boundary is on the production startup path, and must stay there.
 ///
-/// When it stops being true, the reservations stop being justified, and
-/// nothing else in the repository would say so. This test fails at exactly
-/// that moment. It is deliberately an *equality* check rather than a
-/// one-directional one: it is as wrong to leave the table reserved after the
-/// boundary lands as it is to wire a probe before it does.
+/// This test replaces `the_stated_blocker_for_every_reservation_still_holds`,
+/// which asserted the opposite: that `init_from_policy` had *no* production
+/// caller, and that this was what made "catalogued but not emitted" a dormant
+/// gap rather than a live leak. That premise was true when the census was
+/// written and is now false -- `run_startup` calls `init_from_policy`, so the
+/// redacting span exporter and the per-instrument Views are built on every
+/// real start.
+///
+/// Inverting the assertion rather than deleting it keeps the load-bearing
+/// invariant guarded, because which direction is dangerous has flipped with
+/// it. Redaction is enforced at the export boundary and nowhere else -- never
+/// at the instrumentation call site -- so while the boundary was off the path
+/// the risk was *adding* an emitter, and now that it is on the path the risk
+/// is *removing* the boundary: every probe that gets wired from here on is
+/// one more attribute set that would reach a collector unstripped if this
+/// call disappeared, and nothing else in the repository would say so.
+///
+/// It is falsifiable in the way that matters: delete the `init_from_policy`
+/// call from `run_startup`, or route startup back through `init_batch`, and
+/// this fails.
 #[test]
-fn the_stated_blocker_for_every_reservation_still_holds() {
+fn the_redacting_export_boundary_is_on_the_production_startup_path() {
     let sources = production_sources();
     let callers = redaction_boundary_call_sites(&sources);
-    let reserved = METRIC_EMISSION
-        .iter()
-        .chain(SPAN_EMISSION.iter())
-        .chain(BUILDER_EMISSION.iter())
-        .filter(|(_, e)| !e.is_wired())
-        .count();
 
     assert!(
-        RESERVED_PENDING_REDACTION.contains("init_from_policy"),
-        "the shared reason no longer names the function this test checks for; \
-         one of the two has drifted"
+        callers.iter().any(|p| p == "src/telemetry/startup.rs"),
+        "run_startup no longer calls init_from_policy, so nothing builds the \
+         redacting span exporter or the metric-label Views on the production \
+         path. Callers found: {callers:?}. Every wired probe now exports its \
+         attributes unstripped."
     );
 
-    if callers.is_empty() {
-        assert!(
-            reserved > 0,
-            "init_from_policy still has no production caller, so the export \
-             boundary is still bare, yet nothing is Reserved — either the \
-             catalog shrank or an entry was promoted to Wired without the \
-             boundary landing"
-        );
-    } else {
-        panic!(
-            "init_from_policy now has production caller(s) in {callers:?}, so the \
-             redacting export boundary is on the startup path and \
-             RESERVED_PENDING_REDACTION no longer holds. Revisit all {reserved} \
-             Reserved entries in METRIC_EMISSION/SPAN_EMISSION/BUILDER_EMISSION: \
-             the reason that gated every one of them is gone."
-        );
-    }
+    assert!(
+        RESERVED_PENDING_INSTRUMENTATION.contains("run_startup")
+            && RESERVED_PENDING_INSTRUMENTATION.contains("init_from_policy"),
+        "the shared reason no longer names the two symbols this test checks \
+         for; one of the two has drifted"
+    );
 }
