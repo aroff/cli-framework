@@ -934,6 +934,20 @@ impl AppBuilder {
             Some(from_env) => Some(crate::SecretString::new(from_env)),
             None => self.telemetry_defaults.headers.clone(),
         };
+        // Same three layers as the endpoint, and for the same reason: the
+        // shim is the only place a sample ratio could be declared before
+        // this PR, and deprecating it without a replacement would leave a
+        // `Service` on the new API unable to sample anything but everything.
+        // `resolve_policy` normalizes whatever falls out here -- an absent
+        // ratio arrives as `0.0` and becomes full sampling.
+        let sample_ratio = read_env("OTEL_TRACES_SAMPLER_ARG")
+            .and_then(|raw| raw.parse::<f64>().ok())
+            .or(self.telemetry_defaults.sample_ratio)
+            .or_else(|| {
+                #[allow(deprecated)]
+                self.telemetry_config.as_ref().map(|shim| shim.sample_ratio)
+            })
+            .unwrap_or_default();
 
         crate::telemetry::TelemetryInputs {
             app: app.to_string(),
@@ -946,15 +960,7 @@ impl AppBuilder {
             registry,
             app_attr_allowlist: self.telemetry_attrs.clone(),
             extra_never: self.telemetry_never.clone(),
-            // Same reason as the endpoint above. An absent shim leaves the
-            // field at `0.0`, which `resolve_policy` normalizes to full
-            // sampling -- exactly what `..Default::default()` supplied here
-            // before.
-            sample_ratio: self
-                .telemetry_config
-                .as_ref()
-                .map(|shim| shim.sample_ratio)
-                .unwrap_or_default(),
+            sample_ratio,
             ..Default::default()
         }
     }
@@ -1333,6 +1339,9 @@ impl AppBuilder {
             telemetry_config: self.telemetry_config,
             deployment: self.deployment,
             active_telemetry: None,
+            // Nothing declares it at build time; only the testkit harness
+            // does, on the App it wraps.
+            stderr_interactive: None,
             #[cfg(feature = "telemetry")]
             telemetry_policy,
             #[cfg(feature = "telemetry")]
@@ -1453,6 +1462,20 @@ pub struct App<C: AppContext> {
     deployment: crate::telemetry::Deployment,
     #[allow(dead_code)]
     pub(crate) active_telemetry: Option<Arc<dyn crate::telemetry::Telemetry + Send + Sync>>,
+    /// Whether stderr is a terminal, when something has *declared* it rather
+    /// than leaving it to be asked of the process.
+    ///
+    /// `None` -- the case for every real application -- means ask. The
+    /// testkit harness declares it, and declares it `false` by default,
+    /// because the spec 025 first-run notice only prints on a tty: left to
+    /// the process, a notice test would pass on a developer's terminal and
+    /// fail in CI's pipe, which is the definition of a flaky test.
+    ///
+    /// `#[allow(dead_code)]` for the same reason as `telemetry_config`
+    /// above: without the `telemetry` feature nothing reads it, and the
+    /// testkit setter has to compile either way.
+    #[allow(dead_code)]
+    pub(crate) stderr_interactive: Option<bool>,
     /// The one telemetry resolution this process makes (spec 025), settled by
     /// [`AppBuilder::build`] from the deployment shape, the author's
     /// [`TelemetryDefaults`](crate::telemetry::TelemetryDefaults), the
@@ -1997,7 +2020,16 @@ impl<C: AppContext> App<C> {
             // Straight to stderr, not through `tracing`: the notice is a
             // message to the person at the terminal, not a log line, and it
             // has to appear whether or not the app installed a subscriber.
-            eprintln!("{notice}");
+            //
+            // Through `write_plain` rather than `eprintln!` so the testkit
+            // capture buffer sees it. `eprintln!` writes fd 2 directly,
+            // where no test can read it -- which would leave the notice, the
+            // one part of spec 025 an end user is guaranteed to see, as the
+            // one part with no end-to-end test. `write_plain` appends no
+            // newline of its own.
+            crate::app::diagnostic_reporter::DiagnosticReporter::write_plain(&format!(
+                "{notice}\n"
+            ));
         }
         result.guard.unwrap_or_else(|| {
             // Nothing was built, because the policy does not export. The
@@ -2019,7 +2051,6 @@ impl<C: AppContext> App<C> {
     #[cfg(feature = "telemetry")]
     #[doc(hidden)]
     pub fn startup_inputs(&self) -> crate::telemetry::StartupInputs {
-        use std::io::IsTerminal;
         crate::telemetry::StartupInputs {
             base: self.telemetry_inputs.clone(),
             store: self.telemetry_store.clone(),
@@ -2042,7 +2073,13 @@ impl<C: AppContext> App<C> {
             // Chat, MCP and the API server reach telemetry through their own
             // entry points and pass their own surface.
             surface: crate::telemetry::Surface::Cli,
-            stderr_is_tty: std::io::stderr().is_terminal(),
+            // Whatever declared it wins; otherwise ask the process
+            // through the framework's own panic-guarded helper rather than
+            // `IsTerminal` directly, so a closed or exotic fd 2 answers
+            // "not a terminal" instead of unwinding out of startup.
+            stderr_is_tty: self
+                .stderr_interactive
+                .unwrap_or_else(crate::cli_mode::is_stderr_tty),
             env: std::env::vars().collect(),
         }
     }

@@ -40,6 +40,18 @@ pub struct TelemetryDefaults {
     /// `cli.command.arg_values` probe. Every other argument records its name
     /// only.
     pub arg_value_allowlist: Vec<String>,
+    /// Head-sampling ratio for a `Service`, in `(0.0, 1.0]`.
+    ///
+    /// `None`, and anything outside that range, means sample everything.
+    /// `OTEL_TRACES_SAMPLER_ARG` wins over it, the same way the endpoint
+    /// works, because how much a fleet samples is an operator's decision
+    /// about their collector's capacity, not the author's.
+    ///
+    /// An `EndUser` install ignores it: there is one process and a dropped
+    /// trace is the whole story, so
+    /// [`sampler_is_always_on`][super::TelemetryPolicy::sampler_is_always_on]
+    /// answers `true` there regardless. `debug` forces the same.
+    pub sample_ratio: Option<f64>,
 }
 
 /// Who the caller is, when the app knows and the attribution axis permits it.

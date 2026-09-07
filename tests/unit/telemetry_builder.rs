@@ -435,3 +435,108 @@ fn app_manifest(key: &str) -> cli_framework::config::manifest::ConfigManifest {
         }],
     )
 }
+
+// ── head sampling (the shim's last exclusive knob) ───────────────────────────
+//
+// Before this PR the sample ratio could only be declared through the
+// deprecated `with_telemetry(TelemetryConfig { sample_ratio, .. })` shim.
+// Deprecating the shim without moving the knob would leave a `Service` on the
+// policy API able to sample nothing but everything, which is not a
+// deprecation, it is a removal of a feature.
+
+/// A helper for the three tests that must not read a developer's ambient
+/// `OTEL_TRACES_SAMPLER_ARG`. `EnvGuard` also serializes them against the
+/// test that does set it.
+fn no_ambient_sampler_arg() -> support::EnvGuard {
+    EnvGuard::unset("OTEL_TRACES_SAMPLER_ARG")
+}
+
+#[test]
+fn an_author_sample_ratio_reaches_the_policy_and_the_sampler() {
+    let _g = no_ambient_sampler_arg();
+    let app = AppBuilder::new()
+        .with_version("demo", "0.0.0")
+        .with_deployment(Deployment::Service)
+        .with_telemetry_defaults(TelemetryDefaults {
+            endpoint: Some("http://collector:4318".into()),
+            sample_ratio: Some(0.25),
+            ..Default::default()
+        })
+        .build_for_test();
+
+    assert_eq!(app.telemetry_policy().sample_ratio, 0.25);
+    // The policy field alone is not the behaviour: a ratio that never reaches
+    // the sampler samples everything anyway, silently.
+    let sampler = format!(
+        "{:?}",
+        cli_framework::telemetry::sampler_for_policy(app.telemetry_policy())
+    );
+    assert!(
+        sampler.contains("0.25"),
+        "the ratio has to reach the sampler, not just the policy: {sampler}"
+    );
+}
+
+#[test]
+fn the_environment_sampler_arg_wins_over_the_authors_ratio() {
+    let _g = EnvGuard::set("OTEL_TRACES_SAMPLER_ARG", "0.1");
+    let app = AppBuilder::new()
+        .with_version("demo", "0.0.0")
+        .with_deployment(Deployment::Service)
+        .with_telemetry_defaults(TelemetryDefaults {
+            endpoint: Some("http://collector:4318".into()),
+            sample_ratio: Some(0.5),
+            ..Default::default()
+        })
+        .build_for_test();
+
+    assert_eq!(
+        app.telemetry_policy().sample_ratio,
+        0.1,
+        "how much a fleet samples is an operator's decision about their \
+         collector, not the author's"
+    );
+}
+
+#[test]
+fn an_end_user_install_samples_everything_whatever_the_author_asked_for() {
+    let _g = no_ambient_sampler_arg();
+    let app = AppBuilder::new()
+        .with_version("demo", "0.0.0")
+        .with_deployment(Deployment::EndUser { privacy_url: None })
+        .with_telemetry_defaults(TelemetryDefaults {
+            endpoint: Some("http://collector:4318".into()),
+            sample_ratio: Some(0.01),
+            ..Default::default()
+        })
+        .build_for_test();
+
+    let sampler = format!(
+        "{:?}",
+        cli_framework::telemetry::sampler_for_policy(app.telemetry_policy())
+    );
+    assert_eq!(
+        sampler, "AlwaysOn",
+        "there is one process on an install and a dropped trace is the whole \
+         story, so head sampling is a server's concern only"
+    );
+}
+
+#[test]
+fn an_app_that_declares_no_ratio_samples_everything() {
+    let _g = no_ambient_sampler_arg();
+    let app = AppBuilder::new()
+        .with_version("demo", "0.0.0")
+        .with_deployment(Deployment::Service)
+        .with_telemetry_defaults(TelemetryDefaults {
+            endpoint: Some("http://collector:4318".into()),
+            ..Default::default()
+        })
+        .build_for_test();
+
+    assert_eq!(
+        app.telemetry_policy().sample_ratio,
+        1.0,
+        "an absent ratio must not silently sample nothing"
+    );
+}

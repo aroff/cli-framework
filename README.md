@@ -692,6 +692,12 @@ the command path, invocation surface (`cli` / `chat` / `mcp` / `api`), and
 argument count — no handler code required. Handlers can also reach a telemetry
 handle via `ctx.telemetry()`.
 
+**[docs/telemetry.md](docs/telemetry.md) is the full document**: what an app
+sends at each telemetry level, the twenty built-in probes and what each one
+promises, the three kill switches, what is never sent at any level, the author
+API, and what an operator has to configure. The rest of this section is the
+short version.
+
 ```rust
 use cli_framework::app::AppBuilder;
 use cli_framework::{Deployment, TelemetryDefaults};
@@ -728,9 +734,12 @@ without handler code. `ctx.telemetry().counter()/histogram()` are exported on th
 same pipeline. The built-in `version` command is instrumented too, with zero args.
 
 Configuration is driven by the standard `OTEL_*` environment variables (see the
-[Environment Variables](#environment-variables) section) or by building a
-`TelemetryConfig` directly. Export only activates when an endpoint is set,
-`enabled` is true, and `OTEL_SDK_DISABLED` is not `true`.
+[Environment Variables](#environment-variables) section) and by the
+`telemetry.*` settings the framework publishes in the app's config manifest.
+Export activates only when the resolved telemetry level is above `off`, an
+endpoint is set, and no kill switch fired — `<APP>_TELEMETRY_DISABLED=1`,
+`OTEL_SDK_DISABLED=true` or `DO_NOT_TRACK=1`. There is no `telemetry.enabled`
+key: the level is the switch.
 
 ### Distributed tracing (context propagation)
 
@@ -779,20 +788,30 @@ a credential.
 ### The subscriber
 
 `tracing` spans only reach OpenTelemetry through a `tracing-opentelemetry` layer
-installed in the **active subscriber**, so `with_telemetry()` installs a
-process-wide subscriber (env-filter + `fmt` to stderr + the OTel bridge).
+installed in the **active subscriber**. The framework installs that subscriber
+during startup (env-filter + `fmt` to stderr), and attaches the OTel layer to it
+once the telemetry policy is resolved — which is later, because the policy
+decides whether there is anything to attach.
 
-If your application already installs its own global subscriber, `with_telemetry()`
-cannot take effect — the framework prints a warning to stderr and exports
-nothing. Compose the layer into your own subscriber instead:
+An application that wants logging *before* the app is built calls
+`install_default_logging()` and holds the guard for the life of the process:
 
 ```rust
-let (_handle, guard) = cli_framework::telemetry::init::init_batch(&cfg, "svc", "1.0").unwrap();
-tracing_subscriber::registry()
-    .with(my_fmt_layer)
-    .with(cli_framework::telemetry::init::otel_layer(&guard))
-    .init();
+let _guard = cli_framework::telemetry::install_default_logging();
 ```
+
+The guard reserves a write-once slot in the subscriber the framework fills in
+later; it is not an error to hold one on a build without the `telemetry`
+feature, where attaching is simply a no-op. (The slot is a plain layer rather
+than `tracing_subscriber::reload::Layer`, which cannot be used here: reload's
+`downcast_raw` answers `None` for every type, so `tracing-opentelemetry`'s
+`WithContext` lookup fails and `Span::set_parent` silently does nothing —
+W3C context propagation breaks with no error anywhere.)
+
+If your application installs an unrelated global subscriber of its own instead,
+the framework cannot attach the layer: it prints one warning, records a
+`telemetry.subscriber` doctor finding, and exports metrics only. Traces need
+the framework's subscriber or the guard above.
 
 ### The `telemetry` command group (end-user deployments)
 

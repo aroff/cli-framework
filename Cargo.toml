@@ -965,3 +965,9 @@ required-features = ["telemetry"]
 name = "integration_telemetry_shim_kill_switch"
 path = "tests/integration/telemetry_shim_kill_switch.rs"
 required-features = ["telemetry"]
+
+# The testkit knobs that make the spec 025 notice testable (PR7 Task 29).
+[[test]]
+name = "unit_testkit_telemetry_knobs"
+path = "tests/unit/testkit_telemetry_knobs.rs"
+required-features = ["telemetry", "config", "testkit"]
