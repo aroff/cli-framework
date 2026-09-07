@@ -118,11 +118,29 @@ async fn a_real_dispatch_hands_the_command_context_the_builtin_probe_registry() 
     // with `ProbeRegistry::with_builtins()`. Omitting this call is not a
     // simplification — it silently switches the assertion below onto the
     // empty-registry path and fails for an unrelated reason.
+    // Store isolation, deliberately unreachable today. Two independent facts
+    // keep this test off the developer's real configuration directory without
+    // it: the shim branch of `App::init_telemetry` returns before
+    // `run_startup` ever runs (`src/app/builder.rs:1916`), and the one
+    // environment lever that forces that fall-through -- `OTEL_SDK_DISABLED`
+    // -- is itself a kill switch, which `run_startup` handles by skipping the
+    // store open outright (`src/telemetry/startup.rs:186`). So no A/B here can
+    // fail; two were built and both came back vacuous, for that reason.
+    //
+    // Kept anyway. `.with_telemetry(cfg)` is the shim, so when the shim is
+    // removed in v0.8.0 this test stops compiling and has to be rebuilt on the
+    // spec 025 path -- which does open `<config_dir>/probeapp/telemetry.json`
+    // for real. This line is the note to whoever does that rewrite.
+    // `tests/unit/testkit_telemetry_knobs.rs` carries the falsifiable proof
+    // that the knob itself is honoured.
+    let config_dir = tempfile::tempdir().unwrap();
+
     let mut app = AppBuilder::new()
         .with_version("probeapp", "1.0.0")
         .register_command(registry_reading_command(Arc::clone(&seen)))
         .unwrap()
         .with_telemetry(cfg)
+        .with_telemetry_config_dir(config_dir.path())
         .build(ProbeCtx)
         .unwrap();
 
