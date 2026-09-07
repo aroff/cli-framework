@@ -1,14 +1,14 @@
 //! One test, one process: installing the default logging subscriber is a
 //! process-global one-way door, same reasoning as
 //! `unit_telemetry_subscriber_install`. This covers `install_default_logging`,
-//! `LoggingGuard`, and the reload slot a later OTel layer attaches to —
+//! `LoggingGuard`, and the write-once slot a later OTel layer attaches to —
 //! nothing in `unit_telemetry_subscriber*` exercises this path, since those
 //! only call `install_subscriber_for_test`.
 //!
 //! The assertions are on what the attached layer *receives*, not on what
 //! `attach_otel_layer` *returns*. An earlier version of this test checked only
 //! `is_ok()`, which the whole body of `attach_otel_layer` could be replaced by
-//! `Ok(())` without failing — leaving the reload slot, the reason
+//! `Ok(())` without failing — leaving the slot, the reason
 //! `init_default_logging` returns a guard at all, with no behavioural test.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -33,11 +33,11 @@ fn counter() -> (Arc<AtomicUsize>, BoxedLayer) {
 }
 
 #[test]
-fn the_reload_slot_routes_events_to_an_attached_layer_and_no_ops_when_the_install_lost() {
+fn the_attach_slot_routes_events_to_an_attached_layer_and_no_ops_when_the_install_lost() {
     let first = cli_framework::init_default_logging();
     assert!(
         first.can_attach_otel_layer(),
-        "the first install in the process should win the process global and leave a reload slot"
+        "the first install in the process should win the process global and leave an attach slot"
     );
 
     let (attached, layer) = counter();
@@ -50,7 +50,7 @@ fn the_reload_slot_routes_events_to_an_attached_layer_and_no_ops_when_the_instal
 
     first
         .attach_otel_layer(layer)
-        .expect("attaching to a live reload slot must succeed");
+        .expect("attaching to a live, empty slot must succeed");
 
     tracing::info!("emitted after the layer is attached");
     assert_eq!(
@@ -85,5 +85,34 @@ fn the_reload_slot_routes_events_to_an_attached_layer_and_no_ops_when_the_instal
         attached.load(Ordering::SeqCst),
         2,
         "and the layer the winning guard attached must still be receiving events"
+    );
+
+    // The slot is write-once. It has to be: the whole reason it is not a
+    // `tracing_subscriber::reload::Layer` is that a slot which can be replaced
+    // cannot soundly forward `downcast_raw`, and forwarding that downcast is
+    // the only way `tracing-opentelemetry` ever finds its `WithContext` — a
+    // replaceable slot exports spans with no trace context at all.
+    let (rejected, layer) = counter();
+    let error = first
+        .attach_otel_layer(layer)
+        .expect_err("a second attach must be refused, not silently replace the live layer");
+    assert_eq!(
+        error.to_string(),
+        "an OpenTelemetry layer is already attached to this process's subscriber",
+        "the refusal has to name what happened: a caller that only sees `Err(_)` cannot tell \
+         a lost race from a double-initialised process"
+    );
+
+    tracing::info!("emitted after the refused second attach");
+    assert_eq!(
+        rejected.load(Ordering::SeqCst),
+        0,
+        "a refused attach must not have taken effect anyway"
+    );
+    assert_eq!(
+        attached.load(Ordering::SeqCst),
+        3,
+        "and the layer that did win the slot must be untouched by the refusal — replacing it \
+         would silently drop every span the first layer had already started"
     );
 }

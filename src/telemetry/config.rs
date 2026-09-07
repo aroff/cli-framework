@@ -146,7 +146,12 @@ fn percent_decode(value: &str) -> String {
 /// Splits each pair on the FIRST `=` only, because base64 credentials routinely
 /// end in `=` padding and splitting on all of them would truncate the value.
 /// Entries without a `=`, or with an empty key, are skipped.
-fn parse_headers(raw: &str) -> HashMap<String, String> {
+///
+/// `pub(crate)` because the policy export path in `init.rs` needs the same
+/// parse: `TelemetryPolicy::headers` carries the raw
+/// `OTEL_EXPORTER_OTLP_HEADERS` string as a `SecretString`, and two
+/// implementations of this splitting rule would be two rules.
+pub(crate) fn parse_headers(raw: &str) -> HashMap<String, String> {
     raw.split(',')
         .filter_map(|pair| {
             let (k, v) = pair.split_once('=')?;

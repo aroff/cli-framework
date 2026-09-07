@@ -138,29 +138,198 @@ pub fn install_subscriber_for_test() -> SubscriberOutcome {
 pub type BoxedLayer =
     Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync>;
 
-/// The reload slot [`LoggingGuard`] carries when its install succeeded.
+/// Returned by [`LoggingGuard::attach_otel_layer`] when the slot already holds
+/// a layer.
 ///
-/// Wraps a handle over an initially-empty, optional, boxed layer slot layered
-/// into the subscriber [`install_default_logging`] installs. Telemetry
-/// startup can later `reload` it to `Some(otel_layer)` to attach OTel export
-/// to a subscriber an application's own `main` already installed — the
-/// mechanism, not yet the wiring: PR7 is where startup actually calls it.
+/// The slot is write-once by design (see [`attach_once`]), so a second attach
+/// is a programming error rather than something to degrade around: the layer
+/// already in place keeps working and the caller is told, instead of the
+/// second layer being silently dropped or the first silently replaced.
 #[cfg(feature = "telemetry")]
-struct ReloadSlot(
-    tracing_subscriber::reload::Handle<Option<BoxedLayer>, tracing_subscriber::Registry>,
-);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AlreadyAttached;
+
+#[cfg(feature = "telemetry")]
+impl std::fmt::Display for AlreadyAttached {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("an OpenTelemetry layer is already attached to this process's subscriber")
+    }
+}
+
+#[cfg(feature = "telemetry")]
+impl std::error::Error for AlreadyAttached {}
+
+#[cfg(feature = "telemetry")]
+mod attach_once {
+    //! A write-once slot for the OpenTelemetry bridge layer.
+    //!
+    //! `tracing_subscriber::reload::Layer` is the obvious thing to reach for
+    //! here, and it is the wrong tool. Its `downcast_raw` deliberately answers
+    //! `None` for every type but `NoneLayerMarker`, because a reloadable slot
+    //! can be replaced at any moment and a pointer handed out through it could
+    //! dangle. `tracing-opentelemetry` reaches its layer *only* through that
+    //! downcast: the layer registers a `WithContext`, and
+    //! `OpenTelemetrySpanExt::context`, `set_parent`, `set_status`,
+    //! `add_link` and `set_attribute` each look it up and return silently when
+    //! it is missing.
+    //!
+    //! Bridging through a reload slot therefore produces a subscriber that
+    //! still exports spans but carries no trace context:
+    //! `set_parent_from_headers` cannot join an inbound trace and
+    //! `inject_context` writes no `traceparent`, both without an error, and
+    //! neither is visible until someone opens a distributed trace and finds
+    //! three unrelated ones — precisely the failure
+    //! [`crate::telemetry::propagation`] exists to end.
+    //!
+    //! Writing the slot once and never replacing it is what makes forwarding
+    //! the downcast sound: the boxed layer is owned by an `Arc` that the live
+    //! subscriber holds for as long as it exists, so a pointer into it cannot
+    //! be invalidated while anything can still use it.
+
+    use std::any::TypeId;
+    use std::sync::{Arc, OnceLock};
+
+    use tracing::span;
+    use tracing::Event;
+    use tracing_subscriber::layer::Context;
+    use tracing_subscriber::{Layer, Registry};
+
+    use super::{AlreadyAttached, BoxedLayer};
+
+    #[derive(Clone)]
+    pub(super) struct AttachOnceSlot(Arc<OnceLock<BoxedLayer>>);
+
+    impl AttachOnceSlot {
+        pub(super) fn new() -> Self {
+            Self(Arc::new(OnceLock::new()))
+        }
+
+        /// Fill the slot. Fails if it is already full; never replaces.
+        pub(super) fn attach(&self, layer: BoxedLayer) -> Result<(), AlreadyAttached> {
+            self.0.set(layer).map_err(|_| AlreadyAttached)
+        }
+    }
+
+    /// The slot is deliberately transparent to filtering: it overrides neither
+    /// `register_callsite`, `enabled` nor `max_level_hint`. Those answers are
+    /// cached process-wide the first time each callsite is seen, which is
+    /// before the layer is attached; a slot that changed its mind at attach
+    /// time would leave those caches describing a subscriber that no longer
+    /// exists. Filtering stays the `EnvFilter`'s job, at every point in time.
+    impl Layer<Registry> for AttachOnceSlot {
+        fn on_new_span(
+            &self,
+            attrs: &span::Attributes<'_>,
+            id: &span::Id,
+            ctx: Context<'_, Registry>,
+        ) {
+            if let Some(inner) = self.0.get() {
+                inner.on_new_span(attrs, id, ctx);
+            }
+        }
+
+        fn on_record(&self, id: &span::Id, values: &span::Record<'_>, ctx: Context<'_, Registry>) {
+            if let Some(inner) = self.0.get() {
+                inner.on_record(id, values, ctx);
+            }
+        }
+
+        fn on_follows_from(&self, id: &span::Id, follows: &span::Id, ctx: Context<'_, Registry>) {
+            if let Some(inner) = self.0.get() {
+                inner.on_follows_from(id, follows, ctx);
+            }
+        }
+
+        fn event_enabled(&self, event: &Event<'_>, ctx: Context<'_, Registry>) -> bool {
+            match self.0.get() {
+                Some(inner) => inner.event_enabled(event, ctx),
+                None => true,
+            }
+        }
+
+        fn on_event(&self, event: &Event<'_>, ctx: Context<'_, Registry>) {
+            if let Some(inner) = self.0.get() {
+                inner.on_event(event, ctx);
+            }
+        }
+
+        fn on_enter(&self, id: &span::Id, ctx: Context<'_, Registry>) {
+            if let Some(inner) = self.0.get() {
+                inner.on_enter(id, ctx);
+            }
+        }
+
+        fn on_exit(&self, id: &span::Id, ctx: Context<'_, Registry>) {
+            if let Some(inner) = self.0.get() {
+                inner.on_exit(id, ctx);
+            }
+        }
+
+        fn on_close(&self, id: span::Id, ctx: Context<'_, Registry>) {
+            if let Some(inner) = self.0.get() {
+                inner.on_close(id, ctx);
+            }
+        }
+
+        fn on_id_change(&self, old: &span::Id, new: &span::Id, ctx: Context<'_, Registry>) {
+            if let Some(inner) = self.0.get() {
+                inner.on_id_change(old, new, ctx);
+            }
+        }
+
+        unsafe fn downcast_raw(&self, id: TypeId) -> Option<*const ()> {
+            if id == TypeId::of::<Self>() {
+                return Some(std::ptr::from_ref(self).cast());
+            }
+            // SAFETY: forwarding is what lets `tracing-opentelemetry` find its
+            // `WithContext`, and it is sound here because the pointer cannot be
+            // invalidated while the borrow that produced it is usable: the slot
+            // is written at most once, the `Arc` keeps the box alive for as
+            // long as the subscriber holding this layer, and nothing ever
+            // replaces or drops the boxed layer while that subscriber exists.
+            unsafe { self.0.get()?.downcast_raw(id) }
+        }
+    }
+}
+
+/// Process-global copy of the slot [`install_default_logging`] layered in.
+///
+/// Telemetry startup runs inside `App::run_with_args`, which never sees the
+/// [`LoggingGuard`] the application's `main` is holding. Without a global copy
+/// the upgrade path would be reachable only by applications that thread that
+/// guard down into the framework — exactly the boilerplate
+/// `init_default_logging` exists to remove.
+#[cfg(feature = "telemetry")]
+static GLOBAL_ATTACH_SLOT: std::sync::OnceLock<attach_once::AttachOnceSlot> =
+    std::sync::OnceLock::new();
+
+/// Attach `layer` to the subscriber [`install_default_logging`] installed
+/// earlier in this process.
+///
+/// Returns `false` when there is no slot to attach to — either
+/// `init_default_logging()` was never called, or it lost the process global to
+/// a foreign subscriber — and also when a layer is already attached. Any
+/// `false` here is a real loss of trace export, so the caller reports
+/// [`SubscriberOutcome::ForeignSubscriber`] rather than pretending the layer
+/// landed.
+#[cfg(feature = "telemetry")]
+pub fn attach_otel_layer_globally(layer: BoxedLayer) -> bool {
+    match GLOBAL_ATTACH_SLOT.get() {
+        Some(slot) => slot.attach(layer).is_ok(),
+        None => false,
+    }
+}
 
 /// Returned by [`crate::init_default_logging`].
 ///
-/// It carries the reload handle that telemetry startup uses to add the OTel
-/// layer to an already-installed subscriber, which is how an application can
-/// call `init_default_logging()` in `main` and still get exported traces.
-/// Holding it is not required for logging to work; dropping it only gives up
-/// that upgrade path.
+/// It carries the write-once slot that telemetry startup fills with the OTel
+/// layer, which is how an application can call `init_default_logging()` in
+/// `main` and still get exported traces. Holding it is not required for
+/// logging to work; dropping it only gives up that upgrade path.
 #[must_use = "hold the guard to let telemetry attach its layer later"]
 pub struct LoggingGuard {
     #[cfg(feature = "telemetry")]
-    reload: Option<ReloadSlot>,
+    slot: Option<attach_once::AttachOnceSlot>,
 }
 
 impl LoggingGuard {
@@ -169,13 +338,13 @@ impl LoggingGuard {
     /// the process global to something else, in which case there is no slot
     /// left to attach to (the foreign subscriber owns the composition).
     ///
-    /// Under the weaker `observability`-only build there is no reload slot at
-    /// all — `init_default_logging` cannot be upgraded by telemetry that was
+    /// Under the weaker `observability`-only build there is no slot at all
+    /// — `init_default_logging` cannot be upgraded by telemetry that was
     /// never compiled in — so this is always `false`.
     pub fn can_attach_otel_layer(&self) -> bool {
         #[cfg(feature = "telemetry")]
         {
-            self.reload.is_some()
+            self.slot.is_some()
         }
         #[cfg(not(feature = "telemetry"))]
         {
@@ -183,21 +352,21 @@ impl LoggingGuard {
         }
     }
 
-    /// Attach `layer` to this process's subscriber, replacing whatever the
-    /// reload slot currently holds.
+    /// Attach `layer` to this process's subscriber.
     ///
     /// A no-op, not an error, when
     /// [`can_attach_otel_layer`](Self::can_attach_otel_layer) is `false` —
     /// there is no slot to attach to (a foreign subscriber won the install),
     /// and this module's rule throughout is to degrade rather than fail when
     /// that happens.
+    ///
+    /// Errors only when a layer is already attached: the slot is write-once,
+    /// because a replaceable one cannot forward the downcast
+    /// `tracing-opentelemetry` needs (see [`attach_once`]).
     #[cfg(feature = "telemetry")]
-    pub fn attach_otel_layer(
-        &self,
-        layer: BoxedLayer,
-    ) -> Result<(), tracing_subscriber::reload::Error> {
-        match &self.reload {
-            Some(slot) => slot.0.reload(Some(layer)),
+    pub fn attach_otel_layer(&self, layer: BoxedLayer) -> Result<(), AlreadyAttached> {
+        match &self.slot {
+            Some(slot) => slot.attach(layer),
             None => Ok(()),
         }
     }
@@ -207,33 +376,34 @@ impl LoggingGuard {
 /// subscriber and hand back a guard.
 ///
 /// Rule 1: an application that never asks for telemetry gets what it has
-/// today. Under `telemetry`, the subscriber additionally carries a reload
-/// slot so telemetry startup can attach the OTel layer later without a
-/// second, competing `try_init` call.
+/// today. Under `telemetry`, the subscriber additionally carries a write-once
+/// slot so telemetry startup can attach the OTel layer later without a second,
+/// competing `try_init` call.
 #[cfg(feature = "telemetry")]
 pub fn install_default_logging() -> LoggingGuard {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
-    let (reload_layer, handle) = tracing_subscriber::reload::Layer::new(None::<BoxedLayer>);
+    let slot = attach_once::AttachOnceSlot::new();
 
-    // `reload_layer` must be the first layer added on top of the bare
-    // `Registry`: `reload::Layer<L, S>` only implements `Layer<S>` for the
-    // exact `S` it was constructed with (here, `Registry`), not for whatever
-    // stack happens to be built by the time `.with()` reaches it.
+    // The slot must be the first layer added on top of the bare `Registry`:
+    // it implements `Layer<Registry>` for exactly that subscriber, not for
+    // whatever stack happens to be built by the time `.with()` reaches it.
     let installed = tracing_subscriber::registry()
-        .with(reload_layer)
+        .with(slot.clone())
         .with(compose::filter())
         .with(tracing_subscriber::fmt::layer().with_target(true))
         .try_init()
         .is_ok();
 
+    if installed {
+        // Publish before returning: `App::run_with_args` reaches the slot
+        // through the global, not through the guard the caller keeps.
+        let _ = GLOBAL_ATTACH_SLOT.set(slot.clone());
+    }
+
     LoggingGuard {
-        reload: if installed {
-            Some(ReloadSlot(handle))
-        } else {
-            None
-        },
+        slot: if installed { Some(slot) } else { None },
     }
 }
 

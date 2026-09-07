@@ -476,14 +476,31 @@ pub fn init_with_exporter_config(
 fn span_exporter_for_policy(
     policy: &Arc<TelemetryPolicy>,
 ) -> Option<RedactingExporter<opentelemetry_otlp::SpanExporter>> {
-    use opentelemetry_otlp::WithExportConfig;
+    use opentelemetry_otlp::{WithExportConfig, WithHttpConfig};
     let endpoint = policy.endpoint.as_deref()?;
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_http()
         .with_endpoint(format!("{}/v1/traces", endpoint.trim_end_matches('/')))
+        .with_headers(headers_for_policy(policy))
         .build()
         .ok()?;
     Some(RedactingExporter::new(exporter, policy.clone()))
+}
+
+/// The OTLP headers a policy carries, parsed into the map the exporter
+/// builders take.
+///
+/// Empty when the policy carries none. Without this the policy export path
+/// silently dropped `OTEL_EXPORTER_OTLP_HEADERS`, so every authenticated
+/// collector rejected the export with a 401 that appeared nowhere — the
+/// config path (`span_exporter`) has always sent them.
+fn headers_for_policy(policy: &TelemetryPolicy) -> std::collections::HashMap<String, String> {
+    use secrecy::ExposeSecret;
+    policy
+        .headers
+        .as_ref()
+        .map(|h| crate::telemetry::config::parse_headers(h.expose_secret()))
+        .unwrap_or_default()
 }
 
 /// Build the OTLP metric exporter for a policy's endpoint. `None` under the
@@ -491,11 +508,12 @@ fn span_exporter_for_policy(
 fn metric_exporter_for_policy(
     policy: &TelemetryPolicy,
 ) -> Option<opentelemetry_otlp::MetricExporter> {
-    use opentelemetry_otlp::WithExportConfig;
+    use opentelemetry_otlp::{WithExportConfig, WithHttpConfig};
     let endpoint = policy.endpoint.as_deref()?;
     opentelemetry_otlp::MetricExporter::builder()
         .with_http()
         .with_endpoint(format!("{}/v1/metrics", endpoint.trim_end_matches('/')))
+        .with_headers(headers_for_policy(policy))
         .build()
         .ok()
 }

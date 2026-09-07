@@ -854,15 +854,19 @@ impl AppBuilder {
     /// [`resolve_policy`][crate::telemetry::resolve_policy] and is made
     /// there.
     ///
-    /// The stored settings file is deliberately not read here. Consent lives
-    /// in the framework-owned telemetry store, which the startup sequence
-    /// opens; folding it in is the next step's job, and this resolution is
-    /// the input that step starts from.
+    /// The stored settings file is deliberately not read here, and neither
+    /// is the environment layer. Both belong to
+    /// [`run_startup`](crate::telemetry::run_startup), which opens the
+    /// framework-owned store on the first command and folds it, the
+    /// `<APP>_TELEMETRY_*` variables and the published manifest into exactly
+    /// these inputs before resolving once. Returning the *inputs* rather
+    /// than a resolved policy is what makes that possible: a policy cannot
+    /// be re-layered, only replaced.
     #[cfg(feature = "telemetry")]
-    fn resolve_telemetry_policy(
+    fn telemetry_inputs(
         &self,
         registry: crate::telemetry::ProbeRegistry,
-    ) -> crate::telemetry::TelemetryPolicy {
+    ) -> crate::telemetry::TelemetryInputs {
         use crate::config::resolution::Layer;
 
         let app = self.meta.as_ref().map(|m| m.name).unwrap_or(self.app_name);
@@ -881,7 +885,7 @@ impl AppBuilder {
             None => self.telemetry_defaults.headers.clone(),
         };
 
-        crate::telemetry::resolve_policy(crate::telemetry::TelemetryInputs {
+        crate::telemetry::TelemetryInputs {
             app: app.to_string(),
             deployment: self.deployment.clone(),
             endpoint,
@@ -893,7 +897,7 @@ impl AppBuilder {
             app_attr_allowlist: self.telemetry_attrs.clone(),
             extra_never: self.telemetry_never.clone(),
             ..Default::default()
-        })
+        }
     }
 
     /// The one published manifest (spec 025).
@@ -938,13 +942,33 @@ impl AppBuilder {
         // so that a malformed operational probe id fails the build outright
         // instead of after half a command tree has been assembled.
         #[cfg(feature = "telemetry")]
-        let telemetry_policy = {
+        let telemetry_inputs = {
             let registry = self.telemetry_registry()?;
-            Arc::new(self.resolve_telemetry_policy(registry))
+            self.telemetry_inputs(registry)
         };
+        // Resolved here as well as in `run_startup`, and deliberately: the
+        // `telemetry` command group, the doctor and every span attribute
+        // read `App::telemetry_policy`, and an app that is built but never
+        // run -- which is most of this crate's own test suite -- still has
+        // to be able to answer what it would send. Startup replaces it with
+        // the resolution that folded in the stored consent.
+        #[cfg(feature = "telemetry")]
+        let telemetry_policy = Arc::new(crate::telemetry::resolve_policy(telemetry_inputs.clone()));
         #[cfg(feature = "telemetry")]
         let published_manifest =
-            Arc::new(self.published_telemetry_manifest(&telemetry_policy.registry)?);
+            Arc::new(self.published_telemetry_manifest(&telemetry_inputs.registry)?);
+        // The one place the settings file's location is decided. The
+        // `telemetry` command group and the startup sequence must open the
+        // same file: `telemetry set usage` writing one file while startup
+        // reads another is a consent bug, not a path bug.
+        #[cfg(feature = "telemetry")]
+        let telemetry_store = crate::telemetry::TelemetryStoreLocation {
+            dir: self.telemetry_store_dir.clone(),
+            // Spec 025: the extension follows the app's own configuration
+            // format, so a TOML app gets `telemetry.toml` rather than one
+            // lone JSON file in an otherwise-TOML directory.
+            format: self.config_format,
+        };
 
         let ailoop_client = if let Some(config) = self.ailoop_config {
             Some(AiloopClient::with_config(config)?)
@@ -1046,18 +1070,10 @@ impl AppBuilder {
                     .group_metadata_for("telemetry")
                     .is_some();
             if !already_owned {
-                let location = crate::telemetry::TelemetryStoreLocation {
-                    dir: self.telemetry_store_dir.take(),
-                    // Spec 025: the extension follows the app's own
-                    // configuration format, so a TOML app gets
-                    // `telemetry.toml` rather than one lone JSON file in an
-                    // otherwise-TOML directory.
-                    format: self.config_format,
-                };
                 crate::telemetry::commands::register_telemetry_commands(
                     &mut self.command_registry,
                     self.app_name,
-                    location,
+                    telemetry_store.clone(),
                 )?;
             } else {
                 tracing::warn!(
@@ -1255,6 +1271,10 @@ impl AppBuilder {
             published_manifest,
             #[cfg(feature = "telemetry")]
             telemetry_identity: self.telemetry_identity,
+            #[cfg(feature = "telemetry")]
+            telemetry_inputs,
+            #[cfg(feature = "telemetry")]
+            telemetry_store,
             #[cfg(feature = "config")]
             config_handle,
             #[cfg(feature = "config")]
@@ -1403,6 +1423,17 @@ pub struct App<C: AppContext> {
     /// [`AppBuilder::with_telemetry_identity`].
     #[cfg(feature = "telemetry")]
     telemetry_identity: Option<crate::telemetry::IdentityResolver>,
+    /// The build-time telemetry inputs, kept so the startup sequence can
+    /// layer the stored consent and the environment on top of them and
+    /// resolve once. `telemetry_policy` above is what those inputs resolve
+    /// to *before* either is read.
+    #[cfg(feature = "telemetry")]
+    telemetry_inputs: crate::telemetry::TelemetryInputs,
+    /// Where the framework-owned settings file lives. The same value the
+    /// `telemetry` command group was registered with, so the group and
+    /// startup can never disagree about which file holds consent.
+    #[cfg(feature = "telemetry")]
+    telemetry_store: crate::telemetry::TelemetryStoreLocation,
     #[cfg(feature = "config")]
     config_handle: Option<Arc<dyn crate::config::ConfigHandle>>,
     #[cfg(feature = "config")]
@@ -1854,10 +1885,71 @@ impl<C: AppContext> App<C> {
                 self.active_telemetry = Some(handle);
                 return guard;
             }
+            // The shim was configured but produced nothing usable. Fall
+            // through to the spec 025 sequence rather than returning a dead
+            // guard: it still has to open the store, honour the kill
+            // switches and show the notice.
         }
-        // Return a noop guard when telemetry is enabled but init didn't produce one.
-        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
-        crate::telemetry::TelemetryGuard::new(provider, None)
+
+        // Spec 025 startup. `run_startup` walks all ten steps in order --
+        // kill switches, the store, the environment, one resolution, the
+        // freeze, the providers and export boundary, the subscriber, the
+        // notice, the panic hook, dispatch -- and returns what each produced.
+        let result = crate::telemetry::run_startup(self.startup_inputs());
+        self.telemetry_policy = result.policy.clone();
+        self.active_telemetry = result.handle.clone();
+        if let Some(notice) = result.notice.as_deref() {
+            // Straight to stderr, not through `tracing`: the notice is a
+            // message to the person at the terminal, not a log line, and it
+            // has to appear whether or not the app installed a subscriber.
+            eprintln!("{notice}");
+        }
+        result.guard.unwrap_or_else(|| {
+            // Nothing was built, because the policy does not export. The
+            // guard still exists because `run_with_args` holds one
+            // unconditionally; flushing it is a no-op.
+            let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
+            crate::telemetry::TelemetryGuard::new(provider, None)
+        })
+    }
+
+    /// Everything [`run_startup`](crate::telemetry::run_startup) reads,
+    /// gathered in one place.
+    ///
+    /// The ambient process state startup depends on -- the environment, and
+    /// whether stderr is a terminal -- is captured *here* rather than inside
+    /// the sequence. That is what lets a test substitute all of it and
+    /// assert the startup order by running startup, instead of re-reading
+    /// the constant startup is supposed to follow.
+    #[cfg(feature = "telemetry")]
+    #[doc(hidden)]
+    pub fn startup_inputs(&self) -> crate::telemetry::StartupInputs {
+        use std::io::IsTerminal;
+        crate::telemetry::StartupInputs {
+            base: self.telemetry_inputs.clone(),
+            store: self.telemetry_store.clone(),
+            manifest: self.published_manifest.clone(),
+            service: crate::telemetry::ServiceIdentity {
+                name: self
+                    .meta
+                    .as_ref()
+                    .map(|m| m.name)
+                    .unwrap_or(self.app_name)
+                    .to_string(),
+                version: self
+                    .meta
+                    .as_ref()
+                    .map(|m| m.version)
+                    .unwrap_or(self.app_version)
+                    .to_string(),
+            },
+            // `run_with_args` is the command-line surface by construction.
+            // Chat, MCP and the API server reach telemetry through their own
+            // entry points and pass their own surface.
+            surface: crate::telemetry::Surface::Cli,
+            stderr_is_tty: std::io::stderr().is_terminal(),
+            env: std::env::vars().collect(),
+        }
     }
 
     #[cfg(not(feature = "telemetry"))]

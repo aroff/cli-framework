@@ -925,3 +925,27 @@ required-features = ["telemetry"]
 name = "unit_telemetry_builder"
 path = "tests/unit/telemetry_builder.rs"
 required-features = ["telemetry", "config"]
+
+# Startup wiring (PR7 Task 27). `config` is required as well as `telemetry`
+# because the bridge test goes through `AppBuilder::with_config` to prove the
+# store format reaches startup.
+[[test]]
+name = "unit_telemetry_startup_wiring"
+path = "tests/unit/telemetry_startup_wiring.rs"
+required-features = ["telemetry", "config"]
+
+# Own binary: installing a subscriber is a process-global one-way door, so
+# the "an application got there first" case cannot share a process with the
+# tests above. Same split, and the same reason, as
+# `unit_telemetry_subscriber_foreign` (PR4 Task 14).
+[[test]]
+name = "unit_telemetry_startup_foreign_subscriber"
+path = "tests/unit/telemetry_startup_foreign_subscriber.rs"
+required-features = ["telemetry", "config"]
+
+# Own binary for the same reason, from the other side: this one calls
+# `init_default_logging()` first and asserts startup upgrades it.
+[[test]]
+name = "unit_telemetry_startup_logging_upgrade"
+path = "tests/unit/telemetry_startup_logging_upgrade.rs"
+required-features = ["telemetry", "config"]

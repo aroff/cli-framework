@@ -93,7 +93,7 @@ pub use guard::TelemetryGuard;
 // TelemetryGuard` block), unlike the always-present `TelemetryGuard` type
 // itself, which has a no-op stub for a default build.
 #[cfg(feature = "telemetry")]
-pub use guard::{flush_within, flush_within_for_test, FlushOutcome};
+pub use guard::{flush_within, flush_within_for_test, FlushOutcome, END_USER_FLUSH_BUDGET};
 pub use handle::{Counter, Histogram, KeyValue, SpanHandle, Telemetry};
 pub use noop::NoopTelemetry;
 
@@ -165,8 +165,9 @@ pub use notice::{notice_decision, NoticeDecision, SkipReason};
 pub mod subscriber;
 #[cfg(feature = "telemetry")]
 pub use subscriber::{
-    foreign_subscriber_finding, install_subscriber_for_test, install_telemetry_subscriber,
-    warn_once_foreign_subscriber, BoxedLayer, SubscriberOutcome,
+    attach_otel_layer_globally, foreign_subscriber_finding, install_subscriber_for_test,
+    install_telemetry_subscriber, warn_once_foreign_subscriber, AlreadyAttached, BoxedLayer,
+    SubscriberOutcome,
 };
 #[cfg(feature = "observability")]
 pub use subscriber::{install_default_logging, LoggingGuard};
@@ -182,13 +183,16 @@ pub use panic::{install_panic_hook, panic_record, PanicRecord};
 
 // Gated on `telemetry`, like `policy`/`store`/`panic` above: `startup.rs`
 // names `KillSwitch`, `StoreState` and `SubscriberOutcome`, all of which only
-// exist under this same feature. It only pins the fixed startup order and
-// the `StartupReport` shape — the wiring that actually walks the order lands
-// in PR7.
+// exist under this same feature. It pins the fixed startup order, the
+// `StartupReport` shape, and `run_startup` — the one function that walks the
+// order, which every application reaches through `App::run_with_args`.
 #[cfg(feature = "telemetry")]
 pub mod startup;
 #[cfg(feature = "telemetry")]
-pub use startup::{startup_order, StartupReport, StartupStep};
+pub use startup::{
+    run_startup, run_startup_recording, startup_order, StartupInputs, StartupReport, StartupResult,
+    StartupStep,
+};
 
 // Gated on `telemetry` for the same reason as `policy`/`store` above:
 // `manifest.rs` hard-depends on `crate::config::manifest::{ConfigManifest,
