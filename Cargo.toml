@@ -731,6 +731,16 @@ name = "integration_telemetry_otlp_headers"
 path = "tests/integration/telemetry_otlp_headers.rs"
 required-features = ["telemetry"]
 
+# The same property on the OTHER export path. `telemetry_otlp_headers`
+# drives `init_batch` (the config path the deprecated `with_telemetry` shim
+# takes); this drives `init_from_policy`, whose span and metric exporters
+# are built by different call sites. Own binary for the same two reasons:
+# process-global providers, and it removes OTEL_EXPORTER_OTLP_HEADERS.
+[[test]]
+name = "integration_telemetry_policy_headers"
+path = "tests/integration/telemetry_policy_headers.rs"
+required-features = ["telemetry"]
+
 # Own binary for the same process-global-subscriber reason. Asserts the
 # `traces_enabled` toggle suppresses trace export WITHOUT taking metrics down.
 [[test]]
