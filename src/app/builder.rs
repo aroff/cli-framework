@@ -69,9 +69,11 @@ pub struct AppBuilder {
     telemetry_config: Option<crate::telemetry::TelemetryConfig>,
     /// The application's deployment shape (spec 025). Ungated: `Deployment`
     /// lives in `telemetry::axes`, which compiles unconditionally, and this
-    /// field is read outside the `telemetry` feature too (it will gate
-    /// startup behaviour PR7 adds). Defaults to `EndUser { privacy_url: None
-    /// }`, the PRD's default for an app that never calls `with_deployment`.
+    /// field is read outside the `telemetry` feature too. It gates real
+    /// startup behaviour -- the end-user clamp, the sampler, the flush
+    /// budget and whether the first-run notice may print at all. Defaults to
+    /// `EndUser { privacy_url: None }`, the PRD's default for an app that
+    /// never calls `with_deployment`.
     deployment: crate::telemetry::Deployment,
     /// Whether [`Self::with_deployment`] was called at all.
     ///
@@ -255,6 +257,21 @@ impl AppBuilder {
     /// every caller of this method did; reading such an app as an end-user
     /// install would apply the end-user clamp, pin its telemetry level to
     /// `off`, and stop a working collector feed with no error anywhere.
+    ///
+    /// # Export path
+    ///
+    /// An app configured this way exports through the pre-spec-025 pipeline:
+    /// a bare OTLP span exporter and a meter provider with no Views. It does
+    /// *not* pass through the spec 025 export boundary, so neither the
+    /// redacting span exporter nor the metric-label allowlist applies to it,
+    /// and probe attributes such as `cli.probe` reach the collector. That is
+    /// a deliberate compatibility choice rather than an oversight: this
+    /// method has always exported unconditionally to its configured
+    /// endpoint, and rerouting it would change what a working collector
+    /// receives, under a deprecated shim, in a patch release. Every app that
+    /// has migrated to [`with_deployment`](Self::with_deployment) and
+    /// [`with_telemetry_defaults`](Self::with_telemetry_defaults) gets the
+    /// boundary. This exception is removed with the shim in v0.8.0.
     #[deprecated(
         since = "0.6.0",
         note = "use with_deployment and with_telemetry_defaults; removed in 0.8.0"
@@ -1044,6 +1061,38 @@ impl AppBuilder {
             format: self.config_format,
         };
 
+        // Spec 025: the framework's own six telemetry doctor checks,
+        // registered for every application rather than left to its author to
+        // discover and wire. This is the only place they are registered, and
+        // it has to be *here* specifically, wedged between two constraints:
+        // `push_doctor_checks` borrows all of `self`, so it must precede the
+        // first partial move out of `self` (`self.ailoop_config`, immediately
+        // below); and `build` later moves `doctor_checks` wholesale into the
+        // `doctor` command, so it must precede that too.
+        //
+        // They are handed *cells*, not values: both things they read, the
+        // policy and the startup report, are produced at run time by
+        // `run_startup`, and `App::init_telemetry` fills these same cells
+        // there. The policy cell is seeded with the build-time resolution so
+        // that an app which is built and never run -- most of this crate's
+        // own suite -- still answers `telemetry.endpoint` and
+        // `telemetry.identity` rather than skipping them. See
+        // `crate::telemetry::StartupCell`.
+        //
+        // `feature = "telemetry"` alone, not `all(telemetry, doctor)`:
+        // `telemetry` lists `doctor` among its own features (Cargo.toml), so
+        // the two cannot come apart.
+        #[cfg(feature = "telemetry")]
+        let (telemetry_policy_cell, telemetry_report_cell) = {
+            let policy_cell = crate::telemetry::StartupCell::filled(telemetry_policy.clone());
+            let report_cell = crate::telemetry::StartupCell::empty();
+            self.push_doctor_checks(crate::telemetry::telemetry_checks(
+                policy_cell.clone(),
+                report_cell.clone(),
+            ));
+            (policy_cell, report_cell)
+        };
+
         let ailoop_client = if let Some(config) = self.ailoop_config {
             Some(AiloopClient::with_config(config)?)
         } else {
@@ -1347,6 +1396,10 @@ impl AppBuilder {
             #[cfg(feature = "telemetry")]
             startup_report: None,
             #[cfg(feature = "telemetry")]
+            telemetry_policy_cell,
+            #[cfg(feature = "telemetry")]
+            telemetry_report_cell,
+            #[cfg(feature = "telemetry")]
             published_manifest,
             #[cfg(feature = "telemetry")]
             telemetry_identity: self.telemetry_identity,
@@ -1487,7 +1540,11 @@ pub struct App<C: AppContext> {
     /// same `Arc`, so no two of them can disagree about what was consented
     /// to.
     ///
-    /// Written exactly once, by [`AppBuilder::build`]. The deprecated
+    /// Seeded by [`AppBuilder::build`] and replaced once, by
+    /// [`Self::init_telemetry`], with the resolution that folded in the
+    /// stored consent -- the only write that happens after the store has
+    /// been opened, and the reason the seed is a seed rather than the
+    /// answer. The deprecated
     /// [`AppBuilder::with_telemetry`] shim used to overwrite the whole
     /// resolution at startup with one derived from its `TelemetryConfig`,
     /// which honoured no part of spec 025 — no kill switches, no deployment
@@ -1515,6 +1572,27 @@ pub struct App<C: AppContext> {
     /// it decides whether the doctor checks have anything to report.
     #[cfg(feature = "telemetry")]
     startup_report: Option<Arc<crate::telemetry::StartupReport>>,
+    /// The same policy the doctor's `telemetry.endpoint` and
+    /// `telemetry.identity` checks read, shared with them.
+    ///
+    /// A second handle on `telemetry_policy` above rather than a duplicate of
+    /// it: the checks were registered during `build`, and `Vec<Arc<dyn
+    /// DoctorCheck>>` gives no way to reach back into them afterwards, so the
+    /// only way startup's resolution can reach a check is through a cell they
+    /// were both given. Seeded by `build`, overwritten by
+    /// [`Self::init_telemetry`].
+    #[cfg(feature = "telemetry")]
+    telemetry_policy_cell: crate::telemetry::StartupCell<crate::telemetry::TelemetryPolicy>,
+    /// The counterpart for `startup_report`, read by the doctor's
+    /// `telemetry.subscriber`, `telemetry.store` and `telemetry.env` checks.
+    ///
+    /// Empty until startup has run, and still empty afterwards for an app on
+    /// the deprecated shim -- in which case those three checks report
+    /// `Skipped`, which is the honest answer: no startup sequence ran, so
+    /// there is no subscriber outcome, store state or environment scan to
+    /// report on.
+    #[cfg(feature = "telemetry")]
+    telemetry_report_cell: crate::telemetry::StartupCell<crate::telemetry::StartupReport>,
     /// The one published manifest (spec 025): the application's own config
     /// manifest with the framework's generated `telemetry` section merged in,
     /// or a telemetry-only manifest when the application publishes none.
@@ -2015,6 +2093,12 @@ impl<C: AppContext> App<C> {
         let result = crate::telemetry::run_startup(self.startup_inputs());
         self.telemetry_policy = result.policy.clone();
         self.startup_report = Some(result.report.clone());
+        // The write that makes the doctor honest. The six checks were
+        // registered in `build` holding these cells; until this line they
+        // would answer about the pre-consent resolution (policy) or skip
+        // outright (report).
+        self.telemetry_policy_cell.set(result.policy.clone());
+        self.telemetry_report_cell.set(result.report.clone());
         self.active_telemetry = result.handle.clone();
         if let Some(notice) = result.notice.as_deref() {
             // Straight to stderr, not through `tracing`: the notice is a

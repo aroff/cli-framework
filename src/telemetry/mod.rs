@@ -190,8 +190,8 @@ pub use panic::{install_panic_hook, panic_record, PanicRecord};
 pub mod startup;
 #[cfg(feature = "telemetry")]
 pub use startup::{
-    run_startup, run_startup_recording, startup_order, StartupInputs, StartupReport, StartupResult,
-    StartupStep,
+    run_startup, run_startup_recording, startup_order, StartupCell, StartupInputs, StartupReport,
+    StartupResult, StartupStep,
 };
 
 // Gated on `telemetry` for the same reason as `policy`/`store` above:
@@ -266,12 +266,11 @@ pub use probes::{
 // all themselves gated on this feature, and implements
 // `crate::doctor::check::DoctorCheck` (the framework's top-level `doctor`
 // module, `src/doctor/`, unrelated to and not gated by this one — it exists
-// in every build). Wiring `telemetry_checks`'s output into
-// `AppBuilder::build` via `push_doctor_checks` is PR7's job: PR7's own
-// preamble says the startup wiring lands there because it depends on both
-// this PR and PR5 (the probe catalog) being merged first. This PR only
-// produces the six checks in the `Vec<Arc<dyn DoctorCheck>>` shape that hook
-// already expects.
+// in every build). `AppBuilder::build` registers `telemetry_checks`'s output
+// through `push_doctor_checks`, so every application built on this framework
+// answers `<app> doctor` about its own telemetry without its author wiring
+// anything; the checks read `StartupCell`s that `App::init_telemetry` fills
+// once the startup sequence has resolved.
 #[cfg(feature = "telemetry")]
 pub mod doctor;
 #[cfg(feature = "telemetry")]

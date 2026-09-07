@@ -227,10 +227,12 @@ async fn reset_returns_a_configured_install_to_a_brand_new_one() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = enduser_harness(dir.path());
     h.run(&["demo", "telemetry", "set", "debug"]).await;
-    // Startup mints the id (PR7 wires that); nothing inside the `telemetry`
-    // group does, so this test stands in for the run that would have minted
-    // one. Without it there is no id for `reset` to have to forget, and the
-    // assertion below would pass against a `reset` that kept it.
+    // The startup sequence mints the id (`run_startup`, step 2); nothing
+    // inside the `telemetry` group does, and this harness dispatches
+    // straight to the command, so this line stands in for the run that would
+    // have minted one. Without it there is no id for `reset` to have to
+    // forget, and the assertion below would pass against a `reset` that kept
+    // it.
     let before = TelemetryStore::open_at(dir.path(), "demo")
         .ensure_install_id()
         .unwrap();

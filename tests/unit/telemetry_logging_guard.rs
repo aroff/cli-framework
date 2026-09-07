@@ -18,7 +18,8 @@ use cli_framework::telemetry::BoxedLayer;
 use tracing_subscriber::layer::{Context, Layer};
 
 /// A layer that counts the events the subscriber routes to it. Standing in
-/// for the OTel bridge layer, which is what PR7 attaches here for real.
+/// for the OTel bridge layer, which is what `attach_otel_layer` puts in this
+/// slot in a real run.
 struct CountingLayer(Arc<AtomicUsize>);
 
 impl<S: tracing::Subscriber> Layer<S> for CountingLayer {

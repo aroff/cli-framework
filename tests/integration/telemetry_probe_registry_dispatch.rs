@@ -43,10 +43,10 @@
 //! asserted `Some(true)`, and observed `Some(false)`.)
 //!
 //! Whether a zero-config app *should* still see the built-in probes is a
-//! policy-orchestration question — the same kind `src/app/builder.rs`'s
-//! `telemetry_policy` field doc defers to PR7 for the redaction-boundary
-//! gap (see `tests/integration/telemetry_end_to_end.rs`). It is not decided
-//! here. What this file tests is the mainline case any application that
+//! policy-orchestration question, and it is not decided here. It belongs
+//! with the other shim-versus-spec-025 divergences that survive until the
+//! shim is removed in v0.8.0 (see the closing note in
+//! `tests/integration/telemetry_end_to_end.rs`). What this file tests is the mainline case any application that
 //! actually wants telemetry will hit: register commands, call
 //! `.with_telemetry(cfg)`, dispatch. The mock server below exists only so
 //! `init_batch`'s exporter construction and the guard's drop-time flush

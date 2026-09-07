@@ -1,14 +1,12 @@
 // tests/unit/telemetry_builder.rs
 //
-// Corrected against `origin/main` per the PR7 brief's C1/C4 corrections and
-// two additional defects found while transcribing:
+// Two API facts this file's construction has to work around, recorded
+// because both are easy to get wrong again:
 //   - `AppBuilder` is not re-exported at the crate root (only
 //     `cli_framework::app::AppBuilder` / the prelude), so the import is split.
 //   - `secrecy::Secret<String>` has no `From<&str>`, only `From<String>`, so
 //     every `headers: Some("...".into())` literal becomes
 //     `Some("...".to_string().into())`.
-// Per C1's closing instruction, the test names and assertions are otherwise
-// unchanged from the plan; only the construction is fixed.
 use cli_framework::app::AppBuilder;
 use cli_framework::{Deployment, Identity, TelemetryDefaults};
 

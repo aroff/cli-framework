@@ -922,6 +922,11 @@ path = "tests/unit/telemetry_doctor.rs"
 required-features = ["telemetry"]
 
 [[test]]
+name = "unit_telemetry_doctor_wiring"
+path = "tests/unit/telemetry_doctor_wiring.rs"
+required-features = ["telemetry", "config", "testkit"]
+
+[[test]]
 name = "unit_telemetry_builder"
 path = "tests/unit/telemetry_builder.rs"
 required-features = ["telemetry", "config"]

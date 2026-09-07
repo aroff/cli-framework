@@ -190,23 +190,22 @@ async fn app_builder_run_exports_spans_and_metrics() {
     // wire. It is not — this run puts it on the wire for real, and this
     // assertion caught that live rather than assuming the boundary applies.
     //
-    // `AppBuilder::init_telemetry` (src/app/builder.rs) calls
-    // `telemetry::init::init_batch`, whose span exporter comes from
-    // `build_tracer_provider` -> `span_exporter(config)`
-    // (src/telemetry/init.rs): a bare `opentelemetry_otlp::SpanExporter`,
-    // never wrapped in `RedactingExporter`. The wrapped, policy-aware
-    // pipeline exists and is unit-tested (`init_from_policy` /
-    // `span_exporter_for_policy`, same file) but nothing outside its own
-    // `#[cfg(test)]` module calls it. `AppBuilder`'s own field doc says so
-    // directly (the `telemetry_policy` field, src/app/builder.rs:927-942):
-    // "`App` still runs the pre-existing `TelemetryConfig` -> `init_batch`
-    // export path ..., which never consults `TelemetryPolicy` at all. Full
-    // `App`-level policy orchestration ... is deferred to PR7." The same
-    // gap holds for metrics: `build_meter_provider` (config-based, what
-    // `init_batch` uses) attaches no View, so the metric-label allowlist
-    // `build_meter_provider_from_policy` applies is equally unenforced here.
-    // Wiring either fix means editing `src/app/builder.rs` and/or
-    // `src/telemetry/init.rs`'s production callsites, both outside this
-    // task's file list and squarely PR7/Task 26's job per that same field
-    // doc — reported in full rather than silently patched around.
+    // That is the shim's behaviour, not the framework's. `App::init_telemetry`
+    // (src/app/builder.rs) branches: an app carrying a `TelemetryConfig` goes
+    // through `telemetry::init::init_batch`, whose span exporter is a bare
+    // `opentelemetry_otlp::SpanExporter` from `span_exporter(config)`
+    // (src/telemetry/init.rs), never wrapped in `RedactingExporter`; the same
+    // holds for metrics, where `build_meter_provider` attaches no View and so
+    // does not enforce the metric-label allowlist. Every other app takes the
+    // spec 025 sequence, where `run_startup` (src/telemetry/startup.rs) calls
+    // `init_from_policy` and gets both the redacting span exporter and the
+    // per-instrument Views.
+    //
+    // The split is deliberate and documented on `with_telemetry` itself: the
+    // shim has always exported unconditionally to its configured endpoint,
+    // and routing it through the redacting boundary would change what a
+    // working collector receives, under a compatibility shim, in a patch
+    // release. This file exercises the shim on purpose (see the note above
+    // the test), so it sees the unredacted path by construction. The shim —
+    // and this exception with it — is removed in v0.8.0.
 }

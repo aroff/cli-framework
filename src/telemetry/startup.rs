@@ -90,6 +90,123 @@ pub struct StartupReport {
     pub findings: Vec<DoctorFinding>,
 }
 
+/// A handle to a value that only telemetry startup can produce, handed out
+/// before it exists.
+///
+/// The six telemetry doctor checks are registered at *build* time — that is
+/// the only moment [`AppBuilder::push_doctor_checks`](crate::app::AppBuilder)
+/// can reach the check list, because `build()` consumes the builder and moves
+/// the list into the `doctor` command. Both values those checks read, the
+/// `Arc<TelemetryPolicy>` and the `Arc<StartupReport>`, are produced at *run*
+/// time by [`run_startup`]. A check handed the build-time policy would answer
+/// about a resolution that had not opened the settings store: it would report
+/// the level and attribution the app would have used had the person never run
+/// `telemetry set`, which is exactly the question nobody is asking when they
+/// run `doctor`.
+///
+/// So the checks hold this, filled at [`StartupStep::FreezePolicy`] and read
+/// at the moment the doctor runs them.
+///
+/// Deliberately not a `OnceLock`. The policy cell is *seeded* at build time,
+/// so an app that is built and never run — most of this crate's own suite,
+/// and any app whose `doctor` command somehow runs before startup — still
+/// gets an answer rather than a skipped check; startup then overwrites it
+/// with the resolution that saw the store. `OnceLock` would make the seeding
+/// and the real value mutually exclusive, and the seed would win.
+///
+/// [`get`](Self::get) clones the `Arc` out and drops the lock before it
+/// returns, which is load-bearing rather than stylistic:
+/// [`DoctorCheck::run`](crate::doctor::check::DoctorCheck::run) returns a
+/// `'static` [`DoctorFuture`](crate::doctor::check::DoctorFuture), and a lock
+/// guard alive across an `.await` is `clippy::await_holding_lock` — denied in
+/// this workspace.
+pub struct StartupCell<T> {
+    slot: Arc<std::sync::RwLock<Option<Arc<T>>>>,
+}
+
+impl<T> StartupCell<T> {
+    /// A cell nothing has filled yet. [`get`](Self::get) answers `None` until
+    /// [`set`](Self::set) is called.
+    pub fn empty() -> Self {
+        Self {
+            slot: Arc::new(std::sync::RwLock::new(None)),
+        }
+    }
+
+    /// A cell that already holds `value`.
+    pub fn filled(value: Arc<T>) -> Self {
+        Self {
+            slot: Arc::new(std::sync::RwLock::new(Some(value))),
+        }
+    }
+
+    /// Replace whatever the cell holds. Every clone of this cell sees it.
+    ///
+    /// Overwrites rather than refusing: the policy cell is seeded at build
+    /// time and startup's resolution is the one that folded in the stored
+    /// consent, so the later write is the one that must win.
+    pub fn set(&self, value: Arc<T>) {
+        let mut slot = self
+            .slot
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *slot = Some(value);
+    }
+
+    /// The value, if the cell has been filled.
+    ///
+    /// Clones the `Arc` out and releases the lock before returning; see the
+    /// type's documentation for why that is a requirement and not a taste.
+    ///
+    /// A poisoned lock is read through rather than panicked on. The doctor
+    /// exists to explain a broken process; making it the one command that
+    /// panics inside a broken process would be backwards.
+    pub fn get(&self) -> Option<Arc<T>> {
+        self.slot
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// Manual, because `#[derive(Clone)]` would demand `T: Clone` — and `T` here
+/// is `TelemetryPolicy` / `StartupReport` behind an `Arc`, which is precisely
+/// the thing being shared rather than cloned. Cloning a cell shares the slot:
+/// that is how the copy `App` keeps and the copies the six checks hold are
+/// the same cell.
+impl<T> Clone for StartupCell<T> {
+    fn clone(&self) -> Self {
+        Self {
+            slot: Arc::clone(&self.slot),
+        }
+    }
+}
+
+impl<T> Default for StartupCell<T> {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+/// So a caller that already has the value — every test that builds a policy
+/// and a report by hand — passes it straight to
+/// [`telemetry_checks`](crate::telemetry::telemetry_checks) with no ceremony.
+impl<T> From<Arc<T>> for StartupCell<T> {
+    fn from(value: Arc<T>) -> Self {
+        Self::filled(value)
+    }
+}
+
+impl<T> std::fmt::Debug for StartupCell<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The contents are deliberately not printed: `TelemetryPolicy` is
+        // reachable from `App`'s `Debug`, and it carries the install id.
+        f.debug_struct("StartupCell")
+            .field("filled", &self.get().is_some())
+            .finish()
+    }
+}
+
 /// Everything one process needs in order to start telemetry, gathered by the
 /// caller before the first step runs.
 ///
