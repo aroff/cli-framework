@@ -1,5 +1,6 @@
 use crate::app::meta::AppMeta;
 use crate::command::CommandRegistry;
+use crate::environment::EnvironmentVariableRegistry;
 use crate::spec::arg_spec::ArgSpec;
 
 /// Renders formatted help text for a CLI application.
@@ -13,6 +14,7 @@ pub struct HelpRenderer<'a> {
     commands: &'a CommandRegistry,
     version_string: Option<String>,
     global_flags: &'a [ArgSpec],
+    environment_variables: Option<&'a EnvironmentVariableRegistry>,
 }
 
 impl<'a> HelpRenderer<'a> {
@@ -23,6 +25,7 @@ impl<'a> HelpRenderer<'a> {
             commands,
             version_string: None,
             global_flags: &[],
+            environment_variables: None,
         }
     }
 
@@ -42,6 +45,12 @@ impl<'a> HelpRenderer<'a> {
     /// Provide registered global flags to be enumerated in the Options block.
     pub fn with_global_flags(mut self, flags: &'a [ArgSpec]) -> Self {
         self.global_flags = flags;
+        self
+    }
+
+    /// Provide application and command environment variables for root help.
+    pub fn with_environment_variables(mut self, registry: &'a EnvironmentVariableRegistry) -> Self {
+        self.environment_variables = Some(registry);
         self
     }
 
@@ -209,6 +218,13 @@ impl<'a> HelpRenderer<'a> {
             out.push_str(&pad);
             out.push_str(flag.help);
             out.push('\n');
+        }
+
+        if let Some(registry) = self.environment_variables {
+            if !registry.is_empty() {
+                out.push('\n');
+                out.push_str(&registry.render_help());
+            }
         }
 
         out

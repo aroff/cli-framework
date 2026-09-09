@@ -150,6 +150,75 @@ fn show_help_contains_version_entry() {
 }
 
 #[test]
+fn root_help_lists_registered_and_command_environment_variables() {
+    use cli_framework::command::Command;
+    use cli_framework::spec::EnvVarEntry;
+
+    let cmd = Command {
+        id: Arc::from("deploy"),
+        spec: Arc::new(CommandSpec {
+            summary: "Deploy service",
+            category: Some("deployment"),
+            env_vars: vec![EnvVarEntry {
+                name: "DEPLOY_TOKEN",
+                description: "Token used by deploy",
+            }],
+            ..Default::default()
+        }),
+        validator: None,
+        expose_mcp: false,
+        expose_chat: true,
+        meta: None,
+        visibility: None,
+        execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
+    };
+
+    let app = AppBuilder::new()
+        .with_version("myapp", "1.2.3")
+        .register_env_var(EnvVarEntry {
+            name: "APP_CONFIG",
+            description: "Application configuration path",
+        })
+        .unwrap()
+        .register_command(cmd)
+        .unwrap()
+        .build(DummyCtx)
+        .unwrap();
+
+    let help = app.render_help();
+    assert!(help.contains("Environment Variables:\n"));
+    assert!(help.contains("APP_CONFIG"));
+    assert!(help.contains("Application configuration path"));
+    assert!(help.contains("DEPLOY_TOKEN"));
+    assert!(help.contains("Token used by deploy"));
+    assert!(help.find("APP_CONFIG").unwrap() < help.find("DEPLOY_TOKEN").unwrap());
+}
+
+#[cfg(feature = "testkit")]
+#[tokio::test]
+async fn clap_root_help_lists_environment_variables_without_categories() {
+    use cli_framework::spec::EnvVarEntry;
+    use cli_framework::testkit::CliTestHarness;
+
+    let app = AppBuilder::new()
+        .with_version("myapp", "1.2.3")
+        .register_env_var(EnvVarEntry {
+            name: "MYAPP_HOME",
+            description: "Application data directory",
+        })
+        .unwrap()
+        .build(DummyCtx)
+        .unwrap();
+
+    let mut harness = CliTestHarness::new(app);
+    let output = harness.run(&["myapp", "--help"]).await;
+
+    assert!(output.stdout().contains("Environment Variables:\n"));
+    assert!(output.stdout().contains("MYAPP_HOME"));
+    assert!(output.stdout().contains("Application data directory"));
+}
+
+#[test]
 
 fn show_help_version_appears_before_registered_commands() {
     use cli_framework::command::Command;

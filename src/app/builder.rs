@@ -5,9 +5,10 @@ use crate::app::module::Module;
 use crate::app::AppMeta;
 use crate::cli_output::HelpRenderer;
 use crate::command::{Command, CommandRegistry, TypedArgs};
+use crate::environment::EnvironmentVariableRegistry;
 use crate::plugin::PluginRegistryManager;
 use crate::spec::arg_spec::ArgSpec;
-use crate::spec::command_tree::{CommandPath, GroupMetadata};
+use crate::spec::command_tree::{CommandPath, EnvVarEntry, GroupMetadata};
 use crate::spec::value::ArgValue;
 use anyhow::Result;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -46,6 +47,7 @@ pub struct AppBuilder {
     risk_policy: crate::security::command_risk::CommandRiskPolicy,
     auto_register_completion: bool,
     global_flags: Vec<ArgSpec>,
+    environment_variables: EnvironmentVariableRegistry,
     #[cfg(feature = "doctor")]
     doctor_checks: Vec<Arc<dyn crate::doctor::check::DoctorCheck>>,
     #[cfg(feature = "mcp-server")]
@@ -120,6 +122,7 @@ impl AppBuilder {
             risk_policy: crate::security::command_risk::CommandRiskPolicy::default(),
             auto_register_completion: true,
             global_flags: Vec::new(),
+            environment_variables: EnvironmentVariableRegistry::new(),
             #[cfg(feature = "doctor")]
             doctor_checks: Vec::new(),
             #[cfg(feature = "mcp-server")]
@@ -354,6 +357,15 @@ impl AppBuilder {
     pub fn global_flag(mut self, spec: ArgSpec) -> Self {
         self.global_flags.push(spec);
         self
+    }
+
+    /// Declare an application-level environment variable for root help.
+    ///
+    /// Variables declared by individual [`CommandSpec`](crate::spec::CommandSpec)
+    /// values are collected automatically when the app is built.
+    pub fn register_env_var(mut self, entry: EnvVarEntry) -> Result<Self> {
+        self.environment_variables.register(entry)?;
+        Ok(self)
     }
 
     /// Set the MCP export policy used when `--mcp-serve` starts the embedded server.
@@ -860,7 +872,10 @@ impl AppBuilder {
             }
         }
 
-        let clap_root = crate::app::clap_adapter::build_clap_root(
+        self.environment_variables
+            .register_commands(&self.command_registry)?;
+
+        let mut clap_root = crate::app::clap_adapter::build_clap_root(
             self.meta.as_ref(),
             &self.command_registry,
             self.app_name,
@@ -868,6 +883,9 @@ impl AppBuilder {
             self.app_git_sha_short,
             &self.global_flags,
         );
+        if !self.environment_variables.is_empty() {
+            clap_root = clap_root.after_help(self.environment_variables.render_help());
+        }
 
         let registry_arc = Arc::new(self.command_registry);
 
@@ -888,6 +906,7 @@ impl AppBuilder {
             app_git_sha_short: self.app_git_sha_short,
             clap_root,
             global_flags: self.global_flags,
+            environment_variables: self.environment_variables,
             stdout_capture: None,
             suggest_corrections: self.suggest_corrections,
             #[cfg(feature = "auth")]
@@ -991,6 +1010,7 @@ pub struct App<C: AppContext> {
     app_git_sha_short: Option<&'static str>,
     clap_root: clap::Command,
     global_flags: Vec<ArgSpec>,
+    environment_variables: EnvironmentVariableRegistry,
     /// When set, framework-level stdout (`framework_println`: version strings,
     /// help, completion scripts, the command surface, etc.) is captured into this
     /// buffer instead of being written to fd 1. Used by testkit and by embedders
@@ -1083,6 +1103,12 @@ impl<C: AppContext> App<C> {
             self.app_git_sha_short,
             &self.global_flags,
         );
+        if !self.environment_variables.is_empty() {
+            self.clap_root = self
+                .clap_root
+                .clone()
+                .after_help(self.environment_variables.render_help());
+        }
     }
 
     /// Returns true if any root-level command has a non-None category.
@@ -1267,6 +1293,7 @@ impl<C: AppContext> App<C> {
         HelpRenderer::new(self.meta.as_ref(), self.command_registry.as_ref())
             .with_version_string(self.version_string())
             .with_global_flags(&self.global_flags)
+            .with_environment_variables(&self.environment_variables)
             .print();
     }
 
@@ -1274,6 +1301,7 @@ impl<C: AppContext> App<C> {
         HelpRenderer::new(self.meta.as_ref(), self.command_registry.as_ref())
             .with_version_string(self.version_string())
             .with_global_flags(&self.global_flags)
+            .with_environment_variables(&self.environment_variables)
             .render()
     }
 
@@ -1480,6 +1508,11 @@ impl<C: AppContext> App<C> {
     /// Return the global flags registered on this app.
     pub fn global_flags(&self) -> &[ArgSpec] {
         &self.global_flags
+    }
+
+    /// Return all application and command environment variable declarations.
+    pub fn environment_variables(&self) -> &EnvironmentVariableRegistry {
+        &self.environment_variables
     }
 
     /// The deployment shape configured via [`AppBuilder::with_deployment`].
