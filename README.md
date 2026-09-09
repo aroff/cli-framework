@@ -956,6 +956,25 @@ Defaults: 5s connect timeout, 30s total timeout, built-in TLS roots, TLS certifi
 
 ## Environment Variables
 
+Applications declare supported environment variables once, and `cli-framework`
+lists them in root `--help` output by default. App-wide variables use the builder;
+variables in any command's `CommandSpec.env_vars` are collected automatically.
+
+```rust
+use cli_framework::prelude::*;
+
+let app = AppBuilder::new()
+    .register_env_var(EnvVarEntry {
+        name: "MYAPP_CONFIG",
+        description: "Path to the application configuration file",
+    })?
+    .build(MyContext)?;
+# Ok::<(), anyhow::Error>(())
+```
+
+Names are sorted. Repeating the same declaration is allowed; declaring one name
+with different descriptions fails registration or build.
+
 ### Chat / LLM Configuration
 
 | Variable | Role |

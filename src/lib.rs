@@ -42,6 +42,7 @@ pub mod app;
 pub mod cli_mode;
 pub mod cli_output;
 pub mod command;
+pub mod environment;
 pub mod message;
 
 // New modules for CLI framework
@@ -168,10 +169,11 @@ macro_rules! path {
 pub mod prelude {
     pub use crate::app::{AppBuilder, AppContext, AppMeta, RequestIdentityExt, UsageError};
     pub use crate::command::{Command, FromArgValueMap, IntoCommandSpec, TypedArgs};
+    pub use crate::environment::{EnvironmentVariableError, EnvironmentVariableRegistry};
     pub use crate::message::{AppMessage, AppMessageKind};
     pub use crate::path;
     pub use crate::plugin::PluginRegistryManager;
-    pub use crate::spec::{ArgSpec, ArgValue, CommandPath, CommandSpec};
+    pub use crate::spec::{ArgSpec, ArgValue, CommandPath, CommandSpec, EnvVarEntry};
 
     #[cfg(feature = "chat")]
     pub use crate::command::chat::ChatToolPolicy;
