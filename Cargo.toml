@@ -804,6 +804,22 @@ name = "unit_telemetry_subscriber_otel"
 path = "tests/unit/telemetry_subscriber_otel.rs"
 required-features = ["telemetry"]
 
+# Own binary for the same reason as its neighbour: it installs the
+# process-global subscriber. Drives the `Layer` callbacks the attach slot
+# forwards, which the upgrade test never reaches.
+[[test]]
+name = "unit_telemetry_slot_forwarding"
+path = "tests/unit/telemetry_slot_forwarding.rs"
+required-features = ["telemetry"]
+
+# `src/telemetry/author.rs` is three declarations with no function bodies,
+# so its derived impls are only instantiated where a test uses them. Without
+# this binary the file produces no coverage records at all.
+[[test]]
+name = "unit_telemetry_author"
+path = "tests/unit/telemetry_author.rs"
+required-features = ["telemetry"]
+
 [[test]]
 name = "unit_telemetry_subscriber_install"
 path = "tests/unit/telemetry_subscriber_install.rs"
@@ -947,6 +963,14 @@ required-features = ["telemetry", "config"]
 [[test]]
 name = "unit_telemetry_startup_wiring"
 path = "tests/unit/telemetry_startup_wiring.rs"
+required-features = ["telemetry", "config"]
+
+# Own binary: the panic hook and the process subscriber are both one-way
+# process globals, so the test that panics for real to read the hook's own
+# output cannot share a process with the wiring tests above.
+[[test]]
+name = "unit_telemetry_startup_panic_hook"
+path = "tests/unit/telemetry_startup_panic_hook.rs"
 required-features = ["telemetry", "config"]
 
 # Own binary: installing a subscriber is a process-global one-way door, so

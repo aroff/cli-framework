@@ -271,11 +271,12 @@ mod attach_once {
             }
         }
 
-        fn on_id_change(&self, old: &span::Id, new: &span::Id, ctx: Context<'_, Registry>) {
-            if let Some(inner) = self.0.get() {
-                inner.on_id_change(old, new, ctx);
-            }
-        }
+        // `on_id_change` is deliberately not overridden. `Layered::clone_span`
+        // calls it only when the subscriber below hands back an id different
+        // from the one it was given, and this layer is implemented for
+        // `Registry` alone -- whose `clone_span` bumps a refcount and returns
+        // `id.clone()`. There is nothing to forward, and a forwarding body
+        // here would be unreachable code that no test could honestly reach.
 
         unsafe fn downcast_raw(&self, id: TypeId) -> Option<*const ()> {
             if id == TypeId::of::<Self>() {
@@ -288,6 +289,35 @@ mod attach_once {
             // long as the subscriber holding this layer, and nothing ever
             // replaces or drops the boxed layer while that subscriber exists.
             unsafe { self.0.get()?.downcast_raw(id) }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::AttachOnceSlot;
+        use tracing_subscriber::layer::SubscriberExt;
+
+        /// The slot must answer `downcast_raw` for its own type.
+        ///
+        /// Everything this module does rests on a downcast reaching it: the
+        /// reason the write-once slot replaced `reload::Layer` at all is that
+        /// `reload` answered `None` for every `TypeId` and so hid
+        /// `tracing-opentelemetry`'s `WithContext` from the stack above.
+        /// Delegating to the attached layer is only sound if the slot first
+        /// identifies itself, because `Layered::downcast_raw` walks the stack
+        /// asking each layer in turn and a layer that lies about its own type
+        /// is not a layer the walk can reason about.
+        #[test]
+        fn the_slot_is_findable_in_a_registry_stack_by_its_own_type() {
+            let slot = AttachOnceSlot::new();
+            let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(slot));
+
+            assert!(
+                dispatch.downcast_ref::<AttachOnceSlot>().is_some(),
+                "the slot did not answer `downcast_raw` for its own `TypeId`, \
+                 so nothing above it in the stack can find it -- which is the \
+                 exact failure mode that made `reload::Layer` unusable here"
+            );
         }
     }
 }

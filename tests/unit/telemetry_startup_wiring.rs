@@ -481,6 +481,170 @@ fn a_service_deployment_guard_is_not_bounded() {
     );
 }
 
+/// The stored file carries more than consent. `attribution`, `endpoint` and
+/// the per-probe switches all live in it, and each one has a different
+/// observable consequence: attribution decides whether an install id exists
+/// at all, the endpoint carries its own provenance so `telemetry status` can
+/// name the file it came from, and a probe switch is a two-way door -- it has
+/// to be able to turn a probe back *on*, not only off, or a default-off probe
+/// could never be opted into.
+#[test]
+fn startup_folds_stored_attribution_endpoint_and_both_directions_of_a_probe_switch() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let store = TelemetryStore::open_at_with_format(dir.path(), "demo", ConfigFormat::Json);
+    store
+        .mutate(|s| {
+            s.attribution = Some(Attribution::Anonymous);
+            s.endpoint = Some(DEAD_COLLECTOR.to_string());
+            s.probes.insert("cli.command".to_string(), true);
+            s.probes.insert("cli.help".to_string(), false);
+        })
+        .expect("the fixture store is writable");
+
+    let mut inputs = inputs_at(dir.path());
+    // Disabled going in, so the stored `true` has something to undo. A test
+    // that started from the default (enabled) would pass against a fold that
+    // handled only the `false` direction.
+    inputs
+        .base
+        .disabled_probes
+        .insert("cli.command".to_string());
+
+    let result = run_startup(inputs);
+
+    assert_eq!(
+        result.policy.attribution,
+        Attribution::Anonymous,
+        "the fixture asks for pseudonymous; only the stored file can have \
+         changed it"
+    );
+    assert!(
+        result.policy.install_id.is_none(),
+        "an anonymous Install must carry no install id, however writable its \
+         store is"
+    );
+    assert_eq!(
+        result.policy.endpoint.as_deref(),
+        Some(DEAD_COLLECTOR),
+        "the stored endpoint must reach the policy"
+    );
+    assert_eq!(
+        result.policy.endpoint_source,
+        Some(Layer::ConfigFile),
+        "`telemetry status` names the layer an endpoint came from; an \
+         endpoint read from the file and reported as a default sends a \
+         person looking in the wrong place"
+    );
+    assert!(
+        !result.policy.disabled_probes.contains("cli.command"),
+        "a stored `true` must re-enable a probe that was disabled in the \
+         inputs -- the switch is a two-way door"
+    );
+    assert!(
+        result.policy.disabled_probes.contains("cli.help"),
+        "a stored `false` must disable the probe"
+    );
+}
+
+/// The same three, from the environment layer, which carries its own
+/// provenance (`Layer::Environment`) and is what a CI job or a container
+/// actually sets.
+#[test]
+fn startup_folds_environment_attribution_endpoint_and_probe_switches() {
+    // `Service` with an endpoint resolves to `diagnostic`, so this fixture
+    // exports and `init_from_policy` writes the OpenTelemetry process
+    // globals.
+    let _lock = otel_global_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let mut inputs = inputs_at(dir.path());
+    inputs.base.deployment = Deployment::Service;
+    inputs
+        .base
+        .disabled_probes
+        .insert("cli.command".to_string());
+    inputs.env = env(&[
+        ("DEMO_TELEMETRY_ATTRIBUTION", "anonymous"),
+        ("DEMO_TELEMETRY_ENDPOINT", DEAD_COLLECTOR),
+        ("DEMO_TELEMETRY_CLI_COMMAND_ENABLED", "1"),
+        ("DEMO_TELEMETRY_CLI_HELP_ENABLED", "0"),
+    ]);
+
+    let result = run_startup(inputs);
+
+    assert_eq!(result.policy.attribution, Attribution::Anonymous);
+    assert_eq!(result.policy.endpoint.as_deref(), Some(DEAD_COLLECTOR));
+    assert_eq!(
+        result.policy.endpoint_source,
+        Some(Layer::Environment),
+        "an endpoint set by `DEMO_TELEMETRY_ENDPOINT` must be reported as \
+         coming from the environment, not from the file it overrode"
+    );
+    assert!(
+        !result.policy.disabled_probes.contains("cli.command"),
+        "`DEMO_TELEMETRY_CLI_COMMAND_ENABLED=1` must re-enable the probe"
+    );
+    assert!(
+        result.policy.disabled_probes.contains("cli.help"),
+        "`DEMO_TELEMETRY_CLI_HELP_ENABLED=0` must disable the probe"
+    );
+    assert!(
+        result.policy.level > TelemetryLevel::Off,
+        "a Service with an endpoint defaults to diagnostic; without that \
+         this test would not have exercised the export path at all"
+    );
+}
+
+/// `install_id` and `notice_shown` are published manifest leaves, so
+/// `scan_environment` matches their variables and hands them to the fold --
+/// but the store owns both. An environment variable that could rewrite an
+/// Install's identity would defeat `local_only`.
+#[test]
+fn the_environment_cannot_rewrite_the_install_id() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let store = TelemetryStore::open_at_with_format(dir.path(), "demo", ConfigFormat::Json);
+    // Opted in, so a pseudonymous install id is minted and there is something
+    // for the environment to have overwritten.
+    store
+        .mutate(|s| s.level = Some(TelemetryLevel::Usage))
+        .expect("the fixture store is writable");
+
+    let mut inputs = inputs_at(dir.path());
+    inputs.env = env(&[("DEMO_TELEMETRY_INSTALL_ID", "identity-from-the-environment")]);
+
+    let result = run_startup(inputs);
+
+    let install_id = result
+        .policy
+        .install_id
+        .as_deref()
+        .expect("an opted-in pseudonymous Install with a writable store has an id");
+    assert_ne!(
+        install_id, "identity-from-the-environment",
+        "`DEMO_TELEMETRY_INSTALL_ID` must not be able to name an Install; \
+         the id is minted once, on the person's own disk"
+    );
+}
+
+/// The other half of the same rule. `notice_shown` records that a *person*
+/// was shown the notice; an environment variable that could pre-set it would
+/// let a deployment suppress the first-run disclosure for people who had
+/// never seen it.
+#[test]
+fn the_environment_cannot_pre_silence_the_first_run_notice() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let mut inputs = inputs_at(dir.path());
+    inputs.stderr_is_tty = true;
+    inputs.env = env(&[("DEMO_TELEMETRY_NOTICE_SHOWN", "usage")]);
+
+    let result = run_startup(inputs);
+
+    assert!(
+        result.notice.is_some(),
+        "`DEMO_TELEMETRY_NOTICE_SHOWN` must not stand in for a notice this \
+         person was never shown"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The bridge from the builder
 // ---------------------------------------------------------------------------

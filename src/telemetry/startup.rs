@@ -458,10 +458,17 @@ fn fold_environment(
     base: &mut TelemetryInputs,
     values: &serde_json::Map<String, serde_json::Value>,
 ) {
-    for (path, value) in values {
-        let Some(key) = path.strip_prefix("telemetry.") else {
-            continue;
-        };
+    // `scan_environment` only ever inserts leaves whose dotted path is
+    // `telemetry` or `telemetry.<something>`, and `with_telemetry_section`
+    // refuses an application manifest that already owns a bare `telemetry`
+    // key -- so the first form cannot reach a real app. Stating that as a
+    // filter rather than an escape inside the loop keeps the invariant where
+    // a reader looks for it, and leaves no in-loop branch that no test could
+    // honestly reach.
+    let telemetry_keys = values
+        .iter()
+        .filter_map(|(path, value)| Some((path.strip_prefix("telemetry.")?, value)));
+    for (key, value) in telemetry_keys {
         match key {
             "level" => {
                 if let Some(level) = value

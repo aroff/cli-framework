@@ -960,3 +960,57 @@ fn the_redacting_export_boundary_is_on_the_production_startup_path() {
          for; one of the two has drifted"
     );
 }
+
+/// How much of the catalog is actually emitted, as a number.
+///
+/// `Emission::is_wired` exists so this question can be asked of the tables
+/// rather than of the reader, and this is the only caller: without it the
+/// predicate is public API that nothing exercises, which is precisely the
+/// shape spec 028 found the probe builders in.
+///
+/// The counts are pinned, not merely reported, because they are quoted
+/// outside this crate -- the "N of 15 instruments" line in the pull request
+/// that shipped the startup path, and the same figure in
+/// `specs/029`'s deferral list. A pinned count turns "we wired one more
+/// probe" into a test that has to be updated deliberately, and turns
+/// "somebody quietly unwired one" into a failure. Both are the point; the
+/// numbers are expected to move, and the failure message says which way.
+#[test]
+fn the_wired_share_of_the_catalog_is_pinned() {
+    fn wired(table: &'static [(&'static str, Emission)]) -> Vec<&'static str> {
+        table
+            .iter()
+            .filter(|(_, e)| e.is_wired())
+            .map(|(name, _)| *name)
+            .collect()
+    }
+
+    let metrics_wired = wired(METRIC_EMISSION);
+    let spans_wired = wired(SPAN_EMISSION);
+    let builders_wired = wired(BUILDER_EMISSION);
+
+    assert_eq!(
+        (metrics_wired.len(), METRIC_EMISSION.len()),
+        (4, 15),
+        "the wired instrument count moved. Wired: {metrics_wired:?}. If a \
+         probe was deliberately wired or unwired, update this number and the \
+         same figure in specs/029 -- it is quoted as evidence of how much of \
+         the catalog is live."
+    );
+    assert_eq!(
+        (spans_wired.len(), SPAN_EMISSION.len()),
+        (3, 8),
+        "the wired span count moved. Wired: {spans_wired:?}."
+    );
+    assert_eq!(
+        (builders_wired.len(), BUILDER_EMISSION.len()),
+        (7, 18),
+        "the wired attribute-builder count moved. Wired: {builders_wired:?}."
+    );
+
+    assert!(
+        metrics_wired.contains(&metrics::PANICS),
+        "cli.panics is emitted by the startup panic hook; a census that \
+         cannot see it is measuring the wrong thing"
+    );
+}
