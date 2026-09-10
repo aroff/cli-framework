@@ -594,6 +594,49 @@ fn startup_folds_environment_attribution_endpoint_and_probe_switches() {
     );
 }
 
+/// A probe switch whose value is not a boolean must be ignored outright,
+/// leaving the probe wherever resolution already put it.
+///
+/// `scan_environment` types every variable against its manifest leaf, and
+/// `FieldKind::Bool` keeps an unrecognised word as a `String` rather than
+/// guessing (`src/telemetry/env.rs`). The fold then asks for `as_bool()` and
+/// gets `None`. Without that arm the plausible alternative is truthiness --
+/// "any non-empty value means on" -- which would read `=off` as *enable*, the
+/// exact opposite of what the person typed, and silently.
+///
+/// Both directions are asserted from one run: a probe that resolution left
+/// enabled must stay enabled, and one it left disabled must stay disabled.
+/// A one-directional version would pass against a fold that ignored the
+/// variable *and* against one that hard-coded a single outcome.
+#[test]
+fn a_probe_switch_that_is_not_a_boolean_changes_nothing() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let mut inputs = inputs_at(dir.path());
+    inputs.base.deployment = Deployment::Service;
+    inputs.base.disabled_probes.insert("cli.help".to_string());
+    inputs.env = env(&[
+        // Neither word is in the accepted set
+        // (`1/true/yes/on` and `0/false/no/off`).
+        ("DEMO_TELEMETRY_CLI_COMMAND_ENABLED", "maybe"),
+        ("DEMO_TELEMETRY_CLI_HELP_ENABLED", "sure"),
+    ]);
+
+    let result = run_startup(inputs);
+
+    assert!(
+        !result.policy.disabled_probes.contains("cli.command"),
+        "`=maybe` is not a boolean, so it must not disable a probe that was \
+         enabled; got {:?}",
+        result.policy.disabled_probes
+    );
+    assert!(
+        result.policy.disabled_probes.contains("cli.help"),
+        "`=sure` is not a boolean, so it must not re-enable a probe the app \
+         disabled; a truthiness reading would have turned it back on; got {:?}",
+        result.policy.disabled_probes
+    );
+}
+
 /// `install_id` and `notice_shown` are published manifest leaves, so
 /// `scan_environment` matches their variables and hands them to the fold --
 /// but the store owns both. An environment variable that could rewrite an

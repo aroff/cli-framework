@@ -373,13 +373,16 @@ fn run_startup_inner(inputs: StartupInputs, record: &mut dyn FnMut(StartupStep))
     // 8. The notice, before dispatch so a person reads it above the command's
     //    own output rather than under it.
     record(StartupStep::ShowNotice);
-    let notice = show_notice(
-        &policy,
-        notice_shown,
-        surface,
-        stderr_is_tty,
-        store.as_ref(),
-    );
+    let notice = match store.as_ref() {
+        Some(store) => show_notice(&policy, notice_shown, surface, stderr_is_tty, store),
+        // No store means a kill switch fired at step 1, and
+        // `notice_decision` skips on a kill switch anyway: someone who set
+        // `DO_NOT_TRACK` has already answered the question the notice asks.
+        // Deciding that here, where both arms are reachable, keeps
+        // `show_notice` total -- passing an `Option` inwards would leave it
+        // with a no-store arm that no test could honestly reach.
+        None => None,
+    };
 
     // 9. The panic hook, last of the setup: a panic *during* startup should be
     //    reported by whatever hook was already installed, not by a half-built
@@ -552,21 +555,19 @@ fn show_notice(
     notice_shown: Option<TelemetryLevel>,
     surface: Surface,
     stderr_is_tty: bool,
-    store: Option<&TelemetryStore>,
+    store: &TelemetryStore,
 ) -> Option<String> {
     match super::notice::notice_decision(policy, notice_shown, surface, stderr_is_tty) {
         super::notice::NoticeDecision::Show {
             text,
             announced_level,
         } => {
-            if let Some(store) = store {
-                // Deliberately swallowed. A store that cannot be written is
-                // already reported by the `telemetry.store` doctor check, and
-                // per the spec an unwritable store means the notice prints
-                // every run — which is the honest outcome, not a failure to
-                // hand back to a person running an unrelated command.
-                let _ = store.mutate(|s| s.notice_shown = Some(announced_level));
-            }
+            // Deliberately swallowed. A store that cannot be written is
+            // already reported by the `telemetry.store` doctor check, and
+            // per the spec an unwritable store means the notice prints
+            // every run — which is the honest outcome, not a failure to
+            // hand back to a person running an unrelated command.
+            let _ = store.mutate(|s| s.notice_shown = Some(announced_level));
             Some(text)
         }
         super::notice::NoticeDecision::Skip(_) => None,
