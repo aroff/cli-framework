@@ -179,7 +179,12 @@ impl TelemetryConfig {
     /// the one telemetry resolution, so an app no longer has to. Declare the
     /// shape of the deployment and any author defaults instead:
     ///
-    /// ```rust,no_run
+    // The example names `TelemetryDefaults`, which only exists behind the
+    // `telemetry` feature, but the item it documents is ungated -- so rustdoc
+    // extracts this doctest under every feature set. Compile it where the
+    // types exist; render it, unchecked, everywhere else.
+    #[cfg_attr(feature = "telemetry", doc = "```rust,no_run")]
+    #[cfg_attr(not(feature = "telemetry"), doc = "```rust,ignore")]
     /// use cli_framework::app::AppBuilder;
     /// use cli_framework::{Deployment, TelemetryDefaults};
     ///

@@ -238,7 +238,12 @@ impl AppBuilder {
     /// The replacement is two calls that separate the two decisions this one
     /// conflated -- *what shape of program is this* and *where does it send*:
     ///
-    /// ```rust,no_run
+    // The example names `TelemetryDefaults`, which only exists behind the
+    // `telemetry` feature, but the item it documents is ungated -- so rustdoc
+    // extracts this doctest under every feature set. Compile it where the
+    // types exist; render it, unchecked, everywhere else.
+    #[cfg_attr(feature = "telemetry", doc = "```rust,no_run")]
+    #[cfg_attr(not(feature = "telemetry"), doc = "```rust,ignore")]
     /// # use cli_framework::app::AppBuilder;
     /// # use cli_framework::{Deployment, TelemetryDefaults};
     /// AppBuilder::new()
