@@ -46,6 +46,7 @@ async fn nested_command_executes_via_cli() {
             GroupMetadata {
                 summary: "Cluster management",
                 hidden: false,
+                ..Default::default()
             },
         )
         .unwrap()

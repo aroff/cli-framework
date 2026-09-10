@@ -4,7 +4,7 @@ use cli_framework::app::AppBuilder;
 use cli_framework::app::AppContext;
 use cli_framework::cli_output::HelpRenderer;
 use cli_framework::command::{Command, CommandRegistry};
-use cli_framework::spec::command_tree::CommandSpec;
+use cli_framework::spec::command_tree::{CommandPath, CommandSpec, GroupMetadata};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -169,6 +169,91 @@ fn render_normalized_matches_render() {
     assert_eq!(renderer.render(), renderer.render_normalized());
 }
 
+#[test]
+fn categorized_groups_honor_explicit_section_and_entry_order_with_compact_rows() {
+    let builder = AppBuilder::new().with_help_section_order(&[
+        "Operations",
+        "Skills and projects",
+        "Operations",
+    ]);
+    assert_eq!(
+        builder.command_registry().help_section_order(),
+        &["Operations", "Skills and projects"]
+    );
+    let mut registry = builder.command_registry().clone();
+
+    registry
+        .register_group(
+            &CommandPath::root_for("bundle"),
+            GroupMetadata {
+                summary: "Build and manage skill bundles",
+                category: Some("Skills and projects"),
+                help_order: Some(20),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    registry
+        .register_group(
+            &CommandPath::root_for("skill"),
+            GroupMetadata {
+                summary: "Discover and manage skills",
+                category: Some("Skills and projects"),
+                help_order: Some(10),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    registry
+        .register_group(
+            &CommandPath::root_for("server"),
+            GroupMetadata {
+                summary: "Run the HTTP API",
+                category: Some("Operations"),
+                help_order: Some(30),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    registry.register(Command {
+        id: Arc::from("doctor"),
+        spec: Arc::new(CommandSpec {
+            summary: "Diagnose setup",
+            syntax: Some("doctor [--json]"),
+            category: Some("Operations"),
+            help_order: Some(10),
+            ..Default::default()
+        }),
+        validator: None,
+        expose_mcp: false,
+        expose_chat: true,
+        meta: None,
+        visibility: None,
+        execute: noop_arc_execute(),
+    });
+
+    let output = HelpRenderer::new(None, &registry).render();
+    let operations = output.find("Operations:").unwrap();
+    let skills = output.find("Skills and projects:").unwrap();
+    let skill = output.find("  skill ").unwrap();
+    let bundle = output.find("  bundle").unwrap();
+
+    assert!(
+        operations < skills,
+        "explicit section order was ignored:\n{output}"
+    );
+    assert!(
+        skill < bundle,
+        "explicit entry order was ignored:\n{output}"
+    );
+    assert_eq!(
+        output.matches("Usage:").count(),
+        1,
+        "root help must contain only its own usage line:\n{output}"
+    );
+    assert!(!output.contains("doctor [--json]"));
+}
+
 struct DummyCtx;
 impl AppContext for DummyCtx {}
 
@@ -303,6 +388,50 @@ async fn t10_run_with_args_no_subcommand_routes_through_help_renderer_when_categ
         "expected 'Observability:' heading in output:\n{}",
         out.stdout()
     );
+}
+
+#[cfg(feature = "testkit")]
+#[tokio::test]
+async fn categorized_root_group_enables_grouped_help_without_categorized_leaf_commands() {
+    use cli_framework::testkit::CliTestHarness;
+
+    let app = AppBuilder::new()
+        .with_version("testapp", "1.0.0")
+        .register_group(
+            &CommandPath::root_for("skill"),
+            GroupMetadata {
+                summary: "Discover and manage skills",
+                category: Some("Skills and projects"),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .register_command_at(
+            &CommandPath::new(&["skill", "list"]).unwrap(),
+            Command {
+                id: Arc::from("list"),
+                spec: Arc::new(CommandSpec {
+                    summary: "List installed skills",
+                    ..Default::default()
+                }),
+                validator: None,
+                expose_mcp: false,
+                expose_chat: true,
+                meta: None,
+                visibility: None,
+                execute: noop_arc_execute(),
+            },
+        )
+        .unwrap()
+        .build(DummyCtx)
+        .unwrap();
+
+    let mut harness = CliTestHarness::new(app);
+    let out = harness.run(&["testapp", "--help"]).await;
+
+    assert!(out.stdout().contains("Skills And Projects:"));
+    assert!(out.stdout().contains("  skill  Discover and manage skills"));
+    assert!(!out.stdout().contains("Usage: list"));
 }
 
 // AC-4: run_with_args(["app", "--help"]) with all category: None → clap flat output (no category headings)

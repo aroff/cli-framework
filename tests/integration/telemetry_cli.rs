@@ -408,6 +408,7 @@ fn an_app_that_already_owns_a_telemetry_group_keeps_its_own() {
             GroupMetadata {
                 summary: "the app's own telemetry surface",
                 hidden: false,
+                ..Default::default()
             },
         )
         .unwrap()

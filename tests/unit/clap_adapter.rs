@@ -3,7 +3,7 @@ use cli_framework::app::{AppBuilder, Shell};
 use cli_framework::command::{Command, CommandRegistry};
 use cli_framework::parser::ParseOutcome;
 use cli_framework::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
-use cli_framework::spec::command_tree::CommandSpec;
+use cli_framework::spec::command_tree::{CommandPath, CommandSpec, GroupMetadata};
 use cli_framework::spec::value::ArgValue;
 use std::collections::HashMap;
 use std::future::Future;
@@ -88,6 +88,23 @@ fn make_cmd_with_hidden(id: &'static str, hidden: bool) -> Command {
     }
 }
 
+fn make_ordered_cmd(id: &'static str, help_order: Option<u32>) -> Command {
+    Command {
+        id: Arc::from(id),
+        spec: Arc::new(CommandSpec {
+            summary: id,
+            help_order,
+            ..Default::default()
+        }),
+        validator: None,
+        expose_mcp: false,
+        expose_chat: true,
+        meta: None,
+        visibility: None,
+        execute: noop_execute(),
+    }
+}
+
 fn first_non_blank_line(s: &str) -> &str {
     s.lines().find(|l| !l.trim().is_empty()).unwrap_or("")
 }
@@ -139,6 +156,70 @@ fn build_clap_root_subcommand_count_matches_registry() {
     let help_output = matches.to_string();
     assert!(help_output.contains("hello"));
     assert!(help_output.contains("goodbye"));
+}
+
+#[test]
+fn nested_help_uses_explicit_order_then_alphabetical_fallback() {
+    let mut registry = CommandRegistry::new();
+    registry
+        .register_group(
+            &CommandPath::root_for("bundle"),
+            GroupMetadata {
+                summary: "Manage bundles",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    for (id, order) in [
+        ("override", Some(60)),
+        ("remove", Some(50)),
+        ("update", Some(40)),
+        ("list", Some(30)),
+        ("add", Some(20)),
+        ("build", Some(10)),
+        ("z-last", None),
+        ("a-first-unordered", None),
+    ] {
+        registry
+            .register_at(
+                &CommandPath::new(&["bundle", id]).unwrap(),
+                make_ordered_cmd(id, order),
+            )
+            .unwrap();
+    }
+
+    let root = cli_framework::app::clap_adapter::build_clap_root(
+        None,
+        &registry,
+        "testapp",
+        "0.1.0",
+        None,
+        &[],
+    );
+    let help = root
+        .try_get_matches_from(["testapp", "bundle", "--help"])
+        .unwrap_err()
+        .to_string();
+
+    let ordered = [
+        "build",
+        "add",
+        "list",
+        "update",
+        "remove",
+        "override",
+        "a-first-unordered",
+        "z-last",
+    ];
+    let positions: Vec<_> = ordered
+        .iter()
+        .map(|id| help.find(&format!("  {id}  ")).expect("command in help"))
+        .collect();
+    assert!(
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "unexpected nested help order:\n{help}"
+    );
 }
 
 #[test]

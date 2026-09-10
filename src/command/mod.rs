@@ -82,6 +82,11 @@ impl Command {
         self.spec.category
     }
 
+    /// Return the optional position of this command in categorized root help.
+    pub fn help_order(&self) -> Option<u32> {
+        self.spec.help_order
+    }
+
     /// Attach a command-level validation hook.
     pub fn with_validator<F>(mut self, f: F) -> Self
     where

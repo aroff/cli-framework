@@ -65,6 +65,7 @@ fn build_app() -> App<DummyCtx> {
             GroupMetadata {
                 summary: "Repository management",
                 hidden: false,
+                ..Default::default()
             },
         )
         .unwrap()
@@ -305,6 +306,30 @@ fn completes_top_level_verbs_at_the_first_word() {
     );
 }
 
+#[test]
+fn namespaced_builtins_are_completed_from_the_final_registry_tree() {
+    if !bash_available() {
+        eprintln!("skipping: no bash on PATH");
+        return;
+    }
+
+    let app = AppBuilder::new()
+        .with_version("myapp", "1.0.0")
+        .with_builtin_command_namespace(&CommandPath::root_for("cli"))
+        .build(DummyCtx)
+        .unwrap();
+    let script = bash_script(&app);
+
+    let root_reply = complete(&script, &["myapp", ""], 1);
+    assert!(root_reply.iter().any(|word| word == "cli"));
+    assert!(!root_reply.iter().any(|word| word == "spec"));
+    assert!(!root_reply.iter().any(|word| word == "completion"));
+
+    let cli_reply = complete(&script, &["myapp", "cli", ""], 2);
+    assert!(cli_reply.iter().any(|word| word == "spec"));
+    assert!(cli_reply.iter().any(|word| word == "completion"));
+}
+
 /// Hidden commands stay out of the completion surface at every level.
 #[test]
 fn hidden_commands_are_not_completed() {
@@ -315,6 +340,7 @@ fn hidden_commands_are_not_completed() {
             GroupMetadata {
                 summary: "Repository management",
                 hidden: false,
+                ..Default::default()
             },
         )
         .unwrap()

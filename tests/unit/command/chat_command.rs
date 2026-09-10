@@ -1,3 +1,4 @@
+use cli_framework::app::{AppBuilder, AppContext};
 use cli_framework::command::chat::host_tool_adapter::McpHostToolAdapter;
 use cli_framework::command::chat::{
     ChatToolCallOptions, CHAT_ARG_VALIDATION_FAILED, CHAT_COMMAND_EXECUTION_FAILED,
@@ -12,6 +13,9 @@ use cli_framework::spec::command_tree::CommandSpec;
 use cli_framework::spec::value::ArgValue;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+struct DummyCtx;
+impl AppContext for DummyCtx {}
 
 fn make_spec_command(id: &'static str) -> Command {
     Command {
@@ -107,23 +111,13 @@ async fn tool_names_match_mcp_convention() {
 
 #[tokio::test]
 async fn completion_command_not_exposed_as_tool() {
-    let mut registry = CommandRegistry::new();
-    registry.register(Command {
-        id: Arc::from("completion"),
-        spec: Arc::new(CommandSpec {
-            summary: "shell completion",
-            ..Default::default()
-        }),
-        validator: None,
-        expose_mcp: false,
-        expose_chat: true,
-        meta: None,
-        visibility: None,
-        execute: Arc::new(|_ctx, _args| Box::pin(async { Ok(()) })),
-    });
-    registry.register(make_spec_command("deploy"));
+    let app = AppBuilder::new()
+        .register_command(make_spec_command("deploy"))
+        .unwrap()
+        .build(DummyCtx)
+        .unwrap();
 
-    let exec = make_registry_executor(&registry);
+    let exec = make_registry_executor(app.command_registry());
     let tools = exec.list_tools();
     let names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
     assert!(

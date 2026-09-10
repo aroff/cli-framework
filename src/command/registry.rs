@@ -30,6 +30,13 @@ pub struct CommandRegistry {
     tree_commands: HashMap<String, Command>,
     /// Group metadata by path string (non-leaf group nodes).
     groups: HashMap<String, GroupMetadata>,
+    /// Consumer-defined ordering for categorized root-help sections.
+    help_section_order: Vec<String>,
+    /// Exact registry path of the framework-provided completion command.
+    ///
+    /// Consumer commands may also use `completion` as a leaf id, so tool
+    /// surfaces must use this identity instead of filtering by name.
+    framework_completion_path: Option<String>,
 }
 
 impl CommandRegistry {
@@ -37,6 +44,8 @@ impl CommandRegistry {
         Self {
             tree_commands: HashMap::new(),
             groups: HashMap::new(),
+            help_section_order: Vec::new(),
+            framework_completion_path: None,
         }
     }
 
@@ -74,8 +83,20 @@ impl CommandRegistry {
         metadata: GroupMetadata,
     ) -> Result<(), RegistrationError> {
         let path_str = path.to_path_string();
-        if self.tree_commands.contains_key(&path_str) || self.groups.contains_key(&path_str) {
+        if self.tree_commands.contains_key(&path_str)
+            || self.groups.contains_key(&path_str)
+            || self.command_ancestor(path).is_some()
+        {
             return Err(RegistrationError::Collision { path: path_str });
+        }
+        if let Some((alias, existing_path)) = self
+            .existing_alias_for_path(&path_str)
+            .or_else(|| self.existing_alias_ancestor(path))
+        {
+            return Err(RegistrationError::AliasConflict {
+                alias,
+                existing_path,
+            });
         }
         self.groups.insert(path_str, metadata);
         Ok(())
@@ -91,6 +112,32 @@ impl CommandRegistry {
         self.groups.iter().map(|(k, v)| (k.as_str(), v))
     }
 
+    /// Set the preferred root-help section order.
+    ///
+    /// Section labels not present here continue to render alphabetically after
+    /// the explicitly ordered sections. Duplicate labels keep their first
+    /// position.
+    pub fn set_help_section_order(&mut self, sections: &[&str]) {
+        self.help_section_order.clear();
+        for section in sections {
+            if !self.help_section_order.iter().any(|known| known == section) {
+                self.help_section_order.push((*section).to_string());
+            }
+        }
+    }
+
+    /// Return the consumer-defined root-help section order.
+    pub fn help_section_order(&self) -> &[String] {
+        &self.help_section_order
+    }
+
+    /// Return the explicit rank of a root-help section, if configured.
+    pub fn help_section_rank(&self, section: &str) -> Option<usize> {
+        self.help_section_order
+            .iter()
+            .position(|known| known == section)
+    }
+
     /// Register a command at a specific `CommandPath`.
     ///
     /// Returns `Err(RegistrationError::Collision)` if the path is already occupied.
@@ -103,22 +150,75 @@ impl CommandRegistry {
     ) -> Result<(), RegistrationError> {
         let path_str = path.to_path_string();
 
-        if self.tree_commands.contains_key(&path_str) || self.groups.contains_key(&path_str) {
+        if self.tree_commands.contains_key(&path_str)
+            || self.groups.contains_key(&path_str)
+            || self.command_ancestor(path).is_some()
+            || self.path_has_descendants(&path_str)
+        {
             return Err(RegistrationError::Collision { path: path_str });
+        }
+
+        if let Some((alias, existing_path)) = self.existing_alias_for_path(&path_str) {
+            return Err(RegistrationError::AliasConflict {
+                alias,
+                existing_path,
+            });
+        }
+        if let Some((alias, existing_path)) = self.existing_alias_ancestor(path) {
+            return Err(RegistrationError::AliasConflict {
+                alias,
+                existing_path,
+            });
         }
 
         let spec = &command.spec;
         for alias in spec.aliases.iter().chain(spec.hidden_aliases.iter()) {
-            if let Some((existing_key, _)) = self.tree_commands.get_key_value(*alias) {
+            let alias_path = qualified_alias_path(path, alias);
+            if let Some((existing_key, _)) = self.tree_commands.get_key_value(&alias_path) {
                 return Err(RegistrationError::AliasConflict {
                     alias: alias.to_string(),
                     existing_path: existing_key.clone(),
+                });
+            }
+            if self.groups.contains_key(&alias_path) {
+                return Err(RegistrationError::AliasConflict {
+                    alias: alias.to_string(),
+                    existing_path: alias_path,
+                });
+            }
+            if self.path_has_descendants(&alias_path) {
+                return Err(RegistrationError::AliasConflict {
+                    alias: alias.to_string(),
+                    existing_path: alias_path,
+                });
+            }
+            if let Some((_, existing_path)) = self.existing_alias_for_path(&alias_path) {
+                return Err(RegistrationError::AliasConflict {
+                    alias: alias.to_string(),
+                    existing_path,
                 });
             }
         }
 
         self.tree_commands.insert(path_str, command);
         Ok(())
+    }
+
+    /// Register and identify the framework-provided completion command.
+    pub(crate) fn register_framework_completion_at(
+        &mut self,
+        path: &CommandPath,
+        command: Command,
+    ) -> Result<(), RegistrationError> {
+        self.register_at(path, command)?;
+        self.framework_completion_path = Some(path.to_path_string());
+        Ok(())
+    }
+
+    /// Return whether `path` identifies the framework-provided completion
+    /// command rather than a consumer command with the same leaf id.
+    pub(crate) fn is_framework_completion(&self, path: &str) -> bool {
+        self.framework_completion_path.as_deref() == Some(path)
     }
 
     /// Resolve a command by `CommandPath`.
@@ -157,6 +257,59 @@ impl CommandRegistry {
             })
             .collect()
     }
+
+    fn command_ancestor(&self, path: &CommandPath) -> Option<String> {
+        (1..path.0.len()).find_map(|len| {
+            let ancestor = path.0[..len].join("/");
+            self.tree_commands
+                .contains_key(&ancestor)
+                .then_some(ancestor)
+        })
+    }
+
+    fn path_has_descendants(&self, path: &str) -> bool {
+        let prefix = format!("{path}/");
+        self.tree_commands
+            .keys()
+            .any(|key| key.starts_with(&prefix))
+            || self.groups.keys().any(|key| key.starts_with(&prefix))
+    }
+
+    fn existing_alias_for_path(&self, candidate: &str) -> Option<(String, String)> {
+        self.tree_commands
+            .iter()
+            .find_map(|(existing_path, existing_command)| {
+                existing_command
+                    .spec
+                    .aliases
+                    .iter()
+                    .chain(existing_command.spec.hidden_aliases.iter())
+                    .find(|alias| {
+                        qualified_alias_path(
+                            &CommandPath(existing_path.split('/').map(str::to_string).collect()),
+                            alias,
+                        ) == candidate
+                    })
+                    .map(|alias| ((*alias).to_string(), existing_path.clone()))
+            })
+    }
+
+    fn existing_alias_ancestor(&self, path: &CommandPath) -> Option<(String, String)> {
+        (1..path.0.len()).find_map(|len| {
+            let ancestor = path.0[..len].join("/");
+            self.existing_alias_for_path(&ancestor)
+        })
+    }
+}
+
+fn qualified_alias_path(command_path: &CommandPath, alias: &str) -> String {
+    if alias.contains('/') {
+        return alias.to_string();
+    }
+
+    let mut segments = command_path.0[..command_path.0.len().saturating_sub(1)].to_vec();
+    segments.push(alias.to_string());
+    segments.join("/")
 }
 
 impl Default for CommandRegistry {
@@ -315,6 +468,185 @@ mod tests {
             }
             _ => panic!("expected AliasConflict"),
         }
+    }
+
+    #[test]
+    fn nested_aliases_are_qualified_relative_to_the_command_parent() {
+        let mut registry = CommandRegistry::new();
+        registry
+            .register_at(
+                &CommandPath::new(&["cli", "completions"]).unwrap(),
+                make_cmd("completions"),
+            )
+            .unwrap();
+        let command = Command {
+            id: Arc::from("completion"),
+            spec: Arc::new(CommandSpec {
+                hidden_aliases: vec!["completions"],
+                ..Default::default()
+            }),
+            ..make_cmd("completion")
+        };
+
+        let error = registry
+            .register_at(&CommandPath::new(&["cli", "completion"]).unwrap(), command)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RegistrationError::AliasConflict {
+                alias,
+                existing_path
+            } if alias == "completions" && existing_path == "cli/completions"
+        ));
+    }
+
+    #[test]
+    fn canonical_path_conflicts_with_an_existing_sibling_alias() {
+        let mut registry = CommandRegistry::new();
+        let command = Command {
+            id: Arc::from("completion"),
+            spec: Arc::new(CommandSpec {
+                hidden_aliases: vec!["completions"],
+                ..Default::default()
+            }),
+            ..make_cmd("completion")
+        };
+        registry
+            .register_at(&CommandPath::new(&["cli", "completion"]).unwrap(), command)
+            .unwrap();
+
+        let error = registry
+            .register_at(
+                &CommandPath::new(&["cli", "completions"]).unwrap(),
+                make_cmd("completions"),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RegistrationError::AliasConflict {
+                alias,
+                existing_path
+            } if alias == "completions" && existing_path == "cli/completion"
+        ));
+    }
+
+    #[test]
+    fn command_paths_cannot_be_ancestors_or_descendants_of_other_commands() {
+        let mut descendant_first = CommandRegistry::new();
+        descendant_first
+            .register_at(
+                &CommandPath::new(&["cli", "spec"]).unwrap(),
+                make_cmd("spec"),
+            )
+            .unwrap();
+        assert!(matches!(
+            descendant_first.register_at(&CommandPath::root_for("cli"), make_cmd("cli")),
+            Err(RegistrationError::Collision { path }) if path == "cli"
+        ));
+
+        let mut ancestor_first = CommandRegistry::new();
+        ancestor_first.register(make_cmd("cli"));
+        assert!(matches!(
+            ancestor_first.register_at(
+                &CommandPath::new(&["cli", "spec"]).unwrap(),
+                make_cmd("spec")
+            ),
+            Err(RegistrationError::Collision { path }) if path == "cli/spec"
+        ));
+    }
+
+    #[test]
+    fn groups_and_command_aliases_cannot_occupy_the_same_path() {
+        let mut alias_first = CommandRegistry::new();
+        let owner = Command {
+            id: Arc::from("owner"),
+            spec: Arc::new(CommandSpec {
+                aliases: vec!["cli"],
+                ..Default::default()
+            }),
+            ..make_cmd("owner")
+        };
+        alias_first.register(owner);
+        assert!(matches!(
+            alias_first.register_group(&CommandPath::root_for("cli"), GroupMetadata::default()),
+            Err(RegistrationError::AliasConflict { .. })
+        ));
+
+        let mut group_first = CommandRegistry::new();
+        group_first
+            .register_group(
+                &CommandPath::new(&["cli", "completions"]).unwrap(),
+                GroupMetadata::default(),
+            )
+            .unwrap();
+        let completion = Command {
+            id: Arc::from("completion"),
+            spec: Arc::new(CommandSpec {
+                hidden_aliases: vec!["completions"],
+                ..Default::default()
+            }),
+            ..make_cmd("completion")
+        };
+        assert!(matches!(
+            group_first.register_at(
+                &CommandPath::new(&["cli", "completion"]).unwrap(),
+                completion
+            ),
+            Err(RegistrationError::AliasConflict { .. })
+        ));
+    }
+
+    #[test]
+    fn aliases_cannot_shadow_implicit_groups_or_other_aliases() {
+        let mut implicit_group = CommandRegistry::new();
+        implicit_group
+            .register_at(
+                &CommandPath::new(&["cli", "completions", "show"]).unwrap(),
+                make_cmd("show"),
+            )
+            .unwrap();
+        let completion = Command {
+            id: Arc::from("completion"),
+            spec: Arc::new(CommandSpec {
+                hidden_aliases: vec!["completions"],
+                ..Default::default()
+            }),
+            ..make_cmd("completion")
+        };
+        assert!(matches!(
+            implicit_group.register_at(
+                &CommandPath::new(&["cli", "completion"]).unwrap(),
+                completion
+            ),
+            Err(RegistrationError::AliasConflict { .. })
+        ));
+
+        let mut alias_collision = CommandRegistry::new();
+        let first = Command {
+            id: Arc::from("first"),
+            spec: Arc::new(CommandSpec {
+                aliases: vec!["shared"],
+                ..Default::default()
+            }),
+            ..make_cmd("first")
+        };
+        alias_collision
+            .register_at(&CommandPath::new(&["cli", "first"]).unwrap(), first)
+            .unwrap();
+        let second = Command {
+            id: Arc::from("second"),
+            spec: Arc::new(CommandSpec {
+                aliases: vec!["shared"],
+                ..Default::default()
+            }),
+            ..make_cmd("second")
+        };
+        assert!(matches!(
+            alias_collision.register_at(&CommandPath::new(&["cli", "second"]).unwrap(), second),
+            Err(RegistrationError::AliasConflict { .. })
+        ));
     }
 
     #[test]

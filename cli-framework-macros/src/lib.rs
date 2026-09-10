@@ -7,7 +7,7 @@
 //!
 //! #[derive(CommandSpec)]
 //! #[command(about = "Run optimization")]
-//! #[cfw(category = "quality")]
+//! #[cfw(category = "quality", help_order = 10)]
 //! struct RunArgs {
 //!     #[arg(long, required)]
 //!     config: std::path::PathBuf,
@@ -36,6 +36,7 @@ use syn::{
 /// - `#[command(about = "...")]` — command summary
 /// - `#[command(long_about = "...")]` — extended description
 /// - `#[cfw(category = "...")]` — help group category
+/// - `#[cfw(help_order = 10)]` — position within categorized root help
 /// - `#[cfw(syntax = "...")]` — usage hint line
 /// - `#[cfw(deprecated = "...")]` — deprecation message
 /// - `#[cfw(note = "...")]` — notes section
@@ -78,6 +79,7 @@ fn derive_impl(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let mut summary = String::new();
     let mut long_about: Option<String> = None;
     let mut category: Option<String> = None;
+    let mut help_order: Option<u32> = None;
     let mut syntax: Option<String> = None;
     let mut deprecated: Option<String> = None;
     let mut notes: Option<String> = None;
@@ -100,11 +102,18 @@ fn derive_impl(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 Ok(())
             });
         } else if attr.path().is_ident("cfw") {
-            let _ = attr.parse_nested_meta(|meta| {
+            attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("category") {
                     let value: Lit = meta.value()?.parse()?;
                     if let Lit::Str(s) = value {
                         category = Some(s.value());
+                    }
+                } else if meta.path.is_ident("help_order") {
+                    let value: Lit = meta.value()?.parse()?;
+                    if let Lit::Int(value) = value {
+                        help_order = Some(value.base10_parse()?);
+                    } else {
+                        return Err(meta.error("help_order must be an unsigned integer"));
                     }
                 } else if meta.path.is_ident("syntax") {
                     let value: Lit = meta.value()?.parse()?;
@@ -128,7 +137,7 @@ fn derive_impl(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                     }
                 }
                 Ok(())
-            });
+            })?;
         }
     }
 
@@ -279,6 +288,10 @@ fn derive_impl(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         Some(ref s) => quote! { Some(#s) },
         None => quote! { None },
     };
+    let help_order_ts = match help_order {
+        Some(value) => quote! { Some(#value) },
+        None => quote! { None },
+    };
     let syntax_ts = match syntax {
         Some(ref s) => quote! { Some(#s) },
         None => quote! { None },
@@ -304,6 +317,7 @@ fn derive_impl(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                     summary: #summary_ts,
                     long_about: #long_about_ts,
                     category: #category_ts,
+                    help_order: #help_order_ts,
                     syntax: #syntax_ts,
                     deprecated: #deprecated_ts,
                     notes: #notes_ts,
@@ -439,6 +453,44 @@ fn extract_required_value(ty: &Type, key: &str, field_name: &str) -> proc_macro2
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod command_spec_tests {
+    use super::*;
+
+    fn expand(src: &str) -> syn::Result<String> {
+        let input: DeriveInput = syn::parse_str(src).expect("valid struct source");
+        derive_impl(input).map(|tokens| tokens.to_string())
+    }
+
+    #[test]
+    fn help_order_is_parsed_into_the_generated_command_spec() {
+        let output = expand(
+            r#"
+            #[command(about = "Run checks")]
+            #[cfw(category = "Quality", help_order = 17)]
+            struct CheckArgs { verbose: bool }
+            "#,
+        )
+        .unwrap();
+
+        assert!(output.contains("category : Some (\"Quality\")"));
+        assert!(output.contains("help_order : Some (17u32)"));
+    }
+
+    #[test]
+    fn help_order_rejects_non_integer_values() {
+        let error = expand(
+            r#"
+            #[cfw(help_order = "first")]
+            struct CheckArgs { verbose: bool }
+            "#,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("unsigned integer"));
     }
 }
 

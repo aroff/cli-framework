@@ -32,10 +32,7 @@ fn with_token_provider_registers_exactly_four_auth_commands() {
     let app = app_with_provider();
     let registry = app.command_registry();
 
-    let auth_paths: Vec<&str> = ["auth/login", "auth/logout", "auth/status", "auth/token"]
-        .iter()
-        .copied()
-        .collect();
+    let auth_paths = ["auth/login", "auth/logout", "auth/status", "auth/token"];
 
     for path in &auth_paths {
         let resolved = registry.resolve(
@@ -88,6 +85,7 @@ fn pre_registered_auth_group_causes_build_error() {
             GroupMetadata {
                 summary: "pre-existing auth",
                 hidden: false,
+                ..Default::default()
             },
         )
         .unwrap()

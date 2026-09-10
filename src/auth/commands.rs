@@ -24,6 +24,7 @@ pub(crate) fn register_auth_commands(
             GroupMetadata {
                 summary: "Authentication commands",
                 hidden: false,
+                ..Default::default()
             },
         )
         .map_err(|e| anyhow::anyhow!("{}", e))?;

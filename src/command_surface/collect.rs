@@ -79,6 +79,7 @@ pub fn collect(
                 summary: cmd.summary().to_string(),
                 syntax: cmd.syntax().map(|s: &str| s.to_string()),
                 category: cmd.category().map(|c: &str| c.to_string()),
+                help_order: cmd.help_order(),
                 hidden: spec.hidden,
                 deprecated: spec.deprecated.map(|d: &str| d.to_string()),
                 aliases: spec.aliases.iter().map(|a: &&str| a.to_string()).collect(),

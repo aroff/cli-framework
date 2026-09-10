@@ -19,9 +19,9 @@ fn mcp_install_registered_after_build() {
     assert!(found, "mcp/install not registered after build()");
 }
 
-/// `register` is a hidden alias on `mcp install`, not a peer command of its own.
+/// `register` is neither an alias nor a peer command.
 #[test]
-fn mcp_register_is_a_hidden_alias_not_a_peer_command() {
+fn mcp_register_is_not_registered() {
     let app = AppBuilder::new()
         .with_version("testapp", "0.1.0")
         .build(DummyCtx)
@@ -32,8 +32,8 @@ fn mcp_register_is_a_hidden_alias_not_a_peer_command() {
         .resolve(&CommandPath::new(&["mcp", "install"]).unwrap())
         .expect("mcp/install not registered after build()");
     assert!(
-        install.spec.hidden_aliases.contains(&"register"),
-        "`register` is not declared as a hidden alias of `mcp install`: {:?}",
+        !install.spec.hidden_aliases.contains(&"register"),
+        "`register` remains an alias of `mcp install`: {:?}",
         install.spec.hidden_aliases
     );
 
@@ -200,8 +200,6 @@ async fn mcp_install_stdio_defaults_argv() {
     );
 }
 
-// ── `register` is an alias, not a second primary verb ─────────────────────────
-
 const INSTALL_SUMMARY: &str = "Install this app as an MCP server in an agent configuration";
 
 fn build_test_app() -> cli_framework::app::App<DummyCtx> {
@@ -222,9 +220,7 @@ async fn run_capture(app: &mut cli_framework::app::App<DummyCtx>, args: &[&str])
     String::from_utf8(bytes).unwrap()
 }
 
-/// The install verb is registered once. `install` and `register` used to be the
-/// same command registered twice, so two `mcp` children carried byte-identical
-/// summaries and `mcp --help` offered two equal-looking primary verbs.
+/// The install verb is registered once.
 #[test]
 fn mcp_install_verb_is_registered_exactly_once() {
     let app = build_test_app();
@@ -268,15 +264,21 @@ async fn mcp_help_lists_install_list_serve_but_not_register() {
     );
 }
 
-/// The alias keeps working: `mcp register --help` still resolves.
+/// The removed alias no longer resolves, including for help.
 #[tokio::test]
-async fn mcp_register_alias_still_shows_install_help() {
+async fn mcp_register_help_is_rejected() {
     let mut app = build_test_app();
-    let help = run_capture(&mut app, &["testapp", "mcp", "register", "--help"]).await;
+    let result = app
+        .run_with_args(
+            ["testapp", "mcp", "register", "--help"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        )
+        .await;
 
     assert!(
-        help.contains(INSTALL_SUMMARY),
-        "`mcp register --help` did not render the install help:\n{}",
-        help
+        result.is_err(),
+        "removed `mcp register --help` unexpectedly succeeded"
     );
 }

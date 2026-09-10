@@ -908,6 +908,7 @@ async fn completion_includes_root_segment_from_visible_leaf_even_when_group_hidd
             GroupMetadata {
                 summary: "grp",
                 hidden: true,
+                ..Default::default()
             },
         )
         .unwrap();

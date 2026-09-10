@@ -16,6 +16,7 @@ expression: "&doc"
       "summary": "Say hello",
       "syntax": null,
       "category": null,
+      "helpOrder": null,
       "hidden": false,
       "deprecated": null,
       "aliases": [],

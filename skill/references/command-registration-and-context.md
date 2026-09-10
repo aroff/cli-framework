@@ -65,3 +65,31 @@ builder.register_command_at(
 ```
 
 `CommandPath::new` validates that segments are non-empty and contain no `/`. Use `register_command_at` for all hierarchical paths; `register_command` registers at the root.
+
+## Categorized root help
+
+Root groups can declare a help section and an explicit position. Section order
+is stored in the same command registry as the groups and commands:
+
+```rust
+let cli = CommandPath::root_for("cli");
+let builder = AppBuilder::new()
+    .with_help_section_order(&["Skills and projects", "Operations"])
+    .register_group(
+        &cli,
+        GroupMetadata {
+            summary: "CLI setup and diagnostics",
+            category: Some("Operations"),
+            help_order: Some(30),
+            ..Default::default()
+        },
+    )?
+    .with_builtin_command_namespace(&cli);
+```
+
+This places the built-in commands at `cli/spec` and `cli/completion`; the
+default remains root-level `spec` and `completion`. Completion generation,
+command-spec export, parser dispatch, chat, and MCP all consume the resulting
+registry paths. `CommandSpec::help_order` provides the same entry-order control
+for commands at every namespace depth; unordered siblings follow
+alphabetically. Derived typed commands set it with `#[cfw(help_order = 10)]`.

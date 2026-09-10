@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Added categorized group metadata and explicit help ordering for root sections
+  and nested sibling commands. Framework-owned `spec` and `completion` commands
+  can move under a configured namespace while remaining registry-backed. This is
+  a source-breaking addition for `CommandSpec` and `GroupMetadata` struct
+  literals: consumers must set the new fields or use `..Default::default()` when
+  upgrading. Existing runtime placement and alphabetical ordering remain the
+  defaults.
+- Removed the duplicate `mcp register` command. Use `mcp install`. The former
+  hidden `register` alias is also removed, so `mcp register` now returns an
+  unknown-command error. `mcp --help`, the command registry, and exported command
+  specifications expose only the canonical `install` command.
+
 ### Added
 
 - **OS-native keychain `SecretStore` backend**: a new `secrets-keychain` feature (implies
@@ -282,21 +296,6 @@
   output is unchanged. Internal-only signature change: the `pub(crate)` helpers
   `emit_completion_script`/`visible_top_level_commands` now take a `CompletionModel`; the public
   `App::emit_completion` is untouched.
-
-- **`mcp install` and `mcp register` were one command registered twice.** `build()` cloned the
-  install command, rewrote its id to `register`, and registered it a second time at
-  `mcp/register`, so `mcp --help` offered two primary verbs with byte-identical descriptions
-  ("Install this app as an MCP server in an agent configuration") and nothing to choose
-  between them. `register` is now a **hidden alias** declared on the install command's spec
-  (`CommandSpec.hidden_aliases`) rather than a second registration: `mcp register …` keeps
-  working unchanged — clap resolves the alias to `install` — but it is no longer listed in
-  `mcp --help` beside `install`, and the command tree holds one install command instead of
-  two. The alias is **deprecated**; prefer `mcp install`. It is kept for one release so
-  downstream binaries and scripts that already call `mcp register` do not break, and may be
-  removed after that.
-  - Registry-visible consequence: `command_registry().resolve(["mcp", "register"])` now
-    returns `None` (the alias is carried on `mcp/install`'s spec), and the `spec` command's
-    document lists a single install entry instead of two identical ones.
 
 ## [0.5.4] — 2026-06-13
 
