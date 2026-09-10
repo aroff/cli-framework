@@ -69,14 +69,50 @@ pub struct AppBuilder {
     telemetry_config: Option<crate::telemetry::TelemetryConfig>,
     /// The application's deployment shape (spec 025). Ungated: `Deployment`
     /// lives in `telemetry::axes`, which compiles unconditionally, and this
-    /// field is read outside the `telemetry` feature too (it will gate
-    /// startup behaviour PR7 adds). Defaults to `EndUser { privacy_url: None
-    /// }`, the PRD's default for an app that never calls `with_deployment`.
+    /// field is read outside the `telemetry` feature too. It gates real
+    /// startup behaviour -- the end-user clamp, the sampler, the flush
+    /// budget and whether the first-run notice may print at all. Defaults to
+    /// `EndUser { privacy_url: None }`, the PRD's default for an app that
+    /// never calls `with_deployment`.
     deployment: crate::telemetry::Deployment,
+    /// Whether [`Self::with_deployment`] was called at all.
+    ///
+    /// The default deployment and a deliberately-chosen `EndUser` are the
+    /// same value, and the deprecated `with_telemetry` shim has to tell them
+    /// apart: it infers `Service` for an app that never declared a shape, and
+    /// must not overrule one that did.
+    deployment_explicit: bool,
     /// Test-only override for where the `telemetry` settings file lives; see
     /// [`Self::with_telemetry_config_dir`].
     #[cfg(feature = "telemetry")]
     telemetry_store_dir: Option<PathBuf>,
+    /// Transport defaults the author picked; the operator's
+    /// `OTEL_EXPORTER_OTLP_*` variables win over both fields (spec 025).
+    #[cfg(feature = "telemetry")]
+    telemetry_defaults: crate::telemetry::TelemetryDefaults,
+    /// Operational probes the author registered, in call order. Kept as the
+    /// `'static` slices they arrived as: they are folded into one
+    /// `ProbeRegistry` at build, which is where a malformed or colliding id
+    /// becomes a build error.
+    #[cfg(feature = "telemetry")]
+    telemetry_ops: Vec<&'static [crate::telemetry::ProbeSpec]>,
+    /// How the app answers "who is calling?"; see
+    /// [`crate::telemetry::IdentityResolver`].
+    #[cfg(feature = "telemetry")]
+    telemetry_identity: Option<crate::telemetry::IdentityResolver>,
+    /// Application attribute keys the author allowlisted.
+    #[cfg(feature = "telemetry")]
+    telemetry_attrs: Vec<String>,
+    /// Extra never-list fragments the author added.
+    #[cfg(feature = "telemetry")]
+    telemetry_never: Vec<String>,
+    /// The format the app's own configuration is stored in, captured from
+    /// [`Self::with_config`] before its `ConfigOptions` moves into the
+    /// registration closure. The framework-owned telemetry file follows it
+    /// (spec 025: "the extension follows the app's configuration format"),
+    /// so an app storing TOML gets `telemetry.toml`, not a lone JSON file.
+    #[cfg(feature = "config")]
+    config_format: crate::config::ConfigFormat,
     #[cfg(feature = "config")]
     config_backend: Option<Arc<dyn crate::config::ConfigBackend>>,
     #[cfg(feature = "config")]
@@ -144,8 +180,21 @@ impl AppBuilder {
             token_provider: None,
             telemetry_config: None,
             deployment: crate::telemetry::Deployment::EndUser { privacy_url: None },
+            deployment_explicit: false,
             #[cfg(feature = "telemetry")]
             telemetry_store_dir: None,
+            #[cfg(feature = "telemetry")]
+            telemetry_defaults: crate::telemetry::TelemetryDefaults::default(),
+            #[cfg(feature = "telemetry")]
+            telemetry_ops: Vec::new(),
+            #[cfg(feature = "telemetry")]
+            telemetry_identity: None,
+            #[cfg(feature = "telemetry")]
+            telemetry_attrs: Vec::new(),
+            #[cfg(feature = "telemetry")]
+            telemetry_never: Vec::new(),
+            #[cfg(feature = "config")]
+            config_format: crate::config::ConfigFormat::default(),
             #[cfg(feature = "config")]
             config_backend: None,
             #[cfg(feature = "config")]
@@ -183,6 +232,55 @@ impl AppBuilder {
     /// When set and `TelemetryConfig::is_active()` returns `true`, the framework will
     /// initialise an OTLP exporter on every `run()` call and attach a telemetry handle
     /// to the command dispatch context.
+    ///
+    /// # Migrating
+    ///
+    /// The replacement is two calls that separate the two decisions this one
+    /// conflated -- *what shape of program is this* and *where does it send*:
+    ///
+    // The example names `TelemetryDefaults`, which only exists behind the
+    // `telemetry` feature, but the item it documents is ungated -- so rustdoc
+    // extracts this doctest under every feature set. Compile it where the
+    // types exist; render it, unchecked, everywhere else.
+    #[cfg_attr(feature = "telemetry", doc = "```rust,no_run")]
+    #[cfg_attr(not(feature = "telemetry"), doc = "```rust,ignore")]
+    /// # use cli_framework::app::AppBuilder;
+    /// # use cli_framework::{Deployment, TelemetryDefaults};
+    /// AppBuilder::new()
+    ///     .with_version("myapp", "0.1.0")
+    ///     .with_deployment(Deployment::Service)
+    ///     .with_telemetry_defaults(TelemetryDefaults {
+    ///         endpoint: Some("http://collector:4318".into()),
+    ///         ..Default::default()
+    ///     });
+    /// ```
+    ///
+    /// Until it is removed, an app that calls this and never calls
+    /// [`with_deployment`](Self::with_deployment) is read as
+    /// [`Deployment::Service`][crate::telemetry::Deployment::Service].
+    /// Configuring an endpoint by hand is what a server does, and it is what
+    /// every caller of this method did; reading such an app as an end-user
+    /// install would apply the end-user clamp, pin its telemetry level to
+    /// `off`, and stop a working collector feed with no error anywhere.
+    ///
+    /// # Export path
+    ///
+    /// An app configured this way exports through the pre-spec-025 pipeline:
+    /// a bare OTLP span exporter and a meter provider with no Views. It does
+    /// *not* pass through the spec 025 export boundary, so neither the
+    /// redacting span exporter nor the metric-label allowlist applies to it,
+    /// and probe attributes such as `cli.probe` reach the collector. That is
+    /// a deliberate compatibility choice rather than an oversight: this
+    /// method has always exported unconditionally to its configured
+    /// endpoint, and rerouting it would change what a working collector
+    /// receives, under a deprecated shim, in a patch release. Every app that
+    /// has migrated to [`with_deployment`](Self::with_deployment) and
+    /// [`with_telemetry_defaults`](Self::with_telemetry_defaults) gets the
+    /// boundary. This exception is removed with the shim in v0.8.0.
+    #[deprecated(
+        since = "0.6.0",
+        note = "use with_deployment and with_telemetry_defaults; removed in 0.8.0"
+    )]
     pub fn with_telemetry(mut self, config: crate::telemetry::TelemetryConfig) -> Self {
         self.telemetry_config = Some(config);
         self
@@ -222,6 +320,10 @@ impl AppBuilder {
     where
         T: crate::config::VersionedConfig,
     {
+        // Read the format out *before* the closure below moves `options`.
+        // Nothing else can recover it afterwards, and the framework-owned
+        // telemetry file needs it (spec 025).
+        self.config_format = options.format;
         self.config_registration = Some(Box::new(move |backend| {
             let mut store = crate::config::ConfigStore::<T>::new(
                 backend,
@@ -624,12 +726,126 @@ impl AppBuilder {
     /// for the fleet — so no command group is registered there at all.
     pub fn with_deployment(mut self, deployment: crate::telemetry::Deployment) -> Self {
         self.deployment = deployment;
+        self.deployment_explicit = true;
         self
     }
 
     /// The deployment shape configured via [`Self::with_deployment`].
     pub fn deployment(&self) -> &crate::telemetry::Deployment {
         &self.deployment
+    }
+
+    /// Build this app against a bare [`TestContext`], returning the build
+    /// error rather than panicking.
+    ///
+    /// The fallible form exists because several build-time decisions are
+    /// *supposed* to fail — a malformed operational probe id, an app that
+    /// owns a top-level `telemetry` key — and a test that asserts on those
+    /// needs the error, not a panic.
+    #[doc(hidden)]
+    pub fn try_build_for_test(self) -> Result<App<TestContext>> {
+        self.build(TestContext)
+    }
+
+    /// Build this app against a bare [`TestContext`], panicking on failure.
+    #[doc(hidden)]
+    pub fn build_for_test(self) -> App<TestContext> {
+        self.try_build_for_test().expect("the test app builds")
+    }
+
+    /// The transport defaults this app ships with (spec 025).
+    ///
+    /// Both `endpoint` and `headers` are *defaults*: whoever runs the process
+    /// overrides either with `OTEL_EXPORTER_OTLP_ENDPOINT` /
+    /// `OTEL_EXPORTER_OTLP_HEADERS`. Headers are a
+    /// [`SecretString`][crate::SecretString] and never reach the config tree,
+    /// so a bearer token cannot be read back out of `telemetry status`,
+    /// roamed to another machine, or printed by a `Debug` line.
+    ///
+    /// ```rust,no_run
+    /// use cli_framework::app::AppBuilder;
+    /// use cli_framework::{Deployment, TelemetryDefaults};
+    ///
+    /// let builder = AppBuilder::new()
+    ///     .with_version("demo", "0.1.0")
+    ///     .with_deployment(Deployment::Service)
+    ///     .with_telemetry_defaults(TelemetryDefaults {
+    ///         endpoint: Some("http://collector:4318".into()),
+    ///         ..Default::default()
+    ///     });
+    /// ```
+    #[cfg(feature = "telemetry")]
+    pub fn with_telemetry_defaults(
+        mut self,
+        defaults: crate::telemetry::TelemetryDefaults,
+    ) -> Self {
+        self.telemetry_defaults = defaults;
+        self
+    }
+
+    /// Register operational probes of the application's own.
+    ///
+    /// The slice is `'static` because a probe is a *declaration*, like a
+    /// command: `telemetry info` lists it, the config manifest grows a
+    /// `telemetry.<id>.enabled` switch for it, and both need the summary
+    /// text to outlive any one invocation. Ids are validated at build —
+    /// a malformed id, one that collides with a reserved first segment, or a
+    /// duplicate fails [`Self::build`] rather than being silently dropped,
+    /// because a probe that vanished quietly is a probe whose data never
+    /// arrives and nobody notices.
+    ///
+    /// Call it more than once to register several groups; they are folded
+    /// into one registry alongside the framework's built-in probes.
+    #[cfg(feature = "telemetry")]
+    pub fn with_telemetry_ops(mut self, probes: &'static [crate::telemetry::ProbeSpec]) -> Self {
+        self.telemetry_ops.push(probes);
+        self
+    }
+
+    /// Teach the app how to answer "who is calling?".
+    ///
+    /// A closure, not a value: identity is not known at build time — a CLI
+    /// resolves it after authentication and a service resolves it per
+    /// request. The framework calls it only when the resolved
+    /// [`Attribution`][crate::telemetry::Attribution] permits attaching an
+    /// identity at all.
+    #[cfg(feature = "telemetry")]
+    pub fn with_telemetry_identity(mut self, resolver: crate::telemetry::IdentityResolver) -> Self {
+        self.telemetry_identity = Some(resolver);
+        self
+    }
+
+    /// Allowlist application attribute keys.
+    ///
+    /// Framework attributes carry their own minimum telemetry level; an
+    /// application attribute has none, so it is dropped at the export
+    /// boundary unless its exact key appears here. The never-list still wins:
+    /// allowlisting `app.api_key` does not bring it back.
+    #[cfg(feature = "telemetry")]
+    pub fn with_telemetry_attrs(mut self, keys: Vec<String>) -> Self {
+        self.telemetry_attrs = keys;
+        self
+    }
+
+    /// Add fragments to the never-list, which no telemetry level and no
+    /// allowlist can override.
+    ///
+    /// The framework's own fragments (`password`, `secret`, `token`,
+    /// `authorization`, `cookie`, `api_key`) always apply; these are extra
+    /// ones an app knows about its own domain, such as `employee_id`.
+    #[cfg(feature = "telemetry")]
+    pub fn with_telemetry_never(mut self, fragments: Vec<String>) -> Self {
+        self.telemetry_never = fragments;
+        self
+    }
+
+    /// The format the app's own configuration is stored in, captured from
+    /// [`Self::with_config`]. Defaults to
+    /// [`ConfigFormat::default`][crate::config::ConfigFormat] for an app that
+    /// declares no configuration.
+    #[cfg(feature = "config")]
+    pub fn config_format(&self) -> crate::config::ConfigFormat {
+        self.config_format
     }
 
     /// Point telemetry's settings file at `dir` instead of the platform
@@ -669,11 +885,218 @@ impl AppBuilder {
         self.doctor_checks.extend(checks);
     }
 
+    /// Fold the framework's built-in probes together with every slice the
+    /// author registered through [`Self::with_telemetry_ops`].
+    ///
+    /// A malformed id, a reserved first segment or a duplicate is returned as
+    /// an error rather than skipped: a probe that disappeared quietly is a
+    /// probe whose data never arrives and nobody finds out until they go
+    /// looking for it.
+    #[cfg(feature = "telemetry")]
+    fn telemetry_registry(&self) -> Result<crate::telemetry::ProbeRegistry> {
+        let mut registry = crate::telemetry::ProbeRegistry::with_builtins();
+        for slice in &self.telemetry_ops {
+            for spec in slice.iter() {
+                registry.register(*spec)?;
+            }
+        }
+        Ok(registry)
+    }
+
+    /// The one telemetry resolution this process makes (spec 025).
+    ///
+    /// Pure apart from reading the environment, which is exactly the layer
+    /// this step is responsible for: the author's `TelemetryDefaults` supply
+    /// the transport defaults, and whoever runs the process overrides either
+    /// with `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_HEADERS`.
+    /// Every *decision* — the deployment default, the end-user clamp, the
+    /// kill switches — belongs to
+    /// [`resolve_policy`][crate::telemetry::resolve_policy] and is made
+    /// there.
+    ///
+    /// The stored settings file is deliberately not read here, and neither
+    /// is the environment layer. Both belong to
+    /// [`run_startup`](crate::telemetry::run_startup), which opens the
+    /// framework-owned store on the first command and folds it, the
+    /// `<APP>_TELEMETRY_*` variables and the published manifest into exactly
+    /// these inputs before resolving once. Returning the *inputs* rather
+    /// than a resolved policy is what makes that possible: a policy cannot
+    /// be re-layered, only replaced.
+    #[cfg(feature = "telemetry")]
+    fn telemetry_inputs(
+        &self,
+        registry: crate::telemetry::ProbeRegistry,
+    ) -> crate::telemetry::TelemetryInputs {
+        use crate::config::resolution::Layer;
+
+        let app = self.meta.as_ref().map(|m| m.name).unwrap_or(self.app_name);
+        let read_env = |key: &str| std::env::var(key).ok().filter(|v| !v.is_empty());
+
+        let (endpoint, endpoint_source) = match read_env("OTEL_EXPORTER_OTLP_ENDPOINT") {
+            Some(from_env) => (Some(from_env), Some(Layer::Environment)),
+            None => {
+                // The deprecated `with_telemetry` shim is the last fallback.
+                // The endpoint it carries is an author default like any
+                // other, and folding it in here is what lets an app still on
+                // the shim be described by the same policy as one that has
+                // migrated: `telemetry status`, the doctor checks and the
+                // export boundary all read the policy, and a policy that
+                // said "no endpoint" about a process exporting to a
+                // collector would be worse than no answer at all.
+                let author = self.telemetry_defaults.endpoint.clone().or_else(|| {
+                    self.telemetry_config
+                        .as_ref()
+                        .and_then(|shim| shim.endpoint.clone())
+                });
+                let source = author.as_ref().map(|_| Layer::Default);
+                (author, source)
+            }
+        };
+        let headers = match read_env("OTEL_EXPORTER_OTLP_HEADERS") {
+            Some(from_env) => Some(crate::SecretString::new(from_env)),
+            None => self.telemetry_defaults.headers.clone(),
+        };
+        // Same three layers as the endpoint, and for the same reason: the
+        // shim is the only place a sample ratio could be declared before
+        // this PR, and deprecating it without a replacement would leave a
+        // `Service` on the new API unable to sample anything but everything.
+        // `resolve_policy` normalizes whatever falls out here -- an absent
+        // ratio arrives as `0.0` and becomes full sampling.
+        let sample_ratio = read_env("OTEL_TRACES_SAMPLER_ARG")
+            .and_then(|raw| raw.parse::<f64>().ok())
+            .or(self.telemetry_defaults.sample_ratio)
+            .or_else(|| {
+                #[allow(deprecated)]
+                self.telemetry_config.as_ref().map(|shim| shim.sample_ratio)
+            })
+            .unwrap_or_default();
+
+        crate::telemetry::TelemetryInputs {
+            app: app.to_string(),
+            deployment: self.deployment.clone(),
+            endpoint,
+            endpoint_source,
+            headers,
+            session_id: uuid::Uuid::new_v4().to_string(),
+            kill_switch: crate::telemetry::detect_kill_switch(app, &|k| std::env::var(k).ok()),
+            registry,
+            app_attr_allowlist: self.telemetry_attrs.clone(),
+            extra_never: self.telemetry_never.clone(),
+            sample_ratio,
+            ..Default::default()
+        }
+    }
+
+    /// The one published manifest (spec 025).
+    ///
+    /// The framework generates the `telemetry` section from the resolved
+    /// probe registry and inserts it into the application's own manifest. An
+    /// application that publishes no manifest of its own still gets one, so
+    /// the telemetry tree is administrable everywhere; its own `config`
+    /// command group is still not auto-registered, because that decision is
+    /// made from the *app-declared* manifest above.
+    ///
+    /// An app that owns a top-level `telemetry` key fails the build here,
+    /// rather than having its section silently shadowed.
+    #[cfg(feature = "telemetry")]
+    fn published_telemetry_manifest(
+        &self,
+        registry: &crate::telemetry::ProbeRegistry,
+    ) -> Result<crate::config::manifest::ConfigManifest> {
+        let default_endpoint = self.telemetry_defaults.endpoint.as_deref();
+        match self.config_manifest.as_deref() {
+            Some(app_manifest) => Ok(crate::telemetry::merge_telemetry_section(
+                app_manifest.clone(),
+                registry,
+                default_endpoint,
+            )?),
+            None => Ok(crate::telemetry::telemetry_only_manifest(
+                self.app_name,
+                registry,
+                default_endpoint,
+            )),
+        }
+    }
+
     pub fn build<C: AppContext + 'static>(mut self, ctx: C) -> Result<App<C>> {
+        // The deprecated `with_telemetry` shim's deployment inference, made
+        // here rather than inside `with_telemetry` so it does not depend on
+        // the order the two setters are written in. Everything downstream --
+        // the one telemetry resolution, the `telemetry` command group, the
+        // built `App` -- reads `self.deployment` after this point.
+        if self.telemetry_config.is_some() && !self.deployment_explicit {
+            self.deployment = crate::telemetry::Deployment::Service;
+        }
+
         // Resolve config first (mirrors registry freezing / telemetry config capture
         // below in spirit: a framework-owned service is finalized exactly once here).
         #[cfg(feature = "config")]
         let config_resolved = self.resolve_config()?;
+
+        // Spec 025: one telemetry resolution and one published manifest per
+        // process, both settled before a single command group is registered
+        // so that a malformed operational probe id fails the build outright
+        // instead of after half a command tree has been assembled.
+        #[cfg(feature = "telemetry")]
+        let telemetry_inputs = {
+            let registry = self.telemetry_registry()?;
+            self.telemetry_inputs(registry)
+        };
+        // Resolved here as well as in `run_startup`, and deliberately: the
+        // `telemetry` command group, the doctor and every span attribute
+        // read `App::telemetry_policy`, and an app that is built but never
+        // run -- which is most of this crate's own test suite -- still has
+        // to be able to answer what it would send. Startup replaces it with
+        // the resolution that folded in the stored consent.
+        #[cfg(feature = "telemetry")]
+        let telemetry_policy = Arc::new(crate::telemetry::resolve_policy(telemetry_inputs.clone()));
+        #[cfg(feature = "telemetry")]
+        let published_manifest =
+            Arc::new(self.published_telemetry_manifest(&telemetry_inputs.registry)?);
+        // The one place the settings file's location is decided. The
+        // `telemetry` command group and the startup sequence must open the
+        // same file: `telemetry set usage` writing one file while startup
+        // reads another is a consent bug, not a path bug.
+        #[cfg(feature = "telemetry")]
+        let telemetry_store = crate::telemetry::TelemetryStoreLocation {
+            dir: self.telemetry_store_dir.clone(),
+            // Spec 025: the extension follows the app's own configuration
+            // format, so a TOML app gets `telemetry.toml` rather than one
+            // lone JSON file in an otherwise-TOML directory.
+            format: self.config_format,
+        };
+
+        // Spec 025: the framework's own six telemetry doctor checks,
+        // registered for every application rather than left to its author to
+        // discover and wire. This is the only place they are registered, and
+        // it has to be *here* specifically, wedged between two constraints:
+        // `push_doctor_checks` borrows all of `self`, so it must precede the
+        // first partial move out of `self` (`self.ailoop_config`, immediately
+        // below); and `build` later moves `doctor_checks` wholesale into the
+        // `doctor` command, so it must precede that too.
+        //
+        // They are handed *cells*, not values: both things they read, the
+        // policy and the startup report, are produced at run time by
+        // `run_startup`, and `App::init_telemetry` fills these same cells
+        // there. The policy cell is seeded with the build-time resolution so
+        // that an app which is built and never run -- most of this crate's
+        // own suite -- still answers `telemetry.endpoint` and
+        // `telemetry.identity` rather than skipping them. See
+        // `crate::telemetry::StartupCell`.
+        //
+        // `feature = "telemetry"` alone, not `all(telemetry, doctor)`:
+        // `telemetry` lists `doctor` among its own features (Cargo.toml), so
+        // the two cannot come apart.
+        #[cfg(feature = "telemetry")]
+        let (telemetry_policy_cell, telemetry_report_cell) = {
+            let policy_cell = crate::telemetry::StartupCell::filled(telemetry_policy.clone());
+            let report_cell = crate::telemetry::StartupCell::empty();
+            self.push_doctor_checks(crate::telemetry::telemetry_checks(
+                policy_cell.clone(),
+                report_cell.clone(),
+            ));
+            (policy_cell, report_cell)
+        };
 
         let ailoop_client = if let Some(config) = self.ailoop_config {
             Some(AiloopClient::with_config(config)?)
@@ -775,14 +1198,10 @@ impl AppBuilder {
                     .group_metadata_for("telemetry")
                     .is_some();
             if !already_owned {
-                let location = crate::telemetry::TelemetryStoreLocation {
-                    dir: self.telemetry_store_dir.take(),
-                    format: crate::config::ConfigFormat::default(),
-                };
                 crate::telemetry::commands::register_telemetry_commands(
                     &mut self.command_registry,
                     self.app_name,
-                    location,
+                    telemetry_store.clone(),
                 )?;
             } else {
                 tracing::warn!(
@@ -947,6 +1366,14 @@ impl AppBuilder {
             None => (None, None),
         };
 
+        // `AppContext::opt_config_manifest` sees the *published* manifest, so
+        // dispatch, the config commands and the policy server all read the
+        // same single document the telemetry section was merged into.
+        #[cfg(all(feature = "config", feature = "telemetry"))]
+        let config_manifest_for_ctx = Some(published_manifest.clone());
+        #[cfg(all(feature = "config", not(feature = "telemetry")))]
+        let config_manifest_for_ctx = self.config_manifest.clone();
+
         Ok(App {
             command_registry: registry_arc,
             ailoop_client,
@@ -966,16 +1393,31 @@ impl AppBuilder {
             telemetry_config: self.telemetry_config,
             deployment: self.deployment,
             active_telemetry: None,
+            // Nothing declares it at build time; only the testkit harness
+            // does, on the App it wraps.
+            stderr_interactive: None,
             #[cfg(feature = "telemetry")]
-            telemetry_policy: Arc::new(crate::telemetry::resolve_policy(
-                crate::telemetry::TelemetryInputs::default(),
-            )),
+            telemetry_policy,
+            #[cfg(feature = "telemetry")]
+            startup_report: None,
+            #[cfg(feature = "telemetry")]
+            telemetry_policy_cell,
+            #[cfg(feature = "telemetry")]
+            telemetry_report_cell,
+            #[cfg(feature = "telemetry")]
+            published_manifest,
+            #[cfg(feature = "telemetry")]
+            telemetry_identity: self.telemetry_identity,
+            #[cfg(feature = "telemetry")]
+            telemetry_inputs,
+            #[cfg(feature = "telemetry")]
+            telemetry_store,
             #[cfg(feature = "config")]
             config_handle,
             #[cfg(feature = "config")]
             config_value_erased,
             #[cfg(feature = "config")]
-            config_manifest: self.config_manifest,
+            config_manifest: config_manifest_for_ctx,
             #[cfg(feature = "config-managed")]
             policy_client: self.policy_client,
         })
@@ -1078,28 +1520,109 @@ pub struct App<C: AppContext> {
     deployment: crate::telemetry::Deployment,
     #[allow(dead_code)]
     pub(crate) active_telemetry: Option<Arc<dyn crate::telemetry::Telemetry + Send + Sync>>,
-    /// A resolved [`TelemetryPolicy`](crate::telemetry::TelemetryPolicy) the
-    /// `cli.command` probe reads for its span attributes (`cli.install.id`,
-    /// `session.id`, `cli.telemetry.level`).
+    /// Whether stderr is a terminal, when something has *declared* it rather
+    /// than leaving it to be asked of the process.
     ///
-    /// This is a **transitional stopgap**, not the full policy pipeline.
-    /// `App` still runs the pre-existing `TelemetryConfig` → `init_batch`
-    /// export path (see `init_telemetry` below), which never consults
-    /// `TelemetryPolicy` at all. Full `App`-level policy orchestration
-    /// (config file + environment + store + kill switches, via
-    /// `resolve_policy`/`init_from_policy`) is deferred to PR7 — see the note
-    /// on `startup.rs` in `src/telemetry/mod.rs`. Until that lands,
-    /// `init_telemetry` derives a minimal policy straight from the same
-    /// `TelemetryConfig`, using `Deployment::Service` (not the axis's default
-    /// `EndUser`) so the resolved level comes out `Diagnostic` rather than
-    /// falsely claiming `off` while `init_batch` is in fact exporting. When no
-    /// `TelemetryConfig` was supplied, this field stays the inert default
-    /// `resolve_policy` produces for `TelemetryInputs::default()` (`off`, no
-    /// endpoint) — harmlessly unused, since both callsites only build span
-    /// attributes from it inside the `if let Some(telemetry) = ...` guard
-    /// that already requires `active_telemetry` to be populated.
+    /// `None` -- the case for every real application -- means ask. The
+    /// testkit harness declares it, and declares it `false` by default,
+    /// because the spec 025 first-run notice only prints on a tty: left to
+    /// the process, a notice test would pass on a developer's terminal and
+    /// fail in CI's pipe, which is the definition of a flaky test.
+    ///
+    /// `#[allow(dead_code)]` for the same reason as `telemetry_config`
+    /// above: without the `telemetry` feature nothing reads it, and the
+    /// testkit setter has to compile either way.
+    #[allow(dead_code)]
+    pub(crate) stderr_interactive: Option<bool>,
+    /// The one telemetry resolution this process makes (spec 025), settled by
+    /// [`AppBuilder::build`] from the deployment shape, the author's
+    /// [`TelemetryDefaults`](crate::telemetry::TelemetryDefaults), the
+    /// environment and the kill switches.
+    ///
+    /// Shared rather than copied: the export boundary, the `telemetry`
+    /// command group and the `cli.command` probe's span attributes
+    /// (`cli.install.id`, `session.id`, `cli.telemetry.level`) all read this
+    /// same `Arc`, so no two of them can disagree about what was consented
+    /// to.
+    ///
+    /// Seeded by [`AppBuilder::build`] and replaced once, by
+    /// [`Self::init_telemetry`], with the resolution that folded in the
+    /// stored consent -- the only write that happens after the store has
+    /// been opened, and the reason the seed is a seed rather than the
+    /// answer. The deprecated
+    /// [`AppBuilder::with_telemetry`] shim used to overwrite the whole
+    /// resolution at startup with one derived from its `TelemetryConfig`,
+    /// which honoured no part of spec 025 — no kill switches, no deployment
+    /// shape, no author probes. It no longer does: `build` folds the shim's
+    /// endpoint and sample ratio in as author defaults and infers
+    /// [`Deployment::Service`](crate::telemetry::Deployment::Service) from
+    /// its presence, so an app still on the shim is described by the same
+    /// policy as one that has migrated. The shim is removed in v0.8.0.
+    ///
+    /// The stored consent file is not folded in here — that happens in the
+    /// startup sequence, which opens the framework-owned telemetry store and
+    /// re-resolves from it. Until that runs, `store_available` is false and
+    /// attribution reads `anonymous`, which is the honest answer for a policy
+    /// that has not yet read anybody's choice.
     #[cfg(feature = "telemetry")]
     telemetry_policy: Arc<crate::telemetry::TelemetryPolicy>,
+    /// What the spec 025 startup sequence *observed*, as opposed to what it
+    /// decided — the subscriber outcome, the store state, the kill switch,
+    /// the unmatched `<APP>_TELEMETRY_*` variables and the doctor findings.
+    ///
+    /// `None` until [`App::run_with_args`] has started telemetry, and still
+    /// `None` afterwards for an app on the deprecated
+    /// [`AppBuilder::with_telemetry`] shim whose own export pipeline ran
+    /// instead of the sequence. Which of those two happened is not a detail:
+    /// it decides whether the doctor checks have anything to report.
+    #[cfg(feature = "telemetry")]
+    startup_report: Option<Arc<crate::telemetry::StartupReport>>,
+    /// The same policy the doctor's `telemetry.endpoint` and
+    /// `telemetry.identity` checks read, shared with them.
+    ///
+    /// A second handle on `telemetry_policy` above rather than a duplicate of
+    /// it: the checks were registered during `build`, and `Vec<Arc<dyn
+    /// DoctorCheck>>` gives no way to reach back into them afterwards, so the
+    /// only way startup's resolution can reach a check is through a cell they
+    /// were both given. Seeded by `build`, overwritten by
+    /// [`Self::init_telemetry`].
+    #[cfg(feature = "telemetry")]
+    telemetry_policy_cell: crate::telemetry::StartupCell<crate::telemetry::TelemetryPolicy>,
+    /// The counterpart for `startup_report`, read by the doctor's
+    /// `telemetry.subscriber`, `telemetry.store` and `telemetry.env` checks.
+    ///
+    /// Empty until startup has run, and still empty afterwards for an app on
+    /// the deprecated shim -- in which case those three checks report
+    /// `Skipped`, which is the honest answer: no startup sequence ran, so
+    /// there is no subscriber outcome, store state or environment scan to
+    /// report on.
+    #[cfg(feature = "telemetry")]
+    telemetry_report_cell: crate::telemetry::StartupCell<crate::telemetry::StartupReport>,
+    /// The one published manifest (spec 025): the application's own config
+    /// manifest with the framework's generated `telemetry` section merged in,
+    /// or a telemetry-only manifest when the application publishes none.
+    ///
+    /// Always present, never optional. An administrator can describe the
+    /// telemetry tree of *any* app built on the framework, including one that
+    /// has no configuration of its own — which is precisely the app whose
+    /// users have no other way to find out what it sends.
+    #[cfg(feature = "telemetry")]
+    published_manifest: Arc<crate::config::manifest::ConfigManifest>,
+    /// The author's identity resolver, if any; see
+    /// [`AppBuilder::with_telemetry_identity`].
+    #[cfg(feature = "telemetry")]
+    telemetry_identity: Option<crate::telemetry::IdentityResolver>,
+    /// The build-time telemetry inputs, kept so the startup sequence can
+    /// layer the stored consent and the environment on top of them and
+    /// resolve once. `telemetry_policy` above is what those inputs resolve
+    /// to *before* either is read.
+    #[cfg(feature = "telemetry")]
+    telemetry_inputs: crate::telemetry::TelemetryInputs,
+    /// Where the framework-owned settings file lives. The same value the
+    /// `telemetry` command group was registered with, so the group and
+    /// startup can never disagree about which file holds consent.
+    #[cfg(feature = "telemetry")]
+    telemetry_store: crate::telemetry::TelemetryStoreLocation,
     #[cfg(feature = "config")]
     config_handle: Option<Arc<dyn crate::config::ConfigHandle>>,
     #[cfg(feature = "config")]
@@ -1518,7 +2041,24 @@ impl<C: AppContext> App<C> {
     /// CLI process still delivers its spans.
     #[cfg(feature = "telemetry")]
     fn init_telemetry(&mut self) -> crate::telemetry::TelemetryGuard {
-        if let Some(ref cfg) = self.telemetry_config {
+        // A kill switch wins over every layer, and a shim that predates
+        // the switches is still a layer. `OTEL_SDK_DISABLED` already stopped
+        // the shim, through `TelemetryConfig::is_active`; the other two are
+        // new in spec 025, so honouring them here takes nothing away from a
+        // deployment that works today -- nobody sets a variable the
+        // framework has never read -- while a shim that defeated them would
+        // be a hole in the very switch it exists to obey.
+        //
+        // Read the same way the sequence reads it (`run_startup` step 1):
+        // the environment now, falling back to what `build` saw, so a
+        // variable set after the builder ran still counts.
+        let app_name = self.meta.as_ref().map(|m| m.name).unwrap_or(self.app_name);
+        let kill_switched =
+            crate::telemetry::detect_kill_switch(app_name, &|k| std::env::var(k).ok())
+                .or(self.telemetry_policy.kill_switch)
+                .is_some();
+
+        if let Some(cfg) = self.telemetry_config.as_ref().filter(|_| !kill_switched) {
             let svc = self.meta.as_ref().map(|m| m.name).unwrap_or(self.app_name);
             let ver = self
                 .meta
@@ -1526,32 +2066,111 @@ impl<C: AppContext> App<C> {
                 .map(|m| m.version)
                 .unwrap_or(self.app_version);
 
-            // Transitional: derive a minimal `TelemetryPolicy` from this same
-            // config so the `cli.command` probe below has truthful
-            // `cli.install.id`/`session.id`/`cli.telemetry.level` attributes.
-            // See the field doc on `telemetry_policy` — the real policy
-            // pipeline (config file/environment/store/kill switches) is
-            // PR7's job, not this builder's.
-            self.telemetry_policy = Arc::new(crate::telemetry::resolve_policy(
-                crate::telemetry::TelemetryInputs {
-                    app: svc.to_string(),
-                    deployment: crate::telemetry::Deployment::Service,
-                    endpoint: cfg.endpoint.clone(),
-                    session_id: uuid::Uuid::new_v4().to_string(),
-                    sample_ratio: cfg.sample_ratio,
-                    registry: crate::telemetry::ProbeRegistry::with_builtins(),
-                    ..Default::default()
-                },
-            ));
-
+            // The resolution `build` made already describes this app: it
+            // read the shim's endpoint and its sample ratio, and inferred
+            // `Deployment::Service` unless the author declared otherwise. It
+            // is not replaced here, so the shim keeps the kill switches, the
+            // author-registered probes and the deployment shape that the
+            // rest of the framework already reports -- an app on the shim
+            // and an app that has migrated answer `telemetry status` the
+            // same way.
+            //
+            // Export itself still runs through `init_batch` rather than the
+            // policy's own pipeline. That is the shim's contract: it has
+            // always exported unconditionally to its configured endpoint,
+            // and routing it through the redacting boundary would change
+            // what a working collector receives, under a compatibility shim,
+            // in a patch release. The shim is removed in v0.8.0.
             if let Some((handle, guard)) = crate::telemetry::init::init_batch(cfg, svc, ver) {
                 self.active_telemetry = Some(handle);
                 return guard;
             }
+            // The shim was configured but produced nothing usable. Fall
+            // through to the spec 025 sequence rather than returning a dead
+            // guard: it still has to open the store, honour the kill
+            // switches and show the notice.
         }
-        // Return a noop guard when telemetry is enabled but init didn't produce one.
-        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
-        crate::telemetry::TelemetryGuard::new(provider, None)
+
+        // Spec 025 startup. `run_startup` walks all ten steps in order --
+        // kill switches, the store, the environment, one resolution, the
+        // freeze, the providers and export boundary, the subscriber, the
+        // notice, the panic hook, dispatch -- and returns what each produced.
+        let result = crate::telemetry::run_startup(self.startup_inputs());
+        self.telemetry_policy = result.policy.clone();
+        self.startup_report = Some(result.report.clone());
+        // The write that makes the doctor honest. The six checks were
+        // registered in `build` holding these cells; until this line they
+        // would answer about the pre-consent resolution (policy) or skip
+        // outright (report).
+        self.telemetry_policy_cell.set(result.policy.clone());
+        self.telemetry_report_cell.set(result.report.clone());
+        self.active_telemetry = result.handle.clone();
+        if let Some(notice) = result.notice.as_deref() {
+            // Straight to stderr, not through `tracing`: the notice is a
+            // message to the person at the terminal, not a log line, and it
+            // has to appear whether or not the app installed a subscriber.
+            //
+            // Through `write_plain` rather than `eprintln!` so the testkit
+            // capture buffer sees it. `eprintln!` writes fd 2 directly,
+            // where no test can read it -- which would leave the notice, the
+            // one part of spec 025 an end user is guaranteed to see, as the
+            // one part with no end-to-end test. `write_plain` appends no
+            // newline of its own.
+            crate::app::diagnostic_reporter::DiagnosticReporter::write_plain(&format!(
+                "{notice}\n"
+            ));
+        }
+        result.guard.unwrap_or_else(|| {
+            // Nothing was built, because the policy does not export. The
+            // guard still exists because `run_with_args` holds one
+            // unconditionally; flushing it is a no-op.
+            let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
+            crate::telemetry::TelemetryGuard::new(provider, None)
+        })
+    }
+
+    /// Everything [`run_startup`](crate::telemetry::run_startup) reads,
+    /// gathered in one place.
+    ///
+    /// The ambient process state startup depends on -- the environment, and
+    /// whether stderr is a terminal -- is captured *here* rather than inside
+    /// the sequence. That is what lets a test substitute all of it and
+    /// assert the startup order by running startup, instead of re-reading
+    /// the constant startup is supposed to follow.
+    #[cfg(feature = "telemetry")]
+    #[doc(hidden)]
+    pub fn startup_inputs(&self) -> crate::telemetry::StartupInputs {
+        crate::telemetry::StartupInputs {
+            base: self.telemetry_inputs.clone(),
+            store: self.telemetry_store.clone(),
+            manifest: self.published_manifest.clone(),
+            service: crate::telemetry::ServiceIdentity {
+                name: self
+                    .meta
+                    .as_ref()
+                    .map(|m| m.name)
+                    .unwrap_or(self.app_name)
+                    .to_string(),
+                version: self
+                    .meta
+                    .as_ref()
+                    .map(|m| m.version)
+                    .unwrap_or(self.app_version)
+                    .to_string(),
+            },
+            // `run_with_args` is the command-line surface by construction.
+            // Chat, MCP and the API server reach telemetry through their own
+            // entry points and pass their own surface.
+            surface: crate::telemetry::Surface::Cli,
+            // Whatever declared it wins; otherwise ask the process
+            // through the framework's own panic-guarded helper rather than
+            // `IsTerminal` directly, so a closed or exotic fd 2 answers
+            // "not a terminal" instead of unwinding out of startup.
+            stderr_is_tty: self
+                .stderr_interactive
+                .unwrap_or_else(crate::cli_mode::is_stderr_tty),
+            env: std::env::vars().collect(),
+        }
     }
 
     #[cfg(not(feature = "telemetry"))]
@@ -1608,7 +2227,55 @@ impl<C: AppContext> App<C> {
             .downcast::<crate::config::ConfigStore<T>>()
             .ok()
     }
+
+    /// The telemetry policy this process resolved at build time (spec 025).
+    #[cfg(feature = "telemetry")]
+    pub fn telemetry_policy(&self) -> &crate::telemetry::TelemetryPolicy {
+        &self.telemetry_policy
+    }
+
+    /// What the spec 025 startup sequence observed, or `None` if it has not
+    /// run in this process — either because no command has been dispatched
+    /// yet, or because the deprecated [`AppBuilder::with_telemetry`] shim
+    /// exported through its own pipeline instead.
+    #[cfg(feature = "telemetry")]
+    #[doc(hidden)]
+    pub fn startup_report(&self) -> Option<&crate::telemetry::StartupReport> {
+        self.startup_report.as_deref()
+    }
+
+    /// The published config manifest — the app's own fields plus the
+    /// framework's generated `telemetry` section.
+    ///
+    /// Total, unlike the app-declared manifest it is built from: an app that
+    /// declared none still publishes the telemetry tree. This is the document
+    /// `AppContext::opt_config_manifest` hands to the `config` commands and to
+    /// the managed-configuration server, so what an administrator can inspect
+    /// and what the framework will actually honour are the same list.
+    #[cfg(feature = "telemetry")]
+    pub fn config_manifest(&self) -> &crate::config::manifest::ConfigManifest {
+        &self.published_manifest
+    }
+
+    /// The author's identity resolver, if one was registered through
+    /// [`AppBuilder::with_telemetry_identity`].
+    #[cfg(feature = "telemetry")]
+    pub fn telemetry_identity_resolver(&self) -> Option<&crate::telemetry::IdentityResolver> {
+        self.telemetry_identity.as_ref()
+    }
 }
+
+/// The context a test app runs with: no registry, no output capture, no
+/// token provider — every [`AppContext`] method left at its default.
+///
+/// Exists so a test can exercise the *builder* without also having to stand
+/// up a host application. Hidden from the public docs because it is a test
+/// seam, not API surface an app author should reach for.
+#[doc(hidden)]
+#[derive(Debug, Default)]
+pub struct TestContext;
+
+impl AppContext for TestContext {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shell {

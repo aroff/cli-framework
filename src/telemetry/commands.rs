@@ -154,11 +154,16 @@ fn policy_line(policy: &TelemetryPolicy) -> String {
     }
 }
 
-/// Build a `TelemetryPolicy` from what is currently on disk. There is no
-/// startup-time `TelemetryPolicy` to reuse here (PR7 owns that wiring) — each
-/// leaf command derives its own from a fresh read, which is correct for a
-/// short-lived CLI invocation: the whole point of `telemetry status` is to
-/// show the *current* on-disk state, not a cached one.
+/// Build a `TelemetryPolicy` from what is currently on disk.
+///
+/// The startup sequence does resolve one, and `App` holds it, but a leaf
+/// command reaches its context as `&dyn AppContext` and cannot see it. That
+/// is not the loss it looks like: each command derives its own from a fresh
+/// read, which is the correct answer for a short-lived CLI invocation. The
+/// whole point of `telemetry status` is to show the *current* on-disk state,
+/// and `telemetry set` writes that state moments earlier in the same
+/// process — a policy resolved before dispatch would describe the file as it
+/// was before the write.
 fn build_policy(app_name: &str, store: &TelemetryStore) -> TelemetryPolicy {
     let settings = store.settings();
 

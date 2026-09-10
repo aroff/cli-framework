@@ -138,6 +138,18 @@ pub use app::UsageError;
 /// on every build — so the re-export must not be gated either.
 pub use telemetry::Deployment;
 
+/// Re-export what an app author declares about telemetry (spec 025). Gated on
+/// `telemetry` — unlike `Deployment`, these name `secrecy::SecretString` and
+/// the probe registry, which only exist behind the feature.
+#[cfg(feature = "telemetry")]
+pub use telemetry::{Identity, TelemetryDefaults};
+
+/// Re-export `secrecy::SecretString` so an author can write a
+/// [`TelemetryDefaults::headers`] value without taking a direct dependency on
+/// `secrecy` and having to keep its version in step with ours.
+#[cfg(feature = "telemetry")]
+pub use secrecy::SecretString;
+
 /// Re-export the `#[derive(CommandSpec)]` macro when the `derive` feature is enabled.
 #[cfg(feature = "derive")]
 pub use cli_framework_macros::CommandSpec;
@@ -209,7 +221,7 @@ pub mod prelude {
 /// Install a process-wide `tracing` subscriber and return a guard.
 ///
 /// Under the `telemetry` feature the returned [`telemetry::LoggingGuard`]
-/// carries a reload slot that later telemetry startup can attach the OTel
+/// carries a write-once slot that later telemetry startup attaches the OTel
 /// export layer to, so calling this from `main` before building the
 /// application does not forfeit exported traces. See
 /// [`telemetry::subscriber`] for the composition rules and what happens when

@@ -272,9 +272,13 @@ impl TelemetryStore {
 ///
 /// `dir: None` means the platform configuration directory, which is what
 /// every real application uses. A test sets it to a `TempDir` so it never
-/// touches the person's own consent file. `format` is JSON until PR7's
-/// Task 27 teaches the builder to report the application's declared
-/// configuration format (PRD line 258) — do not try to resolve it here.
+/// touches the person's own consent file.
+///
+/// `format` follows the application's own declared configuration format (PRD
+/// line 258), so a TOML app's telemetry settings sit beside its TOML config
+/// rather than in a lone JSON file; an app that declares no configuration
+/// gets JSON, which is the `Default`. `AppBuilder::startup_inputs` fills both
+/// fields in — resolve neither here.
 #[derive(Debug, Clone, Default)]
 pub struct TelemetryStoreLocation {
     pub dir: Option<PathBuf>,

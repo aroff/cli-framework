@@ -156,6 +156,17 @@ const ELEVATED: &[(&str, TelemetryLevel)] = &[
     ("cli.command.arg_values", TelemetryLevel::Debug),
     ("cli.usage_error.token", TelemetryLevel::Debug),
     ("error.type", TelemetryLevel::Diagnostic),
+    // `cli.command.args` is the probe *id*; the two entries below it are the
+    // attribute *keys* the root span records for that probe
+    // (`src/app/builder.rs`). `attribute_min_level` matches keys exactly, so
+    // listing only the id here protects nothing: without these two lines an
+    // install at `usage` exports the names of every argument that was
+    // supplied, which PRD 025 reserves for `diagnostic`. The span records
+    // them unconditionally by design -- redaction is enforced at the export
+    // boundary and nowhere else -- so this table is the only thing that
+    // holds them back.
+    ("cli.command.arg_names", TelemetryLevel::Diagnostic),
+    ("cli.command.arg_count", TelemetryLevel::Diagnostic),
     ("cli.command.args", TelemetryLevel::Diagnostic),
     ("server.address", TelemetryLevel::Diagnostic),
     ("http.client.server_address", TelemetryLevel::Diagnostic),

@@ -669,7 +669,14 @@ fn main() {
 | `with_ailoop_config(config)` | Configure ailoop with a full `AiloopConfig` | — |
 | `with_risk_policy(policy)` | Override the default command risk tier policy | — |
 | `with_token_provider(provider)` | Supply a `TokenProvider`; auto-registers four `auth` commands (requires `auth` feature) | disabled |
-| `with_telemetry(config)` | Enable OpenTelemetry export for CLI runs using a `TelemetryConfig` (requires `telemetry` feature) | disabled |
+| `with_deployment(deployment)` | Declare whether this app runs on someone's machine (`EndUser`) or on a server (`Service`); selects the default telemetry level, the end-user clamp, and whether the `telemetry` command group is registered (requires `telemetry` feature) | `EndUser` |
+| `with_telemetry_defaults(defaults)` | Author defaults for the telemetry resolution: collector endpoint, OTLP headers, and the argument values a `debug` level may record (requires `telemetry` feature) | none |
+| `with_telemetry_ops(probes)` | Register app-owned probes alongside the framework's twenty, so `telemetry info` describes them and the level gates them (requires `telemetry` feature) | built-ins only |
+| `with_telemetry_identity(resolver)` | Supply the end-user and tenant ids attached when attribution is `identified` (requires `telemetry` feature) | none |
+| `with_telemetry_attrs(keys)` | Allow-list extra span attribute keys the redacting export boundary may keep (requires `telemetry` feature) | none |
+| `with_telemetry_never(patterns)` | Extend the never-list of attribute-key patterns the boundary always strips (requires `telemetry` feature) | built-in list |
+| `with_telemetry_config_dir(dir)` | Relocate the framework-owned telemetry settings file; how tests isolate consent (requires `telemetry` feature) | platform config dir |
+| `with_telemetry(config)` | **Deprecated in v0.6.0, removed in v0.8.0.** Enable OpenTelemetry export using a `TelemetryConfig`. Use `with_deployment` + `with_telemetry_defaults` (requires `telemetry` feature) | disabled |
 | `with_config_backend(backend)` | Select an explicit `ConfigBackend` for the typed config (requires `config` feature) | `FileBackend::for_app(app_name)` |
 | `with_config_path(path)` | Shorthand for `with_config_backend(Arc::new(FileBackend::new(path)))` (requires `config` feature) | — |
 | `with_config::<T>(options)` | Register a typed configuration `T`, its format, and its migrations; `build()` resolves it once (requires `config` feature) | disabled |
@@ -685,16 +692,35 @@ the command path, invocation surface (`cli` / `chat` / `mcp` / `api`), and
 argument count — no handler code required. Handlers can also reach a telemetry
 handle via `ctx.telemetry()`.
 
+**[docs/telemetry.md](docs/telemetry.md) is the full document**: what an app
+sends at each telemetry level, the twenty built-in probes and what each one
+promises, the three kill switches, what is never sent at any level, the author
+API, and what an operator has to configure. The rest of this section is the
+short version.
+
 ```rust
 use cli_framework::app::AppBuilder;
-use cli_framework::telemetry::TelemetryConfig;
+use cli_framework::{Deployment, TelemetryDefaults};
 
 let app = AppBuilder::new()
     .with_version("myapp", env!("CARGO_PKG_VERSION"))
-    // Reads OTEL_* env vars; export is a no-op until an endpoint is set.
-    .with_telemetry(TelemetryConfig::from_env())
+    // A server: the operator sets the level, and there is no end-user clamp.
+    // Omit this and the app is an `EndUser` install, which is the default.
+    .with_deployment(Deployment::Service)
+    // Author defaults. `OTEL_EXPORTER_OTLP_ENDPOINT` still wins over them.
+    .with_telemetry_defaults(TelemetryDefaults {
+        endpoint: Some("http://localhost:4318".into()),
+        ..Default::default()
+    })
     .build(ctx)?;
 ```
+
+The framework reads the standard `OTEL_*` variables itself, as the environment
+layer of one telemetry resolution, so an app does not call
+`TelemetryConfig::from_env()` any more. `with_telemetry(config)` is deprecated
+in v0.6.0 and removed in v0.8.0; it still works, and an app that calls it and
+declares no deployment is treated as a `Service` — every existing caller
+configured a collector endpoint by hand, which is a server.
 
 Both CLI runs and long-running servers
 (`ApiServerBuilder::with_telemetry(config, service_name, service_version)`)
@@ -708,9 +734,12 @@ without handler code. `ctx.telemetry().counter()/histogram()` are exported on th
 same pipeline. The built-in `version` command is instrumented too, with zero args.
 
 Configuration is driven by the standard `OTEL_*` environment variables (see the
-[Environment Variables](#environment-variables) section) or by building a
-`TelemetryConfig` directly. Export only activates when an endpoint is set,
-`enabled` is true, and `OTEL_SDK_DISABLED` is not `true`.
+[Environment Variables](#environment-variables) section) and by the
+`telemetry.*` settings the framework publishes in the app's config manifest.
+Export activates only when the resolved telemetry level is above `off`, an
+endpoint is set, and no kill switch fired — `<APP>_TELEMETRY_DISABLED=1`,
+`OTEL_SDK_DISABLED=true` or `DO_NOT_TRACK=1`. There is no `telemetry.enabled`
+key: the level is the switch.
 
 ### Distributed tracing (context propagation)
 
@@ -741,8 +770,14 @@ use cli_framework::telemetry::TelemetryConfig;
 let mut headers = HashMap::new();
 headers.insert("authorization".into(), "Bearer <token>".into());
 
-let cfg = TelemetryConfig { headers, ..TelemetryConfig::from_env() };
+let cfg = TelemetryConfig { headers, ..Default::default() };
 ```
+
+Prefer `with_telemetry_defaults(TelemetryDefaults { headers: Some(..), .. })`,
+which takes the same `key=value,key2=value2` string as the environment variable
+and holds it as a `SecretString`. Headers are deliberately kept out of the
+configuration tree: a credential is not a setting to be shown by
+`telemetry status`.
 
 Or set the standard `OTEL_EXPORTER_OTLP_HEADERS` environment variable
 (`key=value,key2=value2`, percent-encoding supported). Headers are sent with
@@ -753,20 +788,30 @@ a credential.
 ### The subscriber
 
 `tracing` spans only reach OpenTelemetry through a `tracing-opentelemetry` layer
-installed in the **active subscriber**, so `with_telemetry()` installs a
-process-wide subscriber (env-filter + `fmt` to stderr + the OTel bridge).
+installed in the **active subscriber**. The framework installs that subscriber
+during startup (env-filter + `fmt` to stderr), and attaches the OTel layer to it
+once the telemetry policy is resolved — which is later, because the policy
+decides whether there is anything to attach.
 
-If your application already installs its own global subscriber, `with_telemetry()`
-cannot take effect — the framework prints a warning to stderr and exports
-nothing. Compose the layer into your own subscriber instead:
+An application that wants logging *before* the app is built calls
+`install_default_logging()` and holds the guard for the life of the process:
 
 ```rust
-let (_handle, guard) = cli_framework::telemetry::init::init_batch(&cfg, "svc", "1.0").unwrap();
-tracing_subscriber::registry()
-    .with(my_fmt_layer)
-    .with(cli_framework::telemetry::init::otel_layer(&guard))
-    .init();
+let _guard = cli_framework::telemetry::install_default_logging();
 ```
+
+The guard reserves a write-once slot in the subscriber the framework fills in
+later; it is not an error to hold one on a build without the `telemetry`
+feature, where attaching is simply a no-op. (The slot is a plain layer rather
+than `tracing_subscriber::reload::Layer`, which cannot be used here: reload's
+`downcast_raw` answers `None` for every type, so `tracing-opentelemetry`'s
+`WithContext` lookup fails and `Span::set_parent` silently does nothing —
+W3C context propagation breaks with no error anywhere.)
+
+If your application installs an unrelated global subscriber of its own instead,
+the framework cannot attach the layer: it prints one warning, records a
+`telemetry.subscriber` doctor finding, and exports metrics only. Traces need
+the framework's subscriber or the guard above.
 
 ### The `telemetry` command group (end-user deployments)
 
@@ -812,10 +857,11 @@ reason, rather than silently discarding a consent change.
   `SdkLoggerProvider` yet, so the field is reader-visible intent only.
   `record_arg_values` / `arg_value_allowlist` are likewise reserved.
   `traces_enabled` and `metrics_enabled` **are** honoured.
-- **The first-run notice and the telemetry `doctor` checks are built but not
-  yet wired.** `telemetry::notice_decision` and `telemetry::telemetry_checks`
-  are public and tested, but nothing in `AppBuilder::build` calls them yet, so
-  no notice is printed and `doctor` does not report the six telemetry checks.
+- **The telemetry `doctor` checks are built but not yet wired.**
+  `telemetry::telemetry_checks` is public and tested, but nothing in
+  `AppBuilder::build` calls it yet, so `doctor` does not report the six
+  telemetry checks. The first-run notice **is** wired: startup decides it and
+  prints it to stderr.
 
 ## Chat Command (default feature)
 
@@ -1035,7 +1081,8 @@ with different descriptions fails registration or build.
 
 ### Telemetry Configuration (`telemetry` feature)
 
-Read by `TelemetryConfig::from_env()`. Export stays a no-op until an endpoint is set.
+Read by the framework as the environment layer of the telemetry resolution.
+Export stays a no-op until an endpoint is set.
 
 | Variable | Role |
 |---------|------|

@@ -13,8 +13,29 @@ pub struct CliTestHarness<C: AppContext> {
 
 impl<C: AppContext + 'static> CliTestHarness<C> {
     /// Create a new harness wrapping `app`.
+    ///
+    /// stderr is declared *non*-interactive. The spec 025 first-run notice
+    /// only prints on a terminal, so leaving the answer to the process would
+    /// make every notice test depend on how the suite was launched: green in
+    /// a developer's terminal, red in CI's pipe. Declaring it here makes the
+    /// default deterministic, and
+    /// [`with_interactive_stderr`](Self::with_interactive_stderr) is how a
+    /// test that *wants* the notice asks for it.
     pub fn new(app: App<C>) -> Self {
+        let mut app = app;
+        app.stderr_interactive = Some(false);
         Self { app }
+    }
+
+    /// Declare whether the wrapped app should believe stderr is a terminal.
+    ///
+    /// Only the spec 025 first-run notice consults this today. It is a
+    /// declaration, not a simulation: nothing about the captured output
+    /// changes, so a test that turns it on is asserting the *decision* to
+    /// print, which is the part that has a rule behind it.
+    pub fn with_interactive_stderr(mut self, interactive: bool) -> Self {
+        self.app.stderr_interactive = Some(interactive);
+        self
     }
 
     /// Run the app with the given argv slice (index 0 is the binary name).

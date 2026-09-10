@@ -322,25 +322,29 @@ impl Emission {
 /// The reason that gates *every* `Reserved` entry below, in addition to
 /// whatever local obstacle each one names.
 ///
-/// Both halves of the export boundary are built only by
-/// [`init_from_policy`](crate::telemetry::init_from_policy): `RedactingExporter`
-/// for spans, and the meter provider's View that closes each instrument's
-/// attributes to `METRIC_LABEL_ALLOWLIST`. That function has **no production
-/// caller** — `App::run_with_args` (via `init_telemetry`, `src/app/builder.rs`)
-/// and `ApiServer::serve` (`src/api/mod.rs`) both still call `init_batch`,
-/// whose `span_exporter()` is bare and whose `build_meter_provider` installs
-/// no View.
+/// This const previously read `RESERVED_PENDING_REDACTION`, and named a
+/// different obstacle: that
+/// [`init_from_policy`](crate::telemetry::init_from_policy) — the only
+/// constructor of either half of the export boundary — had no production
+/// caller, so `App::run_with_args` and `ApiServer::serve` both exported
+/// through a bare `span_exporter()` and a meter provider with no View.
+/// While that held, wiring a probe was not merely an unfilled gap: it pushed
+/// `cli.probe`, the install id and diagnostic-level attributes onto the wire
+/// unstripped, at a level the person running the CLI never consented to.
+/// Spec 028 called the ordering a safety property for exactly that reason.
 ///
-/// Redaction is enforced at the export boundary and nowhere else — never at
-/// the instrumentation call site — so until that boundary is on the production
-/// path, adding emitters does not merely leave a gap open: it pushes
-/// `cli.probe`, the install id and diagnostic-level attributes (`secrets.op`,
-/// `plugin.name`, the config backend) onto the wire unstripped, at a level the
-/// person running the CLI never consented to. Spec 028 states the ordering as
-/// a safety property rather than a preference for exactly this reason.
-pub const RESERVED_PENDING_REDACTION: &str =
-    "the redacting export boundary (init_from_policy) has no production caller yet; emitting \
-     before it lands would export diagnostic attributes unstripped";
+/// That obstacle is gone. `run_startup` (`src/telemetry/startup.rs`) calls
+/// `init_from_policy`, so the redacting span exporter and the per-instrument
+/// Views are on the production startup path, and
+/// `the_redacting_export_boundary_is_on_the_production_startup_path` in
+/// `tests/unit/telemetry_probe_census.rs` fails if that regresses. What gates
+/// the remaining reservations is now ordinary unfinished work — no call site
+/// has been written — which is what spec 028's "Scope of the work" tracks.
+/// The distinction matters: adding an emitter is now a safe change to make,
+/// where before it was not.
+pub const RESERVED_PENDING_INSTRUMENTATION: &str =
+    "the export boundary has landed (run_startup calls init_from_policy), so what remains is \
+     writing the call site; see spec 028's Scope of the work";
 
 /// Emission status of every instrument in [`metrics::ALL`].
 pub const METRIC_EMISSION: &[(&str, Emission)] = &[
@@ -367,13 +371,7 @@ pub const METRIC_EMISSION: &[(&str, Emission)] = &[
              handle at the point it does so",
         ),
     ),
-    (
-        metrics::PANICS,
-        Emission::Reserved(
-            "install_panic_hook's only caller is tests/unit/telemetry_panic.rs; the hook has \
-             to be installed at startup before this can count anything",
-        ),
-    ),
+    (metrics::PANICS, Emission::Wired("src/telemetry/startup.rs")),
     (
         metrics::HELP_SHOWN,
         Emission::Reserved("the help renderer carries no Telemetry handle"),

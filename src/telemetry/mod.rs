@@ -93,7 +93,7 @@ pub use guard::TelemetryGuard;
 // TelemetryGuard` block), unlike the always-present `TelemetryGuard` type
 // itself, which has a no-op stub for a default build.
 #[cfg(feature = "telemetry")]
-pub use guard::{flush_within, flush_within_for_test, FlushOutcome};
+pub use guard::{flush_within, flush_within_for_test, FlushOutcome, END_USER_FLUSH_BUDGET};
 pub use handle::{Counter, Histogram, KeyValue, SpanHandle, Telemetry};
 pub use noop::NoopTelemetry;
 
@@ -165,8 +165,9 @@ pub use notice::{notice_decision, NoticeDecision, SkipReason};
 pub mod subscriber;
 #[cfg(feature = "telemetry")]
 pub use subscriber::{
-    foreign_subscriber_finding, install_subscriber_for_test, install_telemetry_subscriber,
-    warn_once_foreign_subscriber, BoxedLayer, SubscriberOutcome,
+    attach_otel_layer_globally, foreign_subscriber_finding, install_subscriber_for_test,
+    install_telemetry_subscriber, warn_once_foreign_subscriber, AlreadyAttached, BoxedLayer,
+    SubscriberOutcome,
 };
 #[cfg(feature = "observability")]
 pub use subscriber::{install_default_logging, LoggingGuard};
@@ -182,13 +183,16 @@ pub use panic::{install_panic_hook, panic_record, PanicRecord};
 
 // Gated on `telemetry`, like `policy`/`store`/`panic` above: `startup.rs`
 // names `KillSwitch`, `StoreState` and `SubscriberOutcome`, all of which only
-// exist under this same feature. It only pins the fixed startup order and
-// the `StartupReport` shape — the wiring that actually walks the order lands
-// in PR7.
+// exist under this same feature. It pins the fixed startup order, the
+// `StartupReport` shape, and `run_startup` — the one function that walks the
+// order, which every application reaches through `App::run_with_args`.
 #[cfg(feature = "telemetry")]
 pub mod startup;
 #[cfg(feature = "telemetry")]
-pub use startup::{startup_order, StartupReport, StartupStep};
+pub use startup::{
+    run_startup, run_startup_recording, startup_order, StartupCell, StartupInputs, StartupReport,
+    StartupResult, StartupStep,
+};
 
 // Gated on `telemetry` for the same reason as `policy`/`store` above:
 // `manifest.rs` hard-depends on `crate::config::manifest::{ConfigManifest,
@@ -254,7 +258,7 @@ pub use probes::{
     config_attrs, doctor_attrs, feature_attrs, help_attrs, http_client_attrs, http_server_attrs,
     mcp_session_attrs, metrics, plugin_attrs, process_attrs, registered_feature_names,
     secrets_attrs, spans, usage_error_attrs, CommandOutcome, CommandStatus, Emission, Surface,
-    BUILDER_EMISSION, METRIC_EMISSION, RESERVED_PENDING_REDACTION, SPAN_EMISSION,
+    BUILDER_EMISSION, METRIC_EMISSION, RESERVED_PENDING_INSTRUMENTATION, SPAN_EMISSION,
 };
 
 // Gated on `telemetry` for the same reason as every other submodule above:
@@ -262,13 +266,20 @@ pub use probes::{
 // all themselves gated on this feature, and implements
 // `crate::doctor::check::DoctorCheck` (the framework's top-level `doctor`
 // module, `src/doctor/`, unrelated to and not gated by this one — it exists
-// in every build). Wiring `telemetry_checks`'s output into
-// `AppBuilder::build` via `push_doctor_checks` is PR7's job: PR7's own
-// preamble says the startup wiring lands there because it depends on both
-// this PR and PR5 (the probe catalog) being merged first. This PR only
-// produces the six checks in the `Vec<Arc<dyn DoctorCheck>>` shape that hook
-// already expects.
+// in every build). `AppBuilder::build` registers `telemetry_checks`'s output
+// through `push_doctor_checks`, so every application built on this framework
+// answers `<app> doctor` about its own telemetry without its author wiring
+// anything; the checks read `StartupCell`s that `App::init_telemetry` fills
+// once the startup sequence has resolved.
 #[cfg(feature = "telemetry")]
 pub mod doctor;
 #[cfg(feature = "telemetry")]
 pub use doctor::telemetry_checks;
+
+// What an app author declares: transport defaults, the identity resolver and
+// the two attribute lists. Gated on `telemetry` because `TelemetryDefaults`
+// names `secrecy::SecretString`, an optional dependency of that feature.
+#[cfg(feature = "telemetry")]
+pub mod author;
+#[cfg(feature = "telemetry")]
+pub use author::{Identity, IdentityResolver, TelemetryDefaults};

@@ -24,12 +24,19 @@
 //! says something is wrong without saying what to do about it is half a
 //! finding.
 //!
-//! Each struct holds only the `Arc<TelemetryPolicy>` and/or
-//! `Arc<StartupReport>` fields it actually reads, rather than both
-//! unconditionally: a stored field nothing ever reads is a `dead_code`
+//! Each struct holds only the [`StartupCell`] it actually reads, rather than
+//! both unconditionally: a stored field nothing ever reads is a `dead_code`
 //! warning under this workspace's `-D warnings`, and there is nothing for,
 //! say, [`PolicyCheck`] to do with either one while it has no policy client
 //! to consult.
+//!
+//! The cell, rather than the value: these checks are registered while the
+//! application is still being *built*, and both values they read are produced
+//! at *run* time by the startup sequence. A check holding a build-time
+//! `Arc<TelemetryPolicy>` would answer about a resolution taken before the
+//! settings store was opened — the level the person would have had if they
+//! had never run `telemetry set`. A check whose cell is still empty when the
+//! doctor runs it reports `Skipped`, the same as any other absent subject.
 //!
 //! `run` never captures the borrowed `ctx: &dyn AppContext` it is handed —
 //! [`DoctorFuture`] is `'static`, so, exactly like
@@ -40,7 +47,7 @@ use crate::app::context::AppContext;
 use crate::doctor::check::{CheckSeverity, DoctorCheck, DoctorFinding, DoctorFuture};
 use crate::telemetry::axes::Attribution;
 use crate::telemetry::policy::TelemetryPolicy;
-use crate::telemetry::startup::StartupReport;
+use crate::telemetry::startup::{StartupCell, StartupReport};
 use crate::telemetry::store::StoreState;
 use crate::telemetry::subscriber::SubscriberOutcome;
 use std::net::ToSocketAddrs;
@@ -73,10 +80,31 @@ fn host_port(endpoint: &str) -> Option<(String, u16)> {
     Some((host.to_string(), port))
 }
 
+/// The finding a check reports while its [`StartupCell`] is still empty.
+///
+/// `Skipped`, per this module's rule that an absent subject is not an `Ok`:
+/// "telemetry startup has not run in this process" and "startup ran and found
+/// nothing wrong" are different states. Two real cases reach here — an `App`
+/// that was built but never run, and an app still on the deprecated
+/// `with_telemetry` shim, whose own export pipeline runs instead of the spec
+/// 025 sequence and so fills no report.
+fn awaiting_startup(check_id: &str, title: &str) -> DoctorFinding {
+    DoctorFinding {
+        check_id: check_id.to_string(),
+        title: title.to_string(),
+        severity: CheckSeverity::Skipped,
+        message: "telemetry startup has not run in this process, so there is nothing to report \
+                  yet"
+        .to_string(),
+        detail: None,
+        remediation: None,
+    }
+}
+
 // ── telemetry.subscriber ────────────────────────────────────────────────────
 
 pub struct SubscriberCheck {
-    report: Arc<StartupReport>,
+    report: StartupCell<StartupReport>,
 }
 
 impl DoctorCheck for SubscriberCheck {
@@ -93,8 +121,11 @@ impl DoctorCheck for SubscriberCheck {
     }
 
     fn run(&self, _ctx: &dyn AppContext) -> DoctorFuture {
-        let report = self.report.clone();
+        let report = self.report.get();
         Box::pin(async move {
+            let Some(report) = report else {
+                return awaiting_startup("telemetry.subscriber", "Tracing subscriber");
+            };
             let (severity, message, remediation) = match report.subscriber {
                 SubscriberOutcome::Installed => (
                     CheckSeverity::Ok,
@@ -130,7 +161,7 @@ impl DoctorCheck for SubscriberCheck {
 // ── telemetry.store ─────────────────────────────────────────────────────────
 
 pub struct StoreCheck {
-    report: Arc<StartupReport>,
+    report: StartupCell<StartupReport>,
 }
 
 impl DoctorCheck for StoreCheck {
@@ -147,8 +178,11 @@ impl DoctorCheck for StoreCheck {
     }
 
     fn run(&self, _ctx: &dyn AppContext) -> DoctorFuture {
-        let report = self.report.clone();
+        let report = self.report.get();
         Box::pin(async move {
+            let Some(report) = report else {
+                return awaiting_startup("telemetry.store", "Settings store");
+            };
             let (severity, message, remediation) = match &report.store {
                 StoreState::Ready(path) => (
                     CheckSeverity::Ok,
@@ -183,7 +217,7 @@ impl DoctorCheck for StoreCheck {
 // ── telemetry.endpoint ──────────────────────────────────────────────────────
 
 pub struct EndpointCheck {
-    policy: Arc<TelemetryPolicy>,
+    policy: StartupCell<TelemetryPolicy>,
 }
 
 impl DoctorCheck for EndpointCheck {
@@ -200,8 +234,11 @@ impl DoctorCheck for EndpointCheck {
     }
 
     fn run(&self, _ctx: &dyn AppContext) -> DoctorFuture {
-        let policy = self.policy.clone();
+        let policy = self.policy.get();
         Box::pin(async move {
+            let Some(policy) = policy else {
+                return awaiting_startup("telemetry.endpoint", "Collector reachability");
+            };
             let Some(endpoint) = policy.endpoint.clone() else {
                 return DoctorFinding {
                     check_id: "telemetry.endpoint".to_string(),
@@ -328,7 +365,7 @@ impl DoctorCheck for PolicyCheck {
 // ── telemetry.identity ──────────────────────────────────────────────────────
 
 pub struct IdentityCheck {
-    policy: Arc<TelemetryPolicy>,
+    policy: StartupCell<TelemetryPolicy>,
 }
 
 impl DoctorCheck for IdentityCheck {
@@ -345,8 +382,11 @@ impl DoctorCheck for IdentityCheck {
     }
 
     fn run(&self, _ctx: &dyn AppContext) -> DoctorFuture {
-        let policy = self.policy.clone();
+        let policy = self.policy.get();
         Box::pin(async move {
+            let Some(policy) = policy else {
+                return awaiting_startup("telemetry.identity", "Attribution");
+            };
             // Names the *mode*, never `policy.install_id`'s value: doctor
             // output gets pasted into bug reports.
             let message = match policy.attribution {
@@ -378,7 +418,7 @@ impl DoctorCheck for IdentityCheck {
 // ── telemetry.env ───────────────────────────────────────────────────────────
 
 pub struct EnvCheck {
-    report: Arc<StartupReport>,
+    report: StartupCell<StartupReport>,
 }
 
 impl DoctorCheck for EnvCheck {
@@ -395,8 +435,11 @@ impl DoctorCheck for EnvCheck {
     }
 
     fn run(&self, _ctx: &dyn AppContext) -> DoctorFuture {
-        let report = self.report.clone();
+        let report = self.report.get();
         Box::pin(async move {
+            let Some(report) = report else {
+                return awaiting_startup("telemetry.env", "Environment variables");
+            };
             if report.unmatched_env.is_empty() {
                 DoctorFinding {
                     check_id: "telemetry.env".to_string(),
@@ -430,17 +473,24 @@ impl DoctorCheck for EnvCheck {
 }
 
 /// The six telemetry doctor checks, ready to hand to
-/// `AppBuilder::push_doctor_checks`.
+/// `AppBuilder::push_doctor_checks` — which is where `AppBuilder::build`
+/// hands them, so that every application built on this framework answers
+/// `<app> doctor` about its own telemetry without its author wiring anything.
 ///
 /// `Arc`, not `Box`: `push_doctor_checks`/`register_doctor_checks`
-/// (`src/app/builder.rs`) both take `Vec<Arc<dyn DoctorCheck>>`, and that
-/// wiring — calling this function from `AppBuilder::build` — is later PR's
-/// job (the startup wiring lands once every piece exists at once); this PR
-/// only has to produce the checks in the shape that hook already expects.
+/// (`src/app/builder.rs`) both take `Vec<Arc<dyn DoctorCheck>>`.
+///
+/// Takes cells rather than values, and `impl Into<_>` rather than
+/// [`StartupCell`] itself, so that a caller who already holds the finished
+/// `Arc` — every test that builds a policy and a report by hand — passes it
+/// unchanged, while `build` passes a cell startup fills later. See
+/// [`StartupCell`] for why the deferral is necessary rather than convenient.
 pub fn telemetry_checks(
-    policy: Arc<TelemetryPolicy>,
-    report: Arc<StartupReport>,
+    policy: impl Into<StartupCell<TelemetryPolicy>>,
+    report: impl Into<StartupCell<StartupReport>>,
 ) -> Vec<Arc<dyn DoctorCheck>> {
+    let policy = policy.into();
+    let report = report.into();
     vec![
         Arc::new(SubscriberCheck {
             report: report.clone(),
