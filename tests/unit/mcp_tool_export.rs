@@ -1,3 +1,4 @@
+use cli_framework::app::{AppBuilder, AppContext};
 use cli_framework::command::{Command, CommandRegistry};
 use cli_framework::mcp::{McpToolExportPolicy, McpToolRegistry};
 use cli_framework::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
@@ -8,6 +9,9 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+
+struct DummyCtx;
+impl AppContext for DummyCtx {}
 
 fn noop_execute() -> Arc<
     dyn for<'a> Fn(
@@ -63,18 +67,13 @@ fn test_tool_list_includes_all_commands() {
 
 #[test]
 fn test_completion_is_excluded_even_under_all_commands_policy() {
-    let mut registry = CommandRegistry::new();
-    registry.register(make_cmd("deploy", "Deploy app"));
-    let completion = cli_framework::command_surface::command::create_completion_command(
-        "myapp",
-        std::sync::Arc::new(clap::Command::new("myapp")),
-    );
-    registry
-        .register_at(&CommandPath::root_for("completion"), completion)
+    let app = AppBuilder::new()
+        .register_command(make_cmd("deploy", "Deploy app"))
         .unwrap();
+    let app = app.build(DummyCtx).unwrap();
 
     let tool_registry = McpToolRegistry::from_command_registry_with_policy(
-        &registry,
+        app.command_registry(),
         "myapp",
         McpToolExportPolicy::AllCommands,
     );
@@ -82,10 +81,56 @@ fn test_completion_is_excluded_even_under_all_commands_policy() {
     let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
     assert!(tool_names.contains(&"myapp_deploy".to_string()));
     assert!(
-        !tool_names.iter().any(|n| n.ends_with(".completion")),
-        "expected no tool name ending in .completion, got: {:?}",
+        !tool_names.contains(&"myapp_completion".to_string()),
+        "framework completion must not be exported, got: {:?}",
         tool_names
     );
+}
+
+#[test]
+fn test_namespaced_builtin_completion_is_excluded_and_spec_uses_nested_tool_name() {
+    let app = AppBuilder::new()
+        .with_builtin_command_namespace(&CommandPath::root_for("cli"))
+        .build(DummyCtx)
+        .unwrap();
+
+    let tool_registry = McpToolRegistry::from_command_registry_with_policy(
+        app.command_registry(),
+        "myapp",
+        McpToolExportPolicy::AllCommands,
+    );
+    let names: Vec<String> = tool_registry
+        .list_tools()
+        .iter()
+        .map(|tool| tool.name.clone())
+        .collect();
+
+    assert!(names.contains(&"myapp_cli_spec".to_string()));
+    assert!(!names.contains(&"myapp_cli_completion".to_string()));
+}
+
+#[test]
+fn consumer_completion_leaf_remains_visible_to_mcp() {
+    let mut registry = CommandRegistry::new();
+    registry
+        .register_at(
+            &CommandPath::new(&["project", "completion"]).unwrap(),
+            make_cmd("completion", "Show project completion status"),
+        )
+        .unwrap();
+
+    let tool_registry = McpToolRegistry::from_command_registry_with_policy(
+        &registry,
+        "myapp",
+        McpToolExportPolicy::AllCommands,
+    );
+    let names: Vec<String> = tool_registry
+        .list_tools()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect();
+
+    assert!(names.contains(&"myapp_project_completion".to_string()));
 }
 
 #[test]

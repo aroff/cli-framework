@@ -173,7 +173,9 @@ pub mod prelude {
     pub use crate::message::{AppMessage, AppMessageKind};
     pub use crate::path;
     pub use crate::plugin::PluginRegistryManager;
-    pub use crate::spec::{ArgSpec, ArgValue, CommandPath, CommandSpec, EnvVarEntry};
+    pub use crate::spec::{
+        ArgSpec, ArgValue, CommandPath, CommandSpec, EnvVarEntry, GroupMetadata,
+    };
 
     #[cfg(feature = "chat")]
     pub use crate::command::chat::ChatToolPolicy;

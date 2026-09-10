@@ -27,7 +27,7 @@ pub(crate) fn build_tool_map_for_policy(
     registry
         .all_tree_commands()
         .filter(|(path_str, cmd)| {
-            if *path_str == "completion"
+            if registry.is_framework_completion(path_str)
                 || *path_str == "chat"
                 || path_str.starts_with("auth/")
                 || *path_str == "auth"
@@ -364,7 +364,7 @@ mod tests {
     use super::{build_tool_map_for_policy, turns_from_events};
     use crate::command::chat::ChatToolPolicy;
     use crate::command::{Command, CommandRegistry};
-    use crate::spec::command_tree::CommandSpec;
+    use crate::spec::command_tree::{CommandPath, CommandSpec};
     use aikit_agent::AgentInternalEvent;
     use std::sync::Arc;
 
@@ -484,7 +484,12 @@ mod tests {
     #[test]
     fn chat_policy_completion_excluded_all_policies() {
         let mut registry = registry_with(vec![make_cmd("other", true)]);
-        registry.register(make_cmd("completion", true));
+        registry
+            .register_framework_completion_at(
+                &CommandPath::root_for("completion"),
+                make_cmd("completion", true),
+            )
+            .unwrap();
 
         for policy in [
             ChatToolPolicy::All,
@@ -498,6 +503,20 @@ mod tests {
                 policy
             );
         }
+    }
+
+    #[test]
+    fn chat_policy_consumer_completion_leaf_remains_visible() {
+        let mut registry = CommandRegistry::new();
+        registry
+            .register_at(
+                &CommandPath::new(&["project", "completion"]).unwrap(),
+                make_cmd("completion", true),
+            )
+            .unwrap();
+
+        let map = build_tool_map_for_policy(&registry, "app", &ChatToolPolicy::All);
+        assert!(map.contains_key("app_project_completion"));
     }
 
     #[test]

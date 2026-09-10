@@ -230,7 +230,7 @@ fn spec_spec() -> CommandSpec {
 
 fn completion_spec() -> CommandSpec {
     CommandSpec {
-        summary: "Emit a shell completion stub for top-level subcommands",
+        summary: "Emit a shell completion script for the registered command tree",
         args: vec![ArgSpec {
             name: "shell",
             kind: ArgKind::Positional,

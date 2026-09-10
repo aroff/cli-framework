@@ -14,6 +14,7 @@ fn make_test_doc() -> CliSpecDocument {
             summary: "Say hello".to_string(),
             syntax: None,
             category: None,
+            help_order: None,
             hidden: false,
             deprecated: None,
             aliases: vec![],

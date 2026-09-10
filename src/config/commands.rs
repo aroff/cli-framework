@@ -51,6 +51,7 @@ pub(crate) fn register_config_commands(
             GroupMetadata {
                 summary: "Inspect resolved configuration, policy, and the app's manifest",
                 hidden: false,
+                ..Default::default()
             },
         )
         .map_err(|e| anyhow::anyhow!("{}", e))?;

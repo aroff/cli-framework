@@ -22,6 +22,7 @@ pub struct CliSpecCommand {
     pub summary: String,
     pub syntax: Option<String>,
     pub category: Option<String>,
+    pub help_order: Option<u32>,
     pub hidden: bool,
     pub deprecated: Option<String>,
     pub aliases: Vec<String>,

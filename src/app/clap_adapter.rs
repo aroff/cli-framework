@@ -94,9 +94,11 @@ pub fn build_clap_root(
         root = root.arg(build_clap_arg(flag_spec).global(true));
     }
 
-    for (segment, node) in &tree.children {
+    let mut children: Vec<_> = tree.children.iter().collect();
+    sort_children_by_help_order(registry, "", &mut children);
+    for (display_order, (segment, node)) in children.into_iter().enumerate() {
         if let Some(sub) = build_clap_node(registry, segment, segment, node) {
-            root = root.subcommand(sub);
+            root = root.subcommand(sub.display_order(display_order));
         }
     }
 
@@ -139,14 +141,49 @@ fn build_clap_node(
         .subcommand_required(true)
         .arg_required_else_help(true);
 
-    for (child_segment, child_node) in &node.children {
+    let mut children: Vec<_> = node.children.iter().collect();
+    sort_children_by_help_order(registry, path_str, &mut children);
+    for (display_order, (child_segment, child_node)) in children.into_iter().enumerate() {
         let child_path = format!("{}/{}", path_str, child_segment);
         if let Some(child) = build_clap_node(registry, child_segment, &child_path, child_node) {
-            group = group.subcommand(child);
+            group = group.subcommand(child.display_order(display_order));
         }
     }
 
     Some(group)
+}
+
+fn sort_children_by_help_order<'a>(
+    registry: &CommandRegistry,
+    parent_path: &str,
+    children: &mut Vec<(&'a String, &'a ClapTreeNode<'a>)>,
+) {
+    children.sort_by(|(a_name, _), (b_name, _)| {
+        let child_path = |name: &str| {
+            if parent_path.is_empty() {
+                name.to_string()
+            } else {
+                format!("{parent_path}/{name}")
+            }
+        };
+        let a_path = child_path(a_name);
+        let b_path = child_path(b_name);
+        help_order_for_path(registry, &a_path)
+            .unwrap_or(u32::MAX)
+            .cmp(&help_order_for_path(registry, &b_path).unwrap_or(u32::MAX))
+            .then_with(|| a_name.cmp(b_name))
+    });
+}
+
+fn help_order_for_path(registry: &CommandRegistry, path: &str) -> Option<u32> {
+    registry
+        .group_metadata_for(path)
+        .and_then(|metadata| metadata.help_order)
+        .or_else(|| {
+            registry
+                .resolve(&CommandPath(path.split('/').map(str::to_string).collect()))
+                .and_then(|command| command.help_order())
+        })
 }
 
 fn build_leaf_clap_command(segment: &str, cmd: &crate::command::Command) -> clap::Command {

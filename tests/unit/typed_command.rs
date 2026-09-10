@@ -7,6 +7,15 @@ use cli_framework::spec::value::ArgValue;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+#[cfg(feature = "derive")]
+#[derive(cli_framework::CommandSpec)]
+#[command(about = "Run ordered checks")]
+#[cfw(category = "Quality", help_order = 17)]
+struct DerivedOrderedArgs {
+    #[arg(long)]
+    verbose: bool,
+}
+
 // ── Manual implementations used in tests (pre-derive) ─────────────────────────
 
 /// Minimal typed args struct — manually implements the traits that #[derive(CommandSpec)]
@@ -125,6 +134,15 @@ fn derive_command_spec_summary_and_category() {
     assert_eq!(spec.summary, "Run skill optimization from a config file");
     assert_eq!(spec.category, Some("quality"));
     assert_eq!(spec.syntax, Some("run --config <path>"));
+}
+
+#[cfg(feature = "derive")]
+#[test]
+fn derive_command_spec_help_order() {
+    let spec = DerivedOrderedArgs::command_spec();
+    assert_eq!(spec.category, Some("Quality"));
+    assert_eq!(spec.help_order, Some(17));
+    assert!(!DerivedOrderedArgs::from_arg_value_map(&HashMap::new()).verbose);
 }
 
 #[test]

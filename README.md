@@ -443,6 +443,46 @@ resolver itself still treats them as advisory only, by design.
 
 If your app already defines a root-level `completion` command, call `AppBuilder::without_completion()` to opt out of auto-registration and avoid a registration collision.
 
+Applications can place both framework-owned commands under an operational
+namespace while keeping one registry as the source for parsing, help, command
+specification, completion, chat, and MCP:
+
+```rust
+use cli_framework::prelude::*;
+
+let cli = CommandPath::root_for("cli");
+let builder = AppBuilder::new()
+    .with_help_section_order(&["Skills and projects", "Operations"])
+    .register_group(
+        &cli,
+        GroupMetadata {
+            summary: "CLI setup and diagnostics",
+            category: Some("Operations"),
+            help_order: Some(30),
+            ..Default::default()
+        },
+    )?
+    .with_builtin_command_namespace(&cli);
+// `spec` and `completion` are now registered only at `cli/spec` and
+// `cli/completion`. Their root-level paths are absent.
+# Ok::<(), anyhow::Error>(())
+```
+
+`GroupMetadata::category` places a root group in a help section.
+`GroupMetadata::help_order` and `CommandSpec::help_order` order sibling entries
+at every help depth; entries without an order follow alphabetically.
+`with_help_section_order` orders the root sections themselves; unlisted sections
+follow alphabetically, with `Other` last. Typed commands can set the same value
+with `#[cfw(help_order = 10)]`. Categorized root help stays compact and shows
+one summary row per command or group. Detailed syntax, arguments, examples, and
+environment guidance remain in command-level help.
+
+This API intentionally adds public fields to `CommandSpec` and `GroupMetadata`.
+When upgrading to the first release containing categorized group ordering,
+consumer struct literals must set the new fields or end with
+`..Default::default()`. Runtime defaults retain alphabetical help and root-level
+`spec` and `completion` paths until the new builder methods are called.
+
 ## Exit-code contract
 
 `App::run()` enforces a two-tier exit-code contract. Consumers can rely on this in CI scripts (`set -e`, `if`-chains, etc.):
@@ -618,9 +658,12 @@ fn main() {
 | Method | Description | Default |
 |--------|-------------|---------|
 | `register_command(cmd)` | Register a command in the command registry | — |
+| `register_group(path, metadata)` | Register a command namespace with optional root-help category and order | — |
 | `with_version(name, version)` | Enable the built-in `version` subcommand and `--version` flag | disabled |
 | `with_git_sha_short(sha)` | Append a short git SHA to version output | `None` |
 | `without_completion()` | Opt out of auto-registered `completion` subcommand | enabled |
+| `with_builtin_command_namespace(path)` | Place `spec` and `completion` below one namespace | root |
+| `with_help_section_order(sections)` | Set categorized root-help section order | alphabetical, then `Other` |
 | `suggest_corrections(bool)` | Enable or disable `"Did you mean?"` suggestions for unknown subcommands and flags (E001, E002, E012). When `true`, the `hint:` line shows the closest match clap identified; when `false`, the generic `"Use --help"` hint is always used. | `true` |
 | `with_ailoop_channel(channel)` | Configure the ailoop channel name for HITL interactions | — |
 | `with_ailoop_config(config)` | Configure ailoop with a full `AiloopConfig` | — |

@@ -148,6 +148,7 @@ fn nested_group_help_renders_subcommands() {
             GroupMetadata {
                 summary: "Greeting commands",
                 hidden: false,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -191,6 +192,7 @@ fn nested_subcommand_help_renders_typed_args() {
             GroupMetadata {
                 summary: "Greeting commands",
                 hidden: false,
+                ..Default::default()
             },
         )
         .unwrap();

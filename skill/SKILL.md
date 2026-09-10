@@ -123,6 +123,33 @@ builder.register_command_at(&CommandPath::new(&["project", "init"])?, cmd)?;
 
 `CommandPath::new` validates segments; string form uses `/` as separator (e.g. `"project/init"`). The `cmd.id` should be the leaf name (e.g. `"init"`).
 
+For a categorized, explicitly ordered root help, attach the section and entry
+position to each root group, then register the section order once:
+
+```rust
+let cli = CommandPath::root_for("cli");
+let builder = AppBuilder::new()
+    .with_help_section_order(&["Skills and projects", "Operations"])
+    .register_group(
+        &cli,
+        GroupMetadata {
+            summary: "CLI setup and diagnostics",
+            category: Some("Operations"),
+            help_order: Some(30),
+            ..Default::default()
+        },
+    )?
+    .with_builtin_command_namespace(&cli);
+```
+
+The last call registers the framework-owned commands only at `cli/spec` and
+`cli/completion`. Omit it to retain the default root paths. Use
+`CommandSpec::help_order` for ordered commands. The same order controls sibling
+command listings at every nested help level, with unordered siblings following
+alphabetically. Derived typed commands use `#[cfw(help_order = 10)]`. Root help
+prints one compact summary row per entry; leaf help retains syntax, flags,
+examples, and environment-variable guidance.
+
 ## 7. `CommandSpec`, `ArgSpec`, `ArgValueType`, `Cardinality`
 
 ```rust

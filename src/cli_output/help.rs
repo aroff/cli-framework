@@ -90,33 +90,33 @@ impl<'a> HelpRenderer<'a> {
         }
 
         // 2. GROUP COLLECTION
-        // Unified entry: (id, summary, syntax, category)
+        // Unified root entry sourced from either a root command or group.
         struct Entry<'e> {
             id: &'e str,
             summary: &'e str,
-            syntax: Option<&'e str>,
             category: Option<&'e str>,
+            help_order: Option<u32>,
         }
 
         let mut all_entries: Vec<Entry<'_>> = Vec::new();
 
-        for cmd in self.commands.commands() {
+        for cmd in self.commands.commands().filter(|cmd| !cmd.spec.hidden) {
             all_entries.push(Entry {
                 id: cmd.id.as_ref(),
                 summary: cmd.summary(),
-                syntax: cmd.syntax(),
                 category: cmd.category(),
+                help_order: cmd.help_order(),
             });
         }
 
-        // Include group nodes (e.g., "mcp") as navigable entries in "Other".
+        // Include root group nodes (e.g., "mcp") as categorized navigable entries.
         for (path_str, meta) in self.commands.groups() {
             if !meta.hidden && !path_str.contains('/') {
                 all_entries.push(Entry {
                     id: path_str,
                     summary: meta.summary,
-                    syntax: None,
-                    category: None,
+                    category: meta.category,
+                    help_order: meta.help_order,
                 });
             }
         }
@@ -137,9 +137,14 @@ impl<'a> HelpRenderer<'a> {
             } else if *b == OTHER {
                 std::cmp::Ordering::Less
             } else {
-                a.to_ascii_lowercase()
-                    .cmp(&b.to_ascii_lowercase())
-                    .then_with(|| a.cmp(b))
+                let unordered_rank = self.commands.help_section_order().len();
+                let a_rank = self.commands.help_section_rank(a).unwrap_or(unordered_rank);
+                let b_rank = self.commands.help_section_rank(b).unwrap_or(unordered_rank);
+                a_rank.cmp(&b_rank).then_with(|| {
+                    a.to_ascii_lowercase()
+                        .cmp(&b.to_ascii_lowercase())
+                        .then_with(|| a.cmp(b))
+                })
             }
         });
 
@@ -149,19 +154,26 @@ impl<'a> HelpRenderer<'a> {
                 continue;
             };
 
-            out.push_str(&title_case(group));
+            if self.commands.help_section_rank(group).is_some() {
+                out.push_str(group);
+            } else {
+                out.push_str(&title_case(group));
+            }
             out.push_str(":\n");
 
             entries.sort_by(|a, b| {
-                a.id.to_ascii_lowercase()
-                    .cmp(&b.id.to_ascii_lowercase())
-                    .then_with(|| a.id.cmp(b.id))
+                a.help_order
+                    .unwrap_or(u32::MAX)
+                    .cmp(&b.help_order.unwrap_or(u32::MAX))
+                    .then_with(|| {
+                        a.id.to_ascii_lowercase()
+                            .cmp(&b.id.to_ascii_lowercase())
+                            .then_with(|| a.id.cmp(b.id))
+                    })
             });
 
             let max_id_len = entries.iter().map(|e| e.id.len()).max().unwrap_or(0);
             let col_width = max_id_len + 2;
-            let indent_len = 2 + col_width;
-            let indent = " ".repeat(indent_len);
 
             for entry in entries.iter() {
                 out.push_str("  ");
@@ -172,14 +184,8 @@ impl<'a> HelpRenderer<'a> {
                 }
                 out.push_str(entry.summary);
                 out.push('\n');
-
-                if let Some(syntax) = entry.syntax {
-                    out.push_str(&indent);
-                    out.push_str("Usage: ");
-                    out.push_str(syntax);
-                    out.push('\n');
-                }
             }
+            out.push('\n');
         }
 
         // 4. OPTIONS BLOCK

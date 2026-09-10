@@ -41,7 +41,7 @@ chmod +x .git/hooks/pre-commit
 | Module(s) | Role |
 |-----------|------|
 | `app` | `AppBuilder`, `App::run`, dispatch |
-| `command`, `command::chat` | `Command`, registry, `chat` |
+| `command`, `command::chat` | `Command`, registry, categorized root-help metadata and ordering, `chat` |
 | `command_surface`, `command_surface::tool_bridge` | Command→tool schemas + shared tool invocation bridge (chat / MCP) |
 | `parser`, `spec` | argv → args; `CommandPath`, `CommandSpec` |
 | `plugin` | registry TOML / manifests |
@@ -55,7 +55,7 @@ chmod +x .git/hooks/pre-commit
 
 Also: `auth` (feature `auth`) — `TokenProvider` trait, `AccessToken`, `AuthError`, `AuthenticatedHttpClient`, four auto-registered `auth` commands; companion crate `cli-framework-oidc` provides `OidcClient` (feature `client`) and `oidc_validation_layer` (feature `server`); `data_source`; `observability`, `testkit` behind features; `config` (feature `config`) — `ConfigBackend`/`ConfigStore`/`ConfigHandle` (spec 016); `FileBackend` always, `RegistryBackend` on Windows only; `config::manifest`/`Policy`/`resolution` (feature `config`, spec 021) — the plain-JSON config manifest (+ `#[derive(ConfigManifest)]`), the org `Policy` document, and the enforced-veto resolver, all networking-free; `config::managed` (feature `config-managed`, implies `config`+`auth`) — `PolicyClient`/`RoamingConfigClient` over `AuthenticatedHttpClient`; four auto-registered `config` commands (`show`/`manifest`/`profile`/`refresh`, feature `config-managed`) — spec 021's "Command surface", wired via `AppBuilder::with_config_manifest`/`with_policy_client` and `AppContext::opt_config_manifest`/`opt_policy_client`; `config::service` (feature `config-service`, implies `config`+`api-server`, spec 022) — the server side: `config_service_router` (self-authenticating via a crate-local `CallerIdentity` trait, never `ApiServerBuilder::auth()`), `PolicyStore`/`UserConfigStore` traits with `FsPolicyStore`/`InMemoryUserConfigStore` (tests/dev) and `PgPolicyStore`/`PgUserConfigStore` (`sqlx-core`+`sqlx-postgres` directly, never the `sqlx` facade) implementations, plus a hand-rolled SQL migration runner.
 
-**Flow:** `AppBuilder` registers commands → `run` resolves id + `CommandArgs` → `await` `execute` on `AppContext`. Tool surfaces (chat / MCP) adapt inputs into `command_surface::tool_bridge` for shared parsing/validation/gating/dispatch.
+**Flow:** `AppBuilder` registers commands, groups, help ordering, and built-ins into one registry → `run` resolves id + `CommandArgs` → `await` `execute` on `AppContext`. Help, completion, command-spec export, chat, and MCP read the same frozen registry. Tool surfaces (chat / MCP) adapt inputs into `command_surface::tool_bridge` for shared parsing/validation/gating/dispatch.
 
 **Externals (summary):** `Cargo.toml` — e.g. `tokio`, `reqwest`, `clap`, `serde`, `ailoop-core`, `aikit-agent`; optional `comfy-table`, `indicatif`.
 

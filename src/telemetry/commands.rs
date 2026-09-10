@@ -782,6 +782,7 @@ pub(crate) fn register_telemetry_commands(
             GroupMetadata {
                 summary: "Inspect and control this application's telemetry",
                 hidden: false,
+                ..Default::default()
             },
         )
         .map_err(|e| anyhow::anyhow!("{}", e))?;

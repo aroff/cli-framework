@@ -46,6 +46,7 @@ pub struct AppBuilder {
     app_git_sha_short: Option<&'static str>,
     risk_policy: crate::security::command_risk::CommandRiskPolicy,
     auto_register_completion: bool,
+    builtin_command_namespace: CommandPath,
     global_flags: Vec<ArgSpec>,
     environment_variables: EnvironmentVariableRegistry,
     #[cfg(feature = "doctor")]
@@ -121,6 +122,7 @@ impl AppBuilder {
             app_git_sha_short: None,
             risk_policy: crate::security::command_risk::CommandRiskPolicy::default(),
             auto_register_completion: true,
+            builtin_command_namespace: CommandPath::default(),
             global_flags: Vec::new(),
             environment_variables: EnvironmentVariableRegistry::new(),
             #[cfg(feature = "doctor")]
@@ -311,6 +313,33 @@ impl AppBuilder {
     /// Disable auto-registration of the built-in `completion` command.
     pub fn without_completion(mut self) -> Self {
         self.auto_register_completion = false;
+        self
+    }
+
+    /// Place the framework-provided `spec` and `completion` commands below a
+    /// namespace instead of registering them at the root.
+    ///
+    /// The default namespace is empty, preserving the root-level `spec` and
+    /// `completion` paths. Register the namespace as a command group when it
+    /// needs a custom summary, category, or root-help position.
+    ///
+    /// ```no_run
+    /// # use cli_framework::prelude::*;
+    /// let builder = AppBuilder::new()
+    ///     .with_builtin_command_namespace(&CommandPath::root_for("cli"));
+    /// // Built-ins will be registered as `cli/spec` and `cli/completion`.
+    /// ```
+    pub fn with_builtin_command_namespace(mut self, namespace: &CommandPath) -> Self {
+        self.builtin_command_namespace = namespace.clone();
+        self
+    }
+
+    /// Set the preferred order of categorized root-help sections.
+    ///
+    /// Unlisted sections follow the explicitly ordered sections in
+    /// alphabetical order. The fallback `Other` section remains last.
+    pub fn with_help_section_order(mut self, sections: &[&str]) -> Self {
+        self.command_registry.set_help_section_order(sections);
         self
     }
 
@@ -762,15 +791,38 @@ impl AppBuilder {
             }
         }
 
-        // Auto-register built-in `spec` command (always-on, no feature gate)
-        if self.command_registry.get("spec").is_none() {
+        let builtin_namespace_is_command = !self.builtin_command_namespace.0.is_empty()
+            && self
+                .command_registry
+                .resolve(&self.builtin_command_namespace)
+                .is_some();
+        if builtin_namespace_is_command {
+            return Err(anyhow::anyhow!(
+                "{}",
+                crate::command::registry::RegistrationError::Collision {
+                    path: self.builtin_command_namespace.to_path_string(),
+                }
+            ));
+        }
+
+        // Auto-register built-in `spec` command (always-on, no feature gate).
+        let spec_path = self
+            .builtin_command_namespace
+            .push("spec")
+            .expect("built-in command id is a valid path segment");
+        if self.command_registry.resolve(&spec_path).is_none() {
             let spec_cmd = crate::command_surface::command::create_spec_command(
                 self.app_name,
                 self.app_version,
             );
-            self.command_registry.register(spec_cmd);
+            self.command_registry
+                .register_at(&spec_path, spec_cmd)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
         } else {
-            tracing::warn!("'spec' command already registered; skipping built-in spec command");
+            tracing::warn!(
+                path = %spec_path.to_path_string(),
+                "spec command already registered; skipping built-in spec command"
+            );
         }
 
         // Auto-register built-in `completion` command (always-on, opt-out via without_completion()).
@@ -790,9 +842,12 @@ impl AppBuilder {
                 app_name_for_completion,
                 clap_root_arc,
             );
-            let path = CommandPath::root_for("completion");
+            let path = self
+                .builtin_command_namespace
+                .push("completion")
+                .expect("built-in command id is a valid path segment");
             self.command_registry
-                .register_at(&path, completion_cmd)
+                .register_framework_completion_at(&path, completion_cmd)
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
         }
 
@@ -840,7 +895,7 @@ impl AppBuilder {
             }
         }
 
-        // Auto-register `mcp install` (hidden alias `register`) and `mcp list` when mcp-install enabled.
+        // Auto-register `mcp install` and `mcp list` when mcp-install enabled.
         #[cfg(feature = "mcp-install")]
         {
             if self.command_registry.get("mcp").is_none() {
@@ -855,9 +910,6 @@ impl AppBuilder {
             if self.command_registry.resolve(&install_path).is_none() {
                 let install_cmd =
                     crate::mcp::commands::create_mcp_install_command(app_name_for_install);
-                // `register` is a hidden alias declared on the install spec, not a
-                // second registration: registering it separately produced two
-                // equal-looking primary verbs in `mcp --help`.
                 self.command_registry
                     .register_at(&install_path, install_cmd)
                     .expect("mcp install auto-registration");
@@ -1111,11 +1163,18 @@ impl<C: AppContext> App<C> {
         }
     }
 
-    /// Returns true if any root-level command has a non-None category.
+    /// Returns true if any root-level command or group has a category.
     fn has_categories(&self) -> bool {
-        self.command_registry
+        let command_has_categories = self
+            .command_registry
             .commands()
-            .any(|cmd| cmd.category().is_some())
+            .any(|cmd| cmd.category().is_some());
+        let group_has_categories = self
+            .command_registry
+            .groups()
+            .any(|(path, metadata)| !path.contains('/') && metadata.category.is_some());
+
+        command_has_categories || group_has_categories
     }
 
     pub async fn run_with_args(&mut self, args: Vec<String>) -> Result<()> {

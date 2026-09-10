@@ -115,8 +115,13 @@ impl McpToolRegistry {
         }
         let mut tools = HashMap::new();
         for (path_str, cmd) in registry.all_tree_commands() {
-            // Built-in `completion` and `auth/*` are never exported as MCP tools.
-            if path_str == "completion" || path_str.starts_with("auth/") || path_str == "auth" {
+            // A `completion` command is never an MCP tool, regardless of which
+            // namespace contains it. Authentication commands remain excluded
+            // by their established command family.
+            if registry.is_framework_completion(path_str)
+                || path_str.starts_with("auth/")
+                || path_str == "auth"
+            {
                 continue;
             }
             if policy == McpToolExportPolicy::ExposeMcpOnly && !cmd.expose_mcp {

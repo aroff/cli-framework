@@ -46,9 +46,9 @@ mod tests {
         );
     }
 
-    /// AC9: `prog mcp register` (alias) calls the same install logic as `mcp install`.
+    /// The removed `mcp register` alias is rejected.
     #[tokio::test]
-    async fn mcp_register_alias_project_scope_succeeds() {
+    async fn mcp_register_is_rejected() {
         let tempdir = tempfile::tempdir().expect("could not create temp dir");
 
         let mut app = AppBuilder::new()
@@ -72,9 +72,8 @@ mod tests {
             .await;
 
         assert!(
-            result.is_ok(),
-            "mcp register alias (HTTP, project scope) failed: {:?}",
-            result
+            result.is_err(),
+            "removed mcp register alias unexpectedly succeeded"
         );
     }
 }

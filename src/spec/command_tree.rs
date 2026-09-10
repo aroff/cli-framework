@@ -21,6 +21,11 @@ pub struct CommandSpec {
     pub notes: Option<&'static str>,
     /// Optional grouping label for help output.
     pub category: Option<&'static str>,
+    /// Optional position within the command's root-help section.
+    ///
+    /// Lower values render first. Commands without an explicit order retain the
+    /// deterministic alphabetical ordering used by earlier releases.
+    pub help_order: Option<u32>,
     /// Usage hint shown in help, e.g. `"cmd [--flag] <pos>"`.
     pub syntax: Option<&'static str>,
 }
@@ -301,6 +306,13 @@ pub struct ExitCodeEntry {
 pub struct GroupMetadata {
     pub summary: &'static str,
     pub hidden: bool,
+    /// Optional grouping label for this group in categorized root help.
+    pub category: Option<&'static str>,
+    /// Optional position within the group's root-help section.
+    ///
+    /// Lower values render first. Groups without an explicit order retain the
+    /// deterministic alphabetical ordering used by earlier releases.
+    pub help_order: Option<u32>,
 }
 
 /// Hierarchical command path (e.g. `["cluster", "get"]` → `"cluster/get"`).
