@@ -16,8 +16,32 @@
   unknown-command error. `mcp --help`, the command registry, and exported command
   specifications expose only the canonical `install` command.
 
+### Deprecated
+
+- `AppBuilder::with_telemetry(TelemetryConfig)` and `TelemetryConfig::from_env()`:
+  deprecated in v0.6.0, removed in v0.8.0. Use `with_deployment` +
+  `with_telemetry_defaults`; the framework reads `OTEL_*` itself. The shim still
+  works, treats an app that declares no deployment as a `Service`, and exports
+  through the pre-0.6.0 pipeline without the redacting boundary.
+
 ### Added
 
+- **Default telemetry (spec 025, ADRs 0076–0079)**: every app with the
+  `telemetry` feature gets a person-controlled telemetry level (`off` < `usage`
+  < `diagnostic` < `debug`), a catalogue of named probes with `telemetry info`
+  describing what each one sends, a redacting export boundary, the
+  `<APP>_TELEMETRY_DISABLED=1` / `OTEL_SDK_DISABLED=true` / `DO_NOT_TRACK=1`
+  kill switches, a framework-owned settings file
+  (`<config_dir>/<app>/telemetry.<json|toml>`), a first-run notice, six
+  `doctor` checks, and — on `EndUser` deployments — a built-in `telemetry`
+  command group (`status`/`info`/`set`/`enable`/`disable`/`reset`). New
+  `AppBuilder` methods: `with_deployment`, `with_telemetry_defaults`,
+  `with_telemetry_ops`, `with_telemetry_identity`, `with_telemetry_attrs`,
+  `with_telemetry_never`, plus the test-only `with_telemetry_config_dir`.
+  `Deployment`, `TelemetryDefaults` and `Identity` are re-exported at the crate
+  root. The `telemetry` feature now implies `config` and `doctor`. Consumer
+  documentation: `docs/telemetry.md`. The feature stays opt-in; adding it to
+  the default feature set is planned for v0.7.0.
 - **OS-native keychain `SecretStore` backend**: a new `secrets-keychain` feature (implies
   `secrets`) adding `KeychainSecretStore` under `cli_framework::secrets::keychain`, backed by
   the `keyring` crate (v4, its `v1` compatibility API) — Windows Credential Manager, macOS

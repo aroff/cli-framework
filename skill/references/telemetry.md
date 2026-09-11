@@ -1,157 +1,127 @@
 # Telemetry (OpenTelemetry)
 
-`cli_framework::telemetry` — traces + metrics over OTLP, behind the `telemetry`
-feature (implies `observability`). Off by default; a no-op until you opt in.
+`cli_framework::telemetry`, behind the `telemetry` feature (implies
+`observability`, `config`, `doctor`). Full reference: `docs/telemetry.md` in
+the cli-framework source. This file is the consumer's short version.
 
-## Enable it
+## What you get with no code
 
-```toml
-[dependencies]
-cli-framework = { version = "...", features = ["telemetry"] }
-```
+Every dispatch (CLI, chat, MCP, `version`) opens a `cli.command` span and
+records `cli.command.invocations` / `cli.command.duration_ms` tagged
+`{command, surface, status}`. A catalogue of named probes is gated by a
+telemetry level — `off` < `usage` < `diagnostic` < `debug` — and everything
+crosses a redacting export boundary before it leaves the process.
+
+Resolution order: author defaults → recommended policy → settings file →
+`<APP>_TELEMETRY_*` env → flags → builder overrides → enforced policy. Kill
+switches beat all of it: `<APP>_TELEMETRY_DISABLED=1`, `OTEL_SDK_DISABLED=true`,
+`DO_NOT_TRACK=1`. There is no `telemetry.enabled` key; the level is the switch.
+
+## Declare the deployment — the one decision that matters
 
 ```rust
 use cli_framework::app::AppBuilder;
-use cli_framework::telemetry::TelemetryConfig;
+use cli_framework::{Deployment, TelemetryDefaults};
 
 let app = AppBuilder::new()
     .with_version("myapp", env!("CARGO_PKG_VERSION"))
-    .with_telemetry(TelemetryConfig::from_env())   // no-op until OTEL_EXPORTER_OTLP_ENDPOINT is set
+    .with_deployment(Deployment::Service)          // or EndUser { privacy_url: Some(..) }
+    .with_telemetry_defaults(TelemetryDefaults {
+        endpoint: Some("http://collector:4318".into()),
+        ..Default::default()
+    })
     .build(ctx)?;
 ```
 
-Servers use `ApiServerBuilder::with_telemetry(config, service_name, service_version)`.
+| | `EndUser` (default) | `Service` |
+|---|---|---|
+| Default level | `off`; first-run notice on stderr | `diagnostic` once an endpoint is set, else `off`; no notice |
+| Who sets the level | the person: `myapp telemetry set <level>` | the operator: env / config file |
+| Clamp | env, flags and builder can lower the level, never raise it | none |
+| `telemetry` command group | `status` / `info` / `set` / `enable` / `disable` / `reset` | not registered |
+| Sampling | always full | `OTEL_TRACES_SAMPLER_ARG`, else `TelemetryDefaults::sample_ratio` |
+| Shutdown flush | 500 ms budget; exit code never changed | full, including `SIGTERM` |
 
-## The one trap that matters: subscriber ownership
+A standalone `ApiServerBuilder` defaults to `Service`. The framework reads
+`OTEL_EXPORTER_OTLP_ENDPOINT` / `_HEADERS` / `OTEL_TRACES_SAMPLER_ARG` itself;
+`TelemetryDefaults` fields are defaults those variables override. `headers` is
+a `SecretString`: never written to disk, never printed.
 
-`with_telemetry()` works by installing a process-wide `tracing` subscriber. If
-your `main()` (or any dependency) installs its own subscriber **first** —
-`cli_framework::init_default_logging()`, a hand-rolled `tracing_subscriber::registry().init()`,
-anything — `with_telemetry()` cannot attach the OTel bridge. It prints a
-warning to **stderr** (deliberately not `tracing::warn!`; it doesn't own the
-subscriber, so a `tracing` event could be filtered out and never seen) and
-silently exports nothing. The tracer/meter providers are still installed
-globally, so spans are *created* and just never leave the process — no error,
-no crash, just an empty collector.
+**Deprecated (v0.6.0, removed v0.8.0):** `with_telemetry(TelemetryConfig)` and
+`TelemetryConfig::from_env()`. The shim still works, is treated as `Service`,
+and bypasses the redacting boundary — migrate.
 
-```
-cli-framework telemetry: a global `tracing` subscriber is already installed,
-so OpenTelemetry spans will NOT be exported.
-```
-
-**Fix**: let the framework own the subscriber. Call `init_default_logging()`
-(or any manual subscriber setup) **only** when `TelemetryConfig::from_env().is_active()`
-is `false` — no endpoint configured means the framework installs nothing, and
-you'd otherwise lose all logging.
-
-If your app must own its own subscriber (composing multiple layers of its
-own), use `init_batch_without_subscriber` + `otel_layer` instead of
-`with_telemetry()`:
+## Author API — only what the author knows
 
 ```rust
-let (handle, guard) = cli_framework::telemetry::init::init_batch_without_subscriber(
-    &cfg, "svc", "1.0",
-).expect("telemetry inactive");
-tracing_subscriber::registry()
-    .with(my_fmt_layer)
-    .with(cli_framework::telemetry::init::otel_layer(&guard))
-    .init();
+use std::sync::Arc;
+use cli_framework::Identity;
+use cli_framework::telemetry::{ProbeSpec, TelemetryLevel};
+
+static OPS: &[ProbeSpec] = &[ProbeSpec {
+    id: "sync.batch",
+    min_level: TelemetryLevel::Diagnostic,
+    summary: "Batch synchronisation",
+    sends: "Record count and whether the batch succeeded",   // shown by `telemetry info`
+}];
+
+let builder = builder
+    .with_telemetry_ops(OPS)                                  // validated at build(); bad or duplicate id = build error
+    .with_telemetry_attrs(vec!["app.tenant_kind".into()])     // app attrs are dropped unless allowlisted
+    .with_telemetry_never(vec!["employee_id".into()])         // never-list beats the allowlist
+    .with_telemetry_identity(Arc::new(|_ctx| {                // called only when attribution = identified
+        Some(Identity { enduser_id: Some("u-123".into()), tenant: Some("acme".into()) })
+    }));
 ```
 
-## What you get automatically
+In a handler: `ctx.telemetry().counter("myapp.x").add(1, &[])` /
+`.histogram("myapp.ms").record(v, &[])` — a no-op when telemetry is off.
+`SpanHandle::set_attr` only records keys declared at the span's callsite;
+`record_error` works.
 
-Every command dispatch — CLI, chat, MCP, and the built-in `version` command —
-opens a `cli.command` span (`cli.command.path`, `cli.invocation.surface`,
-arg count/names) and records two metrics tagged `{command, surface, status}`:
-the `cli.command.invocations` counter and `cli.command.duration_ms` histogram.
-No handler code required.
+## Logging: hold the guard
 
-`ApiServerBuilder` wraps every HTTP request in an `http.request` server span
-(method, matched route pattern — never the concrete path, to avoid one
-operation name per resource id). `/healthz`/`/readyz` are deliberately not
-wrapped, or every kubelet probe would dominate every trace view.
+```rust
+let _guard = cli_framework::telemetry::install_default_logging();   // in main(), before build
+```
 
-**Do not add your own request span** in a handler — it nests inside the
-framework's span rather than replacing it. Attach detail with `tracing::info!`
-inside the handler; the event lands on the enclosing `http.request` span.
+The framework attaches the OTel layer to that subscriber once the policy is
+resolved. If your app installs an unrelated global subscriber instead, traces
+cannot be exported: one stderr warning, a `telemetry.subscriber` doctor
+finding, metrics only. Never call `tracing_subscriber::...::init()` yourself.
 
-## Distributed tracing (context propagation)
+## Distributed tracing
 
-Inbound `traceparent`/`tracestate` on an `ApiServerBuilder` request
-automatically becomes the parent of that request's `http.request` span, so a
-call arriving from another cli-framework service continues that trace instead
-of rooting a new one. A request with no header still gets a fresh root — this
-never welds an untraced caller onto someone else's trace.
-
-Outbound propagation is explicit, because the framework doesn't own your HTTP
-client:
+Inbound `traceparent` on `ApiServerBuilder` is extracted automatically; every
+request gets an `http.request` span named from the matched route pattern (do
+not add your own). Outbound is one explicit call per request:
 
 ```rust
 use cli_framework::telemetry::propagation::TracedRequestBuilder as _;
-
 let resp = client.get(url).with_trace_context().send().await?;
 ```
 
-Without this on every outbound call your service makes, `A → B → C` is three
-disconnected traces, not one — the single biggest gap in a multi-service
-platform's telemetry, and the easiest to miss since nothing errors when it's
-absent.
-
-**Baggage is not propagated.** Only `traceparent`/`tracestate`. Baggage would
-carry arbitrary caller-supplied attributes into every downstream service's
-telemetry — a quiet cross-tenant leak on any multi-tenant platform.
-
-## Authenticating to the collector
-
-```rust
-use std::collections::HashMap;
-use cli_framework::telemetry::TelemetryConfig;
-
-let mut headers = HashMap::new();
-headers.insert("authorization".into(), "Bearer <token>".into());
-let cfg = TelemetryConfig { headers, ..TelemetryConfig::from_env() };
-```
-
-Or `OTEL_EXPORTER_OTLP_HEADERS=key=value,key2=value2` (percent-encoding
-supported; first `=` splits key from value, so a base64 value's `=` padding
-survives). Sent with every OTLP request, traces and metrics both.
-`TelemetryConfig`'s `Debug` impl redacts header **values** and keeps names —
-logging a config can't leak a credential.
-
-## App-level emission
-
-```rust
-// Inside a handler, via AppContext:
-ctx.telemetry().counter("myapp.widgets_created").add(1, &[]);
-ctx.telemetry().histogram("myapp.render_ms").record(elapsed_ms, &[]);
-```
-
-`SpanHandle::set_attr` only records attributes for keys declared at the span's
-callsite — `tracing`'s fieldset is fixed at compile time, so an arbitrary key
-is silently dropped. `record_error` works: it sets pre-declared `otel.status_*`
-fields.
-
-## Protocol and signal config
-
-- **`http/protobuf` only.** `OTEL_EXPORTER_OTLP_PROTOCOL` set to anything else
-  (e.g. `grpc`) is **rejected at init** — telemetry stays off and says why on
-  stderr, rather than silently exporting over a protocol you didn't configure.
-- `traces_enabled` / `metrics_enabled` are honoured independently. Disabling
-  traces still creates spans (so propagation to downstream services keeps
-  working) — it only suppresses the exporter.
-- `logs_enabled` is reserved; no OTLP logs pipeline exists yet.
+Skip it and `A → B → C` is three traces. Baggage is never propagated.
 
 ## Testing
 
-Every test that exercises real export must be its **own `[[test]]` binary**.
-`with_telemetry()`/`init_batch()` install a process-global subscriber and
-tracer provider — a second test in the same binary exports into the first
-test's collector and asserts against an empty one. See
-`tests/integration/telemetry_end_to_end.rs` in the cli-framework source for
-the canonical shape (a `wiremock::MockServer` stubbing `POST /v1/traces` +
-`/v1/metrics`, `guard.flush()`, a ~750ms beat, then assert on bytes the
-collector actually received).
+- `AppBuilder::with_telemetry_config_dir(tmp)` — isolate the consent file;
+  never touch `XDG_CONFIG_HOME`.
+- `CliTestHarness::with_interactive_stderr(true)` — make the first-run notice
+  print; the default is `false` so tests are not tty-dependent.
+- `DO_NOT_TRACK=1` — guarantee nothing is sent.
+- Real-export tests: one `[[test]]` binary each (providers are process-global);
+  `wiremock` on `POST /v1/traces` + `/v1/metrics`, flush, assert the received
+  bytes. Always go through `AppBuilder`, never a hand-built subscriber.
 
-Never assert telemetry by building a subscriber/layer by hand in the test —
-go through `AppBuilder`/`ApiServerBuilder` for real. Hand-building the bridge
-in a test can pass while the actual binary never installs one at all.
+## Diagnosing
+
+`myapp telemetry status` (resolved level, which layer set it, endpoint), then
+`myapp doctor`: `telemetry.subscriber`, `.store`, `.endpoint` (2 s TCP probe),
+`.policy`, `.identity`, `.env` (a misspelled `<APP>_TELEMETRY_*` variable).
+
+## Limits
+
+OTLP `http/protobuf` only (`grpc` is rejected at init and telemetry stays off).
+No OTLP logs pipeline. Not every catalogued probe is wired to an emission site
+yet — `telemetry info` lists what the build *can* send.

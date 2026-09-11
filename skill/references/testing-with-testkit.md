@@ -52,6 +52,17 @@ let result = harness.run(&["deploy", "create"]).await;
 assert!(result.is_err(), "expected validation error for missing --env");
 ```
 
+Telemetry-enabled apps: isolate the consent file and make the first-run notice
+deterministic (see `telemetry.md`):
+
+```rust
+let app = AppBuilder::new()
+    .with_version("demo", "0.0.0")
+    .with_telemetry_config_dir(tmp.path())   // never the developer's real settings file
+    .build(TestCtx)?;
+let harness = CliTestHarness::new(app).with_interactive_stderr(true); // notice prints; default is false
+```
+
 ## Feature-gated test suites
 
 Cargo supports feature-gated test targets:
