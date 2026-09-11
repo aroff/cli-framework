@@ -287,36 +287,39 @@ let client = RetryableHttpClient::builder()
 
 ## 14. Telemetry (`telemetry` feature)
 
-Enable with `features = ["telemetry"]`. Every command dispatch — CLI, chat,
-MCP, and `version` — gets an automatic `cli.command` OpenTelemetry span plus
-`cli.command.invocations`/`cli.command.duration_ms` metrics, no handler code
-required:
+Enable with `features = ["telemetry"]`. Every dispatch — CLI, chat, MCP,
+`version` — gets a `cli.command` span plus `cli.command.invocations` /
+`cli.command.duration_ms`, a person-controlled level (`off` < `usage` <
+`diagnostic` < `debug`) gating a catalogue of named probes, and a redacting
+export boundary. The one decision an author must make is the deployment:
 
 ```rust
-use cli_framework::telemetry::TelemetryConfig;
+use cli_framework::{Deployment, TelemetryDefaults};
 
 let app = AppBuilder::new()
     .with_version("myapp", env!("CARGO_PKG_VERSION"))
-    .with_telemetry(TelemetryConfig::from_env())   // no-op until an OTLP endpoint is set
+    // Default is EndUser: level `off`, first-run notice, `telemetry` command group, clamp.
+    .with_deployment(Deployment::Service)
+    .with_telemetry_defaults(TelemetryDefaults {
+        endpoint: Some("http://collector:4318".into()),   // `OTEL_EXPORTER_OTLP_ENDPOINT` wins
+        ..Default::default()
+    })
     .build(ctx)?;
 ```
 
-**The one trap that matters**: `with_telemetry()` installs the process's
-`tracing` subscriber. If anything else installs one first — including this
-framework's own `init_default_logging()` — the OTel bridge cannot attach and
-export goes silently to nowhere (a warning is printed to stderr, not
-`tracing::warn!`, since the subscriber may not be listening). Call
-`init_default_logging()` only when telemetry is inactive; never both.
+The framework reads `OTEL_*` itself; `with_telemetry(TelemetryConfig::from_env())`
+is deprecated (v0.6.0, removed v0.8.0). Kill switches: `<APP>_TELEMETRY_DISABLED=1`,
+`OTEL_SDK_DISABLED=true`, `DO_NOT_TRACK=1`.
 
-Outbound distributed tracing requires one explicit call per HTTP request —
-`with_trace_context()` on a `reqwest::RequestBuilder`
-(`cli_framework::telemetry::propagation::TracedRequestBuilder`) — inbound
-extraction on `ApiServerBuilder` is automatic. Skip it and every service
-downstream produces a disconnected trace instead of joining the caller's.
+**Two traps**: (1) never install your own `tracing` subscriber — call
+`cli_framework::telemetry::install_default_logging()` and hold the guard, or
+the OTel layer cannot attach and traces silently never leave; (2) outbound
+distributed tracing is one explicit `.with_trace_context()` per `reqwest`
+request, or every downstream service starts a disconnected trace. In tests,
+isolate consent with `with_telemetry_config_dir(tmp)`.
 
-Full detail — subscriber-ownership trap, propagation, OTLP auth headers,
-protocol/signal config, app-level `ctx.telemetry()` usage, testing pattern —
-in `skill/references/telemetry.md`.
+Deployment table, author API (custom probes, attributes, identity), testing
+and diagnosing — `skill/references/telemetry.md`.
 
 ## 15. Testkit
 

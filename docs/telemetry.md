@@ -369,6 +369,84 @@ the process. If the application installs an unrelated global subscriber
 instead, the framework cannot attach the layer: it prints one warning, records
 a `telemetry.subscriber` doctor finding, and exports metrics only.
 
+### Servers and distributed tracing
+
+A long-running server declares `Deployment::Service`; a standalone
+`ApiServerBuilder` defaults to it. With an endpoint configured a `Service`
+starts at `diagnostic` (an end-user install starts at `off`), and the operator
+sets the level through the environment or the configuration file — there is no
+`telemetry` command group and no clamp. Every HTTP request is wrapped in an
+`http.request` server span named from the *matched route pattern*, never the
+concrete path, so one resource id does not become one operation name; a
+request that matched nothing reports the method alone. Do not open a request
+span of your own in a handler: it nests inside the framework's instead of
+replacing it. Attach detail with `tracing::info!`; the event lands on the
+enclosing span.
+
+Inbound `traceparent`/`tracestate` headers are extracted automatically, so a
+call from another cli-framework service continues that trace. A request with
+no header gets a fresh root. Outbound propagation is explicit, because the
+framework does not own your HTTP client:
+
+```rust
+use cli_framework::telemetry::propagation::TracedRequestBuilder as _;
+
+let resp = client.get(url).with_trace_context().send().await?;
+```
+
+Without that call on every outbound request, `A → B → C` is three traces, not
+one — and nothing errors when it is missing. Baggage is never propagated; it
+would carry caller-supplied attributes into every downstream service's
+telemetry.
+
+### Emitting from a handler
+
+`ctx.telemetry()` is the app-level handle. It exists on every context, in
+every build, and is a no-op when telemetry is off:
+
+```rust
+ctx.telemetry().counter("myapp.widgets_created").add(1, &[]);
+ctx.telemetry().histogram("myapp.render_ms").record(elapsed_ms, &[]);
+```
+
+Instruments emitted this way ride the same pipeline as the built-in metrics.
+`SpanHandle::set_attr` records only keys declared at the span's callsite —
+`tracing` fixes a span's fieldset at compile time, so an undeclared key is
+dropped — and `record_error` sets the span's OpenTelemetry status to `Error`.
+
+### Testing
+
+Two knobs exist for tests and nothing else:
+
+- `AppBuilder::with_telemetry_config_dir(dir)` points the settings file at a
+  temporary directory, so a test never reads or writes the developer's real
+  consent file and never has to touch `XDG_CONFIG_HOME`.
+- `CliTestHarness::with_interactive_stderr(bool)` declares whether stderr is a
+  terminal, which is what decides whether the first-run notice prints. It
+  defaults to `false`, so a notice test cannot pass in a terminal and fail in
+  CI.
+
+Set `DO_NOT_TRACK=1` in a test that must be sure nothing is sent; it is
+honoured before any file is read or any id minted. A test that exercises real
+export must be its own `[[test]]` binary: the tracer and meter providers are
+process-global, so a second export test in the same binary reports into the
+first one's collector. `tests/integration/telemetry_end_to_end.rs` is the
+shape — a `wiremock` server stubbing `POST /v1/traces` and `/v1/metrics`, a
+flush, then assertions on the bytes the collector received. Go through
+`AppBuilder` for real: a subscriber assembled by hand in a test can pass while
+the binary never installs one.
+
+### Migrating from `with_telemetry`
+
+`AppBuilder::with_telemetry(TelemetryConfig)` and `TelemetryConfig::from_env()`
+are deprecated in v0.6.0 and removed in v0.8.0. Replace them with
+`with_deployment(Deployment::Service)` plus `with_telemetry_defaults`; the
+framework reads `OTEL_*` itself. Until then the old call still works, with two
+things to know: an app that calls it and declares no deployment is treated as a
+`Service` (every existing caller configured a collector by hand, which is a
+server), and it exports through the pre-v0.6.0 pipeline, *bypassing* the
+redacting boundary — nothing in section 5 applies until the app migrates.
+
 ### Diagnosing
 
 Six doctor checks report on telemetry, and `doctor` runs them like any other:
@@ -479,3 +557,16 @@ telemetry"; `telemetry.env` catches the misspelled `<APP>_TELEMETRY_*` variable
 that would otherwise look like a setting that simply did not take.
 `telemetry status` is the faster first answer: it prints the resolved level,
 the layer it came from, and the endpoint in one screen.
+
+## 8. Known limitations
+
+- OTLP `http/protobuf` is the only wire protocol.
+  `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` is rejected at initialisation and
+  telemetry stays off, with the reason on stderr.
+- There is no OTLP logs pipeline. `TelemetryConfig::logs_enabled`,
+  `record_arg_values` and `arg_value_allowlist` are reserved; `traces_enabled`
+  and `metrics_enabled` are honoured, and disabling traces still creates spans
+  so propagation keeps working.
+- Fewer probes emit than the catalogue declares. `telemetry info` lists every
+  probe the build *can* send; some are registered but not yet wired to an
+  emission site. The wired share is pinned by a test and grows per release.
