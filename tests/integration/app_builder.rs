@@ -972,3 +972,102 @@ mod testkit_version_tests {
         assert_eq!(output.exit_code(), 0);
     }
 }
+
+// Spec 037: the framework's own telemetry variables appear in root help.
+
+#[cfg(feature = "telemetry")]
+#[test]
+fn end_user_root_help_lists_framework_telemetry_variables() {
+    let app = AppBuilder::new()
+        .with_version("my-app", "1.0.0")
+        .build(DummyCtx)
+        .unwrap();
+
+    let help = app.render_help();
+    assert!(help.contains("Environment Variables:\n"), "{help}");
+    for expected in [
+        "MY_APP_TELEMETRY_DISABLED",
+        "DO_NOT_TRACK",
+        "OTEL_SDK_DISABLED",
+        "MY_APP_TELEMETRY_LEVEL",
+        "MY_APP_TELEMETRY_<PROBE>_ENABLED",
+    ] {
+        assert!(help.contains(expected), "missing {expected}:\n{help}");
+    }
+    assert!(
+        !help.contains("MY_APP_TELEMETRY_INSTALL_ID"),
+        "install_id is state, not a setting:\n{help}"
+    );
+    assert!(
+        !help.contains("MY_APP_TELEMETRY_CLI_COMMAND"),
+        "probe switches are one pattern row, not one row per probe:\n{help}"
+    );
+}
+
+#[cfg(feature = "telemetry")]
+#[test]
+fn service_root_help_lists_otlp_variables() {
+    use cli_framework::Deployment;
+
+    let app = AppBuilder::new()
+        .with_version("svc", "1.0.0")
+        .with_deployment(Deployment::Service)
+        .build(DummyCtx)
+        .unwrap();
+
+    let help = app.render_help();
+    assert!(help.contains("OTEL_EXPORTER_OTLP_ENDPOINT"), "{help}");
+    assert!(help.contains("OTEL_EXPORTER_OTLP_HEADERS"), "{help}");
+    assert!(help.contains("SVC_TELEMETRY_DISABLED"), "{help}");
+}
+
+#[cfg(feature = "telemetry")]
+#[test]
+fn app_declared_telemetry_variable_keeps_its_own_wording() {
+    use cli_framework::spec::EnvVarEntry;
+
+    let app = AppBuilder::new()
+        .with_version("myapp", "1.0.0")
+        .register_env_var(EnvVarEntry {
+            name: "MYAPP_TELEMETRY_LEVEL",
+            description: "Chosen by myapp",
+        })
+        .unwrap()
+        .build(DummyCtx)
+        .unwrap();
+
+    let help = app.render_help();
+    assert!(help.contains("Chosen by myapp"), "{help}");
+    assert!(
+        !help.contains("How much this application reports"),
+        "the framework wording must yield to the app's:\n{help}"
+    );
+    assert_eq!(
+        help.matches("MYAPP_TELEMETRY_LEVEL").count(),
+        1,
+        "one row for the name, not two:\n{help}"
+    );
+}
+
+#[cfg(all(feature = "telemetry", feature = "testkit"))]
+#[tokio::test]
+async fn clap_root_help_lists_framework_telemetry_variables() {
+    let app = AppBuilder::new()
+        .with_version("myapp", "1.2.3")
+        .build(DummyCtx)
+        .unwrap();
+
+    let mut harness = CliTestHarness::new(app);
+    let output = harness.run(&["myapp", "--help"]).await;
+
+    assert!(
+        output.stdout().contains("MYAPP_TELEMETRY_LEVEL"),
+        "{}",
+        output.stdout()
+    );
+    assert!(
+        output.stdout().contains("DO_NOT_TRACK"),
+        "{}",
+        output.stdout()
+    );
+}
