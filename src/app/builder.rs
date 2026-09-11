@@ -1346,6 +1346,21 @@ impl AppBuilder {
         self.environment_variables
             .register_commands(&self.command_registry)?;
 
+        // Spec 037: the framework's own telemetry variables, listed in root
+        // help beside the application's. Registered *after* the app's and the
+        // commands' so that an app which documents one of these names itself
+        // keeps its own wording. The same name the startup scan uses, so the
+        // variables listed are the ones that will be read.
+        #[cfg(feature = "telemetry")]
+        {
+            let app = self.meta.as_ref().map(|m| m.name).unwrap_or(self.app_name);
+            for (name, description) in crate::telemetry::env::help_entries(app, &published_manifest)
+            {
+                self.environment_variables
+                    .register_if_absent(name, description)?;
+            }
+        }
+
         let mut clap_root = crate::app::clap_adapter::build_clap_root(
             self.meta.as_ref(),
             &self.command_registry,

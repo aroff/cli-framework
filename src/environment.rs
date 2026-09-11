@@ -2,6 +2,7 @@
 
 use crate::command::CommandRegistry;
 use crate::spec::EnvVarEntry;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 /// Registry of environment variables exposed in root help.
@@ -10,7 +11,7 @@ use std::collections::BTreeMap;
 /// than once is idempotent; conflicting descriptions are rejected.
 #[derive(Debug, Clone, Default)]
 pub struct EnvironmentVariableRegistry {
-    entries: BTreeMap<&'static str, &'static str>,
+    entries: BTreeMap<Cow<'static, str>, Cow<'static, str>>,
 }
 
 impl EnvironmentVariableRegistry {
@@ -20,28 +21,60 @@ impl EnvironmentVariableRegistry {
 
     /// Declare an environment variable supported by the application.
     pub fn register(&mut self, entry: EnvVarEntry) -> Result<(), EnvironmentVariableError> {
-        if entry.name.trim().is_empty() {
+        self.insert(
+            Cow::Borrowed(entry.name),
+            Cow::Borrowed(entry.description),
+            true,
+        )
+        .map(|_| ())
+    }
+
+    /// Declare a variable the *framework* honours, without displacing the
+    /// application's own declaration of the same name.
+    ///
+    /// The framework's telemetry variables are computed from the app name at
+    /// build time, so they arrive as owned strings rather than the `'static`
+    /// literals of [`EnvVarEntry`]. An application that has already
+    /// registered the name keeps its own description — its author knows more
+    /// about how the app uses the variable than the framework does — so this
+    /// never reports [`EnvironmentVariableError::ConflictingDescription`].
+    /// Returns whether a new entry was added.
+    pub fn register_if_absent(
+        &mut self,
+        name: impl Into<Cow<'static, str>>,
+        description: impl Into<Cow<'static, str>>,
+    ) -> Result<bool, EnvironmentVariableError> {
+        self.insert(name.into(), description.into(), false)
+    }
+
+    fn insert(
+        &mut self,
+        name: Cow<'static, str>,
+        description: Cow<'static, str>,
+        reject_conflict: bool,
+    ) -> Result<bool, EnvironmentVariableError> {
+        if name.trim().is_empty() {
             return Err(EnvironmentVariableError::EmptyName);
         }
-        if entry.description.trim().is_empty() {
+        if description.trim().is_empty() {
             return Err(EnvironmentVariableError::EmptyDescription {
-                name: entry.name.to_string(),
+                name: name.into_owned(),
             });
         }
 
-        if let Some(existing) = self.entries.get(entry.name) {
-            if *existing != entry.description {
+        if let Some(existing) = self.entries.get(name.as_ref()) {
+            if reject_conflict && *existing != description {
                 return Err(EnvironmentVariableError::ConflictingDescription {
-                    name: entry.name.to_string(),
-                    existing: (*existing).to_string(),
-                    incoming: entry.description.to_string(),
+                    name: name.into_owned(),
+                    existing: existing.to_string(),
+                    incoming: description.into_owned(),
                 });
             }
-            return Ok(());
+            return Ok(false);
         }
 
-        self.entries.insert(entry.name, entry.description);
-        Ok(())
+        self.entries.insert(name, description);
+        Ok(true)
     }
 
     /// Add environment declarations from every registered command.
@@ -65,11 +98,11 @@ impl EnvironmentVariableRegistry {
         self.entries.len()
     }
 
-    /// Iterate over declarations in stable name order.
-    pub fn entries(&self) -> impl Iterator<Item = EnvVarEntry> + '_ {
+    /// Iterate over `(name, description)` pairs in stable name order.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &str)> + '_ {
         self.entries
             .iter()
-            .map(|(name, description)| EnvVarEntry { name, description })
+            .map(|(name, description)| (name.as_ref(), description.as_ref()))
     }
 
     /// Render the section used by both framework and Clap root help.
@@ -139,7 +172,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(registry.len(), 2);
-        let names: Vec<_> = registry.entries().map(|entry| entry.name).collect();
+        let names: Vec<_> = registry.entries().map(|(name, _)| name).collect();
         assert_eq!(names, ["A_TOKEN", "Z_TOKEN"]);
     }
 
@@ -164,5 +197,62 @@ mod tests {
             error,
             EnvironmentVariableError::ConflictingDescription { .. }
         ));
+    }
+
+    #[test]
+    fn register_if_absent_keeps_the_existing_description() {
+        let mut registry = EnvironmentVariableRegistry::new();
+        registry
+            .register(EnvVarEntry {
+                name: "APP_TELEMETRY_LEVEL",
+                description: "The app's own wording",
+            })
+            .unwrap();
+
+        let added = registry
+            .register_if_absent(
+                "APP_TELEMETRY_LEVEL".to_string(),
+                "Framework wording".to_string(),
+            )
+            .unwrap();
+
+        assert!(
+            !added,
+            "an existing name must be left alone, not reported as added"
+        );
+        assert_eq!(registry.len(), 1);
+        let (_, description) = registry.entries().next().unwrap();
+        assert_eq!(description, "The app's own wording");
+    }
+
+    #[test]
+    fn register_if_absent_adds_owned_names_and_renders_them() {
+        let mut registry = EnvironmentVariableRegistry::new();
+        let added = registry
+            .register_if_absent(format!("{}_HOME", "DEMO"), "Data directory")
+            .unwrap();
+
+        assert!(added);
+        assert_eq!(registry.len(), 1);
+        assert_eq!(
+            registry.render_help(),
+            "Environment Variables:\n  DEMO_HOME  Data directory\n"
+        );
+    }
+
+    #[test]
+    fn register_if_absent_validates_like_register() {
+        let mut registry = EnvironmentVariableRegistry::new();
+        assert_eq!(
+            registry.register_if_absent("  ", "x").unwrap_err(),
+            EnvironmentVariableError::EmptyName
+        );
+        assert_eq!(
+            registry.register_if_absent("NAME", " ").unwrap_err(),
+            EnvironmentVariableError::EmptyDescription {
+                name: "NAME".to_string()
+            }
+        );
+        assert!(registry.is_empty());
     }
 }

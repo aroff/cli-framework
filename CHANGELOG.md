@@ -15,6 +15,10 @@
   hidden `register` alias is also removed, so `mcp register` now returns an
   unknown-command error. `mcp --help`, the command registry, and exported command
   specifications expose only the canonical `install` command.
+- `EnvironmentVariableRegistry::entries()` now yields `(&str, &str)` pairs
+  instead of `EnvVarEntry` values, so the registry can hold names computed at
+  build time (the framework's `<APP>_TELEMETRY_*` variables). `register` and
+  `EnvVarEntry` are unchanged.
 
 ### Deprecated
 
@@ -42,6 +46,14 @@
   root. The `telemetry` feature now implies `config` and `doctor`. Consumer
   documentation: `docs/telemetry.md`. The feature stays opt-in; adding it to
   the default feature set is planned for v0.7.0.
+- **Root `--help` lists the framework's telemetry variables** (spec 037): with
+  the `telemetry` feature, the *Environment Variables* section of root help now
+  includes the three kill switches, `<APP>_TELEMETRY_LEVEL` / `_ATTRIBUTION` /
+  `_ENDPOINT`, one `<APP>_TELEMETRY_<PROBE>_ENABLED` pattern row for the probe
+  switches, and the `OTEL_*` variables the resolution reads. They are derived
+  from the published manifest, so an app's operational probes are covered. An
+  application that has registered one of these names keeps its own description.
+  `EnvironmentVariableRegistry::register_if_absent` is the new entry point.
 - **OS-native keychain `SecretStore` backend**: a new `secrets-keychain` feature (implies
   `secrets`) adding `KeychainSecretStore` under `cli_framework::secrets::keychain`, backed by
   the `keyring` crate (v4, its `v1` compatibility API) — Windows Credential Manager, macOS

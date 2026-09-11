@@ -16,6 +16,9 @@ Resolution order: author defaults → recommended policy → settings file →
 `<APP>_TELEMETRY_*` env → flags → builder overrides → enforced policy. Kill
 switches beat all of it: `<APP>_TELEMETRY_DISABLED=1`, `OTEL_SDK_DISABLED=true`,
 `DO_NOT_TRACK=1`. There is no `telemetry.enabled` key; the level is the switch.
+Root `--help` lists all of these under *Environment Variables* (probe switches
+as one `<APP>_TELEMETRY_<PROBE>_ENABLED` row); an app's own `register_env_var`
+wording wins on a shared name.
 
 ## Declare the deployment — the one decision that matters
 

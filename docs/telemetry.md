@@ -499,6 +499,13 @@ The standard OpenTelemetry variables are honoured too:
 `OTEL_TRACES_SAMPLER_ARG`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` and
 `OTEL_SDK_DISABLED`.
 
+All of these are listed in the application's root `--help`, under *Environment
+Variables*, beside the variables the application declares itself. The probe
+switches appear as one pattern row, `<APP>_TELEMETRY_<PROBE>_ENABLED`; the
+probe ids come from `telemetry info` or the config manifest. An application
+that registers one of these names with `register_env_var` keeps its own
+wording.
+
 On a `Service` deployment these take effect directly. On an `EndUser`
 installation the clamp applies: the effective telemetry level is the lower of
 the full resolution and the resolution *without* environment variables, flags
