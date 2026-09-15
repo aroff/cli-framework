@@ -81,6 +81,16 @@ impl<'a> AppContext for CliAppContextWrapper<'a> {
         let _ = writeln!(stdout, "{}", s);
     }
 
+    fn try_framework_println(&self, s: &str) -> std::io::Result<()> {
+        if let Some(ref buf) = self.env.stdout_capture {
+            let mut lock = buf.lock().unwrap_or_else(|error| error.into_inner());
+            lock.extend_from_slice(s.as_bytes());
+            lock.push(b'\n');
+            return Ok(());
+        }
+        crate::app::context::write_output_line(&mut std::io::stdout().lock(), s)
+    }
+
     #[cfg(feature = "testkit")]
     fn drain_output(&self) -> String {
         if let Some(ref buf) = self.env.stdout_capture {
@@ -190,9 +200,40 @@ mod tests {
 
     /// Finding 5: CliAppContextWrapper must override drain_output so that
     /// content written via framework_println is returned, not silently lost.
-    #[test]
-    fn cli_app_context_wrapper_drain_output_returns_captured_content() {
-        let registry = CommandRegistry::new();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cli_app_context_wrapper_drain_output_returns_captured_content() {
+        use crate::ailoop::AiloopContext;
+        use crate::app::context::CommandRegistryContext;
+        let mut registry = CommandRegistry::new();
+        let mut nested = Command {
+            id: "nested".into(),
+            spec: Arc::new(crate::spec::command_tree::CommandSpec::default()),
+            validator: None,
+            execute: Arc::new(|ctx, _| {
+                Box::pin(async move {
+                    #[cfg(feature = "auth")]
+                    assert!(ctx.opt_token_provider().is_none());
+                    let _ = ctx;
+                    Ok(())
+                })
+            }),
+            expose_mcp: false,
+            expose_chat: false,
+            meta: None,
+            visibility: None,
+        };
+        assert!(validate_typed_args(&nested, &HashMap::new()).is_empty());
+        registry.register(nested.clone());
+        nested.validator = Some(Arc::new(|_| {
+            vec![Diagnostic {
+                code: "TEST",
+                category: crate::parser::diagnostic::DiagnosticCategory::Validation,
+                message: "expected custom validator".into(),
+                suggestion: None,
+                span: None,
+            }]
+        }));
+        assert_eq!(validate_typed_args(&nested, &HashMap::new()).len(), 1);
         let ailoop_client: Option<AiloopClient> = None;
         let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
         let global_args_map: HashMap<String, ArgValue> = HashMap::new();
@@ -217,7 +258,7 @@ mod tests {
             policy_client: None,
         };
         let mut inner = DummyCtx;
-        let wrapper = CliAppContextWrapper::new(&mut inner, env);
+        let mut wrapper = CliAppContextWrapper::new(&mut inner, env);
 
         wrapper.framework_println("hello world");
         wrapper.framework_println("line two");
@@ -227,6 +268,47 @@ mod tests {
 
         // Second drain must be empty — buffer was consumed.
         assert!(wrapper.drain_output().is_empty());
+        wrapper.try_framework_println("fallible 世界").unwrap();
+        assert_eq!(wrapper.drain_output(), "fallible 世界\n");
+        assert!(wrapper.opt_registry().is_some());
+        assert!(wrapper.opt_global_args().unwrap().is_empty());
+        assert!(wrapper.ailoop_client().is_none());
+        assert!(wrapper.opt_telemetry_arc().is_none());
+        wrapper.telemetry().event("contract", &[]);
+        wrapper.env.telemetry = Some(Arc::new(crate::telemetry::NoopTelemetry));
+        assert!(wrapper.opt_telemetry_arc().is_some());
+        wrapper.telemetry().event("contract", &[]);
+        #[cfg(feature = "auth")]
+        assert!(wrapper.opt_token_provider().is_none());
+        #[cfg(feature = "config")]
+        {
+            assert!(wrapper.opt_config_handle().is_none());
+            assert!(wrapper.opt_config_manifest().is_none());
+        }
+        #[cfg(feature = "config-managed")]
+        assert!(wrapper.opt_policy_client().is_none());
+        #[cfg(feature = "telemetry")]
+        assert!(wrapper.opt_probe_registry().is_some());
+        assert!(wrapper
+            .execute_command_sync("missing", HashMap::new())
+            .is_err());
+        wrapper
+            .execute_command_sync("nested", HashMap::new())
+            .unwrap();
+        wrapper.env.stdout_capture = None;
+        assert!(wrapper.drain_output().is_empty());
+        wrapper
+            .try_framework_println("framework live flushed-output contract")
+            .unwrap();
+        wrapper.framework_println("framework legacy-output contract");
+        for (surface, expected) in [
+            (InvocationSurface::Cli, "cli"),
+            (InvocationSurface::Chat, "chat"),
+            (InvocationSurface::Mcp, "mcp"),
+            (InvocationSurface::Api, "api"),
+        ] {
+            assert_eq!(surface.as_str(), expected);
+        }
     }
 }
 
