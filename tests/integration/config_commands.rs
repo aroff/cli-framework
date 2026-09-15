@@ -364,6 +364,15 @@ async fn config_manifest_round_trips_the_registered_manifest() {
     assert_eq!(out.exit_code(), 0, "stderr: {}", out.stderr());
     let round_tripped: ConfigManifest =
         serde_json::from_str(out.stdout()).expect("`config manifest` stdout must be valid JSON");
+    // Postcondition: application fields survive unchanged; when compiled in,
+    // the framework-owned telemetry section is part of the published contract.
+    #[cfg(feature = "telemetry")]
+    let manifest = cli_framework::telemetry::merge_telemetry_section(
+        manifest,
+        &cli_framework::telemetry::ProbeRegistry::with_builtins(),
+        None,
+    )
+    .unwrap();
     assert_eq!(round_tripped, manifest);
 }
 

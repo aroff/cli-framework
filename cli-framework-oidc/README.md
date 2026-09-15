@@ -64,6 +64,21 @@ client never collide.
 `access_token: null` in the cache means the token has been invalidated but the refresh
 token may still be usable.
 
+### Explicit SSO logout
+
+`TokenProvider::logout()` clears local credentials only. Native applications may
+separately call `client.end_session_url(post_logout_redirect_uri, state).await`
+to prepare the issuer's advertised RP-initiated logout URL. The host opens or
+displays that URL; preparing it does not terminate SSO or clear the token cache.
+Clear local credentials independently, including when discovery fails.
+
+Return URIs must be registered with the provider. If supplying state, the host
+must validate it on return. This helper sends no bearer or refresh token and does
+not retain an ID-token hint, so the provider may request browser confirmation.
+Report logout as requested, not verified; existing access tokens may remain valid.
+Discovery requires credential-free HTTPS (loopback HTTP is allowed for tests),
+does not follow redirects, and validates the returned issuer.
+
 ## Server (`server` feature)
 
 `oidc_validation_layer` returns a Tower layer that validates `Authorization: Bearer` JWTs

@@ -105,6 +105,10 @@ pub mod pkce;
 #[cfg(feature = "client")]
 pub mod client;
 
+/// Native RP-initiated logout URL preparation; browser launch remains host-owned.
+#[cfg(feature = "client")]
+pub mod end_session;
+
 #[cfg(feature = "server")]
 pub mod server;
 
@@ -122,3 +126,65 @@ pub use types::{AudiencePolicy, OidcClaims};
 /// stable API.
 #[cfg(feature = "test-support")]
 pub mod test_support;
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+
+    /// Normalization preserves the realm path/explicit nondefault port and is idempotent.
+    #[test]
+    fn issuer_normalization_contract() {
+        for (input, expected) in [
+            (
+                "HTTPS://EXAMPLE.COM:443/realm///",
+                "https://example.com/realm",
+            ),
+            (
+                "https://example.com:8443/realm/",
+                "https://example.com:8443/realm",
+            ),
+            ("http://localhost:80/", "http://localhost"),
+            ("http://127.0.0.1:8765/", "http://127.0.0.1:8765"),
+            ("http://[::1]/", "http://[::1]"),
+        ] {
+            assert_eq!(normalize_issuer(input).unwrap(), expected);
+            assert_eq!(normalize_issuer(expected).unwrap(), expected);
+        }
+        for invalid in [
+            "relative",
+            "http://public.example",
+            "ftp://localhost",
+            "data:text/plain,x",
+        ] {
+            assert!(matches!(
+                normalize_issuer(invalid),
+                Err(OidcConfigError::InsecureIssuer(_))
+            ));
+        }
+    }
+
+    /// JWKS endpoints accept TLS or loopback HTTP, rejecting malformed/other schemes.
+    #[cfg(any(feature = "server", feature = "browser"))]
+    #[test]
+    fn jwks_transport_contract() {
+        for valid in [
+            "https://example.com/keys",
+            "http://localhost/keys",
+            "http://127.0.0.1/keys",
+            "http://[::1]/keys",
+        ] {
+            assert!(validate_jwks_uri(valid).is_ok());
+        }
+        for invalid in [
+            "relative",
+            "http://public.example/keys",
+            "ftp://localhost/keys",
+            "data:text/plain,x",
+        ] {
+            assert!(matches!(
+                validate_jwks_uri(invalid),
+                Err(OidcConfigError::InvalidJwksUri(_))
+            ));
+        }
+    }
+}

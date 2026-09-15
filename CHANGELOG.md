@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- OIDC client `end_session_url` prepares a validated, discovered RP-initiated
+  logout URL without opening a browser, sending tokens, or clearing credentials.
+  Native hosts retain responsibility for local logout and callback validation.
+
 ### Changed
 
 - Added categorized group metadata and explicit help ordering for root sections
