@@ -170,13 +170,17 @@ mod imp {
     #[cfg(test)]
     use windows_sys::Win32::Security::{GetSecurityDescriptorDacl, GetSecurityDescriptorOwner};
     use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, FileAttributeTagInfo, GetFileInformationByHandleEx, GetFileType, MoveFileExW,
-        CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_TYPE_DISK, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, OPEN_EXISTING,
+        CreateFileW, FileAttributeTagInfo, FileRenameInfoEx, GetFileInformationByHandleEx,
+        GetFileType, SetFileInformationByHandle, CREATE_NEW, DELETE, FILE_ATTRIBUTE_NORMAL,
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_GENERIC_READ, FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_TYPE_DISK, OPEN_EXISTING, READ_CONTROL,
     };
     use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    use windows_sys::Win32::System::WindowsProgramming::{
+        FILE_RENAME_FLAG_POSIX_SEMANTICS, FILE_RENAME_FLAG_REPLACE_IF_EXISTS,
+    };
 
     struct OwnedHandle(HANDLE);
 
@@ -558,25 +562,87 @@ mod imp {
     }
 
     pub(super) fn replace(source: &Path, target: &Path) -> io::Result<()> {
-        let source_wide = wide(source.as_os_str())?;
-        let target_wide = wide(target.as_os_str())?;
-        // MoveFileExW on two paths in the same parent is an atomic rename and
-        // keeps the source file's protected DACL. Unlike ReplaceFileW, it does
-        // not preserve a potentially unsafe target DACL. The caller-controlled
-        // parent boundary is documented at module level.
-        // SAFETY: both paths are live, NUL-terminated UTF-16 strings.
-        if unsafe {
-            MoveFileExW(
-                source_wide.as_ptr(),
+        // Use an absolute FILE_RENAME_INFO target with a null RootDirectory.
+        // Absolutizing without canonicalizing preserves the
+        // caller's final-name semantics and does not follow the target.
+        let absolute_target = std::path::absolute(target)?;
+        let target_wide = wide(absolute_target.as_os_str())?;
+        let user = current_user()?;
+        let source_file = create_file(
+            source,
+            DELETE | READ_CONTROL | FILE_READ_ATTRIBUTES,
+            0,
+            OPEN_EXISTING,
+            null(),
+        )?;
+        // Validate the opened inode before it can become the final named
+        // object. In particular, fail closed if an attacker substituted a
+        // reparse point or a file with an unsafe descriptor at the temp name.
+        validate(&source_file, &user)?;
+        let file_name_len = target_wide
+            .len()
+            .checked_sub(1)
+            .and_then(|len| len.checked_mul(size_of::<u16>()))
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "private path is too long")
+            })?;
+        // Include the complete fixed Rust representation as well as the
+        // variable filename bytes. The Windows declaration ends in
+        // `FileName[1]`, and over-allocating that placeholder/padding is both
+        // accepted by the API and avoids ever passing less than `sizeof` the
+        // structure for very short paths.
+        let buffer_len = size_of::<FILE_RENAME_INFO>()
+            .checked_add(file_name_len)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "private path is too long")
+            })?;
+        let words = buffer_len.div_ceil(size_of::<usize>());
+        let mut buffer = vec![0usize; words];
+        let rename = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+        // SAFETY: `buffer` is usize-aligned and large enough for the fixed
+        // structure plus every non-NUL UTF-16 target byte. FileName is the
+        // structure's trailing flexible array and no terminator is required.
+        unsafe {
+            (*rename).Anonymous.Flags =
+                FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
+            (*rename).RootDirectory = null_mut();
+            (*rename).FileNameLength = u32::try_from(file_name_len).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "private path is too long")
+            })?;
+            std::ptr::copy_nonoverlapping(
                 target_wide.as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                (*rename).FileName.as_mut_ptr(),
+                target_wide.len() - 1,
+            );
+        }
+        // POSIX replacement keeps existing handles to the old target valid,
+        // while subsequent opens resolve to the renamed private file. This is
+        // the Windows analogue of Unix rename semantics and, unlike
+        // ReplaceFileW, does not copy a potentially unsafe target DACL onto the
+        // new inode. The source HANDLE carries DELETE access as required.
+        // SAFETY: source_file owns a live disk HANDLE and `buffer` contains the
+        // correctly sized FILE_RENAME_INFO_EX payload initialized above.
+        if unsafe {
+            SetFileInformationByHandle(
+                source_file.as_raw_handle(),
+                FileRenameInfoEx,
+                buffer.as_ptr().cast(),
+                u32::try_from(buffer_len).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "private path is too long")
+                })?,
             )
         } == 0
         {
             return Err(last_error());
         }
-        // Validate the final named object as a defense against filesystem or
-        // platform behavior that would fail to retain the source descriptor.
+        // Revalidate the still-open inode after the namespace mutation, then
+        // close the exclusive source handle before opening the final name.
+        // Keeping this handle alive would make the fresh open fail with a
+        // sharing violation even though the rename itself succeeded.
+        validate(&source_file, &user)?;
+        drop(source_file);
+        // Validate a fresh open by final name too: the old target may remain
+        // readable through an existing handle, but no new open may resolve to it.
         open_private(target)?;
         Ok(())
     }
@@ -754,6 +820,21 @@ mod tests {
             open_private(&link).unwrap_err().kind(),
             std::io::ErrorKind::PermissionDenied
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_replace_accepts_a_relative_target() {
+        let current = std::env::current_dir().unwrap();
+        let dir = TempDir::new_in(&current).unwrap();
+        let absolute = dir.path().join("relative-private");
+        let relative = absolute.strip_prefix(&current).unwrap();
+
+        replace_private(relative, b"relative private contents").unwrap();
+        let mut opened = open_private(relative).unwrap();
+        let mut contents = String::new();
+        opened.read_to_string(&mut contents).unwrap();
+        assert_eq!(contents, "relative private contents");
     }
 
     #[cfg(windows)]

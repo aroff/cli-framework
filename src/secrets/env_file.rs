@@ -227,9 +227,8 @@ mod tests {
     #[test]
     fn backend_error_branches_preserve_non_policy_io_failures() {
         let dir = TempDir::new().unwrap();
-        let too_long = dir.path().join("x".repeat(300));
         assert!(matches!(
-            read_file(&too_long),
+            read_file(Path::new("invalid\0path")),
             Err(SecretError::Backend { .. })
         ));
 
