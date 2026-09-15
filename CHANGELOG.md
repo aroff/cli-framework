@@ -4,6 +4,10 @@
 
 ### Added
 
+- `AppContext::try_framework_println` offers an additive fallible output seam.
+  CLI dispatch flushes each record and preserves write/flush errors; testkit
+  capture and existing custom/tool context capture remain compatible.
+
 - OIDC client `end_session_url` prepares a validated, discovered RP-initiated
   logout URL without opening a browser, sending tokens, or clearing credentials.
   Native hosts retain responsibility for local logout and callback validation.

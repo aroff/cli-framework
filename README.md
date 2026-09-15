@@ -776,6 +776,15 @@ let deploy_command = Command {
 
 ### AppContext
 
+For command result records, use `ctx.try_framework_println(&record)?` when
+delivery errors must fail the invocation. CLI dispatch writes the full line,
+flushes stdout, and propagates write/flush errors; testkit dispatch captures the
+same line without writing to the process terminal. An error may follow a partial
+write and does not roll back remote effects. The legacy `framework_println`
+method remains best-effort. Custom/tool contexts keep their existing capture
+behavior through the new method's compatibility default; override it to expose
+errors from a custom fallible sink.
+
 `AppContext` holds your application's state and services:
 
 ```rust

@@ -31,6 +31,19 @@ pub trait AppContext: Send + Sync {
         let _ = writeln!(stdout, "{}", s);
     }
 
+    /// Write one command-output record, reporting output errors when supported.
+    ///
+    /// CLI dispatch overrides this to write a complete line and flush stdout,
+    /// or append atomically to the testkit capture buffer. Legacy custom/tool
+    /// contexts retain their existing `framework_println` capture behavior;
+    /// such contexts should override this method to expose fallible sinks.
+    /// An error does not imply that zero bytes were written or undo a command's
+    /// server-side effects. Machine-output consumers should propagate it.
+    fn try_framework_println(&self, s: &str) -> std::io::Result<()> {
+        self.framework_println(s);
+        Ok(())
+    }
+
     /// Drain and return any output captured since the last call.
     ///
     /// Contexts that capture `framework_println` output override this to return
@@ -244,6 +257,16 @@ pub trait AppContext: Send + Sync {
     fn mark_feature(&self, _name: &str) {}
 }
 
+/// Success implies the complete record and newline were accepted and flushed.
+/// Failure preserves the writer's original error; partial writes are possible.
+pub(crate) fn write_output_line(
+    writer: &mut dyn std::io::Write,
+    line: &str,
+) -> std::io::Result<()> {
+    writeln!(writer, "{line}")?;
+    writer.flush()
+}
+
 /// Typed accessor over [`AppContext::opt_request_identity`].
 ///
 /// Blanket-implemented for every `AppContext`, so any command's `execute`
@@ -285,6 +308,116 @@ mod tests {
 
     struct PlainCtx;
     impl AppContext for PlainCtx {}
+
+    /// Default capabilities remain absent; the additive output method preserves
+    /// a custom legacy capture implementation without reaching real stdout.
+    #[test]
+    fn default_capabilities_and_legacy_capture_remain_compatible() {
+        struct Capture(std::sync::Mutex<Vec<String>>);
+        impl AppContext for Capture {
+            fn framework_println(&self, line: &str) {
+                self.0.lock().unwrap().push(line.into());
+            }
+        }
+        let capture = Capture(std::sync::Mutex::new(Vec::new()));
+        capture.try_framework_println("record 世界").unwrap();
+        assert_eq!(*capture.0.lock().unwrap(), ["record 世界"]);
+        let ctx = PlainCtx;
+        assert!(ctx.opt_registry().is_none());
+        assert!(ctx.opt_global_args().is_none());
+        assert!(ctx.drain_output().is_empty());
+        ctx.framework_set_structured_content(serde_json::json!({"test":true}));
+        assert!(ctx.drain_structured_content().is_none());
+        assert!(ctx.opt_telemetry_arc().is_none());
+        ctx.telemetry().event("test", &[]);
+        ctx.framework_println("framework default-output contract");
+        #[cfg(feature = "auth")]
+        assert!(ctx.opt_token_provider().is_none());
+        #[cfg(feature = "config")]
+        {
+            assert!(ctx.opt_config_handle().is_none());
+            assert!(ctx.opt_config_manifest().is_none());
+        }
+        #[cfg(feature = "config-managed")]
+        assert!(ctx.opt_policy_client().is_none());
+        #[cfg(not(feature = "telemetry"))]
+        ctx.mark_feature("test");
+    }
+
+    /// The writer's write/flush errors survive unchanged, including partial writes.
+    #[test]
+    fn output_line_requires_successful_write_and_flush() {
+        struct Sink {
+            bytes: Vec<u8>,
+            fail_write: bool,
+            fail_flush: bool,
+            flushed: bool,
+        }
+        impl std::io::Write for Sink {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if self.fail_write {
+                    return Err(std::io::ErrorKind::BrokenPipe.into());
+                }
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.flushed = true;
+                if self.fail_flush {
+                    Err(std::io::ErrorKind::ConnectionReset.into())
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        for (write, flush) in [(false, false), (true, false), (false, true)] {
+            let mut sink = Sink {
+                bytes: Vec::new(),
+                fail_write: write,
+                fail_flush: flush,
+                flushed: false,
+            };
+            let result = write_output_line(&mut sink, "record 世界");
+            if write {
+                assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::BrokenPipe);
+                assert!(!sink.flushed);
+            } else {
+                assert_eq!(sink.bytes, "record 世界\n".as_bytes());
+                assert!(sink.flushed);
+                if flush {
+                    assert_eq!(
+                        result.unwrap_err().kind(),
+                        std::io::ErrorKind::ConnectionReset
+                    );
+                } else {
+                    assert!(result.is_ok());
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "telemetry")]
+    #[test]
+    fn default_feature_method_checks_declared_names() {
+        struct Probed(crate::telemetry::ProbeRegistry);
+        impl AppContext for Probed {
+            fn opt_probe_registry(&self) -> Option<&crate::telemetry::ProbeRegistry> {
+                Some(&self.0)
+            }
+        }
+        let mut registry = crate::telemetry::ProbeRegistry::new();
+        registry.register_feature("outputcontract").unwrap();
+        let ctx = Probed(registry);
+        ctx.mark_feature("outputcontract");
+        if cfg!(debug_assertions) {
+            for _ in 0..2 {
+                assert!(std::panic::catch_unwind(
+                    || PlainCtx.mark_feature("CFW_CONTEXT_UNREGISTERED_OUTPUT")
+                )
+                .is_err());
+            }
+        }
+    }
 
     struct MyIdentity;
 
