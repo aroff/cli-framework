@@ -46,7 +46,7 @@ chmod +x .git/hooks/pre-commit
 | `parser`, `spec` | argv → args; `CommandPath`, `CommandSpec` |
 | `plugin` | registry TOML / manifests |
 | `ailoop` | ailoop-core client |
-| `security` | output sanitize, command risk policy |
+| `security` | output sanitize, command risk policy, handle-validated private-file creation/open/atomic replacement |
 | `http_retry`, `retry` | HTTP retry, `secure_reqwest_client` |
 | `cli_output`, `cli_mode`, `message`, `environment` | help, environment-variable registry, tables, JSON, modes |
 | `api` (feature `api-server`) | Built-in Axum host for versioned APIs (`/api/{version}/...`) plus `/healthz` + `/readyz`; `build()` may apply a root `fallback_service` (via `root_fallback()`) as its final composition step |

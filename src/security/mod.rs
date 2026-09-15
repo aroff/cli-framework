@@ -1,6 +1,7 @@
 pub mod command_risk;
 pub mod gate;
 pub mod output_sanitize;
+pub mod private_file;
 pub mod risk_enforcer;
 
 pub use command_risk::{CommandRiskPolicy, CommandRiskTier};

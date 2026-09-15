@@ -135,7 +135,7 @@ Flow is a construction-time choice on `OidcClient`, not a runtime flag.
 
 ### 7. Token cache
 
-The OIDC client persists access and refresh tokens to `<cache_dir>/<app>/oidc/token.json` (0600), where `<app>` is `OidcClientBuilder::app_name` (or `default`). A legacy `<cache_dir>/oidc-token.json` is still read and migrated on the next write. The
+The OIDC client persists access and refresh tokens to `<cache_dir>/<app>/oidc/token.json`, where `<app>` is `OidcClientBuilder::app_name` (or `default`). The file is created owner-only (`0600` on Unix; a protected current-user/SYSTEM/Administrators DACL on Windows), and reads validate the opened handle rather than path metadata. A legacy `<cache_dir>/oidc-token.json` is read and migrated on the next write only if it passes the same policy; an insecure legacy cache fails closed. The
 cache directory is supplied explicitly at `OidcClient` construction time. When the config manager
 (ADR 0067) ships, a convenience helper `OidcClient::cache_dir_from_config(ctx)` will read the
 path from the config layer without requiring a structural change.

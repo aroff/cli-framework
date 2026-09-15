@@ -11,7 +11,7 @@ A Rust library for building CLIs with optional AI-assisted command resolution (*
 - **Human-in-the-loop**: ailoop-core for confirmations
 - **Command registry**: Central registration, optional typed `CommandSpec`, and grouping metadata
 - **CLI output helpers**: Tables, JSON, progress (behind Cargo features where applicable)
-- **Security defaults**: Output sanitization, risk tiers, hardened HTTP helpers
+- **Security defaults**: Output sanitization, risk tiers, hardened HTTP helpers, and handle-validated user-private files on Unix and Windows
 - **MCP Server Mode**: Expose registered commands as MCP tools over Streamable HTTP or stdio (opt-in via `mcp-server` feature)
 - **API Server**: Built-in Axum host for serving versioned HTTP APIs with `/healthz` + `/readyz` (opt-in via `api-server` feature)
 - **Project Config**: Project root discovery and TOML loading (opt-in via `project-config` feature)
@@ -239,7 +239,7 @@ Auth commands are **never** exposed as MCP tools or chat tools regardless of the
 
 `cli-framework-oidc` (companion crate) works with any OIDC-compliant provider — Keycloak, Azure AD, etc. — and is split into two independent halves:
 
-- **`client`** — `OidcClient` (a `TokenProvider`) with three grant flows (Device Code, Auth Code + PKCE, Client Credentials), OIDC discovery, and an on-disk token cache (`0600`-permissioned).
+- **`client`** — `OidcClient` (a `TokenProvider`) with three grant flows (Device Code, Auth Code + PKCE, Client Credentials), OIDC discovery, and an on-disk token cache protected for the current user (`0600` on Unix; protected owner DACL on Windows).
 - **`server`** — an Axum JWT validation layer (`oidc_validation_layer` + `OidcClaims` extractor) that verifies incoming bearer tokens against the provider's JWKS. It handles signing-key rotation (forced refetch on an unknown `kid`) with single-flight + rate-limit bounds so an attacker-supplied `kid` cannot amplify into a fetch flood (ADR 0070).
 
 A consumer enables only the half it needs. See [`cli-framework-oidc/README.md`](cli-framework-oidc/README.md) and the [auth & OIDC skill reference](skill/references/auth-and-oidc.md).

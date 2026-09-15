@@ -132,11 +132,11 @@ The cache file is `<app>/oidc/token.json` inside whatever path you pass to `.cac
 
 Recommended: `.app_name("my-app").cache_dir(dirs::cache_dir().unwrap().join("my-app"))` → `~/.cache/my-app/my-app/oidc/token.json` on Linux/macOS. Prefer letting `.app_name(...)` also derive `cache_dir` (`<os-cache>/cli-framework-oidc/<app>/oidc/token.json`).
 
-A sidecar lock file is created next to the cache file (`token.lock`) on first write and used for cross-process `flock` serialization — two concurrent CLI invocations won't corrupt the file.
+A sidecar lock file is created next to the cache file (`token.lock`) on first write and used for cross-process advisory locking — two concurrent CLI invocations won't corrupt the file. The lock contains no credential material. On Unix it is mode `0600`; on Windows it is a concurrency marker and does not carry the token file's private-DACL guarantee.
 
-A legacy flat file `oidc-token.json` in `cache_dir` is still read. The first successful write migrates it to the namespaced key and deletes the legacy file.
+A legacy flat file `oidc-token.json` in `cache_dir` is still read only when it passes the same private-file validation. The first successful write migrates it to the namespaced key and deletes the legacy file. A legacy file with permissive Unix mode bits or an insecure Windows DACL fails closed; the user must authenticate again.
 
-On unix the token file and its lock are created with mode `0600` (owner read/write only) under a `0700` parent directory, so other local users cannot read cached bearer/refresh tokens.
+On Unix the token file is created mode `0600` under a newly-created `0700` parent directory. On Windows its protected DACL grants access only to its current-user owner, Local System, and Builtin Administrators. Both platforms reject symlink/reparse-point final components and validate the already-open handle before reading, so other unprivileged local users cannot read cached bearer/refresh tokens. The cache directory must remain controlled by the current user; an attacker who can rename ancestor directories can still cause denial of service.
 
 ### File schema
 

@@ -2,6 +2,7 @@
 
 use super::{SecretError, SecretKey, SecretStore, SecretValue};
 use async_trait::async_trait;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// A dev/test-friendly backend that checks an environment variable override
@@ -18,8 +19,10 @@ use std::path::{Path, PathBuf};
 ///   at `<base_dir>/<key segments joined by the OS path separator>` is read.
 /// - `put`/`delete` operate on the file only — environment variables are
 ///   read-only input, there's nowhere to durably write them back to.
-/// - Files are written 0600 (unix) via an atomic tmp-then-rename; the
-///   containing directories are created 0700.
+/// - Files are created with their private policy already attached and replaced
+///   atomically: mode 0600 under newly-created 0700 directories on Unix; a
+///   protected current-user/SYSTEM/Administrators DACL on Windows. Reads
+///   validate the opened handle and fail closed for insecure legacy files.
 /// - `rotate` returns [`SecretError::NotSupported`].
 pub struct EnvFileSecretStore {
     base_dir: PathBuf,
@@ -107,8 +110,12 @@ impl SecretStore for EnvFileSecretStore {
 }
 
 fn read_file(path: &Path) -> Result<SecretValue, SecretError> {
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(SecretValue::from(bytes)),
+    match crate::security::private_file::open_private(path) {
+        Ok(mut file) => {
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).map_err(SecretError::backend)?;
+            Ok(SecretValue::from(bytes))
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(SecretError::NotFound),
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
             Err(SecretError::PermissionDenied)
@@ -136,35 +143,7 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<(), SecretError> {
         std::fs::create_dir_all(parent).map_err(SecretError::backend)?;
     }
 
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("secret");
-    let tmp_path = parent.join(format!("{file_name}.tmp.{}", std::process::id()));
-
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp_path)
-            .map_err(SecretError::backend)?;
-        f.write_all(bytes).map_err(SecretError::backend)?;
-        f.sync_all().map_err(SecretError::backend)?;
-    }
-    #[cfg(not(unix))]
-    {
-        use std::io::Write;
-        let mut f = std::fs::File::create(&tmp_path).map_err(SecretError::backend)?;
-        f.write_all(bytes).map_err(SecretError::backend)?;
-        f.sync_all().map_err(SecretError::backend)?;
-    }
-
-    std::fs::rename(&tmp_path, path).map_err(SecretError::backend)?;
+    crate::security::private_file::replace_private(path, bytes).map_err(SecretError::backend)?;
     Ok(())
 }
 
@@ -188,12 +167,83 @@ mod tests {
     #[tokio::test]
     async fn env_override_wins_over_file() {
         let dir = TempDir::new().unwrap();
-        let store = EnvFileSecretStore::new(dir.path()).with_env_prefix("CFWTEST");
+        let store =
+            EnvFileSecretStore::new(dir.path()).with_env_prefix("CFW_TEST_ENV_FILE_OVERRIDE");
         let k = key("some/thing");
-        std::env::set_var("CFWTEST_SOME_THING", "from-env");
+        std::env::set_var("CFW_TEST_ENV_FILE_OVERRIDE_SOME_THING", "from-env");
         let v = store.get(&k).await.unwrap();
         assert_eq!(v.expose_str().unwrap(), "from-env");
-        std::env::remove_var("CFWTEST_SOME_THING");
+        std::env::remove_var("CFW_TEST_ENV_FILE_OVERRIDE_SOME_THING");
+    }
+
+    #[tokio::test]
+    async fn file_lifecycle_and_fail_closed_reads() {
+        let dir = TempDir::new().unwrap();
+        let store = EnvFileSecretStore::new(dir.path());
+        let k = key("lifecycle/value");
+
+        assert!(matches!(store.get(&k).await, Err(SecretError::NotFound)));
+        store.put(&k, SecretValue::from("first")).await.unwrap();
+        assert_eq!(store.get(&k).await.unwrap().expose_str().unwrap(), "first");
+        store.put(&k, SecretValue::from("second")).await.unwrap();
+        assert_eq!(store.get(&k).await.unwrap().expose_str().unwrap(), "second");
+        assert!(matches!(
+            store.rotate(&k).await,
+            Err(SecretError::NotSupported(_))
+        ));
+
+        store.delete(&k).await.unwrap();
+        store.delete(&k).await.unwrap();
+        assert!(matches!(store.get(&k).await, Err(SecretError::NotFound)));
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn insecure_existing_file_is_rejected_then_repaired_by_put() {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let store = EnvFileSecretStore::new(dir.path());
+        let k = key("legacy");
+        let path = dir.path().join("legacy");
+        std::fs::write(&path, b"exposed").unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(matches!(
+            store.get(&k).await,
+            Err(SecretError::PermissionDenied)
+        ));
+
+        store.put(&k, SecretValue::from("safe")).await.unwrap();
+        assert_eq!(store.get(&k).await.unwrap().expose_str().unwrap(), "safe");
+        #[cfg(unix)]
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn backend_error_branches_preserve_non_policy_io_failures() {
+        let dir = TempDir::new().unwrap();
+        let too_long = dir.path().join("x".repeat(300));
+        assert!(matches!(
+            read_file(&too_long),
+            Err(SecretError::Backend { .. })
+        ));
+
+        let nonempty = dir.path().join("nonempty");
+        std::fs::create_dir(&nonempty).unwrap();
+        std::fs::write(nonempty.join("child"), b"x").unwrap();
+        assert!(matches!(
+            delete_file(&nonempty),
+            Err(SecretError::Backend { .. })
+        ));
+        assert!(matches!(
+            write_file(Path::new(""), b"x"),
+            Err(SecretError::Backend { .. })
+        ));
     }
 
     #[cfg(unix)]

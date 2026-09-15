@@ -173,6 +173,8 @@ pub fn parse_rfc3339(s: &str) -> Option<SystemTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cli_framework::secrets::EnvFileSecretStore;
+    use tempfile::TempDir;
 
     #[test]
     fn default_key_uses_app_name() {
@@ -216,6 +218,30 @@ mod tests {
         assert_eq!(
             cache_lock_relpath(&legacy_cache_secret_key()),
             PathBuf::from("oidc-token.lock")
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn insecure_legacy_file_is_not_a_cache_migration_bypass() {
+        let dir = TempDir::new().unwrap();
+        let legacy_path = dir.path().join("oidc-token.json");
+        std::fs::write(
+            &legacy_path,
+            r#"{"version":1,"entries":{"exposed":{"access_token":"bearer","refresh_token":null,"expires_at":null,"obtained_at":"1970-01-01T00:00:00Z","scopes":[]}}}"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&legacy_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+
+        let store = EnvFileSecretStore::new(dir.path());
+        let cache = read_cache(&store, &default_cache_secret_key(Some("app"))).await;
+        assert!(
+            cache.entries.is_empty(),
+            "an insecure legacy cache must fail closed instead of exposing bearer material"
         );
     }
 }
