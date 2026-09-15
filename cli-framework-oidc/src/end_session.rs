@@ -24,7 +24,8 @@ impl OidcClient {
         state: Option<&str>,
     ) -> Result<String, AuthError> {
         validate_return(post_logout_redirect_uri, state)?;
-        let issuer = secure_endpoint(self.issuer_url())?;
+        let issuer = crate::endpoint_security::secure_endpoint(self.issuer_url())
+            .map_err(|()| failure("invalid OIDC endpoint URL"))?;
         if issuer.query().is_some() || issuer.fragment().is_some() {
             return Err(failure("issuer must not contain a query or fragment"));
         }
@@ -63,23 +64,6 @@ impl OidcClient {
     }
 }
 
-/// Accept HTTPS or development loopback HTTP only, with no credential/fragment.
-fn secure_endpoint(raw: &str) -> Result<Url, AuthError> {
-    let url = Url::parse(raw).map_err(|_| failure("invalid OIDC endpoint URL"))?;
-    let loopback = matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"));
-    if url.host_str().is_none()
-        || !(url.scheme() == "https" || url.scheme() == "http" && loopback)
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.fragment().is_some()
-    {
-        return Err(failure(
-            "OIDC endpoint must be credential-free HTTPS or loopback HTTP",
-        ));
-    }
-    Ok(url)
-}
-
 /// Validate callback arguments before networking; no arbitrary browser script URIs.
 fn validate_return(redirect: Option<&str>, state: Option<&str>) -> Result<(), AuthError> {
     if state.is_some_and(str::is_empty) || state.is_some() && redirect.is_none() {
@@ -97,7 +81,9 @@ fn validate_return(redirect: Option<&str>, state: Option<&str>) -> Result<(), Au
             return Err(failure("unsafe logout return URI"));
         }
         if matches!(url.scheme(), "http" | "https") {
-            secure_endpoint(raw)?;
+            crate::endpoint_security::secure_endpoint(raw).map_err(|()| {
+                failure("OIDC endpoint must be credential-free HTTPS or loopback HTTP")
+            })?;
         }
     }
     Ok(())
@@ -110,7 +96,8 @@ fn compose_url(
     redirect: Option<&str>,
     state: Option<&str>,
 ) -> Result<String, AuthError> {
-    let mut url = secure_endpoint(endpoint)?;
+    let mut url = crate::endpoint_security::secure_endpoint(endpoint)
+        .map_err(|()| failure("OIDC endpoint must be credential-free HTTPS or loopback HTTP"))?;
     if url.query_pairs().any(|(key, _)| {
         matches!(
             key.as_ref(),
@@ -157,7 +144,10 @@ mod tests {
             "http://localhost/logout",
             "http://[::1]/logout",
         ] {
-            assert!(secure_endpoint(valid).is_ok(), "{valid}");
+            assert!(
+                crate::endpoint_security::secure_endpoint(valid).is_ok(),
+                "{valid}"
+            );
         }
         for invalid in [
             "relative",
@@ -166,7 +156,10 @@ mod tests {
             "https://user:password@issuer.example/",
             "https://issuer.example/#fragment",
         ] {
-            assert!(secure_endpoint(invalid).is_err(), "{invalid}");
+            assert!(
+                crate::endpoint_security::secure_endpoint(invalid).is_err(),
+                "{invalid}"
+            );
         }
     }
 

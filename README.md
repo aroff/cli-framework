@@ -244,6 +244,15 @@ Auth commands are **never** exposed as MCP tools or chat tools regardless of the
 
 A consumer enables only the half it needs. See [`cli-framework-oidc/README.md`](cli-framework-oidc/README.md) and the [auth & OIDC skill reference](skill/references/auth-and-oidc.md).
 
+PKCE hosts can set `OidcClientBuilder::open_browser(false)` for manual URL
+opening. The callback is bounded and asynchronous; dropping login releases its
+loopback sockets without waiting for the five-minute callback deadline.
+The native client validates the issuer and every discovered credential-bearing
+endpoint as HTTPS (or explicit loopback HTTP), rejects URL credentials and
+fragments, never follows HTTP redirects, and bounds each discovery/grant request
+to 15 seconds. This prevents 307/308 responses from replaying credential form
+bodies to another authority.
+
 ### Using `AuthenticatedHttpClient`
 
 ```rust

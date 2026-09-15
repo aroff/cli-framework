@@ -4,6 +4,10 @@
 
 ### Added
 
+- `OidcClientBuilder::open_browser(false)` supports explicit manual PKCE login.
+  The authorization URL is always reported; callback acceptance is asynchronous,
+  bounded and cancellation-safe rather than blocking an executor thread.
+
 - `AppContext::try_framework_println` offers an additive fallible output seam.
   CLI dispatch flushes each record and preserves write/flush errors; testkit
   capture and existing custom/tool context capture remain compatible.
@@ -13,6 +17,11 @@
   Native hosts retain responsibility for local logout and callback validation.
 
 ### Changed
+
+- Hardened native OIDC discovery and grant transport: issuer and discovered
+  endpoints are validated as credential-free HTTPS (or loopback HTTP), every
+  request has a 15-second deadline, and redirects are disabled so 307/308
+  responses cannot replay credential form bodies to another authority.
 
 - Added categorized group metadata and explicit help ordering for root sections
   and nested sibling commands. Framework-owned `spec` and `completion` commands

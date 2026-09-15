@@ -61,6 +61,11 @@ Also: `auth` (feature `auth`) — `TokenProvider` trait, `AccessToken`, `AuthErr
 
 **Security (summary):** sanitize untrusted terminal output; command risk tier policy; plugin paths rooted (no traversal).
 
+The OIDC client's loopback callback lives in `cli-framework-oidc/src/client/callback.rs`:
+bounded asynchronous reception owns its sockets for cancellation, validates the
+request path/state/code, and constructs unambiguous PKCE authorization queries.
+Browser launch is optional and never blocks callback reception or runtime shutdown.
+
 **Features:** default `["clap-dispatch", "chat"]`; see `[features]` in `Cargo.toml`. The `clap-dispatch` flag is now a no-op default — all dispatch goes through the Clap path. User-visible behavior → update README in the same PR.
 
 ## Tests

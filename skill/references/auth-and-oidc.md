@@ -100,6 +100,23 @@ Flow resolution: an explicit `KC_FLOW` (`device` | `pkce` | `client-credentials`
 .flow(OidcFlow::auto_interactive())
 ```
 
+For an explicitly selected PKCE flow, use `.open_browser(false)` to print the
+authorization URL without invoking the platform browser launcher. Automatic
+launch remains the default, but the URL is also reported for manual fallback.
+Dropping the login future releases the loopback listener and accepted socket;
+the callback has a five-minute deadline and an 8 KiB request-line limit. The
+callback response acknowledges authorization-code reception, not successful
+token exchange. Malformed or wrong-state callbacks fail the current login;
+they never acquire a token. The host decides whether and when to start a new login.
+
+The native OIDC transport has a 15-second total deadline per discovery or grant
+request and never follows redirects. Issuers and discovered authorization,
+token, and device-authorization endpoints must use HTTPS, except explicit
+loopback HTTP for development; URL credentials and fragments are rejected.
+Endpoint query parameters are preserved. Consequently a 307/308 response cannot
+replay an authorization code, verifier, refresh token, device code, or client
+secret to another authority.
+
 ### Available flows
 
 ```rust
