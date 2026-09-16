@@ -96,3 +96,20 @@ pub const TEL002: &str = "TEL002";
 /// platform config directory), or the underlying `ConfigStore` write itself
 /// failed for some other `ConfigError` reason.
 pub const TEL003: &str = "TEL003";
+
+/// Self-install (ADR 0080): `self install` refused to run as root or under
+/// `sudo` without `<APP>_INSTALL_ALLOW_SUDO=1`.
+pub const SI001: &str = "SI001";
+/// Self-install: the target path already holds a binary that no receipt
+/// records, and `--force` was not given.
+pub const SI002: &str = "SI002";
+/// Self-install: the install receipt could not be read, parsed or written.
+pub const SI003: &str = "SI003";
+/// Self-install: `self uninstall` found no receipt, or the binary belongs to
+/// a package manager whose own command must be used.
+pub const SI004: &str = "SI004";
+/// Self-install: `--purge` refused a directory that failed a safety guard.
+pub const SI005: &str = "SI005";
+/// Self-install: a filesystem or registry operation failed, or no home or
+/// data directory could be resolved.
+pub const SI006: &str = "SI006";

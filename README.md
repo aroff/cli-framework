@@ -32,6 +32,7 @@ A Rust library for building CLIs with optional AI-assisted command resolution (*
 | `api-server` | no | Serve versioned Axum APIs with health/readiness and graceful shutdown |
 | `api-swagger` | no | Runtime OpenAPI spec endpoint + embedded Swagger UI (requires `api-server`) |
 | `doctor` | no | Structured health-check framework with terminal/JSON output |
+| `self-install` | no | `self install`/`uninstall`/`status` for end-user apps: install receipt, reversible PATH edits, `install.*` doctor checks, `SI001`–`SI006` error codes, and `install.sh`/`install.ps1` templates (implies `doctor`, `config`) |
 | `project-config` | no | Project root discovery and TOML loading (`PC001`–`PC005` error codes) |
 | `auth` | no | Generic `TokenProvider` trait + `AuthenticatedHttpClient` + four `auth` subcommands; pair with `cli-framework-oidc` for OIDC flows |
 | `observability` | no | `tracing-subscriber` logging foundation (implied by `telemetry`) |
@@ -449,6 +450,7 @@ resolver itself still treats them as advisory only, by design.
 - `spec`: exports the command surface as JSON/YAML/Markdown.
 - `completion <shell>`: emits a shell completion script for `bash`, `zsh`, `fish`, or `powershell` (alias: `pwsh`). The `bash` script completes the word under the cursor at every level — nested subcommands and each command's own flags, not just the top-level verbs — and falls back to the shell's filename completion (`complete -o default`) where the framework has no candidates. The other three shells still emit a top-level-only stub.
 - `auth login`, `auth logout`, `auth status`, `auth token`: registered only when `with_token_provider(...)` is called (requires `auth` feature).
+- `self install`, `self uninstall`, `self status`: registered only when `with_self_install(...)` is called and the deployment is `EndUser` (requires `self-install` feature). The group follows `with_builtin_command_namespace`, and an app that already owns `self` keeps it. See [ADR 0080](docs/adr/0080-self-install-update-uninstall.md) and `skill/references/self-install-and-distribution.md` for the release contract and installer script templates.
 
 If your app already defines a root-level `completion` command, call `AppBuilder::without_completion()` to opt out of auto-registration and avoid a registration collision.
 
@@ -672,6 +674,7 @@ fn main() {
 | `with_git_sha_short(sha)` | Append a short git SHA to version output | `None` |
 | `without_completion()` | Opt out of auto-registered `completion` subcommand | enabled |
 | `with_builtin_command_namespace(path)` | Place `spec` and `completion` below one namespace | root |
+| `with_self_install(options)` | Register the `self` group and the `install.*` doctor checks for `EndUser` apps; invalid options fail `build()` (requires `self-install` feature) | disabled |
 | `with_help_section_order(sections)` | Set categorized root-help section order | alphabetical, then `Other` |
 | `suggest_corrections(bool)` | Enable or disable `"Did you mean?"` suggestions for unknown subcommands and flags (E001, E002, E012). When `true`, the `hint:` line shows the closest match clap identified; when `false`, the generic `"Use --help"` hint is always used. | `true` |
 | `with_ailoop_channel(channel)` | Configure the ailoop channel name for HITL interactions | — |

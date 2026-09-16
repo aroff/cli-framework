@@ -222,6 +222,14 @@ For any non-trivial tool, plan these commands:
 | `config show` | Print effective config when non-trivial |
 | `auth login` / `auth logout` | When remote APIs are involved |
 | `chat` | Natural language command resolution (default feature) |
+| `self install` / `self uninstall` / `self status` | End-user install story (`self-install` feature) |
+
+For apps people install on their own machines, add the `self-install` feature
+and `.with_self_install(SelfInstallOptions::github("OWNER/REPO"))`. That gives
+the `self` group, an install receipt, reversible PATH handling and four
+`install.*` doctor checks. Copy the `curl | sh` and `irm | iex` installer
+templates and follow the release contract in
+`skill/references/self-install-and-distribution.md`.
 
 ## 10. Chat command and security tiers
 
@@ -485,6 +493,7 @@ Full detail — Keycloak client config, all three flows, cache file schema, runt
 | `skill/references/http-retry.md` | `RetryableHttpClient`, circuit breaker |
 | `skill/references/telemetry.md` | OpenTelemetry: subscriber trap, auto spans/metrics, W3C propagation, OTLP auth headers, testing |
 | `skill/references/testing-with-testkit.md` | `CliTestHarness`, in-process test pattern |
+| `skill/references/self-install-and-distribution.md` | `self install`/`uninstall`/`status`, release contract, installer script templates, per-OS tricks, distribution tiers |
 | `skill/references/cli-creation-scenarios.md` | Domain CLI layouts (internal tooling, API client, data ops, plugins) |
 
 ### Runnable examples

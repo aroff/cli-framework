@@ -51,6 +51,8 @@ pub struct AppBuilder {
     environment_variables: EnvironmentVariableRegistry,
     #[cfg(feature = "doctor")]
     doctor_checks: Vec<Arc<dyn crate::doctor::check::DoctorCheck>>,
+    #[cfg(feature = "self-install")]
+    self_install: Option<crate::self_install::SelfInstallOptions>,
     #[cfg(feature = "mcp-server")]
     mcp_export_policy: crate::mcp::McpToolExportPolicy,
     #[cfg(feature = "mcp-server")]
@@ -163,6 +165,8 @@ impl AppBuilder {
             environment_variables: EnvironmentVariableRegistry::new(),
             #[cfg(feature = "doctor")]
             doctor_checks: Vec::new(),
+            #[cfg(feature = "self-install")]
+            self_install: None,
             #[cfg(feature = "mcp-server")]
             mcp_export_policy: crate::mcp::McpToolExportPolicy::default(),
             #[cfg(feature = "mcp-server")]
@@ -415,6 +419,27 @@ impl AppBuilder {
     /// Disable auto-registration of the built-in `completion` command.
     pub fn without_completion(mut self) -> Self {
         self.auto_register_completion = false;
+        self
+    }
+
+    /// Enable `self install`, `self uninstall` and `self status`, plus the
+    /// `install.*` doctor checks (ADR 0080).
+    ///
+    /// The group follows [`Self::with_builtin_command_namespace`] and is
+    /// registered only for [`Deployment::EndUser`][crate::Deployment]
+    /// applications: a service is deployed by its operator's tooling. An
+    /// application that already owns the `self` path keeps it and the
+    /// built-in group is skipped with a warning.
+    ///
+    /// ```no_run
+    /// # use cli_framework::prelude::*;
+    /// let builder = AppBuilder::new()
+    ///     .with_version("myapp", "1.4.2")
+    ///     .with_self_install(SelfInstallOptions::github("aroff/myapp"));
+    /// ```
+    #[cfg(feature = "self-install")]
+    pub fn with_self_install(mut self, options: crate::self_install::SelfInstallOptions) -> Self {
+        self.self_install = Some(options);
         self
     }
 
@@ -877,6 +902,15 @@ impl AppBuilder {
         self
     }
 
+    /// How a person types the self group, e.g. `myapp cli self`.
+    #[cfg(feature = "self-install")]
+    fn self_invocation(&self) -> String {
+        let mut words = vec![self.app_name.to_string()];
+        words.extend(self.builtin_command_namespace.0.iter().cloned());
+        words.push("self".to_string());
+        words.join(" ")
+    }
+
     #[cfg(feature = "doctor")]
     pub(crate) fn push_doctor_checks(
         &mut self,
@@ -1098,6 +1132,31 @@ impl AppBuilder {
             (policy_cell, report_cell)
         };
 
+        // ADR 0080: self-install is end-user only. Its doctor checks join
+        // the others before the `doctor` command takes them below.
+        #[cfg(feature = "self-install")]
+        let self_install_options = match self.self_install.take() {
+            Some(options)
+                if matches!(
+                    self.deployment,
+                    crate::telemetry::Deployment::EndUser { .. }
+                ) =>
+            {
+                options
+                    .validate()
+                    .map_err(|e| anyhow::anyhow!("invalid self-install options: {e}"))?;
+                crate::self_install::startup_cleanup();
+                let invocation = self.self_invocation();
+                self.push_doctor_checks(crate::self_install::install_checks(
+                    self.app_name,
+                    self.app_version,
+                    invocation,
+                ));
+                Some(options)
+            }
+            _ => None,
+        };
+
         let ailoop_client = if let Some(config) = self.ailoop_config {
             Some(AiloopClient::with_config(config)?)
         } else {
@@ -1242,6 +1301,40 @@ impl AppBuilder {
                 path = %spec_path.to_path_string(),
                 "spec command already registered; skipping built-in spec command"
             );
+        }
+
+        // Registered before `completion` so the completion scripts cover it.
+        #[cfg(feature = "self-install")]
+        if let Some(options) = self_install_options {
+            let self_path = self
+                .builtin_command_namespace
+                .push("self")
+                .expect("built-in command id is a valid path segment");
+            let occupied = self.command_registry.resolve(&self_path).is_some()
+                || self
+                    .command_registry
+                    .group_metadata_for(&self_path.to_path_string())
+                    .is_some();
+            if occupied {
+                tracing::warn!(
+                    path = %self_path.to_path_string(),
+                    "'self' already registered; skipping built-in self-install commands"
+                );
+            } else {
+                let completion_command = self.auto_register_completion.then(|| {
+                    let mut argv = self.builtin_command_namespace.0.clone();
+                    argv.push("completion".to_string());
+                    argv
+                });
+                crate::self_install::register_self_commands(
+                    &mut self.command_registry,
+                    &self.builtin_command_namespace,
+                    self.app_name,
+                    self.app_version,
+                    Arc::new(options),
+                    completion_command,
+                )?;
+            }
         }
 
         // Auto-register built-in `completion` command (always-on, opt-out via without_completion()).

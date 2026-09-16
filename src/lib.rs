@@ -82,6 +82,10 @@ pub mod mcp;
 #[cfg(feature = "doctor")]
 pub mod doctor;
 
+// Self-install — `self install|uninstall|status` for end-user binaries (ADR 0080)
+#[cfg(feature = "self-install")]
+pub mod self_install;
+
 // API server — compile only when the `api-server` feature is active
 #[cfg(feature = "api-server")]
 pub mod api;
@@ -196,6 +200,9 @@ pub mod prelude {
     pub use crate::doctor::{
         CheckSeverity, DoctorCheck, DoctorFinding, DoctorModule, DoctorReport,
     };
+
+    #[cfg(feature = "self-install")]
+    pub use crate::self_install::SelfInstallOptions;
 
     #[cfg(feature = "project-config")]
     pub use crate::project_config::{
