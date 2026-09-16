@@ -902,7 +902,6 @@ impl AppBuilder {
         self
     }
 
-    #[cfg(feature = "doctor")]
     /// How a person types the self group, e.g. `myapp cli self`.
     #[cfg(feature = "self-install")]
     fn self_invocation(&self) -> String {
@@ -912,6 +911,7 @@ impl AppBuilder {
         words.join(" ")
     }
 
+    #[cfg(feature = "doctor")]
     pub(crate) fn push_doctor_checks(
         &mut self,
         checks: Vec<Arc<dyn crate::doctor::check::DoctorCheck>>,
