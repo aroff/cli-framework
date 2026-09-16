@@ -30,6 +30,14 @@
 
 ### Changed
 
+- HTTP clients now trust the operating system's certificate store in addition
+  to the bundled Mozilla roots (`reqwest` gains `rustls-tls-native-roots` in
+  `cli-framework` and `cli-framework-oidc`). A company CA installed by IT for a
+  TLS-intercepting proxy is now honoured, so OIDC login, managed configuration
+  and telemetry export work where `curl` already did. `SSL_CERT_FILE` and
+  `SSL_CERT_DIR` replace the OS store when set. Minimal containers without a CA
+  bundle keep working through the bundled roots.
+
 - Hardened native OIDC discovery and grant transport: issuer and discovered
   endpoints are validated as credential-free HTTPS (or loopback HTTP), every
   request has a 15-second deadline, and redirects are disabled so 307/308
