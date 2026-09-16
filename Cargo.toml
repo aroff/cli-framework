@@ -11,7 +11,14 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
 tokio = { version = "1.52", features = ["full"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# TLS roots: `rustls-tls` bundles the Mozilla roots (webpki-roots) and
+# `rustls-tls-native-roots` adds the operating system's trust store on top.
+# Both load: the bundled set keeps minimal containers without a CA bundle
+# working, and the native set is what makes a company CA installed by IT (a
+# TLS-intercepting proxy) trusted. `SSL_CERT_FILE` / `SSL_CERT_DIR` replace
+# the native store when set, on every platform. Same crypto provider (`ring`)
+# either way. See tests/integration/tls_native_roots.rs.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
 syn = { version = "2", features = ["full"] }
@@ -144,11 +151,12 @@ secrecy = { version = "0.8", features = ["serde"], optional = true }
 # before, see `reference_sqlx_facade_audit_landmine`).
 #
 # TLS: `_tls-rustls-ring-webpki` on `sqlx-core` matches this crate's existing
-# TLS stack exactly — `reqwest`'s `rustls-tls` feature (already unconditional
+# crypto provider — `reqwest`'s `rustls-tls` feature (already unconditional
 # above) resolves to rustls + the `ring` crypto provider + `webpki-roots`
 # (reqwest's `rustls-tls` = `rustls-tls-webpki-roots` = `__rustls-ring` +
-# `webpki-roots`), so this avoids linking a second crypto backend
-# (`aws-lc-rs`) alongside `ring` in the same binary.
+# `webpki-roots`; the added `rustls-tls-native-roots` uses the same `ring`
+# provider), so this avoids linking a second crypto backend (`aws-lc-rs`)
+# alongside `ring` in the same binary.
 #
 # Runtime: `_rt-tokio` — the only async runtime this crate uses anywhere.
 #
@@ -201,8 +209,13 @@ windows-sys = { version = "0.61", features = [
 # transitively; under `--no-default-features --features auth,testkit` (a combo
 # `scripts/run-ci-tests.sh` step 5b runs) that enabler disappears and the test
 # target fails to compile. Declared here so the combo stands on its own.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots", "stream"] }
 wiremock = "0.6"
+# tests/integration/tls_native_roots.rs: a local HTTPS server signed by a
+# throwaway CA, trusted only through `SSL_CERT_FILE`. `ring` matches the
+# crate's provider so the test adds no second crypto backend.
+rcgen = "0.13"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 env_logger = "0.11"
 log = "0.4"
 tempfile = "3.0"
@@ -356,6 +369,12 @@ required-features = ["auth"]
 name = "with_config_service"
 path = "skill/examples/with_config_service/src/main.rs"
 required-features = ["config-service"]
+
+# The HTTP client trusts the OS certificate store (company CAs behind
+# TLS-intercepting proxies), proved with a throwaway CA via SSL_CERT_FILE.
+[[test]]
+name = "integration_tls_native_roots"
+path = "tests/integration/tls_native_roots.rs"
 
 [[test]]
 name = "integration_app_builder"
