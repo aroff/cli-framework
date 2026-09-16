@@ -4,6 +4,18 @@
 
 ### Added
 
+- `self-install` feature (ADR 0080, phase 1): `AppBuilder::with_self_install`
+  registers `self install`, `self uninstall` and `self status` for `EndUser`
+  apps. Installs write a receipt, edit PATH reversibly (a shared `env` file
+  sourced from existing rc files on Unix, the user `Path` on Windows, never
+  when `CI` is set or stdout is not a terminal), refuse root without
+  `<APP>_INSTALL_ALLOW_SUDO=1`, and report failures as `SI001`–`SI006`.
+  `doctor` gains `install.on_path`, `install.shadowed`, `install.receipt` and
+  `install.stale_files`. The skill ships `install.sh` and `install.ps1`
+  templates that verify `SHA256SUMS` before running
+  `self install --from-bootstrap`; CI runs them end to end on Linux, macOS
+  and Windows.
+
 - `OidcClientBuilder::open_browser(false)` supports explicit manual PKCE login.
   The authorization URL is always reported; callback acceptance is asynchronous,
   bounded and cancellation-safe rather than blocking an executor thread.

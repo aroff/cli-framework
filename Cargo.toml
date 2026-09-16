@@ -179,6 +179,12 @@ sqlx-postgres = { version = "0.8", default-features = false, features = ["json",
 # workspace.
 tar = { version = "0.4", optional = true }
 
+# `self-install` (ADR 0080): removes the running executable on `self
+# uninstall`. On Unix this is a plain unlink; on Windows a running exe cannot
+# be deleted, and this crate's spawn-and-wait helper is the maintained way to
+# do it without a reboot-time move that needs elevation.
+self-replace = { version = "1.5", optional = true }
+
 # Windows registry backend for the `config` feature (`ConfigBackend`). Only
 # resolved/built when compiling for a Windows target; `config` builds and
 # tests cleanly without it everywhere else.
@@ -192,6 +198,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_SystemServices",
     "Win32_System_Threading",
     "Win32_System_WindowsProgramming",
+    # `self-install`: WM_SETTINGCHANGE broadcast after a user PATH edit.
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [dev-dependencies]
@@ -303,10 +311,22 @@ config-managed = ["config", "auth"]
 # dependency cycle (a real risk `config-managed` does NOT reopen, since
 # `config` has no path back to `cli-framework-oidc`).
 config-service = ["config", "api-server", "dep:sqlx-core", "dep:sqlx-postgres", "dep:tar"]
+# Self-install (ADR 0080) — the `self install|uninstall|status` command group,
+# the install receipt, PATH handling and four `install.*` doctor checks, for
+# end-user deployments. Implies `doctor` (the checks) and `config` (the
+# Windows registry backend it already brings, and phase 2's policy keys).
+self-install = ["doctor", "config", "dep:self-replace"]
 
 [lib]
 name = "cli_framework"
 path = "src/lib.rs"
+
+# Self-install demo app for tests/integration/self_install_cli.rs and the CI
+# installer-script job (ADR 0080).
+[[bin]]
+name = "cfw-self-install-demo"
+path = "tests/bin/self_install_demo.rs"
+required-features = ["self-install"]
 
 [[bin]]
 name = "cfw_mcp_stdio_test_server"
@@ -1019,3 +1039,15 @@ required-features = ["telemetry"]
 name = "unit_testkit_telemetry_knobs"
 path = "tests/unit/testkit_telemetry_knobs.rs"
 required-features = ["telemetry", "config", "testkit"]
+
+# Self-install operations over a temporary InstallEnv (ADR 0080).
+[[test]]
+name = "unit_self_install"
+path = "tests/unit/self_install.rs"
+required-features = ["self-install"]
+
+# The `self` group through the builder and the real demo binary (ADR 0080).
+[[test]]
+name = "integration_self_install_cli"
+path = "tests/integration/self_install_cli.rs"
+required-features = ["self-install"]

@@ -105,6 +105,42 @@ jobs:
           name: windows-private-file-coverage
           path: private-files.lcov
 
+  self-install:
+    name: Self-install (${{ matrix.os }})
+    # ADR 0080: `self install` / `uninstall` / `status`, the doctor checks and
+    # the install.sh / install.ps1 templates touch PATH, rc files, the Windows
+    # registry and running-binary replacement, so each OS runs them natively.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Unit and CLI tests
+        run: cargo test --features self-install --test unit_self_install --test integration_self_install_cli
+
+      - name: Build the demo binary
+        run: cargo build --features self-install --bin cfw-self-install-demo
+
+      - name: install.sh end to end
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          scripts/ci/self-install-e2e.sh target/debug/cfw-self-install-demo sh
+          if command -v dash >/dev/null 2>&1; then
+            scripts/ci/self-install-e2e.sh target/debug/cfw-self-install-demo dash
+          fi
+
+      - name: install.ps1 end to end
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: scripts/ci/self-install-e2e.ps1 target\debug\cfw-self-install-demo.exe
+
   ci:
     name: Linux Check / Lint / Test
     runs-on: ubuntu-latest
@@ -374,16 +410,18 @@ jobs:
   required-check:
     name: Check / Lint / Test
     if: ${{ always() }}
-    needs: [ci, windows-private-files]
+    needs: [ci, windows-private-files, self-install]
     runs-on: ubuntu-latest
     steps:
-      - name: Require Linux and native Windows success
+      - name: Require Linux, native Windows and self-install success
         env:
           LINUX_RESULT: ${{ needs.ci.result }}
           WINDOWS_RESULT: ${{ needs.windows-private-files.result }}
+          SELF_INSTALL_RESULT: ${{ needs.self-install.result }}
         run: |
-          if [[ "$LINUX_RESULT" != "success" || "$WINDOWS_RESULT" != "success" ]]; then
+          if [[ "$LINUX_RESULT" != "success" || "$WINDOWS_RESULT" != "success" || "$SELF_INSTALL_RESULT" != "success" ]]; then
             echo "Linux result: $LINUX_RESULT"
             echo "Windows result: $WINDOWS_RESULT"
+            echo "Self-install result: $SELF_INSTALL_RESULT"
             exit 1
           fi

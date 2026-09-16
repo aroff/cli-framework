@@ -12,6 +12,7 @@ All optional features for `cli-framework`. Default feature set includes `chat`.
 | `api-swagger` | off | Runtime OpenAPI spec endpoint at `/api/{version}/openapi.json` + embedded Swagger UI at `/api/docs`; requires `api-server` |
 | `auth` | off | Generic `TokenProvider` trait + `AuthenticatedHttpClient` + four auto-registered `auth` subcommands; pair with `cli-framework-oidc` for OIDC flows |
 | `doctor` | off | Structured `DoctorCheck` trait, concurrent runner, and `doctor` CLI command with terminal/JSON output |
+| `self-install` | off | `self install` / `self uninstall` / `self status` for `EndUser` apps (ADR 0080): install receipt, reversible PATH edits (shared `env` file on Unix, `HKCU\Environment` on Windows), four `install.*` doctor checks, `SI001`–`SI006` codes. Enable with `AppBuilder::with_self_install(SelfInstallOptions::github(..))`. Implies `doctor`, `config`. See `self-install-and-distribution.md` |
 | `project-config` | off | Project root discovery and TOML config loading |
 | `testkit` | off | Enable `CliTestHarness` for in-process CLI testing (dev/test use only) |
 | `table-advanced` | off | Enable `comfy-table` based advanced table rendering |

@@ -472,12 +472,13 @@ and `record_arg_values` + `arg_value_allowlist` (security gate — R13).
 be overridden by any builder field.
 _Avoid_: "OTel config", "observability config" — use Telemetry config.
 
-**Deployment** _(spec 025)_:
-How a cli-framework binary is deployed, which decides whose telemetry it
-produces: **end-user** (a person's own device — telemetry requires their
-**Consent**) or **service** (an operator's infrastructure — telemetry is
-configured, never consented). Chosen once by the application author; it is
-not an **Invocation surface** and not a **Profile**.
+**Deployment** _(spec 025; ADR 0080)_:
+Whose device a cli-framework binary runs on: **end-user** (a person's own
+device — telemetry requires their **Consent**, and the binary may
+**Self-install** itself) or **service** (an operator's infrastructure —
+telemetry is configured, never consented, and the operator places the
+binary). Chosen once by the application author; it is not an **Invocation
+surface** and not a **Profile**.
 _Avoid_: "profile" (ADR 0074's org grouping), "mode", "environment"
 (semconv's prod/staging).
 
@@ -489,6 +490,27 @@ accounts on one laptop are two Installs.
 _Avoid_: "installation" (also the act of installing), "device" (may host
 several Installs), bare "machine" (the Scope value `machine` *means* this
 Install).
+
+**Self-install** _(ADR 0080)_:
+An end-user **Deployment** placing, updating or removing its own binary on
+the **Install**'s device, through the built-in `self` command group. Always
+qualified: bare "install" collides with `mcp install` (registering the app in
+an agent's configuration) and with the **Install** noun.
+_Avoid_: "installer" for the binary's own commands, "self-update" as a
+separate concept (it is one Self-install verb).
+
+**Install receipt** _(ADR 0080)_:
+The record a **Self-install** leaves of one **Install**: which version was
+placed where, by which method, and which files it changed. Separate from the
+telemetry state of the same Install; the receipt is what a later
+Self-install reads and reverses.
+_Avoid_: "manifest" (taken by Plugin manifest and Config manifest), "lock".
+
+**Installer script** _(ADR 0080)_:
+The shell or PowerShell one-liner target that fetches, verifies and hands a
+release to **Self-install**; it places nothing itself. Published as a release
+asset of the application.
+_Avoid_: "bootstrap script", "installer" for the binary's own commands.
 
 **Telemetry level** _(spec 025)_:
 How much telemetry leaves the process: `off`, `usage` (what was used —
