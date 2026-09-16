@@ -105,6 +105,9 @@ pub mod pkce;
 #[cfg(feature = "client")]
 pub mod client;
 
+#[cfg(feature = "client")]
+mod endpoint_security;
+
 /// Native RP-initiated logout URL preparation; browser launch remains host-owned.
 #[cfg(feature = "client")]
 pub mod end_session;
