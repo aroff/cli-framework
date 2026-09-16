@@ -32,8 +32,81 @@ env:
   SWAGGER_UI_DOWNLOAD_URL: file:///nonexistent/swagger-ui-must-come-from-the-vendored-feature.zip
 
 jobs:
+  windows-private-files:
+    name: Windows private-file ACLs
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable with coverage support
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Test native Windows private-file contracts
+        shell: pwsh
+        run: |
+          cargo llvm-cov -p cli-framework --lib --no-default-features --features secrets --lcov --output-path private-files.lcov
+
+      - name: Test full OIDC client cache and flow suite
+        shell: pwsh
+        run: |
+          cargo test -p cli-framework-oidc --features client
+
+      - name: Enforce touched-file line coverage
+        shell: pwsh
+        run: |
+          $targets = @{
+            "src/security/private_file.rs" = @{
+              Lines = [System.Collections.Generic.HashSet[int]]::new()
+              Hit = [System.Collections.Generic.HashSet[int]]::new()
+            }
+            "src/secrets/env_file.rs" = @{
+              Lines = [System.Collections.Generic.HashSet[int]]::new()
+              Hit = [System.Collections.Generic.HashSet[int]]::new()
+            }
+          }
+          $current = $null
+          foreach ($line in Get-Content private-files.lcov) {
+            if ($line.StartsWith("SF:")) {
+              $source = $line.Substring(3).Replace("\", "/")
+              $current = $null
+              foreach ($target in $targets.Keys) {
+                if ($source.EndsWith($target)) { $current = $target; break }
+              }
+            } elseif ($null -ne $current -and $line -match '^DA:(\d+),(\d+)') {
+              $lineNumber = [int]$Matches[1]
+              $null = $targets[$current].Lines.Add($lineNumber)
+              if ([int]$Matches[2] -gt 0) { $null = $targets[$current].Hit.Add($lineNumber) }
+            }
+          }
+          $failed = $false
+          foreach ($target in $targets.Keys) {
+            $found = $targets[$target].Lines.Count
+            $hit = $targets[$target].Hit.Count
+            if ($found -eq 0) {
+              Write-Error "$target was absent from the coverage report"
+              $failed = $true
+              continue
+            }
+            $percent = 100.0 * $hit / $found
+            Write-Host ("{0}: {1}/{2} lines ({3:N2}%)" -f $target, $hit, $found, $percent)
+            if (10 * $hit -le 9 * $found) { $failed = $true }
+          }
+          if ($failed) { exit 1 }
+
+      - name: Upload Windows private-file coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-private-file-coverage
+          path: private-files.lcov
+
   ci:
-    name: Check / Lint / Test
+    name: Linux Check / Lint / Test
     runs-on: ubuntu-latest
 
     # First service container this repo has ever needed (spec 022): the
@@ -297,3 +370,20 @@ jobs:
         run: |
           df -h /
           du -sh target 2>/dev/null || true
+
+  required-check:
+    name: Check / Lint / Test
+    if: ${{ always() }}
+    needs: [ci, windows-private-files]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require Linux and native Windows success
+        env:
+          LINUX_RESULT: ${{ needs.ci.result }}
+          WINDOWS_RESULT: ${{ needs.windows-private-files.result }}
+        run: |
+          if [[ "$LINUX_RESULT" != "success" || "$WINDOWS_RESULT" != "success" ]]; then
+            echo "Linux result: $LINUX_RESULT"
+            echo "Windows result: $WINDOWS_RESULT"
+            exit 1
+          fi
