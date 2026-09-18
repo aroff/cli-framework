@@ -73,23 +73,30 @@ fn classify(raw: &str) -> Option<InstallMethod> {
     }
 }
 
-/// The command that upgrades or removes a package-manager install.
-pub fn upgrade_hint(method: InstallMethod, app: &str) -> Option<String> {
+/// The command that upgrades a package-manager install.
+pub fn upgrade_command(method: InstallMethod, app: &str) -> Option<String> {
     match method {
-        InstallMethod::Homebrew => Some(format!(
-            "brew upgrade {app}  (remove: brew uninstall {app})"
-        )),
-        InstallMethod::Scoop => Some(format!(
-            "scoop update {app}  (remove: scoop uninstall {app})"
-        )),
-        InstallMethod::Winget => Some(format!(
-            "winget upgrade {app}  (remove: winget uninstall {app})"
-        )),
-        InstallMethod::Cargo => Some(format!(
-            "cargo install {app} --force  (remove: cargo uninstall {app})"
-        )),
+        InstallMethod::Homebrew => Some(format!("brew upgrade {app}")),
+        InstallMethod::Scoop => Some(format!("scoop update {app}")),
+        InstallMethod::Winget => Some(format!("winget upgrade {app}")),
+        InstallMethod::Cargo => Some(format!("cargo install {app} --force")),
         _ => None,
     }
+}
+
+/// The command that upgrades or removes a package-manager install.
+pub fn upgrade_hint(method: InstallMethod, app: &str) -> Option<String> {
+    let remove = match method {
+        InstallMethod::Homebrew => format!("brew uninstall {app}"),
+        InstallMethod::Scoop => format!("scoop uninstall {app}"),
+        InstallMethod::Winget => format!("winget uninstall {app}"),
+        InstallMethod::Cargo => format!("cargo uninstall {app}"),
+        _ => return None,
+    };
+    Some(format!(
+        "{}  (remove: {remove})",
+        upgrade_command(method, app)?
+    ))
 }
 
 #[cfg(test)]

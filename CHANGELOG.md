@@ -358,6 +358,10 @@
 
 ### Fixed
 
+- The update notice for a package-manager install now names only the upgrade
+  command (for example ``run `brew upgrade fastskill` ``) instead of the whole
+  SI004 hint with its `(remove: ...)` part. New `upgrade_command` export.
+
 - The automatic `doctor` command (registered when the app, telemetry or
   self-install contributes doctor checks) now follows
   `with_builtin_command_namespace` like `spec`, `self` and `completion`.
