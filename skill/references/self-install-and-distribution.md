@@ -115,6 +115,11 @@ let app = AppBuilder::new()
     .build(ctx)?;
 ```
 
+`self` and the `doctor` command that carries the `install.*` checks follow
+`with_builtin_command_namespace` (`myapp cli self`, `myapp cli doctor`). If
+the app registers its own command at that `doctor` path, the built-in one,
+and with it the `install.*` checks, is skipped.
+
 Options on `SelfInstallOptions`:
 
 | Option | Default | Use |

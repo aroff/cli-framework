@@ -1182,22 +1182,6 @@ impl AppBuilder {
             }
         }
 
-        #[cfg(feature = "doctor")]
-        {
-            if !self.doctor_checks.is_empty() {
-                if self.command_registry.get("doctor").is_none() {
-                    let cmd = crate::doctor::command::create_doctor_command(std::mem::take(
-                        &mut self.doctor_checks,
-                    ));
-                    self.command_registry.register(cmd);
-                } else {
-                    tracing::warn!(
-                        "'doctor' command already registered; skipping auto-registration from doctor_checks"
-                    );
-                }
-            }
-        }
-
         // Auto-register `auth` command group when a provider is configured.
         #[cfg(feature = "auth")]
         if self.token_provider.is_some() {
@@ -1301,6 +1285,32 @@ impl AppBuilder {
                 path = %spec_path.to_path_string(),
                 "spec command already registered; skipping built-in spec command"
             );
+        }
+
+        // The `doctor` command collects every registered check (the app's, the
+        // telemetry checks, the `install.*` checks). It is a built-in, so it
+        // follows the built-in namespace like `spec` and `self`, and yields to
+        // a command the app already registered at that path. Registered
+        // before `completion` so the completion scripts cover it.
+        #[cfg(feature = "doctor")]
+        if !self.doctor_checks.is_empty() {
+            let doctor_path = self
+                .builtin_command_namespace
+                .push("doctor")
+                .expect("built-in command id is a valid path segment");
+            if self.command_registry.resolve(&doctor_path).is_none() {
+                let cmd = crate::doctor::command::create_doctor_command(std::mem::take(
+                    &mut self.doctor_checks,
+                ));
+                self.command_registry
+                    .register_at(&doctor_path, cmd)
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+            } else {
+                tracing::warn!(
+                    path = %doctor_path.to_path_string(),
+                    "'doctor' already registered; skipping the built-in doctor command"
+                );
+            }
         }
 
         // Registered before `completion` so the completion scripts cover it.
