@@ -4,18 +4,23 @@
 # twin is self-install-e2e.ps1.
 #
 #   cargo build --features self-install --bin cfw-self-install-demo
-#   scripts/ci/self-install-e2e.sh [path/to/cfw-self-install-demo] [shell]
+#   scripts/ci/self-install-e2e.sh [path/to/cfw-self-install-demo] [shell] [newer-demo]
 #
 # It renders the template for the demo app, builds the release layout the
 # script expects (<base>/latest.json, <base>/v<ver>/<asset>, SHA256SUMS),
 # runs the rendered script with a temporary HOME, and checks that the binary,
 # the receipt and a clean uninstall all behave. `shell` defaults to sh; CI
 # also runs it under dash where available.
+#
+# `newer-demo` is the demo built with CFW_DEMO_VERSION set higher. When it is
+# given, the installed binary also runs `self update` against the same
+# mirror, then `self rollback` three times.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 demo=${1:-${CARGO_TARGET_DIR:-$root/target}/debug/cfw-self-install-demo}
 run_shell=${2:-sh}
+newer=${3:-}
 app=cfw-self-install-demo
 [ -x "$demo" ] || { echo "demo binary not found: $demo" >&2; exit 1; }
 
@@ -88,6 +93,42 @@ status=$("$bin" self status --json)
 echo "$status"
 echo "$status" | grep -q '"method":"script"' || { echo "method is not script" >&2; exit 1; }
 
+if [ -n "$newer" ]; then
+  [ -x "$newer" ] || { echo "newer demo binary not found: $newer" >&2; exit 1; }
+  new_version=$("$newer" --version | awk '{print $2}')
+  [ "$new_version" != "$version" ] || { echo "newer demo reports $version too" >&2; exit 1; }
+  new_rel="$work/release/v${new_version}"
+  mkdir -p "$new_rel" "$work/stage-new"
+  cp "$newer" "$work/stage-new/$app"
+  # install.sh fetches musl; a gnu build updates to its own target.
+  for part in unknown-linux-musl unknown-linux-gnu apple-darwin; do
+    tar -czf "$new_rel/${app}-${arch_part}-${part}.tar.gz" -C "$work/stage-new" "$app"
+  done
+  (cd "$new_rel" && { command -v sha256sum >/dev/null && sha256sum ./*.tar.gz || shasum -a 256 ./*.tar.gz; } \
+    | sed 's#  \./#  #' > SHA256SUMS)
+  printf '{"version": "%s"}\n' "$new_version" > "$work/release/latest.json"
+
+  echo "== update --check"
+  "$bin" self update --check | tee "$work/out"
+  grep -q "$new_version is available" "$work/out" || { echo "no update offered" >&2; exit 1; }
+  [ "$("$bin" --version | awk '{print $2}')" = "$version" ] || { echo "--check changed the binary" >&2; exit 1; }
+
+  echo "== update"
+  "$bin" self update
+  [ "$("$bin" --version | awk '{print $2}')" = "$new_version" ] || { echo "not updated" >&2; exit 1; }
+  [ -f "$bin.prev" ] || { echo "previous binary not kept" >&2; exit 1; }
+  "$bin" self status --json | grep -q "\"version\":\"$new_version\"" \
+    || { echo "receipt not updated" >&2; exit 1; }
+
+  echo "== rollback, and back again"
+  "$bin" self rollback
+  [ "$("$bin" --version | awk '{print $2}')" = "$version" ] || { echo "rollback failed" >&2; exit 1; }
+  "$bin" self rollback
+  [ "$("$bin" --version | awk '{print $2}')" = "$new_version" ] || { echo "second rollback failed" >&2; exit 1; }
+  "$bin" self rollback
+  printf '{"version": "%s"}\n' "$version" > "$work/release/latest.json"
+fi
+
 echo "== checksum mismatch is refused"
 echo "0000000000000000000000000000000000000000000000000000000000000000  $asset" > "$rel/SHA256SUMS"
 if "$run_shell" "$work/install.sh" 2>"$work/err"; then
@@ -104,5 +145,6 @@ grep -q "must be https" "$work/err" || { cat "$work/err" >&2; exit 1; }
 echo "== uninstall"
 "$bin" self uninstall
 [ ! -e "$bin" ] || { echo "binary still present" >&2; exit 1; }
+[ ! -e "$bin.prev" ] || { echo "previous binary still present" >&2; exit 1; }
 [ ! -e "$XDG_DATA_HOME/$app/install-receipt.json" ] || { echo "receipt still present" >&2; exit 1; }
 echo "self-install e2e passed"

@@ -3,16 +3,22 @@
 # self-install-e2e.sh.
 #
 #   cargo build --features self-install --bin cfw-self-install-demo
-#   pwsh scripts/ci/self-install-e2e.ps1 [path\to\cfw-self-install-demo.exe]
+#   pwsh scripts/ci/self-install-e2e.ps1 [path\to\cfw-self-install-demo.exe] [path\to\newer.exe]
 #
 # It renders the template for the demo app, builds the release layout the
 # script expects (<base>/latest.json, <base>/v<ver>/<asset>, SHA256SUMS),
 # runs the rendered script with a temporary install dir, and checks that the
 # binary, the receipt and a clean uninstall all behave. CI=1 keeps the user
 # Path untouched. The receipt lives in the real %LOCALAPPDATA% (the known-folder
-# API ignores environment overrides) and is removed by the uninstall step.
+# API ignores environment overrides) and is removed by the uninstall step, as
+# is the Apps & Features entry under HKCU.
+#
+# The optional second binary is the demo built with CFW_DEMO_VERSION set
+# higher: the installed binary then runs `self update` against the same
+# mirror (replacing itself while running) and `self rollback` three times.
 param(
-  [string]$Demo
+  [string]$Demo,
+  [string]$Newer
 )
 
 $ErrorActionPreference = 'Stop'
@@ -113,6 +119,50 @@ try {
   $receipt = $report.receipt_path
   if (-not $receipt) { $receipt = Join-Path $env:LOCALAPPDATA "$app\install-receipt.json" }
 
+  $arpKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$app"
+  if (-not (Test-Path $arpKey)) { Fail "no Apps & Features entry at $arpKey" }
+  $uninstallString = (Get-ItemProperty $arpKey).UninstallString
+  if ($uninstallString -notmatch 'self uninstall') { Fail "unexpected UninstallString: $uninstallString" }
+
+  function Get-Version { ((& $bin --version) -split '\s+')[1] }
+
+  if ($Newer) {
+    if (-not (Test-Path $Newer)) { Fail "newer demo binary not found: $Newer" }
+    $newVersion = ((& $Newer --version) -split '\s+')[1]
+    if ($newVersion -eq $version) { Fail "newer demo reports $version too" }
+    $newRel = Join-Path $work "release\v$newVersion"
+    $newStage = Join-Path $work 'stage-new'
+    New-Item -ItemType Directory -Force -Path $newRel, $newStage | Out-Null
+    Copy-Item $Newer (Join-Path $newStage "$app.exe")
+    $newAsset = "$app-$arch-pc-windows-msvc.zip"
+    Compress-Archive -Path (Join-Path $newStage "$app.exe") -DestinationPath (Join-Path $newRel $newAsset)
+    $newHash = (Get-FileHash -Algorithm SHA256 (Join-Path $newRel $newAsset)).Hash.ToLowerInvariant()
+    Set-Content -NoNewline -Path (Join-Path $newRel 'SHA256SUMS') -Value "$newHash  $newAsset`n"
+    Set-Content -Path (Join-Path $work 'release\latest.json') -Value "{`"version`": `"$newVersion`"}"
+
+    Write-Host '== update --check'
+    $out = (& $bin self update --check | Out-String)
+    Write-Host $out
+    if ($out -notmatch [regex]::Escape("$newVersion is available")) { Fail 'no update offered' }
+    if ((Get-Version) -ne $version) { Fail '--check changed the binary' }
+
+    Write-Host '== update (the running binary replaces itself)'
+    & $bin self update
+    if ($LASTEXITCODE -ne 0) { Fail "update exited with $LASTEXITCODE" }
+    if ((Get-Version) -ne $newVersion) { Fail 'not updated' }
+    if (-not (Test-Path "$bin.prev")) { Fail 'previous binary not kept' }
+    if ((Get-ItemProperty $arpKey).DisplayVersion -ne $newVersion) { Fail 'Apps & Features version not updated' }
+
+    Write-Host '== rollback, and back again'
+    & $bin self rollback
+    if ((Get-Version) -ne $version) { Fail 'rollback failed' }
+    & $bin self rollback
+    if ((Get-Version) -ne $newVersion) { Fail 'second rollback failed' }
+    & $bin self rollback
+    if ((Get-Version) -ne $version) { Fail 'third rollback failed' }
+    Set-Content -Path (Join-Path $work 'release\latest.json') -Value "{`"version`": `"$version`"}"
+  }
+
   Write-Host '== checksum mismatch is refused'
   Set-Content -NoNewline -Path (Join-Path $rel 'SHA256SUMS') -Value ("0" * 64 + "  $asset`n")
   $r = Invoke-Installer @{}
@@ -132,6 +182,8 @@ try {
   while ((Test-Path $bin) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
   if (Test-Path $bin) { Fail 'binary still present after uninstall' }
   if (Test-Path $receipt) { Fail "receipt still present at $receipt" }
+  if (Test-Path "$bin.prev") { Fail 'previous binary still present after uninstall' }
+  if (Test-Path $arpKey) { Fail 'Apps & Features entry still present after uninstall' }
   Write-Host 'self-install e2e passed'
 }
 finally {
