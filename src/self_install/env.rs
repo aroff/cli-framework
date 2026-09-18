@@ -58,6 +58,10 @@ pub struct InstallEnv {
     /// Registry key under `HKEY_CURRENT_USER` whose `Path` value is edited on
     /// Windows. `Environment` in production; a scratch key in tests.
     pub user_path_key: String,
+    /// Registry key under `HKEY_CURRENT_USER` that holds Apps & Features
+    /// entries on Windows. The real `Uninstall` key in production; a scratch
+    /// key in tests.
+    pub uninstall_key_root: String,
     /// The argv prefix that reaches the built-in `completion` command, when
     /// the application kept it, e.g. `["cli", "completion"]`.
     pub completion_command: Option<Vec<String>>,
@@ -83,6 +87,7 @@ impl InstallEnv {
             config_root: dirs::config_dir(),
             data_root: dirs::data_dir(),
             user_path_key: crate::self_install::layout::USER_PATH_REGISTRY_KEY.to_string(),
+            uninstall_key_root: crate::self_install::layout::UNINSTALL_REGISTRY_KEY.to_string(),
             completion_command: None,
             self_invocation: format!("{app} self"),
         })

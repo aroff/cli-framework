@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 /// The `HKEY_CURRENT_USER` subkey holding the per-user `Path`.
 pub const USER_PATH_REGISTRY_KEY: &str = "Environment";
 
+/// The `HKEY_CURRENT_USER` subkey whose children are Apps & Features entries.
+pub const UNINSTALL_REGISTRY_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall";
+
 /// The receipt's file name inside `<state_root>/<app>`.
 pub const RECEIPT_FILE: &str = "install-receipt.json";
 

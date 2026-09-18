@@ -44,7 +44,8 @@ pub enum PathModification {
     WindowsUserPath { key: String, entry: String },
 }
 
-/// Schema version 1 of `install-receipt.json`.
+/// Schema version 1 of `install-receipt.json`. Phase 2 and 3 fields are
+/// optional and additive, so a phase 1 binary still reads the file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallReceipt {
     pub schema_version: u32,
@@ -60,8 +61,18 @@ pub struct InstallReceipt {
     #[serde(default)]
     pub completions: Vec<PathBuf>,
     pub source: ReceiptSource,
-    /// RFC 3339, UTC.
+    /// RFC 3339, UTC: when the binary at `binary_path` was last placed.
     pub installed_at: String,
+    /// The version kept beside the binary as `<binary>.prev` by the last
+    /// `self update`, which `self rollback` restores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_version: Option<String>,
+    /// Installed with `--system` into a machine-wide bin dir.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub system: bool,
+    /// The `HKCU` Apps & Features key this install created (Windows).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apps_and_features: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]

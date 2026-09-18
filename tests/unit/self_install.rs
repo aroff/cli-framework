@@ -55,6 +55,10 @@ impl Sandbox {
                 "Software\\cli-framework-test\\{}",
                 uuid::Uuid::new_v4().simple()
             ),
+            uninstall_key_root: format!(
+                "Software\\cli-framework-test\\uninstall-{}",
+                uuid::Uuid::new_v4().simple()
+            ),
             completion_command: None,
             self_invocation: format!("{APP} self"),
         };

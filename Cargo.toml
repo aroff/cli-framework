@@ -193,6 +193,17 @@ tar = { version = "0.4", optional = true }
 # do it without a reboot-time move that needs elevation.
 self-replace = { version = "1.5", optional = true }
 
+# `self-install` phase 2 and 3 (ADR 0080): `self update` verifies the
+# downloaded archive against `SHA256SUMS` (sha2), unpacks `tar.gz` (flate2 +
+# tar) or `zip` with a path-traversal guard, orders release tags (semver), and
+# checks `SHA256SUMS.minisig` when the app declares a public key
+# (minisign-verify, pure Rust, no C toolchain).
+sha2 = { version = "0.10", optional = true }
+flate2 = { version = "1", optional = true }
+zip = { version = "2", default-features = false, features = ["deflate-flate2", "flate2"], optional = true }
+semver = { version = "1", optional = true }
+minisign-verify = { version = "0.2", optional = true }
+
 # Windows registry backend for the `config` feature (`ConfigBackend`). Only
 # resolved/built when compiling for a Windows target; `config` builds and
 # tests cleanly without it everywhere else.
@@ -219,6 +230,9 @@ windows-sys = { version = "0.61", features = [
 # target fails to compile. Declared here so the combo stands on its own.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots", "stream"] }
 wiremock = "0.6"
+# tests/unit/self_update.rs signs test releases; the crate itself only
+# verifies (minisign-verify).
+minisign = "0.7"
 # tests/integration/tls_native_roots.rs: a local HTTPS server signed by a
 # throwaway CA, trusted only through `SSL_CERT_FILE`. `ring` matches the
 # crate's provider so the test adds no second crypto backend.
@@ -324,11 +338,12 @@ config-managed = ["config", "auth"]
 # dependency cycle (a real risk `config-managed` does NOT reopen, since
 # `config` has no path back to `cli-framework-oidc`).
 config-service = ["config", "api-server", "dep:sqlx-core", "dep:sqlx-postgres", "dep:tar"]
-# Self-install (ADR 0080) — the `self install|uninstall|status` command group,
-# the install receipt, PATH handling and four `install.*` doctor checks, for
-# end-user deployments. Implies `doctor` (the checks) and `config` (the
-# Windows registry backend it already brings, and phase 2's policy keys).
-self-install = ["doctor", "config", "dep:self-replace"]
+# Self-install (ADR 0080) — the `self install|update|rollback|uninstall|status`
+# command group, the install receipt, PATH handling, four `install.*` doctor
+# checks and the opt-in update notice, for end-user deployments. Implies
+# `doctor` (the checks) and `config` (the Windows registry backend and the
+# `self_update.*` policy keys).
+self-install = ["doctor", "config", "dep:self-replace", "dep:sha2", "dep:flate2", "dep:tar", "dep:zip", "dep:semver", "dep:minisign-verify"]
 
 [lib]
 name = "cli_framework"
@@ -1063,6 +1078,13 @@ required-features = ["telemetry", "config", "testkit"]
 [[test]]
 name = "unit_self_install"
 path = "tests/unit/self_install.rs"
+required-features = ["self-install"]
+
+# `self update`, `self rollback`, `--from`, archives and the notice (ADR 0080
+# phases 2 and 3) against a wiremock release mirror.
+[[test]]
+name = "unit_self_update"
+path = "tests/unit/self_update.rs"
 required-features = ["self-install"]
 
 # The `self` group through the builder and the real demo binary (ADR 0080).

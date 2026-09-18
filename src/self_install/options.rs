@@ -1,11 +1,11 @@
-//! What an application declares about where its releases live.
+//! What an application declares about where its releases live, and how
+//! its installs behave.
 
 use serde::{Deserialize, Serialize};
 
 /// Where release archives are published.
 ///
-/// Phase 1 records the source in the install receipt and validates it; the
-/// updater that downloads from it arrives in phase 2.
+/// `self update` downloads from it; the install receipt records it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ReleaseSource {
@@ -30,6 +30,8 @@ pub struct SelfInstallOptions {
     pub(crate) completions: bool,
     pub(crate) public_key: Option<String>,
     pub(crate) update_notice: bool,
+    pub(crate) apps_and_features: bool,
+    pub(crate) publisher: Option<String>,
 }
 
 /// The default archive name: `<app>-<target>.tar.gz` or `.zip`.
@@ -59,6 +61,8 @@ impl SelfInstallOptions {
             completions: false,
             public_key: None,
             update_notice: false,
+            apps_and_features: true,
+            publisher: None,
         }
     }
 
@@ -95,16 +99,48 @@ impl SelfInstallOptions {
         self
     }
 
-    /// Reserved for phase 3 signature verification (minisign public key).
+    /// A minisign public key (the `RW...` line of a `.pub` file). When set,
+    /// `self update` and `--from` require `SHA256SUMS.minisig` beside
+    /// `SHA256SUMS` and refuse a release it does not verify.
     pub fn public_key(mut self, key: Option<&str>) -> Self {
         self.public_key = key.map(str::to_string);
         self
     }
 
-    /// Reserved for the phase 3 passive update notice.
+    /// After a successful command, print one stderr line when a newer
+    /// release exists (checked at most once a day). Off by default; see
+    /// ADR 0080 for when it stays silent.
     pub fn update_notice(mut self, enabled: bool) -> Self {
         self.update_notice = enabled;
         self
+    }
+
+    /// Register a Windows Apps & Features entry for user installs. On by
+    /// default; no effect on other platforms.
+    pub fn apps_and_features(mut self, enabled: bool) -> Self {
+        self.apps_and_features = enabled;
+        self
+    }
+
+    /// The publisher Apps & Features shows. Defaults to the GitHub owner, or
+    /// the application name for an HTTP source.
+    pub fn publisher(mut self, publisher: impl Into<String>) -> Self {
+        self.publisher = Some(publisher.into());
+        self
+    }
+
+    pub(crate) fn publisher_name(&self, app: &str) -> String {
+        if let Some(p) = &self.publisher {
+            return p.clone();
+        }
+        match &self.source {
+            ReleaseSource::Github { repo, .. } => repo.split('/').next().unwrap_or(app).to_string(),
+            ReleaseSource::Http { .. } => app.to_string(),
+        }
+    }
+
+    pub fn update_notice_enabled(&self) -> bool {
+        self.update_notice
     }
 
     pub fn source(&self) -> &ReleaseSource {
@@ -163,6 +199,9 @@ impl SelfInstallOptions {
                 "self-install asset template {:?} must contain {{target}}",
                 self.asset_template
             ));
+        }
+        if let Some(key) = &self.public_key {
+            super::archive::check_public_key(key)?;
         }
         Ok(())
     }

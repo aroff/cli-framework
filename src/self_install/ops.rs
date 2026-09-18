@@ -2,6 +2,7 @@
 //! `self status`. Pure over an [`InstallEnv`]: no global state is read here,
 //! and nothing is printed.
 
+use super::archive::ArchiveError;
 use super::env::InstallEnv;
 use super::layout::{binary_file_name, default_bin_dir, env_var_prefix, receipt_path, same_path};
 use super::method::{infer_method_from_path, upgrade_hint, InstallMethod};
@@ -11,6 +12,8 @@ use super::receipt::{
     now_rfc3339, InstallReceipt, PathModification, ReceiptError, ReceiptSource,
     RECEIPT_SCHEMA_VERSION,
 };
+use super::release::ReleaseError;
+use super::update::{prev_path, stage_local_archive, UpdateLock, WorkDir};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -22,6 +25,12 @@ pub struct InstallRequest {
     pub unmanaged: bool,
     pub force: bool,
     pub from_bootstrap: bool,
+    /// Install into the machine-wide bin dir (`/usr/local/bin`, or
+    /// `%ProgramFiles%\<app>\bin`). PATH, completions and Apps & Features
+    /// are left alone.
+    pub system: bool,
+    /// Install from a local release archive instead of the running binary.
+    pub from: Option<PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -71,6 +80,45 @@ pub enum SelfInstallError {
         path: PathBuf,
         source: std::io::Error,
     },
+    #[error("{dir} is not writable by this user; run: {command}")]
+    NeedsElevation { dir: PathBuf, command: String },
+    #[error(
+        "no install receipt at {path}; {app} was not installed with `{invocation} install`, \
+         so it cannot update itself. Update it the way it was installed"
+    )]
+    NotManaged {
+        app: String,
+        path: PathBuf,
+        invocation: String,
+    },
+    #[error(
+        "the install receipt records {recorded}, but this is {running}; \
+         run the installed binary instead"
+    )]
+    ReceiptMismatch { recorded: PathBuf, running: PathBuf },
+    #[error("refused by your organisation's policy ({key}): {reason}")]
+    PolicyRefused { key: &'static str, reason: String },
+    #[error(transparent)]
+    Release(#[from] ReleaseError),
+    #[error(transparent)]
+    Verify(#[from] ArchiveError),
+    #[error("the release is unusable: {0}")]
+    BadRelease(String),
+    #[error(
+        "{target} is older than the running {current}; \
+         name the version to downgrade: `{invocation} update {target}`"
+    )]
+    Downgrade {
+        current: String,
+        target: String,
+        invocation: String,
+    },
+    #[error("nothing to roll back to: {path} does not exist")]
+    NothingToRollBack { path: PathBuf },
+    #[error("{0}")]
+    BadRequest(String),
+    #[error("another update is running (lock {path}); if none is, delete the lock file")]
+    Locked { path: PathBuf },
 }
 
 /// Whether PATH gets edited, and why not when it does not.
@@ -85,6 +133,12 @@ pub enum PathDecision {
 /// The ADR's rule: never edit under `--no-modify-path`, `--unmanaged`, `CI`,
 /// or when stdout is not a terminal.
 pub fn path_decision(env: &InstallEnv, req: &InstallRequest, bin_dir: &Path) -> PathDecision {
+    if req.system {
+        if on_path(env, bin_dir) {
+            return PathDecision::AlreadyOnPath;
+        }
+        return PathDecision::Skip("--system: the system PATH is the administrator's".into());
+    }
     if req.unmanaged {
         return PathDecision::Skip("--unmanaged".into());
     }
@@ -112,6 +166,8 @@ fn on_path(env: &InstallEnv, dir: &Path) -> bool {
 /// What `self install` did.
 #[derive(Debug, Clone, Serialize)]
 pub struct InstallOutcome {
+    /// The version installed: the running one, or the `--from` archive's.
+    pub version: String,
     pub binary_path: PathBuf,
     pub bin_dir: PathBuf,
     pub replaced_existing: bool,
@@ -136,8 +192,15 @@ pub fn install(
 ) -> Result<InstallOutcome, SelfInstallError> {
     let prefix = env_var_prefix(&env.app);
     let allow_var = format!("{prefix}_INSTALL_ALLOW_SUDO");
-    if env.is_root && env.var(&allow_var).is_none() {
+    if env.is_root && !req.system && env.var(&allow_var).is_none() {
         return Err(SelfInstallError::RunningAsRoot { allow_var });
+    }
+    if req.system && (req.bin_dir.is_some() || req.unmanaged) {
+        return Err(SelfInstallError::BadRequest(
+            "--system chooses the bin dir and records a receipt; \
+             drop --bin-dir and --unmanaged"
+                .into(),
+        ));
     }
 
     let bin_dir = match &req.bin_dir {
@@ -145,8 +208,12 @@ pub fn install(
         Some(dir) => std::env::current_dir()
             .map(|cwd| cwd.join(dir))
             .unwrap_or_else(|_| dir.clone()),
+        None if req.system => system_bin_dir(env),
         None => default_bin_dir(env).ok_or(SelfInstallError::NoBinDir)?,
     };
+    if req.system {
+        probe_writable(env, req, &bin_dir)?;
+    }
     let dest = bin_dir.join(binary_file_name(&env.app, env.os));
 
     let receipt_file = if req.unmanaged {
@@ -175,18 +242,37 @@ pub fn install(
         });
     }
 
-    let mode = if req.from_bootstrap {
+    // `--from`: verify and unpack the archive into the bin dir first, so the
+    // final placement is a same-filesystem rename.
+    let (_lock, work, staged) = match &req.from {
+        Some(archive) => {
+            std::fs::create_dir_all(&bin_dir).map_err(|source| SelfInstallError::Io {
+                action: "cannot create",
+                path: bin_dir.clone(),
+                source,
+            })?;
+            let lock = UpdateLock::acquire(&bin_dir, &env.app)?;
+            let work = WorkDir::create(&bin_dir, &env.app)?;
+            let (binary, version) = stage_local_archive(env, opts, archive, &work)?;
+            (Some(lock), Some(work), Some((binary, version.to_string())))
+        }
+        None => (None, None, None),
+    };
+    let (src, version) = match &staged {
+        Some((binary, version)) => (binary.clone(), version.clone()),
+        None => (env.current_exe.clone(), env.version.clone()),
+    };
+    let mode = if req.from_bootstrap || staged.is_some() {
         PlaceMode::Move
     } else {
         PlaceMode::Copy
     };
     let placed: PlaceResult =
-        place_binary(&env.current_exe, &dest, mode, env.os).map_err(|source| {
-            SelfInstallError::Place {
-                path: dest.clone(),
-                source,
-            }
+        place_binary(&src, &dest, mode, env.os).map_err(|source| SelfInstallError::Place {
+            path: dest.clone(),
+            source,
         })?;
+    drop(work);
 
     let mut notes = Vec::new();
     if let Some(old) = &placed.parked_old {
@@ -196,7 +282,7 @@ pub fn install(
         ));
     }
     let source_left_behind =
-        (!placed.already_in_place && !req.from_bootstrap).then(|| env.current_exe.clone());
+        (!placed.already_in_place && mode == PlaceMode::Copy).then(|| env.current_exe.clone());
 
     let decision = path_decision(env, req, &bin_dir);
     let mut modifications = Vec::new();
@@ -216,6 +302,7 @@ pub fn install(
 
     if req.unmanaged {
         return Ok(InstallOutcome {
+            version,
             binary_path: dest,
             bin_dir,
             replaced_existing: placed.replaced_existing,
@@ -230,7 +317,7 @@ pub fn install(
         });
     }
 
-    let completions = if opts.completions {
+    let completions = if opts.completions && !req.system {
         install_completions(env, &dest, &mut notes)
     } else {
         Vec::new()
@@ -257,10 +344,21 @@ pub fn install(
         }
     }
 
+    let apps_and_features = if env.os.is_windows() && opts.apps_and_features && !req.system {
+        register_apps_and_features(env, opts, &version, &dest, &bin_dir, &mut notes)
+    } else {
+        None
+    };
+    // An update's `.prev` survives a reinstall, and so does what it records.
+    let previous_version = previous
+        .as_ref()
+        .and_then(|r| r.previous_version.clone())
+        .filter(|_| prev_path(&dest).is_file());
+
     let receipt = InstallReceipt {
         schema_version: RECEIPT_SCHEMA_VERSION,
         app: env.app.clone(),
-        version: env.version.clone(),
+        version: version.clone(),
         target: current_target(),
         channel: previous
             .as_ref()
@@ -277,11 +375,15 @@ pub fn install(
         completions: all_completions,
         source: ReceiptSource::from(opts),
         installed_at: now_rfc3339(),
+        previous_version,
+        system: req.system,
+        apps_and_features,
     };
     let receipt_file = receipt_file.expect("managed install has a receipt path");
     receipt.save(&receipt_file)?;
 
     Ok(InstallOutcome {
+        version,
         binary_path: dest,
         bin_dir,
         replaced_existing: placed.replaced_existing,
@@ -294,6 +396,101 @@ pub fn install(
         notes,
         source_left_behind,
     })
+}
+
+/// The machine-wide bin dir: `/usr/local/bin`, or
+/// `%ProgramFiles%\<app>\bin` on Windows.
+pub fn system_bin_dir(env: &InstallEnv) -> PathBuf {
+    if env.os.is_windows() {
+        let program_files = env.var("ProgramFiles").unwrap_or(r"C:\Program Files");
+        PathBuf::from(program_files).join(&env.app).join("bin")
+    } else {
+        PathBuf::from("/usr/local/bin")
+    }
+}
+
+/// `--system` needs write access to the bin dir. Check before anything is
+/// placed, and name the elevated command rather than elevating.
+fn probe_writable(
+    env: &InstallEnv,
+    req: &InstallRequest,
+    bin_dir: &Path,
+) -> Result<(), SelfInstallError> {
+    let probe = bin_dir.join(format!(".{}.write-probe-{}", env.app, std::process::id()));
+    let result = std::fs::create_dir_all(bin_dir).and_then(|_| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+            .map(drop)
+    });
+    let _ = std::fs::remove_file(&probe);
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            Err(SelfInstallError::NeedsElevation {
+                dir: bin_dir.to_path_buf(),
+                command: elevated_command(env, req),
+            })
+        }
+        Err(source) => Err(SelfInstallError::Io {
+            action: "cannot write to",
+            path: bin_dir.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+fn elevated_command(env: &InstallEnv, req: &InstallRequest) -> String {
+    let group = env
+        .self_invocation
+        .split_once(' ')
+        .map(|(_, rest)| rest)
+        .unwrap_or("self");
+    let mut args = format!("{group} install --system");
+    if let Some(from) = &req.from {
+        args.push_str(&format!(" --from \"{}\"", from.display()));
+    }
+    let exe = env.current_exe.display();
+    if env.os.is_windows() {
+        format!(
+            "Start-Process -Verb RunAs -FilePath \"{exe}\" -ArgumentList '{args}' \
+             (in PowerShell)"
+        )
+    } else {
+        format!("sudo \"{exe}\" {args}")
+    }
+}
+
+fn register_apps_and_features(
+    env: &InstallEnv,
+    opts: &SelfInstallOptions,
+    version: &str,
+    binary: &Path,
+    bin_dir: &Path,
+    notes: &mut Vec<String>,
+) -> Option<String> {
+    let key = format!("{}\\{}", env.uninstall_key_root, env.app);
+    let group = env
+        .self_invocation
+        .split_once(' ')
+        .map(|(_, rest)| rest)
+        .unwrap_or("self");
+    let entry = super::apps_features::Entry {
+        display_name: &env.app,
+        version,
+        publisher: &opts.publisher_name(&env.app),
+        binary,
+        install_location: bin_dir,
+        uninstall_args: &format!("{group} uninstall"),
+    };
+    match super::apps_features::register(&key, &entry) {
+        Ok(()) => Some(key),
+        Err(e) => {
+            notes.push(format!("no Apps & Features entry: {e}"));
+            None
+        }
+    }
 }
 
 type PathEdit = (Vec<PathModification>, Option<String>, Vec<String>);
@@ -517,6 +714,18 @@ pub fn uninstall(env: &InstallEnv, purge: bool) -> Result<UninstallOutcome, Self
         }
     }
 
+    let prev = prev_path(&receipt.binary_path);
+    if remove_if_exists(&prev)? {
+        out.removed.push(prev);
+    }
+    if let Some(key) = &receipt.apps_and_features {
+        match super::apps_features::remove(key) {
+            Ok(()) => out.removed.push(PathBuf::from(format!("HKCU\\{key}"))),
+            Err(e) => out
+                .kept
+                .push(format!("Apps & Features entry HKCU\\{key} ({e})")),
+        }
+    }
     for stale in stale_files(&receipt.bin_dir, &env.app, env.os) {
         if stale.is_file() && remove_if_exists(&stale).unwrap_or(false) {
             out.removed.push(stale);

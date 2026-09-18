@@ -173,12 +173,14 @@ pub fn startup_cleanup() {
     }
 }
 
-/// Leftovers in the bin dir: `.old` executables, installer-script temp dirs,
-/// staging files and the update lock.
+/// Leftovers in the bin dir: `.old` executables, installer-script and
+/// updater temp dirs, staging files and the update lock. The `.prev` copy
+/// kept for `self rollback` is not a leftover.
 pub fn stale_files(bin_dir: &Path, app: &str, os: Os) -> Vec<PathBuf> {
     let binary = binary_file_name(app, os);
     let old_prefix = format!("{binary}.old");
     let script_tmp = format!(".{app}-install.");
+    let update_tmp = format!(".{app}-update.");
     let staging = format!(".{binary}.tmp-");
     let lock = format!(".{app}.lock");
     let Ok(entries) = std::fs::read_dir(bin_dir) else {
@@ -190,6 +192,7 @@ pub fn stale_files(bin_dir: &Path, app: &str, os: Os) -> Vec<PathBuf> {
             let name = e.file_name().to_string_lossy().into_owned();
             name.starts_with(&old_prefix)
                 || name.starts_with(&script_tmp)
+                || name.starts_with(&update_tmp)
                 || name.starts_with(&staging)
                 || name == lock
         })
