@@ -512,6 +512,13 @@ release to **Self-install**; it places nothing itself. Published as a release
 asset of the application.
 _Avoid_: "bootstrap script", "installer" for the binary's own commands.
 
+**Update notice** _(ADR 0080)_:
+The one line a **Self-install**ed application may print after a successful
+command saying a newer release exists. Opt-in per application and passive:
+it never updates anything, and only the person running `self update` does.
+_Avoid_: "auto-update" (nothing updates by itself), "notification" (taken by
+ailoop).
+
 **Telemetry level** _(spec 025)_:
 How much telemetry leaves the process: `off`, `usage` (what was used —
 command and feature tallies, one root span per command), `diagnostic` (adds

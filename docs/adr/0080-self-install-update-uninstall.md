@@ -268,6 +268,73 @@ Recorded here so the decisions above stay readable; none reverses them.
 - On Windows the receipt path comes from the known-folder API, which ignores
   `LOCALAPPDATA` overrides; tests clean the real location up.
 
+## Refinements made while implementing phases 2 and 3
+
+Both phases shipped together. As above, none reverses a decision.
+
+- `self rollback [--json]` is its own command rather than a `self update`
+  argument. The replaced binary is kept as `<binary>.prev`, mode `644` on
+  Unix so it never runs by accident, and the receipt records its version as
+  `previous_version`. Rollback swaps the two, so a second rollback returns
+  to where the first started. `self uninstall` removes `.prev` too.
+- One signature per release, not one per asset: `SHA256SUMS.minisig` is a
+  minisign signature over `SHA256SUMS`, and the archive is then checked
+  against the signed sums. When the app sets `public_key`, a release without
+  a valid signature is refused; without a key, signatures are ignored.
+  Only prehashed signatures (the minisign default since 0.8) are accepted.
+  `minisign-verify` does the checking, so no sigstore or network trust root
+  is needed.
+- After extracting, the updater runs the new binary with `--version` and
+  refuses a release whose binary reports a different version from its tag.
+- The update notice runs after the command, not beside it, because whether
+  it may use the network depends on the effective telemetry level, known
+  only once startup has read the stored consent. With the `telemetry`
+  feature compiled, level `off` (the default before consent) silences it.
+  The source is asked at most once a day with a 1.5 s timeout; the answer,
+  or the failure, is cached in `<state root>/<app>/update-check.json`. It is
+  also silent when stderr is not a terminal and after `self`, `completion`
+  and `mcp serve`. A package-manager install gets that manager's upgrade
+  command in the notice instead of `self update`.
+- Windows swaps by renaming the running exe to `.old`, as phase 1 already
+  did for reinstalls; the `self-replace` crate is not needed.
+- The update lock is `.<app>.lock` in the bin dir, created exclusively and
+  treated as stale after 15 minutes. Downloads land in
+  `.<app>-update.<pid>` inside the bin dir, removed on every exit path; the
+  `install.stale_files` doctor check reports either if a crash leaves them.
+- `--system` installs to `/usr/local/bin` or
+  `%ProgramFiles%\<app>\bin`, checks that it can write there before doing
+  anything, and otherwise fails with the exact elevated command (`sudo ...`
+  or `Start-Process -Verb RunAs ...`). It never edits PATH, writes no
+  completions and registers no Apps & Features entry, and refuses
+  `--bin-dir` and `--unmanaged`.
+- `--from ARCHIVE` needs `SHA256SUMS` in the same directory, and
+  `SHA256SUMS.minisig` too when the app has a key. It works for both
+  `self install` and `self update`; with `self update` it takes the
+  archive's own version, so naming a version as well is refused.
+- `self update <version>` may downgrade; `stable` and `latest` never do.
+  An explicit version leaves the receipt's channel alone.
+- Policy keys are flat dotted keys in the enforced policy tree.
+  `self_update.enabled = false` refuses update and rollback;
+  `self_update.channel = "stable"` refuses `latest` and prerelease versions;
+  `self_update.base_url` (https only) replaces the app's source and
+  `<APP>_INSTALLER_BASE_URL`; `self_update.minimum_version` refuses any
+  target below it, rollback included. A malformed key is ignored with a
+  warning and read the safe way (a non-boolean `enabled` disables).
+- Apps & Features: per-user installs on Windows register
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\<app>` with
+  `DisplayName`, `DisplayVersion`, `Publisher` (the explicit `publisher`
+  option, else the GitHub owner, else the app name), `DisplayIcon`,
+  `InstallLocation`, `NoModify`, `NoRepair` and an `UninstallString` that
+  runs `self uninstall`. Update and rollback refresh `DisplayVersion`. Apps
+  opt out with `apps_and_features(false)`.
+- The receipt stays at schema version 1; `previous_version`, `system` and
+  `apps_and_features` are optional additions a phase 1 binary still reads.
+- New stable error codes: `SI007` refused by policy, `SI008` release source
+  unreachable or no matching release, `SI009` checksum, signature or archive
+  verification failed, `SI010` refused request (downgrade, nothing to roll
+  back, conflicting arguments), `SI011` another update holds the lock.
+  `SI001` also covers `--system` without the needed privilege.
+
 ## Consequences
 
 - Every derived app gets identical commands, flags, layout and platform

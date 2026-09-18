@@ -1,9 +1,11 @@
 # Self-install and distribution
 
-Status: tracks ADR 0080 (accepted). Phase 1 is implemented behind the
-`self-install` feature: `self install`, `self uninstall`, `self status`, the
-receipt, PATH handling, the four doctor checks and both installer scripts.
-`self update`, `--system` and `--from` are phase 2 and are marked below.
+Status: tracks ADR 0080 (accepted), fully implemented behind the
+`self-install` feature: `self install`, `self update`, `self rollback`,
+`self uninstall`, `self status`, the receipt, PATH handling, checksum and
+minisign verification, enterprise policy keys, the opt-in update notice,
+the Windows Apps & Features entry, the four doctor checks and both
+installer scripts.
 
 Every end-user cli-framework app gets the same install story: a one-line
 installer script per platform, a `self` command group that installs, updates
@@ -22,20 +24,33 @@ irm https://github.com/OWNER/REPO/releases/latest/download/install.ps1 | iex
 Pin a version by changing the path: `releases/download/v1.4.2/install.sh`.
 
 ```
-myapp self install   [--bin-dir DIR] [--no-modify-path] [--unmanaged] [--force] [--from-bootstrap]
+myapp self install   [--bin-dir DIR] [--system] [--no-modify-path] [--unmanaged]
+                     [--from ARCHIVE] [--force] [--from-bootstrap]
+myapp self update    [stable|latest|1.4.2] [--check] [--from ARCHIVE] [--force] [--json]
+myapp self rollback  [--json]
 myapp self uninstall [--purge]
 myapp self status    [--json]
 myapp doctor                       # includes the install.* checks
-
-# phase 2
-myapp self install   [--system] [--from ARCHIVE]
-myapp self update    [stable|latest|1.4.2] [--check] [--from ARCHIVE] [--force]
 ```
 
 - `--force` replaces a binary that no receipt records, and rewrites an
   unreadable receipt.
 - `--from-bootstrap` is for the installer scripts: the downloaded binary moves
   itself into the bin dir instead of copying.
+- `--system` installs to the machine-wide bin dir (section 5). It never
+  elevates: without write access it fails with the exact `sudo ...` or
+  `Start-Process -Verb RunAs ...` command to run. It leaves PATH,
+  completions and Apps & Features alone, and refuses `--bin-dir` and
+  `--unmanaged`.
+- `--from ARCHIVE` installs or updates from a local release archive with no
+  network. `SHA256SUMS` must sit beside it, and `SHA256SUMS.minisig` too
+  when the app has a public key (air-gapped sites copy all three).
+- `self update` with no argument follows the channel in the receipt
+  (`stable` unless the install chose otherwise). `--check` only reports.
+  `stable` and `latest` never downgrade; naming a version may. `--force`
+  reinstalls the current version.
+- `self rollback` swaps the binary with the copy the last update kept as
+  `myapp.prev`; running it again swaps back.
 - `--purge` also removes the app's config, state and data directories. Each
   must be named after the app, must not contain the home directory and must
   not sit at or directly under a filesystem root. Keychain entries are never
@@ -45,12 +60,21 @@ Failures exit 1 with a stable code at the start of the message:
 
 | Code | Meaning |
 |---|---|
-| `SI001` | Refused to run as root or under sudo without `MYAPP_INSTALL_ALLOW_SUDO=1` |
+| `SI001` | Refused to run as root or under sudo without `MYAPP_INSTALL_ALLOW_SUDO=1`, or `--system` without write access |
 | `SI002` | A binary no receipt records is in the way; rerun with `--force` |
 | `SI003` | The receipt cannot be read, parsed or written |
 | `SI004` | Nothing to uninstall, or a package manager owns the binary |
 | `SI005` | `--purge` refused a directory that failed a guard |
 | `SI006` | A filesystem or registry operation failed, or no home dir was found |
+| `SI007` | Refused by an enforced `self_update.*` policy key, which the message names |
+| `SI008` | The release source is unreachable, or has no matching release or asset |
+| `SI009` | Checksum, signature or archive verification failed; nothing was changed |
+| `SI010` | Refused request: a downgrade without a version, nothing to roll back, conflicting arguments |
+| `SI011` | Another update holds the lock in the bin dir |
+
+`self update` and `self rollback` also exit with `SI004` when the binary was
+not installed by `self install` (no receipt, or the receipt names another
+path) or a package manager owns it; the message says how to update instead.
 
 The group exists only for `Deployment::EndUser`, the default. If the app
 already registers its own `self` command, the framework logs a warning and
@@ -72,7 +96,7 @@ Environment variables, all optional:
 | `MYAPP_INSTALLER_BASE_URL` | Download base for a mirror. Must be `https`; plain `http` only for `127.0.0.1`, `localhost` or `[::1]` |
 | `MYAPP_GITHUB_TOKEN` or `GITHUB_TOKEN` | Private GitHub releases; sent only as a header, never to a mirror |
 | `MYAPP_INSTALL_ALLOW_SUDO=1` | Allow `self install` under root or sudo |
-| `MYAPP_NO_UPDATE_CHECK=1` | Silence the passive update notice, if the app enabled it |
+| `MYAPP_NO_UPDATE_CHECK=1` | Silence the passive update notice, if the app enabled it (`CI` also silences it) |
 
 ## 2. Enable it in the app
 
@@ -99,8 +123,10 @@ Options on `SelfInstallOptions`:
 | `tag_prefix("myapp-v")` | `"v"` | Monorepos that tag `myapp-v1.4.2` |
 | `asset_template("{app}-{version}-{target}.{ext}")` | `"{app}-{target}.{ext}"` | Only if you already publish versioned names |
 | `completions(true)` | off | Also install shell completions and list them in the receipt |
-| `public_key(...)` | none | Reserved for signature verification (phase 3) |
-| `update_notice(true)` | off | Passive once-a-day check (phase 3) |
+| `public_key(Some("RW..."))` | none | minisign public key; releases must then ship a valid `SHA256SUMS.minisig` |
+| `update_notice(true)` | off | After a successful command, one stderr line when a newer release exists (section 5) |
+| `apps_and_features(false)` | on | Windows: skip the Apps & Features entry for user installs |
+| `publisher("Example Ltd")` | GitHub owner, else app name | Publisher shown in Apps & Features |
 
 ## 3. Release contract
 
@@ -114,6 +140,7 @@ myapp-aarch64-apple-darwin.tar.gz
 myapp-x86_64-pc-windows-msvc.zip
 myapp-aarch64-pc-windows-msvc.zip
 SHA256SUMS
+SHA256SUMS.minisig   # only if the app sets public_key
 install.sh
 install.ps1
 ```
@@ -126,6 +153,17 @@ install.ps1
   archives exist from inside the directory that holds them:
   `sha256sum *.tar.gz *.zip > SHA256SUMS`. It replaces `checksums.txt`; the
   generators' lookup matches either name.
+- Signing (optional): `minisign -S -m SHA256SUMS` with the release key
+  writes `SHA256SUMS.minisig`, one signature covering every archive. Keep
+  the secret key in a CI secret, put the public key in `public_key(...)`,
+  and never ship a release without the signature once the key is set:
+  older binaries holding the key refuse it. Use minisign 0.8 or later (it
+  signs prehashed by default; legacy signatures are refused).
+- The binary in each archive must report the tag's version on
+  `myapp --version` (`myapp 1.4.2`); `self update` checks this before
+  swapping.
+- An `http(...)` source serves the same layout: `latest.json` at the base
+  and the assets under `<base>/<tag_prefix><version>/`.
 - Linux targets are musl so one binary runs on every distribution and in
   Alpine containers. Substitute `-gnu` only if a dependency forces it.
 - macOS ships two per-arch archives, not a universal binary.
@@ -176,7 +214,7 @@ binary; the scripts do not change when that logic does.
 | | Linux | macOS | Windows |
 |---|---|---|---|
 | Per-user bin dir | `$XDG_BIN_HOME` (absolute only) or `~/.local/bin` | same | `%USERPROFILE%\.local\bin` |
-| `--system` bin dir (phase 2) | `/usr/local/bin` | `/usr/local/bin` | `C:\Program Files\myapp\bin` |
+| `--system` bin dir | `/usr/local/bin` | `/usr/local/bin` | `C:\Program Files\myapp\bin` |
 | PATH edit | one shared line `. "$HOME/.local/bin/env"` appended to rc files that already exist: `.profile`, `.bash_profile`, `.bash_login`, `.bashrc`, and `$ZDOTDIR/.zshenv` or else `$ZDOTDIR/.zshrc`; per-app `~/.config/fish/conf.d/myapp.fish` | same; many Macs only have `.zshrc` | user `Path` in `HKCU\Environment`, prepended, then `WM_SETTINGCHANGE`; removed on uninstall only if no other `.exe` lives in the dir |
 | Env file | `~/.local/bin/env`, `env.fish`, shared by every framework app | same | none |
 | Receipt | `~/.local/share/myapp/install-receipt.json` | `~/Library/Application Support/myapp/install-receipt.json` | `%LOCALAPPDATA%\myapp\install-receipt.json` |
@@ -187,14 +225,42 @@ Rules that hold everywhere: no prompts; no rc file is created or rewritten;
 nothing is edited when `CI` is set or stdout is not a terminal, the line is
 printed instead; the shared PATH line is never removed on uninstall; temp
 files live inside the bin dir, never `/tmp`; `self install` refuses root and
-sudo unless the allow variable is set; `--system` (phase 2) never elevates
-and prints the command to run instead.
+sudo unless the allow variable is set; `--system` never elevates and prints
+the command to run instead.
+
+### Update, rollback and the notice
+
+- `self update` resolves the release, takes the lock `.myapp.lock` in the
+  bin dir, downloads `SHA256SUMS` (and the signature) and the archive into
+  `.myapp-update.<pid>` inside the bin dir, verifies, extracts, runs the new
+  binary with `--version`, copies the running one to `myapp.prev` (not
+  executable on Unix), swaps the new one in and updates the receipt. Any
+  failure before the swap leaves the install untouched.
+- It refuses a binary it did not install: no receipt, a receipt naming
+  another path, or a package-manager install (it prints that manager's
+  upgrade command instead).
+- The release source is, first to last: the `self_update.base_url` policy
+  key, `MYAPP_INSTALLER_BASE_URL`, the app's own `github(...)` or
+  `http(...)`.
+- With `update_notice(true)`, a successful command may end with
+  ``myapp 1.5.0 is available (you have 1.4.2); run `myapp self update` ``.
+  The release source is asked at most once a day with a 1.5 s timeout, and
+  the answer is cached in the state root as `update-check.json`. It stays
+  silent when telemetry is `off` (the level before consent, so the notice
+  needs the person's telemetry consent), when `CI` or
+  `MYAPP_NO_UPDATE_CHECK` is set, when stderr is not a terminal, when policy
+  disables updates, and after `self`, `completion` and `mcp serve`.
 
 ## 6. Platform tricks worth knowing
 
 Windows
 - A running `.exe` cannot be overwritten or deleted, only renamed. Seeing
   `myapp.exe.old` once after an update is expected; the next run removes it.
+- User installs register an Apps & Features entry under
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\myapp`, so
+  IT inventory sees the version and Settings can uninstall it (it runs
+  `self uninstall`). Update and rollback keep `DisplayVersion` current;
+  uninstall removes the entry.
 - New PATH values reach new terminals only. The installer prints
   `$env:Path = "...;$env:Path"` for the current session.
 - `Invoke-WebRequest` attaches the mark-of-the-web; the script unblocks the
@@ -259,7 +325,17 @@ native TLS roots; `MYAPP_INSTALLER_BASE_URL` points at a mirror;
 sites; the managed-configuration keys `self_update.enabled`,
 `self_update.channel`, `self_update.base_url` and
 `self_update.minimum_version` let an organisation pin or disable updates
-fleet-wide, and the refusal names the key.
+fleet-wide, and the refusal names the key:
+
+| Enforced key | Effect |
+|---|---|
+| `self_update.enabled = false` | `self update` and `self rollback` refuse; no update notice |
+| `self_update.channel = "stable"` | `latest` and prerelease versions are refused |
+| `self_update.base_url = "https://..."` | Updates come from this mirror, overriding the app and `MYAPP_INSTALLER_BASE_URL` |
+| `self_update.minimum_version = "1.4.0"` | Any target below it is refused, rollback included |
+
+A malformed value is ignored with a warning, read the safe way: a
+non-boolean `enabled` disables updates.
 
 ## 8. Coexistence with package managers
 
@@ -278,7 +354,11 @@ file is the same one uv and other cargo-dist tools write.
    `SHA256SUMS`, upload `install.sh` and `install.ps1`.
 3. Copy the two templates, replace the placeholders, commit under `scripts/`.
 4. Pick a tier and, for tier 2, add signing and notarisation to the workflow.
+   Optionally generate a minisign key pair, sign `SHA256SUMS` in the
+   workflow and pass the public key to `public_key(...)`.
 5. README install section: the two one-liners first, then package managers,
    then "download an archive" last.
 6. Run `myapp doctor` after a fresh install on each platform and confirm the
    four `install.*` checks pass.
+7. After the next release, run `myapp self update --check` on an installed
+   copy to confirm the contract end to end.
