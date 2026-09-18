@@ -16,6 +16,23 @@
   `self install --from-bootstrap`; CI runs them end to end on Linux, macOS
   and Windows.
 
+- `self-install` phases 2 and 3 (ADR 0080): `self update [stable|latest|<version>]`
+  with `--check`, `--from ARCHIVE` and `--force` downloads from the app's
+  GitHub or HTTP source (or a mirror), verifies the archive against
+  `SHA256SUMS` and, when the app sets `public_key`, a minisign
+  `SHA256SUMS.minisig`, checks the new binary's `--version`, and swaps it in
+  (a rename on Windows). The replaced binary stays as `<binary>.prev` for the
+  new `self rollback`. `self install` gains `--system` (machine-wide, never
+  elevates, prints the command instead) and `--from ARCHIVE` (air-gapped).
+  Enforced policy keys `self_update.enabled`, `.channel`, `.base_url` and
+  `.minimum_version` override flags. `SelfInstallOptions::update_notice(true)`
+  prints a once-a-day "newer release available" line after successful
+  commands when telemetry is on, stderr is a terminal and `CI` and
+  `<APP>_NO_UPDATE_CHECK` are unset. Windows user installs register an Apps
+  & Features entry (`apps_and_features(false)` opts out; `publisher(..)`
+  names it). New codes `SI007`–`SI011`; receipts gain the optional
+  `previous_version`, `system` and `apps_and_features` fields.
+
 - `OidcClientBuilder::open_browser(false)` supports explicit manual PKCE login.
   The authorization URL is always reported; callback acceptance is asynchronous,
   bounded and cancellation-safe rather than blocking an executor thread.
@@ -340,6 +357,10 @@
   no `..Default::default()` must add the field.
 
 ### Fixed
+
+- `http_retry::is_timeout` also recognises an `io::ErrorKind::TimedOut`
+  further down a `reqwest::Error`'s source chain, so connectors that report
+  a timeout only that way are retried as timeouts.
 
 - **MCP tool schemas dropped argument descriptions and never marked one-or-more arguments as
   required**, which is the half of the MCP surface an agent can actually read.

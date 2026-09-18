@@ -1305,6 +1305,8 @@ impl AppBuilder {
 
         // Registered before `completion` so the completion scripts cover it.
         #[cfg(feature = "self-install")]
+        let mut update_notice = None;
+        #[cfg(feature = "self-install")]
         if let Some(options) = self_install_options {
             let self_path = self
                 .builtin_command_namespace
@@ -1326,12 +1328,21 @@ impl AppBuilder {
                     argv.push("completion".to_string());
                     argv
                 });
+                let options = Arc::new(options);
+                if options.update_notice_enabled() {
+                    update_notice = Some(Arc::new(crate::self_install::UpdateNotice::new(
+                        self.app_name,
+                        self.app_version,
+                        options.clone(),
+                        &self.builtin_command_namespace.0,
+                    )));
+                }
                 crate::self_install::register_self_commands(
                     &mut self.command_registry,
                     &self.builtin_command_namespace,
                     self.app_name,
                     self.app_version,
-                    Arc::new(options),
+                    options,
                     completion_command,
                 )?;
             }
@@ -1504,6 +1515,8 @@ impl AppBuilder {
             // Nothing declares it at build time; only the testkit harness
             // does, on the App it wraps.
             stderr_interactive: None,
+            #[cfg(feature = "self-install")]
+            update_notice,
             #[cfg(feature = "telemetry")]
             telemetry_policy,
             #[cfg(feature = "telemetry")]
@@ -1642,6 +1655,9 @@ pub struct App<C: AppContext> {
     /// testkit setter has to compile either way.
     #[allow(dead_code)]
     pub(crate) stderr_interactive: Option<bool>,
+    /// The passive update notice, when the app opted in (ADR 0080).
+    #[cfg(feature = "self-install")]
+    update_notice: Option<Arc<crate::self_install::UpdateNotice>>,
     /// The one telemetry resolution this process makes (spec 025), settled by
     /// [`AppBuilder::build`] from the deployment shape, the author's
     /// [`TelemetryDefaults`](crate::telemetry::TelemetryDefaults), the
@@ -1809,6 +1825,37 @@ impl<C: AppContext> App<C> {
     }
 
     pub async fn run_with_args(&mut self, args: Vec<String>) -> Result<()> {
+        #[cfg(feature = "self-install")]
+        let notice = self.update_notice.clone().map(|n| (n, args.clone()));
+        let result = self.run_command(args).await;
+        #[cfg(feature = "self-install")]
+        if let (Ok(()), Some((notice, argv))) = (&result, notice) {
+            // After startup, so the effective telemetry level (stored
+            // consent included) decides whether the network may be touched.
+            #[cfg(feature = "telemetry")]
+            let telemetry_off =
+                self.telemetry_policy.level == crate::telemetry::TelemetryLevel::Off;
+            #[cfg(not(feature = "telemetry"))]
+            let telemetry_off = false;
+            let policy = self.self_update_policy();
+            notice.run(&argv, telemetry_off, &policy).await;
+        }
+        result
+    }
+
+    /// The enforced `self_update.*` keys from the cached managed policy.
+    #[cfg(feature = "self-install")]
+    fn self_update_policy(&self) -> crate::self_install::SelfUpdatePolicy {
+        #[cfg(feature = "config-managed")]
+        if let Some(client) = &self.policy_client {
+            if let Ok(Some(policy)) = client.cached_policy() {
+                return crate::self_install::SelfUpdatePolicy::from_policy(&policy);
+            }
+        }
+        crate::self_install::SelfUpdatePolicy::default()
+    }
+
+    async fn run_command(&mut self, args: Vec<String>) -> Result<()> {
         let _telemetry_guard = self.init_telemetry();
         use crate::app::clap_adapter::parse_with_clap;
         use crate::app::diagnostic_reporter::DiagnosticReporter;

@@ -1,13 +1,18 @@
-//! The `self` command group: thin CLI wrappers over [`super::ops`].
+//! The `self` command group: thin CLI wrappers over [`super::ops`] and
+//! [`super::update`].
 
 use super::env::InstallEnv;
 use super::ops::{
     self, InstallOutcome, InstallRequest, PathDecision, SelfInstallError, StatusReport,
 };
 use super::options::SelfInstallOptions;
+use super::policy::SelfUpdatePolicy;
+use super::update::{self, RollbackOutcome, UpdateAction, UpdateOutcome, UpdateRequest};
 use crate::app::context::AppContext;
 use crate::command::{Command, CommandRegistry, CommandResult};
-use crate::parser::error_codes::{SI001, SI002, SI003, SI004, SI005, SI006};
+use crate::parser::error_codes::{
+    SI001, SI002, SI003, SI004, SI005, SI006, SI007, SI008, SI009, SI010, SI011,
+};
 use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
 use crate::spec::command_tree::{CommandPath, CommandSpec, ExitCodeEntry, GroupMetadata};
 use crate::spec::value::ArgValue;
@@ -46,7 +51,7 @@ impl Shared {
     }
 }
 
-/// Register `<namespace> self {install, uninstall, status}`.
+/// Register `<namespace> self {install, update, rollback, uninstall, status}`.
 ///
 /// `completion_command` is the argv after the binary name that reaches the
 /// built-in completion command, or `None` when the app disabled it.
@@ -83,6 +88,8 @@ pub fn register_self_commands(
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     for (leaf, command) in [
         ("install", install_command(shared.clone())),
+        ("update", update_command(shared.clone())),
+        ("rollback", rollback_command(shared.clone())),
         ("uninstall", uninstall_command(shared.clone())),
         ("status", status_command(shared)),
     ] {
@@ -101,17 +108,25 @@ fn fail(code: &'static str, message: impl std::fmt::Display) -> anyhow::Error {
 
 fn report(err: SelfInstallError) -> anyhow::Error {
     let code = match &err {
-        SelfInstallError::RunningAsRoot { .. } => SI001,
+        SelfInstallError::RunningAsRoot { .. } | SelfInstallError::NeedsElevation { .. } => SI001,
         SelfInstallError::ForeignBinary { .. } => SI002,
         SelfInstallError::Receipt(_) => SI003,
-        SelfInstallError::ManagedByPackageManager { .. } | SelfInstallError::NoReceipt { .. } => {
-            SI004
-        }
+        SelfInstallError::ManagedByPackageManager { .. }
+        | SelfInstallError::NoReceipt { .. }
+        | SelfInstallError::NotManaged { .. }
+        | SelfInstallError::ReceiptMismatch { .. } => SI004,
         SelfInstallError::UnsafePurge { .. } => SI005,
         SelfInstallError::NoBinDir
         | SelfInstallError::NoStateDir
         | SelfInstallError::Place { .. }
         | SelfInstallError::Io { .. } => SI006,
+        SelfInstallError::PolicyRefused { .. } => SI007,
+        SelfInstallError::Release(_) => SI008,
+        SelfInstallError::Verify(_) | SelfInstallError::BadRelease(_) => SI009,
+        SelfInstallError::Downgrade { .. }
+        | SelfInstallError::NothingToRollBack { .. }
+        | SelfInstallError::BadRequest(_) => SI010,
+        SelfInstallError::Locked { .. } => SI011,
     };
     fail(code, err.to_string())
 }
@@ -137,6 +152,25 @@ fn string_arg(args: &HashMap<String, ArgValue>, name: &str) -> Option<String> {
     match args.get(name) {
         Some(ArgValue::Str(s)) if !s.is_empty() => Some(s.clone()),
         _ => None,
+    }
+}
+
+fn path_option(name: &'static str, long: &'static str, help: &'static str) -> ArgSpec {
+    ArgSpec {
+        name,
+        kind: ArgKind::Option,
+        long: Some(long),
+        value_type: ArgValueType::String,
+        cardinality: Cardinality::Optional,
+        help,
+        ..Default::default()
+    }
+}
+
+/// Malformed enforced keys are ignored (with their safe reading), and said.
+fn policy_warnings(ctx: &mut dyn AppContext, policy: &SelfUpdatePolicy) {
+    for key in &policy.malformed {
+        ctx.framework_println(&format!("warning: ignoring the malformed policy key {key}"));
     }
 }
 
@@ -180,15 +214,21 @@ fn leaf(
 
 fn install_command(shared: Shared) -> Command {
     let args = vec![
-        ArgSpec {
-            name: "bin_dir",
-            kind: ArgKind::Option,
-            long: Some("bin-dir"),
-            value_type: ArgValueType::String,
-            cardinality: Cardinality::Optional,
-            help: "Directory to install into (default: $XDG_BIN_HOME or ~/.local/bin)",
-            ..Default::default()
-        },
+        path_option(
+            "bin_dir",
+            "bin-dir",
+            "Directory to install into (default: $XDG_BIN_HOME or ~/.local/bin)",
+        ),
+        flag(
+            "system",
+            "system",
+            "Install for all users (/usr/local/bin, or %ProgramFiles%\\<app>\\bin); needs elevation",
+        ),
+        path_option(
+            "from",
+            "from",
+            "Install from a local release archive, verified against the SHA256SUMS beside it",
+        ),
         flag(
             "no_modify_path",
             "no-modify-path",
@@ -214,7 +254,7 @@ fn install_command(shared: Shared) -> Command {
         "install",
         "Install this binary for the current user and put it on PATH",
         args,
-        "Refused (root, foreign binary) or a filesystem error",
+        "Refused (root, foreign binary, needs elevation), a bad archive, or a filesystem error",
         Arc::new(move |ctx, args| {
             let shared = shared.clone();
             Box::pin(async move {
@@ -225,6 +265,8 @@ fn install_command(shared: Shared) -> Command {
                     unmanaged: is_set(&args, "unmanaged"),
                     force: is_set(&args, "force"),
                     from_bootstrap: is_set(&args, "from_bootstrap"),
+                    system: is_set(&args, "system"),
+                    from: string_arg(&args, "from").map(PathBuf::from),
                 };
                 let outcome = ops::install(&env, &shared.options, &req).map_err(report)?;
                 for line in render_install(&env, &outcome) {
@@ -249,7 +291,7 @@ pub(crate) fn render_install(env: &InstallEnv, o: &InstallOutcome) -> Vec<String
     lines.push(format!(
         "{} {} {verb} {}",
         env.app,
-        env.version,
+        o.version,
         o.binary_path.display()
     ));
     match &o.path {
@@ -308,6 +350,142 @@ fn describe_modification(m: &super::receipt::PathModification) -> String {
         M::FishConf { file } => format!("created {}", file.display()),
         M::WindowsUserPath { key, entry } => format!("HKCU\\{key}\\Path += {entry}"),
     }
+}
+
+fn update_command(shared: Shared) -> Command {
+    let args = vec![
+        ArgSpec {
+            name: "target",
+            kind: ArgKind::Positional,
+            value_type: ArgValueType::String,
+            cardinality: Cardinality::Optional,
+            help: "stable, latest, or a version (default: the channel the receipt records)",
+            ..Default::default()
+        },
+        flag(
+            "check",
+            "check",
+            "Only report whether an update is available",
+        ),
+        path_option(
+            "from",
+            "from",
+            "Update from a local release archive, verified against the SHA256SUMS beside it",
+        ),
+        flag("force", "force", "Reinstall even when already up to date"),
+        flag("json", "json", "Print the result as JSON"),
+    ];
+    leaf(
+        "update",
+        "Update this binary to the newest release, or to a named version",
+        args,
+        "Not a self-managed install, refused by policy, unreachable source, or failed verification",
+        Arc::new(move |ctx, args| {
+            let shared = shared.clone();
+            Box::pin(async move {
+                let env = shared.env()?;
+                let policy = SelfUpdatePolicy::from_context(ctx);
+                policy_warnings(ctx, &policy);
+                let req = UpdateRequest {
+                    target: string_arg(&args, "target"),
+                    check: is_set(&args, "check"),
+                    from: string_arg(&args, "from").map(PathBuf::from),
+                    force: is_set(&args, "force"),
+                };
+                let outcome = update::update(&env, &shared.options, &policy, &req)
+                    .await
+                    .map_err(report)?;
+                if is_set(&args, "json") {
+                    ctx.framework_println(&serde_json::to_string(&outcome)?);
+                } else {
+                    for line in render_update(&env, &outcome) {
+                        ctx.framework_println(&line);
+                    }
+                }
+                Ok(())
+            })
+        }),
+    )
+}
+
+pub(crate) fn render_update(env: &InstallEnv, o: &UpdateOutcome) -> Vec<String> {
+    let channel = o
+        .channel
+        .as_deref()
+        .map(|c| format!(" ({c})"))
+        .unwrap_or_default();
+    let mut lines = match o.action {
+        UpdateAction::UpToDate => vec![format!("{} {} is up to date{channel}", env.app, o.current)],
+        UpdateAction::Available => vec![format!(
+            "{} {} is available{channel}; running {}. Run `{} update` to install it",
+            env.app, o.target, o.current, env.self_invocation
+        )],
+        UpdateAction::Updated => vec![format!(
+            "{} updated {} -> {} at {}",
+            env.app,
+            o.current,
+            o.target,
+            o.binary_path.display()
+        )],
+    };
+    if let Some(prev) = &o.previous {
+        lines.push(format!(
+            "{} kept at {}; `{} rollback` restores it",
+            o.current,
+            prev.display(),
+            env.self_invocation
+        ));
+    }
+    for note in &o.notes {
+        lines.push(format!("note: {note}"));
+    }
+    lines
+}
+
+fn rollback_command(shared: Shared) -> Command {
+    leaf(
+        "rollback",
+        "Swap back to the version the last update replaced",
+        vec![flag("json", "json", "Print the result as JSON")],
+        "Nothing to roll back to, not a self-managed install, or refused by policy",
+        Arc::new(move |ctx, args| {
+            let shared = shared.clone();
+            Box::pin(async move {
+                let env = shared.env()?;
+                let policy = SelfUpdatePolicy::from_context(ctx);
+                policy_warnings(ctx, &policy);
+                let outcome = update::rollback(&env, &policy).map_err(report)?;
+                if is_set(&args, "json") {
+                    ctx.framework_println(&serde_json::to_string(&outcome)?);
+                } else {
+                    for line in render_rollback(&env, &outcome) {
+                        ctx.framework_println(&line);
+                    }
+                }
+                Ok(())
+            })
+        }),
+    )
+}
+
+pub(crate) fn render_rollback(env: &InstallEnv, o: &RollbackOutcome) -> Vec<String> {
+    let mut lines = vec![
+        format!(
+            "{} rolled back {} -> {} at {}",
+            env.app,
+            o.from,
+            o.to,
+            o.binary_path.display()
+        ),
+        format!(
+            "{} kept; `{} rollback` again returns to it",
+            o.from, env.self_invocation
+        ),
+    ];
+    for note in &o.notes {
+        lines.push(format!("note: {note}"));
+    }
+    lines
 }
 
 fn uninstall_command(shared: Shared) -> Command {
@@ -385,12 +563,24 @@ pub(crate) fn render_status(r: &StatusReport) -> Vec<String> {
         format!("install method: {}", r.method.as_str()),
     ];
     match (&r.receipt, &r.receipt_error, &r.receipt_path) {
-        (Some(receipt), _, Some(p)) => lines.push(format!(
-            "receipt: {} (version {}, installed {})",
-            p.display(),
-            receipt.version,
-            receipt.installed_at
-        )),
+        (Some(receipt), _, Some(p)) => {
+            lines.push(format!(
+                "receipt: {} (version {}, channel {}, installed {})",
+                p.display(),
+                receipt.version,
+                receipt.channel,
+                receipt.installed_at
+            ));
+            if let Some(prev) = &receipt.previous_version {
+                lines.push(format!("rollback: {prev} is kept beside the binary"));
+            }
+            if receipt.system {
+                lines.push("scope: system (all users)".into());
+            }
+            if let Some(key) = &receipt.apps_and_features {
+                lines.push(format!("Apps & Features: HKCU\\{key}"));
+            }
+        }
         (None, Some(err), _) => lines.push(format!("receipt: unreadable: {err}")),
         (None, None, Some(p)) => lines.push(format!("receipt: none (expected at {})", p.display())),
         _ => lines.push("receipt: no local data directory".into()),

@@ -122,16 +122,23 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Unit and CLI tests
-        run: cargo test --features self-install --test unit_self_install --test integration_self_install_cli
+        run: cargo test --features self-install --test unit_self_install --test unit_self_update --test integration_self_install_cli
 
-      - name: Build the demo binary
-        run: cargo build --features self-install --bin cfw-self-install-demo
+      # A "newer release" first (CFW_DEMO_VERSION is read at compile time),
+      # set aside, then the current one the installer places.
+      - name: Build the demo binaries
+        shell: bash
+        run: |
+          CFW_DEMO_VERSION=99.0.0 cargo build --features self-install --bin cfw-self-install-demo
+          mkdir -p target/newer
+          cp target/debug/cfw-self-install-demo* target/newer/
+          cargo build --features self-install --bin cfw-self-install-demo
 
       - name: install.sh end to end
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          scripts/ci/self-install-e2e.sh target/debug/cfw-self-install-demo sh
+          scripts/ci/self-install-e2e.sh target/debug/cfw-self-install-demo sh target/newer/cfw-self-install-demo
           if command -v dash >/dev/null 2>&1; then
             scripts/ci/self-install-e2e.sh target/debug/cfw-self-install-demo dash
           fi
@@ -139,7 +146,7 @@ jobs:
       - name: install.ps1 end to end
         if: runner.os == 'Windows'
         shell: pwsh
-        run: scripts/ci/self-install-e2e.ps1 target\debug\cfw-self-install-demo.exe
+        run: scripts/ci/self-install-e2e.ps1 target\debug\cfw-self-install-demo.exe target\newer\cfw-self-install-demo.exe
 
   ci:
     name: Linux Check / Lint / Test

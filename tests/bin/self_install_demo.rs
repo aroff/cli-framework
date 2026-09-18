@@ -3,6 +3,9 @@
 //!
 //! `CFW_DEMO_NAMESPACE=cli` places the built-ins under `cli`, so the group
 //! is reached as `cfw-self-install-demo cli self ...`.
+//!
+//! `CFW_DEMO_VERSION`, read at compile time, overrides the reported version
+//! so the end-to-end job can build a "newer release" to update to.
 
 use cli_framework::app::AppContext;
 use cli_framework::prelude::*;
@@ -13,7 +16,10 @@ impl AppContext for Ctx {}
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut builder = AppBuilder::new()
-        .with_version("cfw-self-install-demo", env!("CARGO_PKG_VERSION"))
+        .with_version(
+            "cfw-self-install-demo",
+            option_env!("CFW_DEMO_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
+        )
         .with_self_install(SelfInstallOptions::github("aroff/cli-framework").completions(true));
     if let Ok(ns) = std::env::var("CFW_DEMO_NAMESPACE") {
         if !ns.is_empty() {

@@ -98,18 +98,33 @@ pub const TEL002: &str = "TEL002";
 pub const TEL003: &str = "TEL003";
 
 /// Self-install (ADR 0080): `self install` refused to run as root or under
-/// `sudo` without `<APP>_INSTALL_ALLOW_SUDO=1`.
+/// `sudo` without `<APP>_INSTALL_ALLOW_SUDO=1`, or `--system` needs elevation.
 pub const SI001: &str = "SI001";
 /// Self-install: the target path already holds a binary that no receipt
 /// records, and `--force` was not given.
 pub const SI002: &str = "SI002";
 /// Self-install: the install receipt could not be read, parsed or written.
 pub const SI003: &str = "SI003";
-/// Self-install: `self uninstall` found no receipt, or the binary belongs to
-/// a package manager whose own command must be used.
+/// Self-install: no receipt records this binary (or it records another
+/// one), or the binary belongs to a package manager whose own command must
+/// be used.
 pub const SI004: &str = "SI004";
 /// Self-install: `--purge` refused a directory that failed a safety guard.
 pub const SI005: &str = "SI005";
 /// Self-install: a filesystem or registry operation failed, or no home or
 /// data directory could be resolved.
 pub const SI006: &str = "SI006";
+/// Self-install: an enforced `self_update.*` policy key refused the
+/// operation; the message names the key.
+pub const SI007: &str = "SI007";
+/// Self-install: the release source could not be reached or has no release
+/// matching the request.
+pub const SI008: &str = "SI008";
+/// Self-install: a release failed verification (checksum, signature, unsafe
+/// archive entry, or a binary that does not run or reports another version).
+pub const SI009: &str = "SI009";
+/// Self-install: the request itself was refused: an implicit downgrade,
+/// nothing to roll back to, or conflicting arguments.
+pub const SI010: &str = "SI010";
+/// Self-install: another update holds the bin dir's lock.
+pub const SI011: &str = "SI011";

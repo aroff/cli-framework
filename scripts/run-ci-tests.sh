@@ -147,9 +147,15 @@ echo ""
 # Step 7: Self-install (ADR 0080). CI runs this on Linux, macOS and Windows;
 # locally it covers the host OS.
 echo -e "${YELLOW}[7/7] Running self-install tests and installer end to end...${NC}"
-if cargo test --features self-install --test unit_self_install --test integration_self_install_cli --verbose \
+demo_dir="${CARGO_TARGET_DIR:-target}/debug"
+if cargo test --features self-install --test unit_self_install --test unit_self_update \
+        --test integration_self_install_cli --verbose \
+    && CFW_DEMO_VERSION=99.0.0 cargo build --features self-install --bin cfw-self-install-demo \
+    && mkdir -p "${CARGO_TARGET_DIR:-target}/newer" \
+    && cp "$demo_dir/cfw-self-install-demo" "${CARGO_TARGET_DIR:-target}/newer/" \
     && cargo build --features self-install --bin cfw-self-install-demo \
-    && scripts/ci/self-install-e2e.sh "${CARGO_TARGET_DIR:-target}/debug/cfw-self-install-demo" sh; then
+    && scripts/ci/self-install-e2e.sh "$demo_dir/cfw-self-install-demo" sh \
+        "${CARGO_TARGET_DIR:-target}/newer/cfw-self-install-demo"; then
     echo -e "${GREEN}✓ Self-install checks passed${NC}"
 else
     echo -e "${RED}✗ Self-install checks failed${NC}"
