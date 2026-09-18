@@ -358,6 +358,13 @@
 
 ### Fixed
 
+- The automatic `doctor` command (registered when the app, telemetry or
+  self-install contributes doctor checks) now follows
+  `with_builtin_command_namespace` like `spec`, `self` and `completion`.
+  Before, it always landed at the root, so an app with built-ins under `cli`
+  and its own `cli doctor` got a second, top-level `doctor`. An app command
+  already at `<namespace> doctor` keeps its place and the built-in is skipped.
+
 - `http_retry::is_timeout` also recognises an `io::ErrorKind::TimedOut`
   further down a `reqwest::Error`'s source chain, so connectors that report
   a timeout only that way are retried as timeouts.

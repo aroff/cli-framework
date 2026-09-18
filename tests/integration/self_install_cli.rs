@@ -57,6 +57,42 @@ fn group_follows_the_builtin_namespace() {
     let reg = app.command_registry();
     assert!(reg.resolve(&path(&["cli", "self", "install"])).is_some());
     assert!(reg.resolve(&path(&["self", "install"])).is_none());
+    // The doctor command carrying the `install.*` checks is a built-in too.
+    assert!(reg.resolve(&path(&["cli", "doctor"])).is_some());
+    assert!(reg.get("doctor").is_none());
+}
+
+#[test]
+fn an_app_owning_the_namespaced_doctor_keeps_it() {
+    let own = Command {
+        id: Arc::from("doctor"),
+        spec: Arc::new(CommandSpec {
+            summary: "the app's own doctor",
+            ..Default::default()
+        }),
+        validator: None,
+        expose_mcp: false,
+        expose_chat: false,
+        meta: None,
+        visibility: None,
+        execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
+    };
+    let app = AppBuilder::new()
+        .with_version("demo", "0.1.0")
+        .with_builtin_command_namespace(&CommandPath::root_for("cli"))
+        .register_command_at(&path(&["cli", "doctor"]), own)
+        .unwrap()
+        .with_self_install(options())
+        .build(Ctx)
+        .unwrap();
+    let reg = app.command_registry();
+    assert_eq!(
+        reg.resolve(&path(&["cli", "doctor"])).unwrap().summary(),
+        "the app's own doctor"
+    );
+    // No second doctor appears at the root.
+    assert!(reg.get("doctor").is_none());
+    assert!(reg.resolve(&path(&["cli", "self", "install"])).is_some());
 }
 
 #[test]
