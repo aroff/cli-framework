@@ -3,6 +3,7 @@
 //! Provides functions to determine whether HTTP errors should trigger retry attempts.
 
 use reqwest::Error;
+use std::error::Error as _;
 
 /// Check if an HTTP error should be retried
 ///
@@ -56,7 +57,22 @@ pub fn is_retryable_http_error(error: &Error) -> bool {
 /// # }
 /// ```
 pub fn is_timeout(error: &Error) -> bool {
-    error.is_timeout()
+    if error.is_timeout() {
+        return true;
+    }
+    // Some connectors report a timeout only as an `io::Error` further down
+    // the source chain. The kind is checked, never the message text.
+    let mut source = error.source();
+    while let Some(err) = source {
+        if err
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::TimedOut)
+        {
+            return true;
+        }
+        source = err.source();
+    }
+    false
 }
 
 /// Check if error is a connection error
