@@ -988,6 +988,26 @@ mod unix {
     }
 
     #[tokio::test]
+    async fn the_notice_names_only_the_package_manager_upgrade_command() {
+        let server = mirror("1.3.0", &[], &names()).await;
+        let opts = http_opts(&server);
+        let mut sb = Sandbox::new("1.2.3");
+        let cellar = sb
+            .root
+            .path()
+            .join("Cellar")
+            .join(APP)
+            .join("1.2.3")
+            .join("bin");
+        std::fs::create_dir_all(&cellar).unwrap();
+        sb.env.current_exe = cellar.join(binary_name());
+        std::fs::write(&sb.env.current_exe, script("1.2.3")).unwrap();
+
+        let line = notice_line(&sb.env, &opts, &no_policy()).await.unwrap();
+        assert!(line.ends_with("run `brew upgrade demoapp`"), "{line}");
+    }
+
+    #[tokio::test]
     async fn the_notice_stays_quiet_when_current_or_unreachable() {
         let server = mirror("1.2.3", &[], &names()).await;
         let opts = http_opts(&server);

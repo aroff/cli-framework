@@ -14,6 +14,7 @@
 
 use super::env::InstallEnv;
 use super::layout::env_var_prefix;
+use super::method::{infer_method_from_path, upgrade_command};
 use super::ops::SelfInstallError;
 use super::options::SelfInstallOptions;
 use super::policy::SelfUpdatePolicy;
@@ -134,8 +135,11 @@ pub async fn notice_line(
             Channel::parse(&receipt.channel).unwrap_or(Channel::Stable),
             format!("run `{} update`", env.self_invocation),
         ),
-        Err(SelfInstallError::ManagedByPackageManager { hint, .. }) if !hint.is_empty() => {
-            (Channel::Stable, format!("run `{hint}`"))
+        // The upgrade command alone: the hint's "(remove: ...)" is not something to run.
+        Err(SelfInstallError::ManagedByPackageManager { .. }) => {
+            let command = infer_method_from_path(&env.current_exe)
+                .and_then(|m| upgrade_command(m, &env.app))?;
+            (Channel::Stable, format!("run `{command}`"))
         }
         Err(_) => return None,
     };

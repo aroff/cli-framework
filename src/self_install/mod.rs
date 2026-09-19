@@ -60,7 +60,7 @@ pub use layout::{
     binary_file_name, default_bin_dir, env_var_prefix, receipt_path, UNINSTALL_REGISTRY_KEY,
     USER_PATH_REGISTRY_KEY,
 };
-pub use method::{infer_method_from_path, upgrade_hint, InstallMethod};
+pub use method::{infer_method_from_path, upgrade_command, upgrade_hint, InstallMethod};
 pub use notice::{check_cache_path, notice_line, CheckCache, UpdateNotice, CHECK_CACHE_FILE};
 pub use ops::{
     install, path_decision, purge_roots, status, system_bin_dir, uninstall, InstallOutcome,
