@@ -19,9 +19,10 @@ pub use banner::BannerSettings;
 #[cfg(feature = "mcp-server")]
 use rmcp::{
     model::{
-        CallToolRequestParams, CallToolResult, Content, ErrorData, JsonObject, ListResourcesResult,
-        ListToolsResult, Meta, PaginatedRequestParams, RawResource, ReadResourceRequestParams,
-        ReadResourceResult, Resource, ResourceContents, ServerCapabilities, ServerInfo, Tool,
+        CallToolRequestParams, CallToolResult, ContentBlock, ErrorData, JsonObject,
+        ListResourcesResult, ListToolsResult, Meta, PaginatedRequestParams,
+        ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents,
+        ServerCapabilities, ServerInfo, Tool,
     },
     service::RequestContext,
     RoleServer, ServerHandler,
@@ -373,7 +374,7 @@ fn make_rmcp_tool(desc: &McpToolDescriptor) -> Tool {
         Arc::new(input_schema),
     );
 
-    // rmcp 1.6 `Tool` carries a per-tool `_meta` passthrough (`Tool::meta`,
+    // rmcp 2 `Tool` carries a per-tool `_meta` passthrough (`Tool::meta`,
     // serialized as `_meta`) but has NO `visibility` field. We therefore merge
     // the command's opaque `_meta` value AND the `visibility` tags into a single
     // `_meta` object so both survive on the wire (see R1). The opaque `_meta`
@@ -484,10 +485,10 @@ impl CliFrameworkHandler {
             .listings()
             .into_iter()
             .map(|listing| {
-                let mut raw = RawResource::new(listing.uri, listing.name);
-                raw.description = listing.description;
-                raw.mime_type = listing.mime_type;
-                Resource::new(raw, None)
+                let mut resource = Resource::new(listing.uri, listing.name);
+                resource.description = listing.description;
+                resource.mime_type = listing.mime_type;
+                resource
             })
             .collect();
         ListResourcesResult {
@@ -702,7 +703,7 @@ pub async fn dispatch_tool_call_with_identity(
             // CF-7: a command may attach a `structuredContent` value distinct
             // from the `content` text (e.g. server-rendered View HTML), kept out
             // of the model's text context.
-            let mut result = CallToolResult::success(vec![Content::text(text)]);
+            let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
             result.structured_content = output.structured;
             Ok(result)
         }
@@ -1162,8 +1163,8 @@ mod cf7_structured_content_tests {
         // structuredContent carries the HTML; the model-facing text does not.
         let structured = result.structured_content.expect("structured content set");
         assert_eq!(structured["html"], "<article>hi</article>");
-        let text = match &result.content[0].raw {
-            rmcp::model::RawContent::Text(t) => t.text.clone(),
+        let text = match &result.content[0] {
+            rmcp::model::ContentBlock::Text(t) => t.text.clone(),
             other => panic!("expected text content, got {other:?}"),
         };
         assert_eq!(text, "text fallback for the model\n");

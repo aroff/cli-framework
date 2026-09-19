@@ -349,8 +349,8 @@ fn whoami_cmd() -> Command {
 }
 
 fn call_result_text(result: &rmcp::model::CallToolResult) -> String {
-    match &result.content[0].raw {
-        rmcp::model::RawContent::Text(t) => t.text.clone(),
+    match &result.content[0] {
+        rmcp::model::ContentBlock::Text(t) => t.text.clone(),
         other => panic!("expected text content, got {other:?}"),
     }
 }

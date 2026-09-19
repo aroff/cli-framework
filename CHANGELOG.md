@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Breaking
+
+- The `mcp-server` feature now depends on `rmcp` 2.x (was 1.x). rmcp types
+  are part of cli-framework's public MCP API: `CliFrameworkHandler` implements
+  `rmcp::ServerHandler`, `dispatch_tool_call*` take `rmcp::model::JsonObject`
+  and return `rmcp::model::CallToolResult` / `ErrorData`, and
+  `list_resources_result` / `read_resource_uri` return rmcp result types.
+  Consumers that name these types or wrap `CliFrameworkHandler` in their own
+  `ServerHandler` must move to `rmcp = "2"` at the same time. rmcp 2 aligns its
+  model with MCP 2025-11-25: `Content`/`RawContent` become the flat
+  `ContentBlock` enum (match `result.content[0]` directly instead of
+  `.raw`), and `Resource` is a flat struct (`Resource::new(uri, name)` instead
+  of `Resource::new(RawResource::new(..), None)`). cli-framework's own
+  signatures and wire output are unchanged.
+
 ### Added
 
 - `self-install` feature (ADR 0080, phase 1): `AppBuilder::with_self_install`
