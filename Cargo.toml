@@ -66,7 +66,7 @@ indicatif = { version = "0.17", optional = true }
 # Optional MCP server dependencies
 # - transport-io: server-side stdio transport (Phase 2 rollout #50)
 # - client: enabled so integration tests can exercise stdio-style transports without TCP
-rmcp = { version = "1.6", features = ["server", "client", "transport-streamable-http-server", "transport-io"], optional = true }
+rmcp = { version = "2.2", features = ["server", "client", "transport-streamable-http-server", "transport-io"], optional = true }
 axum = { version = "0.8", optional = true }
 # `http` (not `axum`'s re-export) so the per-request identity seam's public
 # signature (`&http::HeaderMap`) names a crate consumers can depend on directly.
