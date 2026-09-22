@@ -13,13 +13,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-async fn find_free_port() -> u16 {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-    port
-}
-
 async fn wait_http_ok(url: &str) {
     let client = reqwest::Client::new();
     for _ in 0..50 {
@@ -36,11 +29,14 @@ async fn wait_http_ok(url: &str) {
 async fn spawn_server(
     builder: ApiServerBuilder,
 ) -> (String, tokio::task::JoinHandle<anyhow::Result<()>>) {
-    let port = find_free_port().await;
-    let addr = format!("127.0.0.1:{port}");
+    // Keep the listener rather than releasing the port and rebinding it inside
+    // `serve`: `127.0.0.1:0` draws from the same ephemeral range outbound
+    // connections do, so anything else on the machine can take the port in
+    // between. See `ApiServer::serve_with_listener`.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
     let api = builder.build();
-    let addr_for_task = addr.clone();
-    let handle = tokio::spawn(async move { api.serve(&addr_for_task).await });
+    let handle = tokio::spawn(async move { api.serve_with_listener(listener).await });
     wait_http_ok(&format!("http://{addr}/healthz")).await;
     (addr, handle)
 }

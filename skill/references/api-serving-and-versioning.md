@@ -89,6 +89,23 @@ server.serve("0.0.0.0:8080").await?;
 
 The framework does not add `tower-http`'s `fs` feature as a dependency; consumers add it to their own `Cargo.toml`. Any `axum::Router` is accepted — `ServeDir` is one option, not a requirement.
 
+## Serving
+
+`ApiServer::serve(addr: &str) -> anyhow::Result<()>` binds `addr` and serves until SIGINT/SIGTERM.
+
+`ApiServer::serve_with_listener(listener: tokio::net::TcpListener) -> anyhow::Result<()>` serves on a listener you already bound. `serve()` is a thin wrapper over it.
+
+Use `serve_with_listener` when the address must be known *before* the server starts — typically an ephemeral `127.0.0.1:0` bind whose real port has to be published to something else (a test fixture, a child process, a service registry):
+
+```rust
+let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+let addr = listener.local_addr()?;          // real port, already held
+register_somewhere(addr);
+server.serve_with_listener(listener).await?;
+```
+
+Do **not** bind `:0`, read the port, drop the listener and pass the bare number to `serve()`. `:0` draws from the OS ephemeral range — the same pool outbound connections draw from — so between the drop and `serve()`'s rebind the port can be handed to another process. The failure is not always a clean `EADDRINUSE`: if the squatter speaks HTTP, requests silently reach the wrong server.
+
 ## Health version override
 
 `ApiServerBuilder::health_version(v: impl Into<String>) -> Self`

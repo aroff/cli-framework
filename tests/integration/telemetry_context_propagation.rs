@@ -71,11 +71,35 @@ fn count_occurrences(haystack: &[u8], needle: &[u8]) -> usize {
         .count()
 }
 
-async fn find_free_port() -> u16 {
+/// Binds an ephemeral loopback port and **keeps** the listener.
+///
+/// The address has to be known before either service starts, because A is
+/// configured with B's URL and the test calls A by address. The obvious way to
+/// get one -- bind `127.0.0.1:0`, read the port, drop the listener, hand the
+/// bare number to the server -- opens a window between the drop and the
+/// server's rebind in which the kernel can assign that port to anything else on
+/// the machine: `:0` draws from `ip_local_port_range`, the same pool every
+/// outbound connection draws from, and the range is scanned from a rotating
+/// offset, so the port just released is often the very next one handed out.
+///
+/// Losing the race does not reliably show up as `EADDRINUSE`. If whatever takes
+/// the port speaks HTTP, A's forwarded call reaches the wrong server and comes
+/// back `404`, which surfaced as
+///
+/// ```text
+/// assertion `left == right` failed: A could not reach B, ...
+///   left: "downstream status 404 Not Found"
+///  right: "ok"
+/// ```
+///
+/// Handing the live listener to [`ApiServer::serve_with_listener`] removes the
+/// window instead of narrowing it: the port is never unbound at all.
+///
+/// [`ApiServer::serve_with_listener`]: cli_framework::api::ApiServer::serve_with_listener
+async fn bind_loopback() -> (tokio::net::TcpListener, String) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-    port
+    let addr = listener.local_addr().unwrap().to_string();
+    (listener, addr)
 }
 
 async fn wait_until_ready(client: &reqwest::Client, addr: &str) -> bool {
@@ -140,10 +164,8 @@ async fn one_trace_spans_two_services() {
             .await;
     }
 
-    let port_a = find_free_port().await;
-    let port_b = find_free_port().await;
-    let addr_a = format!("127.0.0.1:{port_a}");
-    let addr_b = format!("127.0.0.1:{port_b}");
+    let (listener_a, addr_a) = bind_loopback().await;
+    let (listener_b, addr_b) = bind_loopback().await;
     SERVICE_B_URL
         .set(format!("http://{addr_b}/api/v1/b"))
         .expect("URL set once");
@@ -163,8 +185,7 @@ async fn one_trace_spans_two_services() {
         )),
     );
     let shutdown_a = api_a.shutdown_token();
-    let serve_a = addr_a.clone();
-    let handle_a = tokio::spawn(async move { api_a.serve(&serve_a).await });
+    let handle_a = tokio::spawn(async move { api_a.serve_with_listener(listener_a).await });
 
     let client = reqwest::Client::new();
     assert!(
@@ -174,8 +195,7 @@ async fn one_trace_spans_two_services() {
 
     let api_b = build_service("/b", axum::routing::get(|| async { "ok" }), None);
     let shutdown_b = api_b.shutdown_token();
-    let serve_b = addr_b.clone();
-    let handle_b = tokio::spawn(async move { api_b.serve(&serve_b).await });
+    let handle_b = tokio::spawn(async move { api_b.serve_with_listener(listener_b).await });
     assert!(
         wait_until_ready(&client, &addr_b).await,
         "service B never became ready on {addr_b}"

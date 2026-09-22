@@ -34,13 +34,6 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 const TRACES: &str = "/v1/traces";
 const METRICS: &str = "/v1/metrics";
 
-async fn find_free_port() -> u16 {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-    port
-}
-
 // Exercises the deprecated `with_telemetry` shim on purpose: it has to keep
 // working until it is removed in v0.8.0.
 #[allow(deprecated)]
@@ -83,12 +76,15 @@ async fn api_request_exports_a_server_span() {
             "1.2.3",
         );
 
-    let port = find_free_port().await;
-    let addr = format!("127.0.0.1:{port}");
+    // Keep the listener rather than releasing the port and rebinding it inside
+    // `serve`: `127.0.0.1:0` draws from the same ephemeral range outbound
+    // connections do, so anything else on the machine can take the port in
+    // between. See `ApiServer::serve_with_listener`.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
     let api = builder.build();
     let shutdown = api.shutdown_token();
-    let serve_addr = addr.clone();
-    let handle = tokio::spawn(async move { api.serve(&serve_addr).await });
+    let handle = tokio::spawn(async move { api.serve_with_listener(listener).await });
 
     let client = reqwest::Client::new();
     let mut ready = false;
