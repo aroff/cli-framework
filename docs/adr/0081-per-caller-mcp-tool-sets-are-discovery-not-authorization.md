@@ -27,10 +27,13 @@ a database or a policy service. The signature mirrors `McpRequestAuthenticator` 
 compose without an adapter, and returns an owned `'static` boxed future so it can be awaited inside
 a spawned dispatch task.
 
-**D3 — `Vec<(String, Command)>`, not `HashMap<String, Command>`.** A map return reintroduces
+**D3 — `Vec<McpDynamicTool>`, not `HashMap<String, Command>`.** A map return reintroduces
 iteration nondeterminism in the per-caller block. A `Vec` lets the provider fix the order it wants
 and lets the framework preserve it, which is what makes repeated `tools/list` calls byte-stable for
-one identity.
+one identity. The element type was `(String, Command)` as first shipped; see Amendment A, which
+widened it to a struct without changing the ordering guarantee. `(String, Command)` still converts
+in with `From`, so the tuple form remains the spelling for a tool a static `CommandSpec` already
+describes.
 
 **D4 — Static wins; the merge adds no ordering of its own.** A name registered at construction
 always resolves to its static command, and the provider is not consulted at all on a static hit in
@@ -116,3 +119,53 @@ one.
   consumer's authenticator is consumer code that may log, emit metrics or spend a rate-limit
   budget, so running it on a `tools/list` whose result could not be used would be a new observable
   side effect on an existing path; D7 covers that too, and a test asserts the absence of the call.
+
+## Amendment A — a per-caller tool may own its MCP presentation (2026-09-22)
+
+D3 as first shipped returned `Vec<(String, Command)>`, and `tools/list` derived every per-caller
+tool's `description` from `Command::summary()` and its `inputSchema` from `build_input_schema`
+over the command's `CommandSpec`. `CommandSpec` and `ArgSpec` are `&'static str` throughout
+(`summary`, `long_about`, `ArgSpec::name`, `ArgSpec::help`, …). The motivating consumer — "the
+actions of the tenant-scoped plugins installed for the authenticated user" — has exactly the shape
+that cannot satisfy that: its field names and help text are database rows. The only way to
+advertise them through a `&'static str` spec is `Box::leak` on every `tools/list`, an unbounded
+leak on a hot path. Argument *validation* was never the problem (`Command::validator` is an owned
+`Arc<dyn Fn>`, and undeclared JSON keys already pass through `json_value_to_typed_map` to
+`execute`); advertising was.
+
+**A1 — Widen the hook's element, do not add a field to `Command`.** `Command` is constructed by
+struct literal in ~232 places across this repository and its consumer `entitystore`, none of them
+with `..Default::default()`, so a new field breaks every one of them for a feature only the MCP
+hook uses. The hook, by contrast, shipped in the same unreleased cycle and has no consumer outside
+this repository's tests, so widening it costs nothing now and would be expensive later.
+`McpDynamicToolsFuture` now yields `Vec<McpDynamicTool>`, where `McpDynamicTool` is `{ name:
+String, command: Command, presentation: Option<McpToolPresentation> }` and `McpToolPresentation`
+is `{ description: String, input_schema: serde_json::Value }`. `impl From<(String, Command)> for
+McpDynamicTool` keeps the tuple spelling for tools a static spec already describes.
+
+**A2 — A presentation is advertising, full stop.** `list_tools_for_identity` reads it;
+`dispatch_tool_call_with_identity` reads only `McpDynamicTool::command`. Argument validation, risk
+classification and the execution gate see a presented tool and an unpresented one identically.
+Making the presented schema a validation gate was rejected: it would put an *advertising* artifact
+on the enforcement path, with the framework enforcing a schema it neither authored nor
+understands, and it would silently change what `execute` receives — the surface D8 already says
+must be enforced in the command body.
+
+**A3 — The presented schema replaces the derived one; it is never merged.** When
+`presentation` is `Some`, `build_input_schema` is not called at all. A merged schema has two
+authors, and when a call is rejected neither the provider nor cli-framework can say which half the
+caller violated. One author per tool keeps that question answerable. `_meta` and `visibility`
+still come from the `Command` on both paths: they describe the command, not its interface.
+
+**A4 — De-duplication is decided before the descriptor is built.** Both drop rules in D4 key on
+the name alone, so an entry that loses either race is dropped whole, presentation included. A
+presentation describes a tool that is being listed; it is never a reason to list one.
+
+### Consequences
+
+- `McpDynamicToolsFuture`'s output type changes from `Vec<(String, Command)>` to
+  `Vec<McpDynamicTool>`. Providers written against the tuple form add `.into()` (or
+  `.map(McpDynamicTool::from)`); nothing else about the hook changes.
+- `mcp::schema::command_to_tool_descriptor_presented` is added beside
+  `command_to_tool_descriptor_full`, gated on `mcp-server`.
+- Nothing changes for a consumer that installs no provider, or whose provider returns tuples.

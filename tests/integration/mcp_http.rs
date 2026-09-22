@@ -1,8 +1,8 @@
 use cli_framework::app::{AppBuilder, AppContext, RequestIdentityExt};
 use cli_framework::command::{Command, CommandRegistry};
 use cli_framework::mcp::{
-    serve_mcp_with_gate, CliFrameworkHandler, McpDynamicToolProvider, McpServerArgs,
-    McpToolExportPolicy, McpToolRegistry, McpTransportKind,
+    serve_mcp_with_gate, CliFrameworkHandler, McpDynamicTool, McpDynamicToolProvider,
+    McpServerArgs, McpToolExportPolicy, McpToolPresentation, McpToolRegistry, McpTransportKind,
 };
 use cli_framework::security::CommandRiskPolicy;
 use cli_framework::spec::command_tree::CommandSpec;
@@ -1184,6 +1184,127 @@ fn rich_command() -> Command {
     .with_visibility(vec!["app".to_string()])
 }
 
+/// A per-caller command whose *static* `CommandSpec` declares exactly one
+/// argument and a summary nothing should ever advertise, and whose `execute`
+/// prints every key it actually received, sorted.
+///
+/// Both halves matter for the presentation tests: the descriptor it would
+/// generate is visibly different from the presentation attached to it, and the
+/// printed keys show what `tools/call` really delivered — including a key that
+/// appears in neither the static spec nor the presented schema.
+fn arg_echo_command(id: &'static str) -> Command {
+    use cli_framework::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
+    use cli_framework::spec::value::ArgValue;
+    use std::collections::HashMap;
+
+    Command {
+        id: Arc::from(id),
+        spec: Arc::new(CommandSpec {
+            summary: "STATIC SUMMARY, must not be advertised",
+            args: vec![ArgSpec {
+                name: "declared",
+                kind: ArgKind::Option,
+                short: None,
+                long: Some("declared"),
+                value_type: ArgValueType::String,
+                cardinality: Cardinality::Optional,
+                default: None,
+                conflicts_with: vec![],
+                requires: vec![],
+                help: "the only statically declared argument",
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        validator: None,
+        expose_mcp: true,
+        expose_chat: false,
+        meta: None,
+        visibility: None,
+        execute: Arc::new(|ctx, args: HashMap<String, ArgValue>| {
+            let mut seen: Vec<String> = args.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            seen.sort();
+            Box::pin(async move {
+                ctx.framework_println(&seen.join(","));
+                Ok(())
+            })
+        }),
+    }
+    .with_meta(serde_json::json!({ "x_tenant": "plugin" }))
+    .with_visibility(vec!["app".to_string()])
+}
+
+/// The runtime-shaped schema a tenant plugin advertises: argument names and
+/// help text that exist only as `String`s at request time, and which the
+/// `&'static str` `ArgSpec` of [`arg_echo_command`] therefore cannot express.
+fn plugin_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "tenant_field": {
+                "type": "string",
+                "description": "a column name that only exists in the tenant's database"
+            }
+        },
+        "required": ["tenant_field"],
+        "additionalProperties": false
+    })
+}
+
+/// The per-caller tools served to `plugin-token`, exercising every branch of
+/// the presentation rules in one provider result:
+///
+/// 1. `testapp_plugin_report` — a presentation, on a command whose static spec
+///    says something else entirely.
+/// 2. `testapp_plugin_plain` — the tuple form via `.into()`, i.e. no
+///    presentation: the compatibility case.
+/// 3. `testapp_plugin_dup` twice — first plain and winning, then presented and
+///    dropped, so a presentation cannot win a de-duplication race.
+/// 4. `testapp_whoami` — presented *and* colliding with a static tool, so the
+///    static-wins rule beats a presentation too.
+fn plugin_tools() -> Vec<McpDynamicTool> {
+    vec![
+        McpDynamicTool {
+            name: "testapp_plugin_report".to_string(),
+            command: arg_echo_command("plugin_report"),
+            presentation: Some(McpToolPresentation {
+                description: "Run the tenant's Monthly Report plugin".to_string(),
+                input_schema: plugin_schema(),
+            }),
+        },
+        (
+            "testapp_plugin_plain".to_string(),
+            arg_echo_command("plugin_plain"),
+        )
+            .into(),
+        (
+            "testapp_plugin_dup".to_string(),
+            labelled_command(
+                "plugin_dup_first",
+                "FIRST plugin dup, must win",
+                "dup-first",
+            ),
+        )
+            .into(),
+        McpDynamicTool {
+            name: "testapp_plugin_dup".to_string(),
+            command: labelled_command("plugin_dup_second", "unused", "dup-second"),
+            presentation: Some(McpToolPresentation {
+                description: "SECOND plugin dup, presented, must be dropped".to_string(),
+                input_schema: serde_json::json!({ "type": "object", "x_dropped": true }),
+            }),
+        },
+        McpDynamicTool {
+            name: "testapp_whoami".to_string(),
+            command: echo_command("whoami_presented", "PRESENTED-COLLISION"),
+            presentation: Some(McpToolPresentation {
+                description: "PRESENTED COLLISION, must never be advertised".to_string(),
+                input_schema: serde_json::json!({ "type": "object", "x_collision": true }),
+            }),
+        },
+    ]
+}
+
 /// Per-caller tool provider used by the tests below.
 ///
 /// - `alice-token` → `testapp_alice_only`, then `testapp_alice_second`
@@ -1192,6 +1313,7 @@ fn rich_command() -> Command {
 /// - `dup-token`   → `testapp_dup` **twice**, with different summaries and
 ///   different output, to exercise the first-pair-wins rule *within* one
 ///   provider result (a distinct rule from the static collision below)
+/// - `plugin-token` → [`plugin_tools`], the `McpToolPresentation` cases
 /// - no identity   → `testapp_anonymous_only` (proving the provider ran with
 ///   `None` rather than being skipped)
 ///
@@ -1210,18 +1332,20 @@ fn tenant_provider(calls: Arc<std::sync::atomic::AtomicUsize>) -> McpDynamicTool
             .unwrap_or_else(|| "anonymous".to_string());
         Box::pin(async move {
             calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let mut tools: Vec<(String, Command)> = match who.as_str() {
+            let mut tools: Vec<McpDynamicTool> = match who.as_str() {
                 "alice-token" => vec![
                     (
                         "testapp_alice_only".to_string(),
                         echo_command("alice_only", "alice-tool"),
-                    ),
-                    ("testapp_alice_second".to_string(), rich_command()),
+                    )
+                        .into(),
+                    ("testapp_alice_second".to_string(), rich_command()).into(),
                 ],
                 "bob-token" => vec![(
                     "testapp_bob_only".to_string(),
                     echo_command("bob_only", "bob-tool"),
-                )],
+                )
+                    .into()],
                 // Two pairs under one name: a realistic collision when two
                 // tenant plugins declare the same action verb. The first must
                 // win on both paths, and the name must appear once.
@@ -1229,7 +1353,8 @@ fn tenant_provider(calls: Arc<std::sync::atomic::AtomicUsize>) -> McpDynamicTool
                     (
                         "testapp_dup".to_string(),
                         labelled_command("dup_first", "FIRST pair, must win", "dup-first"),
-                    ),
+                    )
+                        .into(),
                     (
                         "testapp_dup".to_string(),
                         labelled_command(
@@ -1237,17 +1362,23 @@ fn tenant_provider(calls: Arc<std::sync::atomic::AtomicUsize>) -> McpDynamicTool
                             "SECOND pair, must be dropped",
                             "dup-second",
                         ),
-                    ),
+                    )
+                        .into(),
                 ],
+                "plugin-token" => plugin_tools(),
                 _ => vec![(
                     "testapp_anonymous_only".to_string(),
                     echo_command("anonymous_only", "anonymous-tool"),
-                )],
+                )
+                    .into()],
             };
-            tools.push((
-                "testapp_whoami".to_string(),
-                echo_command("whoami", "DYNAMIC-COLLISION"),
-            ));
+            tools.push(
+                (
+                    "testapp_whoami".to_string(),
+                    echo_command("whoami", "DYNAMIC-COLLISION"),
+                )
+                    .into(),
+            );
             tools
         })
     })
@@ -1376,6 +1507,29 @@ async fn call_tool_rpc(
             "id": "call",
             "method": "tools/call",
             "params": { "name": tool, "arguments": {} }
+        }),
+    )
+    .await
+}
+
+/// `tools/call` by name with a caller-supplied `arguments` object, returning
+/// the parsed response envelope. [`call_tool_rpc`] is this with `{}`.
+async fn call_tool_rpc_with_args(
+    client: &reqwest::Client,
+    base_url: &str,
+    bearer: Option<&str>,
+    tool: &str,
+    arguments: serde_json::Value,
+) -> serde_json::Value {
+    mcp_rpc(
+        client,
+        base_url,
+        bearer,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "call",
+            "method": "tools/call",
+            "params": { "name": tool, "arguments": arguments }
         }),
     )
     .await
@@ -1700,6 +1854,270 @@ async fn test_no_dynamic_tools_installed_leaves_list_and_call_unchanged() {
             .and_then(|m| m.as_str())
             .is_some_and(|m| m.contains("MCP_CMD_NOT_FOUND")),
         "an unknown tool still fails the same way: {json}"
+    );
+}
+
+// ── Per-caller tool *presentation* (`McpToolPresentation`) ────────────────
+//
+// A provider that builds a tool from runtime data — a tenant's installed
+// plugin, whose description and argument names are database rows — cannot
+// express that tool through a `&'static str` `CommandSpec`. It attaches an
+// `McpToolPresentation` instead, which `tools/list` advertises in place of the
+// derived description and schema. The assertions below are made from outside
+// the server, so they are what a real MCP client sees.
+
+/// The raw `tools/list` entry for `tool`, or a panic listing what was there.
+async fn list_tool_entry(
+    client: &reqwest::Client,
+    base_url: &str,
+    bearer: Option<&str>,
+    tool: &str,
+) -> serde_json::Value {
+    let entries = list_tools_raw(client, base_url, bearer).await;
+    entries
+        .iter()
+        .find(|t| t["name"] == tool)
+        .unwrap_or_else(|| panic!("{tool} missing from tools/list: {entries:?}"))
+        .clone()
+}
+
+/// Requirement: a presented tool advertises the presentation's `description`
+/// and its `inputSchema` *verbatim* — not the command's static summary, and
+/// not the schema `build_input_schema` derives from its `CommandSpec`. The
+/// schema replaces the derived one wholly: nothing of the static spec's
+/// `declared` argument may survive into it.
+#[tokio::test]
+async fn test_presentation_replaces_description_and_input_schema_in_tools_list() {
+    let _ = env_logger::try_init();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let port = spawn_dynamic_server(true, Arc::clone(&calls)).await;
+    let client = reqwest::Client::new();
+    let base_url = format!("http://127.0.0.1:{}", port);
+
+    let entry = list_tool_entry(
+        &client,
+        &base_url,
+        Some("plugin-token"),
+        "testapp_plugin_report",
+    )
+    .await;
+
+    assert_eq!(
+        entry["description"], "Run the tenant's Monthly Report plugin",
+        "the presentation's description must be advertised: {entry}"
+    );
+    assert_ne!(
+        entry["description"], "STATIC SUMMARY, must not be advertised",
+        "the static summary must not leak into a presented tool: {entry}"
+    );
+    // Verbatim, field for field — including `required` and
+    // `additionalProperties`, which the derived schema never emits.
+    assert_eq!(
+        entry["inputSchema"],
+        plugin_schema(),
+        "the presented inputSchema must be emitted exactly as given: {entry}"
+    );
+    // No merge: the static spec's own argument is nowhere in the advertised
+    // schema. A merged schema would have two authors and no one could say
+    // which of them a rejected call violated.
+    assert!(
+        entry["inputSchema"]["properties"]["declared"].is_null(),
+        "the derived schema must not be merged into the presentation: {entry}"
+    );
+}
+
+/// Requirement: a presentation is advertising, never a validation gate. The
+/// presented tool is callable, and the arguments reach `execute` unchanged —
+/// including `undeclared_extra`, a key in neither the static `CommandSpec` nor
+/// the presented schema (whose `additionalProperties` is `false`).
+#[tokio::test]
+async fn test_presented_tool_is_callable_and_undeclared_arguments_reach_execute() {
+    let _ = env_logger::try_init();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let port = spawn_dynamic_server(true, Arc::clone(&calls)).await;
+    let client = reqwest::Client::new();
+    let base_url = format!("http://127.0.0.1:{}", port);
+
+    let json = call_tool_rpc_with_args(
+        &client,
+        &base_url,
+        Some("plugin-token"),
+        "testapp_plugin_report",
+        serde_json::json!({
+            "tenant_field": "march",
+            "undeclared_extra": "kept",
+            "declared": "also-kept"
+        }),
+    )
+    .await;
+
+    let text = json
+        .pointer("/result/content/0/text")
+        .and_then(|t| t.as_str())
+        .unwrap_or_else(|| panic!("the presented tool must be callable: {json}"))
+        .trim();
+    assert_eq!(
+        text, "declared=also-kept,tenant_field=march,undeclared_extra=kept",
+        "every argument the caller sent must reach execute, declared or not"
+    );
+}
+
+/// Requirement (compatibility): a per-caller tool built from a `(name,
+/// command)` tuple via `.into()` — `presentation: None` — produces exactly the
+/// descriptor the pre-change code produced from the static spec. Asserted as
+/// whole-value equality against a literal, so any drift in description,
+/// schema, `_meta` or `visibility` fails here.
+#[tokio::test]
+async fn test_tool_without_presentation_keeps_the_pre_change_descriptor() {
+    let _ = env_logger::try_init();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let port = spawn_dynamic_server(true, Arc::clone(&calls)).await;
+    let client = reqwest::Client::new();
+    let base_url = format!("http://127.0.0.1:{}", port);
+
+    let entry = list_tool_entry(
+        &client,
+        &base_url,
+        Some("plugin-token"),
+        "testapp_plugin_plain",
+    )
+    .await;
+
+    assert_eq!(
+        entry,
+        serde_json::json!({
+            "name": "testapp_plugin_plain",
+            "description": "STATIC SUMMARY, must not be advertised",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "declared": {
+                        "type": "string",
+                        "description": "the only statically declared argument"
+                    }
+                }
+            },
+            "_meta": { "x_tenant": "plugin", "visibility": ["app"] }
+        }),
+        "a presentation-less per-caller tool must be described exactly as \
+         before presentations existed"
+    );
+}
+
+/// Requirement: `_meta` and `visibility` come from the `Command` even when a
+/// presentation is present — a presentation describes the tool's interface,
+/// not the command's passthrough metadata. The presented and the plain tool
+/// share one command shape, so their `_meta` must match.
+#[tokio::test]
+async fn test_presentation_does_not_touch_meta_or_visibility() {
+    let _ = env_logger::try_init();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let port = spawn_dynamic_server(true, Arc::clone(&calls)).await;
+    let client = reqwest::Client::new();
+    let base_url = format!("http://127.0.0.1:{}", port);
+
+    let presented = list_tool_entry(
+        &client,
+        &base_url,
+        Some("plugin-token"),
+        "testapp_plugin_report",
+    )
+    .await;
+
+    assert_eq!(
+        presented["_meta"],
+        serde_json::json!({ "x_tenant": "plugin", "visibility": ["app"] }),
+        "opaque _meta and visibility must still come from the Command: {presented}"
+    );
+}
+
+/// Requirement: a presentation never wins a de-duplication race. Both drop
+/// rules are exercised in one provider result:
+///
+/// - `testapp_plugin_dup` is returned plain and then presented; the first
+///   entry wins and the presented one is dropped whole.
+/// - `testapp_whoami` is returned presented and collides with a statically
+///   registered command; the static entry wins and is listed once.
+///
+/// Ordering is unchanged too: the per-caller block follows the static block in
+/// the order the provider returned it, with the dropped entries simply absent.
+#[tokio::test]
+async fn test_presentation_never_wins_a_deduplication_race() {
+    let _ = env_logger::try_init();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let port = spawn_dynamic_server(true, Arc::clone(&calls)).await;
+    let client = reqwest::Client::new();
+    let base_url = format!("http://127.0.0.1:{}", port);
+
+    let entries = list_tools_raw(&client, &base_url, Some("plugin-token")).await;
+    let names: Vec<String> = entries
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_string))
+        .collect();
+
+    // Intra-result: first entry wins, the presented second is not listed.
+    assert_eq!(
+        names.iter().filter(|n| *n == "testapp_plugin_dup").count(),
+        1,
+        "a repeated name must be listed once: {names:?}"
+    );
+    let dup = list_tool_entry(
+        &client,
+        &base_url,
+        Some("plugin-token"),
+        "testapp_plugin_dup",
+    )
+    .await;
+    assert_eq!(
+        dup["description"], "FIRST plugin dup, must win",
+        "the first entry must win; the later presented one is dropped: {dup}"
+    );
+
+    // Static collision: the static command wins, presentation or not.
+    assert_eq!(
+        names.iter().filter(|n| *n == "testapp_whoami").count(),
+        1,
+        "a colliding name must be listed once: {names:?}"
+    );
+    let whoami = list_tool_entry(&client, &base_url, Some("plugin-token"), "testapp_whoami").await;
+    assert_eq!(
+        whoami["description"],
+        "report the caller identity established via the MCP request authenticator",
+        "the static descriptor must be the one listed: {whoami}"
+    );
+
+    // No dropped presentation reached the wire anywhere in the list.
+    let wire = serde_json::to_string(&entries).unwrap();
+    for dropped in [
+        "SECOND plugin dup, presented, must be dropped",
+        "PRESENTED COLLISION, must never be advertised",
+        "x_dropped",
+        "x_collision",
+    ] {
+        assert!(
+            !wire.contains(dropped),
+            "a dropped entry must not be advertised at all, found {dropped:?} in {wire}"
+        );
+    }
+
+    // Ordering is exactly the provider's, minus the drops, appended after the
+    // static block.
+    let tail: Vec<&String> = names.iter().rev().take(3).rev().collect();
+    assert_eq!(
+        tail,
+        vec![
+            "testapp_plugin_report",
+            "testapp_plugin_plain",
+            "testapp_plugin_dup"
+        ],
+        "per-caller order must be preserved across presented and plain tools: {names:?}"
+    );
+
+    // And the static command still answers its own name.
+    let text = call_tool_text(&client, &base_url, Some("plugin-token"), "testapp_whoami").await;
+    assert_eq!(
+        text, "plugin-token",
+        "a presented colliding tool must not become dispatchable"
     );
 }
 

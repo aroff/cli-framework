@@ -141,11 +141,56 @@ let app = AppBuilder::new()
             let Some(tenant) = identity.and_then(|i| i.downcast_ref::<Tenant>().cloned()) else {
                 return Vec::new(); // stdio, or an unauthenticated HTTP caller
             };
-            load_saved_queries(&tenant).await // Vec<(String, Command)>
+            load_saved_queries(&tenant)
+                .await // Vec<(String, Command)>
+                .into_iter()
+                .map(McpDynamicTool::from)
+                .collect()
         })
     }))
     .build();
 ```
+
+The hook returns `Vec<McpDynamicTool>`: a tool name, the `Command` to dispatch,
+and an optional presentation. `(String, Command)` converts into one with
+`.into()`, which is the form above — the tool is then described from its
+`Command`'s static `CommandSpec`, exactly like a statically registered one.
+
+#### Tools whose description and arguments are runtime data
+
+`CommandSpec` and `ArgSpec` are `&'static str` throughout, so a tool built from
+a database row — a tenant's installed plugin, whose argument names and help
+text are not known at compile time — cannot be described through the spec
+without leaking a `String` on every `tools/list`. Attach an
+`McpToolPresentation` instead:
+
+```rust
+use cli_framework::mcp::{McpDynamicTool, McpToolPresentation};
+
+McpDynamicTool {
+    name: format!("myapp_{}", plugin.action),
+    command: command_for(&plugin),          // validation and execution
+    presentation: Some(McpToolPresentation { // advertising
+        description: plugin.description.clone(),
+        input_schema: plugin.json_schema.clone(),
+    }),
+}
+```
+
+`tools/list` then advertises that `description` and that `inputSchema`
+verbatim. The presented schema **replaces** the one derived from the command's
+`CommandSpec`; the two are never merged, because a merged schema has two
+authors and neither could say which half a rejected call violated.
+
+A presentation is advertising and nothing else. It is not consulted at
+dispatch: argument validation (the command's own `validator`, which is an owned
+`Arc<dyn Fn>` and so can check runtime-shaped arguments), risk classification
+and any execution gate behave exactly as for the same command with no
+presentation. In particular, declaring an argument in the presented schema does
+not make it required, and omitting one does not make it rejected — `tools/call`
+hands `execute` every key the caller sent. And a presentation cannot make a
+tool appear: an entry dropped by the de-duplication rules below is dropped
+whole, presentation included.
 
 The hook is awaited once per request and feeds **both** `tools/list` and
 `tools/call`, so the advertised set and the callable set cannot drift apart.

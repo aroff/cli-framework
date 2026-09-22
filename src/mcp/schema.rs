@@ -49,3 +49,28 @@ pub fn command_to_tool_descriptor_full(tool_name: &str, cmd: &Command) -> McpToo
         visibility: cmd.visibility.clone(),
     }
 }
+
+/// Build a descriptor for a per-caller tool that carries an
+/// [`McpToolPresentation`](crate::mcp::McpToolPresentation).
+///
+/// The presentation supplies `description` and `inputSchema` verbatim,
+/// *replacing* what [`command_to_tool_descriptor_full`] would have derived
+/// from `cmd`'s static `CommandSpec` — the derived schema is not built and the
+/// two are never merged, so exactly one author decides what a caller is asked
+/// to satisfy. `_meta` and `visibility` still come from `cmd`, identically to
+/// the static path: they are properties of the command, not of how it is
+/// described.
+#[cfg(feature = "mcp-server")]
+pub fn command_to_tool_descriptor_presented(
+    tool_name: &str,
+    cmd: &Command,
+    presentation: &crate::mcp::McpToolPresentation,
+) -> McpToolDescriptor {
+    McpToolDescriptor {
+        name: tool_name.to_string(),
+        description: presentation.description.clone(),
+        input_schema: presentation.input_schema.clone(),
+        meta: cmd.meta.clone(),
+        visibility: cmd.visibility.clone(),
+    }
+}

@@ -59,6 +59,83 @@ use tokio::sync::Mutex;
 pub type McpRequestAuthenticator =
     Arc<dyn Fn(&http::HeaderMap) -> Option<Arc<dyn Any + Send + Sync>> + Send + Sync>;
 
+/// The MCP presentation of a tool whose description and argument schema are
+/// runtime data rather than a static `CommandSpec`.
+///
+/// [`crate::spec::command_tree::CommandSpec`] and
+/// [`crate::spec::arg_spec::ArgSpec`] are `&'static str` throughout, so a
+/// provider that builds a tool from a database row — a tenant's installed
+/// plugin, whose argument names and help text are not known at compile time —
+/// cannot express that tool's real description or input schema through the
+/// spec without leaking a `String` on every `tools/list`. This owned pair is
+/// how it says them instead.
+///
+/// # Advertising only
+///
+/// A presentation changes what `tools/list` *says* about a tool. It is not
+/// consulted at dispatch and changes nothing about it: argument validation
+/// (the command's own [`crate::command::Command::validator`]), risk
+/// classification and any execution gate all run exactly as they would for
+/// the same command with no presentation attached. In particular, declaring
+/// an argument here does not make it required, and omitting one does not make
+/// it rejected — `tools/call` still hands `execute` every key the caller
+/// sent, declared or not.
+///
+/// # The schema replaces, it does not merge
+///
+/// When a presentation is present, [`Self::input_schema`] is the whole
+/// advertised `inputSchema`; the schema
+/// [`build_input_schema`](crate::command_surface::json_schema::build_input_schema)
+/// would have derived from the command's static spec is not consulted at all.
+/// Merging the two was considered and rejected: a merged schema has two
+/// authors, and when a call is rejected neither the provider nor
+/// cli-framework could say which half of the schema the caller violated. One
+/// author per tool keeps that answerable.
+#[cfg(feature = "mcp-server")]
+#[derive(Debug, Clone)]
+pub struct McpToolPresentation {
+    /// The tool's advertised `description`, replacing `cmd.summary()`.
+    pub description: String,
+    /// The tool's advertised `inputSchema`, replacing the schema derived from
+    /// the command's static `CommandSpec`. Emitted verbatim — cli-framework
+    /// neither validates nor rewrites it.
+    pub input_schema: Value,
+}
+
+/// One tool a provider built for one caller.
+///
+/// Build one from a `(name, command)` tuple with `.into()` when the static
+/// `CommandSpec` already describes the tool correctly; set
+/// [`presentation`](Self::presentation) when it does not.
+#[cfg(feature = "mcp-server")]
+pub struct McpDynamicTool {
+    /// The advertised and callable tool name. It MUST already follow the
+    /// `{app_name}_{path_underscored}` convention, exactly as for
+    /// [`McpToolRegistry::from_commands`] — cli-framework does not rewrite it.
+    pub name: String,
+    /// The command this tool dispatches to.
+    pub command: Command,
+    /// When set, `tools/list` advertises this tool's `description` and
+    /// `inputSchema` from here instead of deriving them from `command`'s
+    /// static [`crate::spec::command_tree::CommandSpec`]. `_meta` and
+    /// `visibility` keep coming from `command` either way, and dispatch is
+    /// unaffected — see [`McpToolPresentation`].
+    pub presentation: Option<McpToolPresentation>,
+}
+
+/// The tuple form: a per-caller tool described entirely by its command's
+/// static spec, exactly as before presentations existed.
+#[cfg(feature = "mcp-server")]
+impl From<(String, Command)> for McpDynamicTool {
+    fn from((name, command): (String, Command)) -> Self {
+        Self {
+            name,
+            command,
+            presentation: None,
+        }
+    }
+}
+
 /// The future returned by an [`McpDynamicToolProvider`].
 ///
 /// Owned and `'static`: the provider is handed an owned identity, so the
@@ -66,7 +143,7 @@ pub type McpRequestAuthenticator =
 /// a spawned dispatch task.
 #[cfg(feature = "mcp-server")]
 pub type McpDynamicToolsFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Vec<(String, Command)>> + Send + 'static>>;
+    std::pin::Pin<Box<dyn std::future::Future<Output = Vec<McpDynamicTool>> + Send + 'static>>;
 
 /// A per-caller tool-set hook for the MCP surface.
 ///
@@ -74,9 +151,14 @@ pub type McpDynamicToolsFuture =
 /// headers into an opaque identity, and this provider turns that identity into
 /// the extra commands *that caller* may see and invoke — for example the
 /// actions of the tenant-scoped plugins installed for the authenticated user.
-/// Returned pairs are `(tool_name, command)`; the name MUST already follow the
-/// `{app_name}_{path_underscored}` convention, exactly as for
-/// [`McpToolRegistry::from_commands`] — cli-framework does not rewrite it.
+///
+/// Each returned [`McpDynamicTool`] carries the tool name — which MUST already
+/// follow the `{app_name}_{path_underscored}` convention, exactly as for
+/// [`McpToolRegistry::from_commands`], since cli-framework does not rewrite it
+/// — the [`Command`] to dispatch, and optionally an [`McpToolPresentation`]
+/// supplying an owned description and input schema for tools whose shape is
+/// runtime data. A `(String, Command)` tuple converts into one with
+/// `.into()`, giving the static-spec behaviour.
 ///
 /// A `Vec` rather than a `HashMap` deliberately: it lets the provider fix the
 /// order in which its tools appear in `tools/list` (a map would reintroduce
@@ -239,6 +321,16 @@ impl McpToolRegistry {
     /// fixed at construction. Both `tools/list` and `tools/call` consume it, so
     /// what a caller is shown is by construction what that caller can dispatch.
     ///
+    /// Each entry is an [`McpDynamicTool`] — a name, a [`Command`], and an
+    /// optional [`McpToolPresentation`]. A `(String, Command)` tuple converts
+    /// into one with `.into()` and describes the tool from its static
+    /// `CommandSpec`, as this hook always did. A presentation instead supplies
+    /// an owned `description` and `inputSchema`, for tools whose shape is
+    /// runtime data (a tenant's installed plugin, whose argument names and
+    /// help text are database rows) and therefore cannot be spelled in a
+    /// `&'static str` spec. It affects `tools/list` only: dispatch,
+    /// validation and risk classification are identical either way.
+    ///
     /// # This is discovery, not a security boundary
     ///
     /// Omitting a tool from a caller's `tools/list` hides it; it does **not**
@@ -292,8 +384,10 @@ impl McpToolRegistry {
     /// - **Static wins.** A provided command whose name collides with a static
     ///   tool is ignored: `tools/call` resolves the name to the static command,
     ///   and `tools/list` emits the static entry only — never a duplicate. The
-    ///   same applies within one provider result: the first pair for a given
-    ///   name wins. Neither drop is silent — each is reported at `tracing::warn!`,
+    ///   same applies within one provider result: the first entry for a given
+    ///   name wins. A dropped entry is dropped whole, presentation included:
+    ///   the skip is decided on the name alone, before the descriptor is
+    ///   built. Neither drop is silent — each is reported at `tracing::warn!`,
     ///   naming the tool and which rule dropped it, because a provider that
     ///   believes it published a tool has no other way to notice it never
     ///   reached the client. Nothing is rejected: the rest of the result is
@@ -342,22 +436,41 @@ impl McpToolRegistry {
     /// # Example
     ///
     /// ```rust,no_run
-    /// # use cli_framework::mcp::{McpToolRegistry, McpDynamicToolProvider};
-    /// # use cli_framework::command::CommandRegistry;
+    /// # use cli_framework::mcp::{
+    /// #     McpDynamicTool, McpDynamicToolProvider, McpToolPresentation, McpToolRegistry,
+    /// # };
+    /// # use cli_framework::command::{Command, CommandRegistry};
     /// # use std::sync::Arc;
     /// # struct CallerId(String);
-    /// # fn tools_for(_who: &str) -> Vec<(String, cli_framework::command::Command)> { vec![] }
+    /// # struct Plugin { tool_name: String, description: String, schema: serde_json::Value }
+    /// # fn tools_for(_who: &str) -> Vec<(String, Command)> { vec![] }
+    /// # fn plugins_for(_who: &str) -> Vec<Plugin> { vec![] }
+    /// # fn command_for(_p: &Plugin) -> Command { unimplemented!() }
     /// # let registry = CommandRegistry::new();
     /// let provider: McpDynamicToolProvider = Arc::new(|identity| {
     ///     // Downcast the opaque identity to the host's own type.
     ///     let who = identity
     ///         .and_then(|id| id.downcast_ref::<CallerId>().map(|c| c.0.clone()));
     ///     Box::pin(async move {
-    ///         match who {
-    ///             // A real provider awaits a database read here.
-    ///             Some(who) => tools_for(&who),
-    ///             None => Vec::new(),
-    ///         }
+    ///         let Some(who) = who else { return Vec::new() };
+    ///         // A real provider awaits a database read here.
+    ///         let mut tools: Vec<McpDynamicTool> = tools_for(&who)
+    ///             // Tools a static `CommandSpec` already describes: the
+    ///             // tuple form, unchanged.
+    ///             .into_iter()
+    ///             .map(McpDynamicTool::from)
+    ///             .collect();
+    ///         // Tools whose description and arguments are runtime data:
+    ///         // advertise them from owned strings instead.
+    ///         tools.extend(plugins_for(&who).into_iter().map(|plugin| McpDynamicTool {
+    ///             name: plugin.tool_name.clone(),
+    ///             command: command_for(&plugin),
+    ///             presentation: Some(McpToolPresentation {
+    ///                 description: plugin.description.clone(),
+    ///                 input_schema: plugin.schema.clone(),
+    ///             }),
+    ///         }));
+    ///         tools
     ///     })
     /// });
     /// let registry = McpToolRegistry::from_command_registry(&registry, "myapp")
@@ -387,7 +500,7 @@ impl McpToolRegistry {
     async fn dynamic_tools_for(
         &self,
         identity: Option<Arc<dyn Any + Send + Sync>>,
-    ) -> Vec<(String, Command)> {
+    ) -> Vec<McpDynamicTool> {
         match self.dynamic_tools.as_ref() {
             Some(provider) => provider(identity).await,
             None => Vec::new(),
@@ -417,9 +530,15 @@ impl McpToolRegistry {
     /// the provider's own result — are skipped, so no name is described twice;
     /// each skip is reported at `tracing::warn!`, naming the tool.
     ///
-    /// Descriptors on both paths come from the same
-    /// `command_to_tool_descriptor_full`, so a per-caller tool's description
-    /// and input schema are generated exactly as a static one's would be.
+    /// A per-caller tool with no [`McpToolPresentation`] gets its descriptor
+    /// from the same `command_to_tool_descriptor_full` the static path uses,
+    /// so its description and input schema are generated exactly as a static
+    /// tool's would be. One *with* a presentation takes its `description` and
+    /// `inputSchema` from there verbatim — the derived schema is not built,
+    /// let alone merged — while `_meta` and `visibility` still come from the
+    /// [`Command`], exactly as on the static path. A skipped name is skipped
+    /// whether or not it carried a presentation: de-duplication is decided on
+    /// the name, before any descriptor is built.
     ///
     /// This is a discovery surface, not an authorization one; see
     /// [`with_dynamic_tools`](Self::with_dynamic_tools).
@@ -432,13 +551,21 @@ impl McpToolRegistry {
         if self.dynamic_tools.is_none() {
             return descriptors;
         }
-        // Two distinct reasons to drop a provided pair, warned about
+        // Two distinct reasons to drop a provided entry, warned about
         // separately: the name is already a static tool (static wins), or the
         // provider returned it twice in one result (first wins). Both are
         // provider bugs the consumer cannot otherwise see — a tool it believes
-        // it published simply is not there — so neither is silent.
+        // it published simply is not there — so neither is silent. Both checks
+        // run before the descriptor is built, so an entry that loses either
+        // race is dropped whole, presentation and all: a presentation is a
+        // description of a listed tool, never a reason to list one.
         let mut emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for (name, cmd) in self.dynamic_tools_for(identity).await {
+        for tool in self.dynamic_tools_for(identity).await {
+            let McpDynamicTool {
+                name,
+                command,
+                presentation,
+            } = tool;
             if self.tools.contains_key(&name) {
                 tracing::warn!(
                     "MCP per-caller tool '{}' collides with a statically registered command; \
@@ -455,7 +582,16 @@ impl McpToolRegistry {
                 );
                 continue;
             }
-            descriptors.push(command_to_tool_descriptor_full(&name, &cmd));
+            descriptors.push(match presentation.as_ref() {
+                // The presentation replaces the derived description and
+                // schema wholly; `build_input_schema` is not even called, so
+                // there is nothing to merge and exactly one author for what a
+                // caller is asked to satisfy.
+                Some(presentation) => {
+                    schema::command_to_tool_descriptor_presented(&name, &command, presentation)
+                }
+                None => command_to_tool_descriptor_full(&name, &command),
+            });
         }
         descriptors
     }
@@ -914,14 +1050,18 @@ pub async fn dispatch_tool_call_with_identity(
     // static miss consults the provider, and only for *this* request's
     // identity — nothing about the per-caller set is cached between requests,
     // which is what keeps this path and `tools/list` in agreement.
+    //
+    // Only `McpDynamicTool::command` is read here. An `McpToolPresentation`
+    // is advertising: it never reaches validation, the risk policy or the
+    // gate, so a tool dispatches identically with and without one.
     let dynamic_cmd = match tool_registry.resolve_tool(tool_name) {
         Some(_) => None,
         None => tool_registry
             .dynamic_tools_for(identity.clone())
             .await
             .into_iter()
-            .find(|(name, _)| name == tool_name)
-            .map(|(_, cmd)| cmd),
+            .find(|tool| tool.name == tool_name)
+            .map(|tool| tool.command),
     };
     let cmd = tool_registry
         .resolve_tool(tool_name)
@@ -1248,6 +1388,13 @@ pub async fn serve_mcp_with_gate_opts(
 /// Like [`serve_mcp_with_gate_opts`], but threads a populated
 /// [`resources::ResourceRegistry`] into the served handler so registered
 /// `ui://…` resources are served over the Streamable HTTP transport.
+///
+/// `dynamic_tools`, if installed, is the per-caller tool-set hook described on
+/// [`McpToolRegistry::with_dynamic_tools`]: it is handed the identity this
+/// request's `request_authenticator` produced and returns that caller's extra
+/// [`McpDynamicTool`]s, each an optionally
+/// [presented](McpToolPresentation) command. It feeds both `tools/list` and
+/// `tools/call`, and it is discovery, not authorization.
 #[cfg(feature = "mcp-server")]
 #[allow(clippy::too_many_arguments)]
 pub async fn serve_mcp_with_gate_opts_with_resources(
