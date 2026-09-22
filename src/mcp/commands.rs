@@ -31,6 +31,7 @@ pub fn create_mcp_serve_command_with_deps(
     gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
     resource_registry: Arc<crate::mcp::resources::ResourceRegistry>,
     request_authenticator: Option<crate::mcp::McpRequestAuthenticator>,
+    dynamic_tools: Option<crate::mcp::McpDynamicToolProvider>,
 ) -> Command {
     Command {
         id: Arc::from("serve"),
@@ -105,6 +106,7 @@ pub fn create_mcp_serve_command_with_deps(
             let gate = gate.clone();
             let resource_registry = Arc::clone(&resource_registry);
             let request_authenticator = request_authenticator.clone();
+            let dynamic_tools = dynamic_tools.clone();
             // Resolve banner settings up front (ctx is not 'static, can't cross await).
             let banner = crate::mcp::BannerSettings::resolve(ctx.opt_global_args(), &args);
             // Extract telemetry Arc before entering the async block — ctx can't cross await.
@@ -159,6 +161,7 @@ pub fn create_mcp_serve_command_with_deps(
                         banner,
                         telemetry,
                         request_authenticator,
+                        dynamic_tools,
                     )
                     .await;
                 }
@@ -202,6 +205,7 @@ pub fn create_mcp_serve_command_with_deps(
                     banner,
                     telemetry,
                     request_authenticator,
+                    dynamic_tools,
                 )
                 .await
             })

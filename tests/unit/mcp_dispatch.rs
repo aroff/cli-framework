@@ -495,6 +495,7 @@ async fn serve_mcp_stdio_stores_installed_authenticator_without_blocking() {
             BannerSettings::from_env(),
             None,
             Some(authenticator),
+            None,
         ),
     )
     .await;
@@ -528,5 +529,194 @@ async fn serve_mcp_stdio_opts_wrapper_does_not_hang() {
     assert!(
         result.is_ok(),
         "serve_mcp_stdio_opts must not hang when stdin is closed"
+    );
+}
+
+// ── Per-caller tool set (`McpToolRegistry::with_dynamic_tools`) ───────────
+//
+// The HTTP half of this hook is covered end to end in
+// `tests/integration/mcp_http.rs`. What is covered here is the transport-free
+// half: the registry API itself, and the stdio-shaped path where no HTTP
+// request — and therefore no identity — can ever exist.
+
+fn tenant_tool(text: &'static str) -> Command {
+    Command {
+        id: Arc::from("tenant"),
+        spec: Arc::new(CommandSpec {
+            summary: "a per-caller tool",
+            ..Default::default()
+        }),
+        validator: None,
+        expose_mcp: true,
+        expose_chat: false,
+        meta: None,
+        visibility: None,
+        execute: Arc::new(move |ctx, _args: HashMap<String, ArgValue>| {
+            Box::pin(async move {
+                ctx.framework_println(text);
+                Ok(())
+            })
+        }),
+    }
+}
+
+/// Serves `myapp_tenant` to everyone, and offers a colliding `myapp_whoami`
+/// that must always lose to the statically registered command of that name.
+fn always_provider() -> cli_framework::mcp::McpDynamicToolProvider {
+    Arc::new(|_identity| {
+        Box::pin(async move {
+            vec![
+                ("myapp_tenant".to_string(), tenant_tool("tenant-tool")),
+                ("myapp_whoami".to_string(), tenant_tool("DYNAMIC-COLLISION")),
+            ]
+        })
+    })
+}
+
+/// With no provider installed, `list_tools_for_identity` is `list_tools()` —
+/// same entries, same order — for any identity. This is the API-level form of
+/// the regression guard every existing consumer relies on.
+#[tokio::test]
+async fn list_tools_for_identity_without_provider_equals_static_list() {
+    let mut registry = CommandRegistry::new();
+    registry.register(whoami_cmd());
+    let tool_registry = McpToolRegistry::from_command_registry(&registry, "myapp");
+
+    let static_names: Vec<String> = tool_registry
+        .list_tools()
+        .iter()
+        .map(|d| d.name.clone())
+        .collect();
+    let identity: Arc<dyn std::any::Any + Send + Sync> = Arc::new(CallerId("alice".to_string()));
+
+    for who in [None, Some(identity)] {
+        let names: Vec<String> = tool_registry
+            .list_tools_for_identity(who)
+            .await
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        assert_eq!(
+            names, static_names,
+            "without a provider the listing must not vary by identity"
+        );
+    }
+}
+
+/// Under stdio there is no HTTP request, so no identity can be established.
+/// An installed provider is still consulted — with `None` — and what it
+/// returns is dispatchable, which is why `dispatch_tool_call` (the
+/// identity-less entry point) resolves a per-caller tool at all.
+#[tokio::test]
+async fn provider_is_invoked_with_none_identity_and_its_tools_dispatch() {
+    let mut registry = CommandRegistry::new();
+    registry.register(whoami_cmd());
+    let tool_registry = McpToolRegistry::from_command_registry(&registry, "myapp")
+        .with_dynamic_tools(always_provider());
+
+    let names: Vec<String> = tool_registry
+        .list_tools_for_identity(None)
+        .await
+        .iter()
+        .map(|d| d.name.clone())
+        .collect();
+    assert!(
+        names.contains(&"myapp_tenant".to_string()),
+        "a None identity must still reach the provider: {names:?}"
+    );
+
+    let result = dispatch_tool_call(
+        &tool_registry,
+        "myapp_tenant",
+        None,
+        McpTransportKind::Stdio,
+    )
+    .await
+    .expect("dispatch ok");
+    assert_eq!(call_result_text(&result).trim(), "tenant-tool");
+}
+
+/// Static wins: a colliding name dispatches to the static command and is
+/// listed exactly once.
+#[tokio::test]
+async fn static_command_wins_a_name_collision_with_the_provider() {
+    let mut registry = CommandRegistry::new();
+    registry.register(whoami_cmd());
+    let tool_registry = McpToolRegistry::from_command_registry(&registry, "myapp")
+        .with_dynamic_tools(always_provider());
+
+    let result = dispatch_tool_call(
+        &tool_registry,
+        "myapp_whoami",
+        None,
+        McpTransportKind::Stdio,
+    )
+    .await
+    .expect("dispatch ok");
+    assert_eq!(
+        call_result_text(&result).trim(),
+        "anonymous",
+        "the static whoami must answer, not the provider's stand-in"
+    );
+
+    let names: Vec<String> = tool_registry
+        .list_tools_for_identity(None)
+        .await
+        .iter()
+        .map(|d| d.name.clone())
+        .collect();
+    assert_eq!(
+        names.iter().filter(|n| *n == "myapp_whoami").count(),
+        1,
+        "a colliding name must be listed once: {names:?}"
+    );
+}
+
+/// A name no one serves still fails as `MCP_CMD_NOT_FOUND`, with a provider
+/// installed — the fallback widens the tool set, it does not swallow misses.
+#[tokio::test]
+async fn unknown_tool_still_reports_not_found_with_a_provider_installed() {
+    let tool_registry = McpToolRegistry::from_command_registry(&CommandRegistry::new(), "myapp")
+        .with_dynamic_tools(always_provider());
+
+    let err = dispatch_tool_call(&tool_registry, "myapp_nope", None, McpTransportKind::Stdio)
+        .await
+        .expect_err("unknown tool must fail");
+    assert!(
+        err.message.contains("MCP_CMD_NOT_FOUND"),
+        "got: {}",
+        err.message
+    );
+}
+
+/// The stdio serve entry point stores an installed provider on the tool
+/// registry, for parity with the HTTP entry point and the `AppBuilder`
+/// wiring. Mirrors `serve_mcp_stdio_stores_installed_authenticator_without_blocking`:
+/// this harness's stdin is already at EOF, so the call returns near-instantly
+/// rather than blocking.
+#[tokio::test]
+async fn serve_mcp_stdio_stores_installed_dynamic_tools_without_blocking() {
+    let registry = Arc::new(CommandRegistry::new());
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        serve_mcp_stdio_opts_with_resources(
+            registry,
+            "testapp",
+            cli_framework::security::CommandRiskPolicy::default(),
+            cli_framework::mcp::McpToolExportPolicy::AllCommands,
+            None,
+            Arc::new(ResourceRegistry::new()),
+            BannerSettings::from_env(),
+            None,
+            None,
+            Some(always_provider()),
+        ),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "serve_mcp_stdio_opts_with_resources must not hang with a provider installed"
     );
 }

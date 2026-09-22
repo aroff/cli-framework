@@ -59,6 +59,36 @@ use tokio::sync::Mutex;
 pub type McpRequestAuthenticator =
     Arc<dyn Fn(&http::HeaderMap) -> Option<Arc<dyn Any + Send + Sync>> + Send + Sync>;
 
+/// The future returned by an [`McpDynamicToolProvider`].
+///
+/// Owned and `'static`: the provider is handed an owned identity, so the
+/// future borrows nothing from the registry and can be awaited freely inside
+/// a spawned dispatch task.
+#[cfg(feature = "mcp-server")]
+pub type McpDynamicToolsFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Vec<(String, Command)>> + Send + 'static>>;
+
+/// A per-caller tool-set hook for the MCP surface.
+///
+/// Companion to [`McpRequestAuthenticator`]: the authenticator turns request
+/// headers into an opaque identity, and this provider turns that identity into
+/// the extra commands *that caller* may see and invoke — for example the
+/// actions of the tenant-scoped plugins installed for the authenticated user.
+/// Returned pairs are `(tool_name, command)`; the name MUST already follow the
+/// `{app_name}_{path_underscored}` convention, exactly as for
+/// [`McpToolRegistry::from_commands`] — cli-framework does not rewrite it.
+///
+/// A `Vec` rather than a `HashMap` deliberately: it lets the provider fix the
+/// order in which its tools appear in `tools/list` (a map would reintroduce
+/// the very nondeterminism this surface is trying to bound), and it costs
+/// nothing at the sizes involved.
+///
+/// The callback is async because real providers read a database to decide
+/// visibility.
+#[cfg(feature = "mcp-server")]
+pub type McpDynamicToolProvider =
+    Arc<dyn Fn(Option<Arc<dyn Any + Send + Sync>>) -> McpDynamicToolsFuture + Send + Sync>;
+
 #[derive(Debug, Clone)]
 pub struct McpServerArgs {
     pub host: String,
@@ -96,6 +126,8 @@ pub struct McpToolRegistry {
     telemetry: Option<std::sync::Arc<dyn crate::telemetry::Telemetry + Send + Sync>>,
     #[cfg(feature = "mcp-server")]
     request_authenticator: Option<McpRequestAuthenticator>,
+    #[cfg(feature = "mcp-server")]
+    dynamic_tools: Option<McpDynamicToolProvider>,
 }
 
 impl McpToolRegistry {
@@ -146,6 +178,8 @@ impl McpToolRegistry {
             telemetry: None,
             #[cfg(feature = "mcp-server")]
             request_authenticator: None,
+            #[cfg(feature = "mcp-server")]
+            dynamic_tools: None,
         }
     }
 
@@ -162,6 +196,8 @@ impl McpToolRegistry {
             telemetry: None,
             #[cfg(feature = "mcp-server")]
             request_authenticator: None,
+            #[cfg(feature = "mcp-server")]
+            dynamic_tools: None,
         }
     }
 
@@ -195,6 +231,144 @@ impl McpToolRegistry {
         self
     }
 
+    /// Install a per-caller tool-set hook (see [`McpDynamicToolProvider`]).
+    ///
+    /// The provider is handed the opaque per-request identity produced by an
+    /// installed [`McpRequestAuthenticator`] and returns the *additional*
+    /// commands that caller may see and invoke, on top of the static tool set
+    /// fixed at construction. Both `tools/list` and `tools/call` consume it, so
+    /// what a caller is shown is by construction what that caller can dispatch.
+    ///
+    /// # This is discovery, not a security boundary
+    ///
+    /// Omitting a tool from a caller's `tools/list` hides it; it does **not**
+    /// authorize anything, and returning a tool does **not** authorize the
+    /// caller to run it. Consumers MUST still enforce authorization inside the
+    /// command's own `execute` closure, reading the identity back via
+    /// [`crate::app::RequestIdentityExt::request_identity`]. Reasons, all of
+    /// which hold even with a correct provider:
+    ///
+    /// - MCP clients call `tools/call` with any name they like. They are not
+    ///   obliged to have called `tools/list` first, nor to call only what it
+    ///   returned.
+    /// - Every command in the **static** set stays callable by every caller,
+    ///   whatever the provider returns — the provider only ever *adds*.
+    /// - Tool names are guessable. A caller who learns another tenant's tool
+    ///   name can ask for it; whether that call succeeds is decided by the
+    ///   command body, never by this hook.
+    /// - Under stdio, and on an unauthenticated HTTP request, the provider is
+    ///   invoked with `None` (see below) and cannot distinguish callers at all.
+    ///
+    /// Two adjacent boundaries, stated so they are not guessed at:
+    ///
+    /// - [`McpToolExportPolicy`] and `Command::expose_mcp` filter the **static**
+    ///   set when the registry is built; they do **not** filter this hook. A
+    ///   command the provider returns is exported even with
+    ///   `expose_mcp: false` under
+    ///   [`McpToolExportPolicy::ExposeMcpOnly`] — the provider is the only
+    ///   filter for its own commands.
+    /// - What *does* still apply to a per-caller tool, exactly as to a static
+    ///   one: argument validation, the command risk policy, and any
+    ///   [`with_gate`](Self::with_gate) execution gate, because dispatch builds
+    ///   the same bridge whatever the command's origin. Read the risk-policy
+    ///   half of that carefully:
+    ///   [`CommandRiskPolicy::classify`](crate::security::CommandRiskPolicy::classify)
+    ///   keys on `Command.id` and then on the command's category, and a
+    ///   provider-built command's id is by definition absent from the
+    ///   consumer's `tiers` map. Unless the provider sets a category
+    ///   (`admin`/`deployment`/`destructive` → `Destructive`, `data`/`config`
+    ///   → `Sensitive`), the tool lands on `default_tier` — `Safe` by default.
+    ///   "The risk policy applies" does **not** mean a consumer's destructive
+    ///   tier covers per-caller tools; the provider must classify what it
+    ///   returns. Note the gate's own limit, too: [`crate::security::ExecutionGate::before_execute`]
+    ///   receives the command, its arguments and its risk tier — **not** the
+    ///   caller identity. A gate can therefore stop a whole class of calls, but
+    ///   it cannot answer "may *this* caller do this". Per-caller authorization
+    ///   belongs in the command's own `execute`, which can read the identity
+    ///   back via [`crate::app::RequestIdentityExt::request_identity`].
+    ///
+    /// # Precedence and determinism
+    ///
+    /// - **Static wins.** A provided command whose name collides with a static
+    ///   tool is ignored: `tools/call` resolves the name to the static command,
+    ///   and `tools/list` emits the static entry only — never a duplicate. The
+    ///   same applies within one provider result: the first pair for a given
+    ///   name wins. Neither drop is silent — each is reported at `tracing::warn!`,
+    ///   naming the tool and which rule dropped it, because a provider that
+    ///   believes it published a tool has no other way to notice it never
+    ///   reached the client. Nothing is rejected: the rest of the result is
+    ///   listed as normal.
+    /// - **Never cached.** The set is recomputed for every request, from that
+    ///   request's identity. cli-framework keeps no per-identity cache, so
+    ///   `tools/list` and `tools/call` cannot disagree about what a caller has.
+    ///   A revocation therefore takes effect on the caller's next request *to
+    ///   this server*, which is not the same as the caller seeing it: the
+    ///   `tools/call` path re-runs the provider and so is prompt, while
+    ///   `tools/list` is only as fresh as the client's last call to it. This
+    ///   server advertises `tools` **without** `listChanged` and never emits
+    ///   `notifications/tools/list_changed`, so a client that listed once at
+    ///   session start keeps showing a withdrawn tool until it re-lists.
+    ///   Revocation is enforced at dispatch, not at discovery — another reason
+    ///   discovery is not the boundary.
+    /// - **The miss path is caller-driven work.** One provider invocation per
+    ///   `tools/list`, and one per `tools/call` whose name is *not* in the
+    ///   static set. That second rate is chosen by the caller, including an
+    ///   unauthenticated one: a loop of `tools/call` with random names is a
+    ///   provider invocation — typically a database read — per request, with
+    ///   no cache in front of it. Treat it as a rate-limiting question at the
+    ///   edge, not as a performance footnote. Caching inside the provider is
+    ///   the consumer's call, along with the staleness it introduces.
+    /// - `tools/call` invokes the provider **only** when the requested name is
+    ///   absent from the static set, so the common path costs nothing.
+    ///
+    /// # Identity may be absent
+    ///
+    /// The provider is called with `None` whenever no identity was established
+    /// for the request: under stdio (there is no HTTP request), when no
+    /// [`McpRequestAuthenticator`] is installed, and when the installed
+    /// authenticator returned `None` for these headers (missing or malformed
+    /// credentials). cli-framework does not treat that as an error and does not
+    /// skip the provider — the consumer decides what an anonymous caller sees,
+    /// which may legitimately be an empty `Vec`.
+    ///
+    /// Opt-in: when unset, both `tools/list` and `tools/call` behave exactly as
+    /// they did before this hook existed, on every transport. In particular
+    /// `tools/list` does not run an installed [`McpRequestAuthenticator`] at
+    /// all when no provider is installed: it could not use the result, and the
+    /// authenticator is consumer code that may log, emit metrics or spend a
+    /// rate-limit budget. Installing a provider is therefore what starts
+    /// authenticating `tools/list` requests.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use cli_framework::mcp::{McpToolRegistry, McpDynamicToolProvider};
+    /// # use cli_framework::command::CommandRegistry;
+    /// # use std::sync::Arc;
+    /// # struct CallerId(String);
+    /// # fn tools_for(_who: &str) -> Vec<(String, cli_framework::command::Command)> { vec![] }
+    /// # let registry = CommandRegistry::new();
+    /// let provider: McpDynamicToolProvider = Arc::new(|identity| {
+    ///     // Downcast the opaque identity to the host's own type.
+    ///     let who = identity
+    ///         .and_then(|id| id.downcast_ref::<CallerId>().map(|c| c.0.clone()));
+    ///     Box::pin(async move {
+    ///         match who {
+    ///             // A real provider awaits a database read here.
+    ///             Some(who) => tools_for(&who),
+    ///             None => Vec::new(),
+    ///         }
+    ///     })
+    /// });
+    /// let registry = McpToolRegistry::from_command_registry(&registry, "myapp")
+    ///     .with_dynamic_tools(provider);
+    /// ```
+    #[cfg(feature = "mcp-server")]
+    pub fn with_dynamic_tools(mut self, provider: McpDynamicToolProvider) -> Self {
+        self.dynamic_tools = Some(provider);
+        self
+    }
+
     /// Run the installed authenticator (if any) against `headers`, returning
     /// the opaque identity it produces.
     ///
@@ -203,6 +377,21 @@ impl McpToolRegistry {
     #[cfg(feature = "mcp-server")]
     fn authenticate(&self, headers: &http::HeaderMap) -> Option<Arc<dyn Any + Send + Sync>> {
         self.request_authenticator.as_ref().and_then(|f| f(headers))
+    }
+
+    /// Run the installed per-caller tool provider (if any) for `identity`.
+    ///
+    /// Returns an empty `Vec` when no provider is installed, without awaiting
+    /// anything — the no-hook path is byte-identical to having no hook at all.
+    #[cfg(feature = "mcp-server")]
+    async fn dynamic_tools_for(
+        &self,
+        identity: Option<Arc<dyn Any + Send + Sync>>,
+    ) -> Vec<(String, Command)> {
+        match self.dynamic_tools.as_ref() {
+            Some(provider) => provider(identity).await,
+            None => Vec::new(),
+        }
     }
 
     pub fn tool_count(&self) -> usize {
@@ -214,6 +403,61 @@ impl McpToolRegistry {
             .iter()
             .map(|(name, cmd)| command_to_tool_descriptor_full(name, cmd))
             .collect()
+    }
+
+    /// The tool descriptors a caller with `identity` sees: the static set
+    /// [`list_tools`](Self::list_tools) returns, followed by the commands an
+    /// installed [`McpDynamicToolProvider`] supplies for that identity.
+    ///
+    /// With no provider installed this is exactly `list_tools()`, including
+    /// its ordering. With one installed, the static block keeps the order
+    /// `list_tools()` gave it and the per-caller block is appended after it in
+    /// the order the provider returned, so the merge adds no nondeterminism of
+    /// its own. Names already present in the static set — or repeated within
+    /// the provider's own result — are skipped, so no name is described twice;
+    /// each skip is reported at `tracing::warn!`, naming the tool.
+    ///
+    /// Descriptors on both paths come from the same
+    /// `command_to_tool_descriptor_full`, so a per-caller tool's description
+    /// and input schema are generated exactly as a static one's would be.
+    ///
+    /// This is a discovery surface, not an authorization one; see
+    /// [`with_dynamic_tools`](Self::with_dynamic_tools).
+    #[cfg(feature = "mcp-server")]
+    pub async fn list_tools_for_identity(
+        &self,
+        identity: Option<Arc<dyn Any + Send + Sync>>,
+    ) -> Vec<McpToolDescriptor> {
+        let mut descriptors = self.list_tools();
+        if self.dynamic_tools.is_none() {
+            return descriptors;
+        }
+        // Two distinct reasons to drop a provided pair, warned about
+        // separately: the name is already a static tool (static wins), or the
+        // provider returned it twice in one result (first wins). Both are
+        // provider bugs the consumer cannot otherwise see — a tool it believes
+        // it published simply is not there — so neither is silent.
+        let mut emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (name, cmd) in self.dynamic_tools_for(identity).await {
+            if self.tools.contains_key(&name) {
+                tracing::warn!(
+                    "MCP per-caller tool '{}' collides with a statically registered command; \
+                     the static command wins and the per-caller one is not listed",
+                    name
+                );
+                continue;
+            }
+            if !emitted.insert(name.clone()) {
+                tracing::warn!(
+                    "MCP per-caller tool provider returned the name '{}' more than once in one \
+                     result; the first pair wins and later ones are dropped",
+                    name
+                );
+                continue;
+            }
+            descriptors.push(command_to_tool_descriptor_full(&name, &cmd));
+        }
+        descriptors
     }
 
     pub fn resolve_tool(&self, tool_name: &str) -> Option<&Command> {
@@ -556,15 +800,38 @@ impl ServerHandler for CliFrameworkHandler {
     fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, ErrorData>> + Send + '_ {
-        let descriptors = self.tool_registry.list_tools();
-        let tools: Vec<Tool> = descriptors.iter().map(make_rmcp_tool).collect();
-        std::future::ready(Ok(ListToolsResult {
-            tools,
-            next_cursor: None,
-            meta: Default::default(),
-        }))
+        // Same per-request identity seam `call_tool` uses, for the same
+        // reason: the advertised set and the callable set are derived from one
+        // identity so they cannot drift. Under stdio there is no HTTP request,
+        // so `identity` is `None` and an installed provider is invoked with
+        // `None` (see `McpToolRegistry::with_dynamic_tools`).
+        let registry = Arc::clone(&self.tool_registry);
+        // With no provider installed this path must stay byte-identical to
+        // what it was before per-caller tool sets existed, which includes
+        // *not* running the consumer's authenticator: that closure is
+        // consumer code and may log, emit metrics or consume a rate-limit
+        // budget, so invoking it on a `tools/list` that cannot use its
+        // result would be a new observable side effect.
+        let identity = if registry.dynamic_tools.is_some() {
+            context
+                .extensions
+                .get::<http::request::Parts>()
+                .and_then(|parts| registry.authenticate(&parts.headers))
+        } else {
+            None
+        };
+
+        async move {
+            let descriptors = registry.list_tools_for_identity(identity).await;
+            let tools: Vec<Tool> = descriptors.iter().map(make_rmcp_tool).collect();
+            Ok(ListToolsResult {
+                tools,
+                next_cursor: None,
+                meta: Default::default(),
+            })
+        }
     }
 
     fn call_tool(
@@ -641,12 +908,30 @@ pub async fn dispatch_tool_call_with_identity(
         BridgeError, BridgeInput, BridgeInvocation, ConfirmationMode,
     };
 
-    let cmd = tool_registry.resolve_tool(tool_name).ok_or_else(|| {
-        mcp_error(
-            -32001,
-            format!("MCP_CMD_NOT_FOUND: tool '{}' not registered", tool_name),
-        )
-    })?;
+    // Static set first: a name registered at construction always resolves to
+    // its static command, whatever a per-caller provider returns for it
+    // (documented precedence on `McpToolRegistry::with_dynamic_tools`). Only a
+    // static miss consults the provider, and only for *this* request's
+    // identity — nothing about the per-caller set is cached between requests,
+    // which is what keeps this path and `tools/list` in agreement.
+    let dynamic_cmd = match tool_registry.resolve_tool(tool_name) {
+        Some(_) => None,
+        None => tool_registry
+            .dynamic_tools_for(identity.clone())
+            .await
+            .into_iter()
+            .find(|(name, _)| name == tool_name)
+            .map(|(_, cmd)| cmd),
+    };
+    let cmd = tool_registry
+        .resolve_tool(tool_name)
+        .or(dynamic_cmd.as_ref())
+        .ok_or_else(|| {
+            mcp_error(
+                -32001,
+                format!("MCP_CMD_NOT_FOUND: tool '{}' not registered", tool_name),
+            )
+        })?;
 
     let bridge = tool_registry.bridge_for_call(transport, tool_name);
 
@@ -955,6 +1240,7 @@ pub async fn serve_mcp_with_gate_opts(
         banner,
         None,
         None,
+        None,
     )
     .await
 }
@@ -975,6 +1261,7 @@ pub async fn serve_mcp_with_gate_opts_with_resources(
     banner: BannerSettings,
     telemetry: Option<std::sync::Arc<dyn crate::telemetry::Telemetry + Send + Sync>>,
     request_authenticator: Option<McpRequestAuthenticator>,
+    dynamic_tools: Option<McpDynamicToolProvider>,
 ) -> Result<()> {
     let mut tool_registry =
         McpToolRegistry::from_command_registry_with_policy(&registry, app_name, export_policy)
@@ -987,6 +1274,9 @@ pub async fn serve_mcp_with_gate_opts_with_resources(
     }
     if let Some(authenticator) = request_authenticator {
         tool_registry = tool_registry.with_request_authenticator(authenticator);
+    }
+    if let Some(provider) = dynamic_tools {
+        tool_registry = tool_registry.with_dynamic_tools(provider);
     }
     let tool_registry = Arc::new(tool_registry);
 
@@ -1038,6 +1328,7 @@ pub async fn serve_mcp_stdio_opts(
         banner,
         None,
         None,
+        None,
     )
     .await
 }
@@ -1061,6 +1352,7 @@ pub async fn serve_mcp_stdio_opts_with_resources(
     banner: BannerSettings,
     telemetry: Option<std::sync::Arc<dyn crate::telemetry::Telemetry + Send + Sync>>,
     request_authenticator: Option<McpRequestAuthenticator>,
+    dynamic_tools: Option<McpDynamicToolProvider>,
 ) -> anyhow::Result<()> {
     let mut tool_registry =
         McpToolRegistry::from_command_registry_with_policy(&registry, app_name, export_policy)
@@ -1073,6 +1365,9 @@ pub async fn serve_mcp_stdio_opts_with_resources(
     }
     if let Some(authenticator) = request_authenticator {
         tool_registry = tool_registry.with_request_authenticator(authenticator);
+    }
+    if let Some(provider) = dynamic_tools {
+        tool_registry = tool_registry.with_dynamic_tools(provider);
     }
     let tool_registry = Arc::new(tool_registry);
     transport_stdio::start_stdio_with_resources(tool_registry, resource_registry, banner).await

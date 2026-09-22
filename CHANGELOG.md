@@ -17,6 +17,13 @@
   of `Resource::new(RawResource::new(..), None)`). cli-framework's own
   signatures and wire output are unchanged.
 
+- Three low-level `mcp-server` entry points take one additional trailing
+  `Option<McpDynamicToolProvider>` argument (ADR 0081):
+  `serve_mcp_with_gate_opts_with_resources`,
+  `serve_mcp_stdio_opts_with_resources` and
+  `create_mcp_serve_command_with_deps`. Direct callers pass `None` to keep
+  today's behaviour; `AppBuilder` users are unaffected.
+
 ### Added
 
 - `self-install` feature (ADR 0080, phase 1): `AppBuilder::with_self_install`
@@ -59,6 +66,26 @@
 - OIDC client `end_session_url` prepares a validated, discovered RP-initiated
   logout URL without opening a browser, sending tokens, or clearing credentials.
   Native hosts retain responsibility for local logout and callback validation.
+
+- Per-caller MCP tool sets (ADR 0081, feature `mcp-server`):
+  `AppBuilder::with_mcp_dynamic_tools` / `McpToolRegistry::with_dynamic_tools`
+  install one `McpDynamicToolProvider` — an async hook taking the same
+  `Option<Arc<dyn Any + Send + Sync>>` identity `McpRequestAuthenticator`
+  produces and returning `Vec<(String, Command)>`. It feeds **both**
+  `tools/list` (`McpToolRegistry::list_tools_for_identity`) and `tools/call`,
+  so the advertised and callable sets cannot drift. Statically registered
+  commands always win a name collision and are listed once; the static block
+  keeps the order `list_tools()` produced and the per-caller block is appended
+  after it in provider order; a name that collides with a static tool or that
+  the provider repeats within one result is dropped with a `tracing::warn!` naming
+  it; the hook is re-run per request and never cached;
+  with no identity (stdio, no authenticator, or rejected credentials) it is
+  invoked with `None`. With no hook installed, `tools/list` and `tools/call`
+  behave exactly as before on every transport. **This is a discovery
+  mechanism, not a security boundary** — hiding a tool authorizes nothing, and
+  consumers must still enforce authorization inside the command's `execute`,
+  the only place the caller identity is available (an MCP tool gate runs for
+  per-caller tools but is not given the identity). See ADR 0081.
 
 ### Changed
 

@@ -155,7 +155,7 @@ When no registry is supplied, MCP serves a tools-only server (backward compatibl
 
 ### Empty tool set
 
-When `ExposeMcpOnly` is active and no commands have `expose_mcp: true`, the server starts normally with zero tools and emits a `log::warn!`. This is a valid operational state — the warning helps diagnose accidental misconfiguration.
+When `ExposeMcpOnly` is active and no commands have `expose_mcp: true`, the server starts normally with zero tools and emits a `tracing::warn!`. This is a valid operational state — the warning helps diagnose accidental misconfiguration.
 
 ### Framework built-in commands
 
@@ -172,6 +172,76 @@ Command { id: "foo", summary: "...", /* other fields */ execute: ... }
 // After
 Command { id: "foo", summary: "...", expose_mcp: false, /* other fields */ execute: ... }
 ```
+
+## Per-caller tool sets (`with_mcp_dynamic_tools`) — ADR 0081
+
+The static tool set is fixed at build time. To let different callers discover different tools,
+install one hook that maps the request's identity to extra commands:
+
+```rust
+AppBuilder::new()
+    .with_version("myapp", "0.1.0")
+    // Establishes WHO the caller is (opaque to the framework).
+    .with_mcp_request_authenticator(Arc::new(|headers| { /* -> Option<Arc<dyn Any + Send + Sync>> */ }))
+    // Supplies WHAT that caller may discover, per request.
+    .with_mcp_dynamic_tools(Arc::new(|identity| {
+        Box::pin(async move { /* -> Vec<(String, Command)> */ })
+    }))
+```
+
+Signature:
+
+```rust
+pub type McpDynamicToolsFuture =
+    Pin<Box<dyn Future<Output = Vec<(String, Command)>> + Send + 'static>>;
+pub type McpDynamicToolProvider =
+    Arc<dyn Fn(Option<Arc<dyn Any + Send + Sync>>) -> McpDynamicToolsFuture + Send + Sync>;
+```
+
+Rules the framework guarantees:
+
+- **One hook, both paths.** The same provider feeds `tools/list`
+  (`McpToolRegistry::list_tools_for_identity`) and `tools/call`, so the advertised set and the
+  callable set cannot drift.
+- **Static wins.** A name registered at construction always resolves to its static command; on a
+  static hit the provider is not consulted at all. A colliding name appears in `tools/list` once,
+  as the static entry, and the dropped pair is reported at `tracing::warn!` naming the tool.
+- **Deterministic order.** The static block keeps the order `list_tools()` produced (it is *not*
+  sorted as a side effect of this feature); the per-caller block is appended after it in the order
+  the provider returned. Names repeated within one provider result are skipped — first pair wins,
+  also with a `tracing::warn!`. Nothing is rejected: the rest of the result is listed as normal.
+- **Never cached.** Run once per `tools/list`, and once per `tools/call` that misses the static
+  set. The miss rate is chosen by the caller (an unauthenticated one too), so unknown-name floods
+  are a rate-limiting question at the edge. Revocation is prompt for `tools/call` and lagging for
+  `tools/list`: the server advertises `tools` without `listChanged` and never sends
+  `notifications/tools/list_changed`, so a client that listed once keeps showing a withdrawn tool
+  until it re-lists.
+- **`None` identity is normal.** Under stdio, with no authenticator installed, or when the
+  authenticator rejects the credentials, the hook is called with `None`.
+- **Names must already follow the convention.** The provider returns the full tool name
+  (`{app_name}_{path_underscored}`); the framework does not prefix it.
+- **Descriptors are generated identically.** Per-caller commands go through the same
+  `command_to_tool_descriptor_full`, so `description`, `inputSchema`, `_meta` and `visibility`
+  behave exactly as for a static command.
+- **No hook installed → unchanged.** Both paths behave byte-identically to before on every
+  transport, and `tools/list` does not invoke an installed `McpRequestAuthenticator` at all (it
+  could not use the result, and running it would be a new side effect in consumer code).
+
+- **`McpToolExportPolicy` does not filter the hook.** `expose_mcp` / `ExposeMcpOnly` are applied
+  when the *static* set is built. A command the provider returns is exported as a tool even if its
+  `expose_mcp` is `false`. The provider is the only filter for its own commands.
+- **The risk policy and the MCP tool gate do apply.** A per-caller tool dispatches through the same
+  `CommandAsToolBridge` as a static one, so `with_mcp_tool_gate` and the command risk tiers cover
+  it unchanged. The gate cannot do per-caller authorization, though:
+  `ExecutionGate::before_execute` receives the command, its arguments and its risk tier, not the
+  identity. And `CommandRiskPolicy::classify` keys on `Command.id` plus category, so a
+  provider-built command — whose id is not in the consumer's `tiers` map — takes `default_tier`
+  (`Safe`) unless the provider sets a category on the command it returns.
+
+**Discovery, not authorization.** Omitting a tool from a caller's list does not prevent them
+calling it — clients may send `tools/call` with any name, tool names are guessable, and every
+static command stays callable by everyone. Enforce authorization inside the command's `execute`,
+the only place the caller identity is available (`ctx.request_identity::<T>()`).
 
 ## Minimal snippet
 
