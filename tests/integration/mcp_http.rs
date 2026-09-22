@@ -1,8 +1,8 @@
 use cli_framework::app::{AppBuilder, AppContext, RequestIdentityExt};
 use cli_framework::command::{Command, CommandRegistry};
 use cli_framework::mcp::{
-    serve_mcp_with_gate, CliFrameworkHandler, McpServerArgs, McpToolExportPolicy, McpToolRegistry,
-    McpTransportKind,
+    serve_mcp_with_gate, CliFrameworkHandler, McpDynamicToolProvider, McpServerArgs,
+    McpToolExportPolicy, McpToolRegistry, McpTransportKind,
 };
 use cli_framework::security::CommandRiskPolicy;
 use cli_framework::spec::command_tree::CommandSpec;
@@ -1096,4 +1096,795 @@ async fn test_mcp_no_authenticator_installed_yields_none() {
 
     let who = call_whoami(&client, &base_url, Some("alice-token")).await;
     assert_eq!(who, "anonymous");
+}
+
+// ── Per-caller tool set (`with_mcp_dynamic_tools`) ────────────────────────
+//
+// End-to-end coverage over the real HTTP transport, reusing the identity
+// harness above: `AppBuilder::with_mcp_dynamic_tools` installs a provider that
+// turns the opaque per-request identity into that caller's extra commands, and
+// both `tools/list` and `tools/call` consume it. The assertions below are all
+// made from outside the server — real Bearer headers in, real JSON-RPC out.
+
+/// A per-caller command that prints one fixed string.
+fn echo_command(id: &'static str, text: &'static str) -> Command {
+    Command {
+        id: Arc::from(id),
+        spec: Arc::new(CommandSpec {
+            summary: "echo a fixed string",
+            ..Default::default()
+        }),
+        validator: None,
+        expose_mcp: true,
+        expose_chat: false,
+        meta: None,
+        visibility: None,
+        execute: Arc::new(move |ctx, _args| {
+            Box::pin(async move {
+                ctx.framework_println(text);
+                Ok(())
+            })
+        }),
+    }
+}
+
+/// Like [`echo_command`], but with a caller-chosen summary, so two commands
+/// published under the *same* tool name stay distinguishable in `tools/list`
+/// (`description`) and in `tools/call` (the text it prints).
+fn labelled_command(id: &'static str, summary: &'static str, text: &'static str) -> Command {
+    let mut cmd = echo_command(id, text);
+    cmd.spec = Arc::new(CommandSpec {
+        summary,
+        ..Default::default()
+    });
+    cmd
+}
+
+/// A per-caller command carrying everything the *static* descriptor path is
+/// able to express — a typed argument, opaque `_meta`, and `visibility` tags.
+///
+/// Its `tools/list` entry is what proves per-caller descriptors are built by
+/// the same `command_to_tool_descriptor_full` the static tools use: a
+/// hand-rolled descriptor would drop the schema, the `_meta`, or both.
+fn rich_command() -> Command {
+    use cli_framework::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
+
+    Command {
+        id: Arc::from("alice_second"),
+        spec: Arc::new(CommandSpec {
+            summary: "second per-caller tool, with a typed argument",
+            args: vec![ArgSpec {
+                name: "note",
+                kind: ArgKind::Option,
+                short: None,
+                long: Some("note"),
+                value_type: ArgValueType::String,
+                cardinality: Cardinality::Optional,
+                default: None,
+                conflicts_with: vec![],
+                requires: vec![],
+                help: "a note",
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        validator: None,
+        expose_mcp: true,
+        expose_chat: false,
+        meta: None,
+        visibility: None,
+        execute: Arc::new(|ctx, _args| {
+            Box::pin(async move {
+                ctx.framework_println("alice-second-tool");
+                Ok(())
+            })
+        }),
+    }
+    .with_meta(serde_json::json!({ "x_tenant": "alice" }))
+    .with_visibility(vec!["app".to_string()])
+}
+
+/// Per-caller tool provider used by the tests below.
+///
+/// - `alice-token` → `testapp_alice_only`, then `testapp_alice_second`
+///   (two tools, in that order, so list ordering is observable)
+/// - `bob-token`   → `testapp_bob_only`
+/// - `dup-token`   → `testapp_dup` **twice**, with different summaries and
+///   different output, to exercise the first-pair-wins rule *within* one
+///   provider result (a distinct rule from the static collision below)
+/// - no identity   → `testapp_anonymous_only` (proving the provider ran with
+///   `None` rather than being skipped)
+///
+/// Every caller is additionally offered `testapp_whoami`, which collides with
+/// the statically registered command of that name. Static must win: the
+/// collision entry must never be dispatched and must never appear twice in
+/// `tools/list`.
+///
+/// `calls` counts awaited invocations, so a test can assert the provider runs
+/// once per request and that no result is reused across requests.
+fn tenant_provider(calls: Arc<std::sync::atomic::AtomicUsize>) -> McpDynamicToolProvider {
+    Arc::new(move |identity| {
+        let calls = Arc::clone(&calls);
+        let who = identity
+            .and_then(|id| id.downcast_ref::<TestCallerId>().map(|c| c.0.clone()))
+            .unwrap_or_else(|| "anonymous".to_string());
+        Box::pin(async move {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut tools: Vec<(String, Command)> = match who.as_str() {
+                "alice-token" => vec![
+                    (
+                        "testapp_alice_only".to_string(),
+                        echo_command("alice_only", "alice-tool"),
+                    ),
+                    ("testapp_alice_second".to_string(), rich_command()),
+                ],
+                "bob-token" => vec![(
+                    "testapp_bob_only".to_string(),
+                    echo_command("bob_only", "bob-tool"),
+                )],
+                // Two pairs under one name: a realistic collision when two
+                // tenant plugins declare the same action verb. The first must
+                // win on both paths, and the name must appear once.
+                "dup-token" => vec![
+                    (
+                        "testapp_dup".to_string(),
+                        labelled_command("dup_first", "FIRST pair, must win", "dup-first"),
+                    ),
+                    (
+                        "testapp_dup".to_string(),
+                        labelled_command(
+                            "dup_second",
+                            "SECOND pair, must be dropped",
+                            "dup-second",
+                        ),
+                    ),
+                ],
+                _ => vec![(
+                    "testapp_anonymous_only".to_string(),
+                    echo_command("anonymous_only", "anonymous-tool"),
+                )],
+            };
+            tools.push((
+                "testapp_whoami".to_string(),
+                echo_command("whoami", "DYNAMIC-COLLISION"),
+            ));
+            tools
+        })
+    })
+}
+
+/// Spawns `testapp mcp serve --port <port>` with [`tenant_provider`] installed
+/// and, optionally, the bearer authenticator. Mirrors [`spawn_whoami_server`].
+async fn spawn_dynamic_server(
+    install_authenticator: bool,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+) -> u16 {
+    let port_guard = port_lock().lock().await;
+    let port = reserve_port();
+
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        rt.block_on(async move {
+            struct Ctx;
+            impl AppContext for Ctx {}
+
+            let mut builder = AppBuilder::new()
+                .with_version("testapp", "0.1.0")
+                .register_command(whoami_command())
+                .unwrap()
+                .with_mcp_dynamic_tools(tenant_provider(calls));
+            if install_authenticator {
+                builder = builder.with_mcp_request_authenticator(bearer_authenticator());
+            }
+            let mut app = builder.build(Ctx).unwrap();
+
+            record_server_exit(
+                "mcp serve (dynamic tools)",
+                app.run_with_args(vec![
+                    "testapp".to_string(),
+                    "mcp".to_string(),
+                    "serve".to_string(),
+                    "--port".to_string(),
+                    port.to_string(),
+                ])
+                .await,
+            );
+        });
+    });
+
+    let base_url = format!("http://127.0.0.1:{}", port);
+    wait_for_http_server(&reqwest::Client::new(), &base_url).await;
+    drop(port_guard);
+
+    port
+}
+
+/// One JSON-RPC round trip over the real HTTP transport, optionally bearing an
+/// `Authorization: Bearer` header. Returns the parsed response envelope, so a
+/// caller can inspect `result` or `error`.
+async fn mcp_rpc(
+    client: &reqwest::Client,
+    base_url: &str,
+    bearer: Option<&str>,
+    body: serde_json::Value,
+) -> serde_json::Value {
+    let session_id = wait_for_http_server(client, base_url).await;
+
+    let mut req = client
+        .post(format!("{}/mcp", base_url))
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream");
+    if let Some(ref sid) = session_id {
+        req = req.header("Mcp-Session-Id", sid);
+    }
+    if let Some(token) = bearer {
+        req = req.header("Authorization", format!("Bearer {}", token));
+    }
+
+    let resp = req.json(&body).send().await.expect("mcp request failed");
+    assert!(resp.status().is_success(), "status: {}", resp.status());
+    parse_sse_data(&resp.text().await.unwrap())
+}
+
+/// The raw `result.tools` array a caller sees from `tools/list`.
+async fn list_tools_raw(
+    client: &reqwest::Client,
+    base_url: &str,
+    bearer: Option<&str>,
+) -> Vec<serde_json::Value> {
+    let json = mcp_rpc(
+        client,
+        base_url,
+        bearer,
+        serde_json::json!({"jsonrpc": "2.0", "id": "list", "method": "tools/list"}),
+    )
+    .await;
+    json.pointer("/result/tools")
+        .and_then(|t| t.as_array())
+        .unwrap_or_else(|| panic!("tools/list returned no tools: {json}"))
+        .clone()
+}
+
+async fn list_tool_names(
+    client: &reqwest::Client,
+    base_url: &str,
+    bearer: Option<&str>,
+) -> Vec<String> {
+    list_tools_raw(client, base_url, bearer)
+        .await
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// `tools/call` by name, returning the parsed response envelope.
+async fn call_tool_rpc(
+    client: &reqwest::Client,
+    base_url: &str,
+    bearer: Option<&str>,
+    tool: &str,
+) -> serde_json::Value {
+    mcp_rpc(
+        client,
+        base_url,
+        bearer,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "call",
+            "method": "tools/call",
+            "params": { "name": tool, "arguments": {} }
+        }),
+    )
+    .await
+}
+
+/// The text content of a successful `tools/call`, or a panic naming the error.
+async fn call_tool_text(
+    client: &reqwest::Client,
+    base_url: &str,
+    bearer: Option<&str>,
+    tool: &str,
+) -> String {
+    let json = call_tool_rpc(client, base_url, bearer, tool).await;
+    json.pointer("/result/content/0/text")
+        .and_then(|t| t.as_str())
+        .unwrap_or_else(|| panic!("tools/call {tool} did not succeed: {json}"))
+        .trim()
+        .to_string()
+}
+
+/// Requirement: two different Bearer identities receive two different
+/// `tools/list` results, and the per-caller entries carry the same descriptor
+/// shape the static path produces (schema, `_meta`, `visibility`), since both
+/// go through `command_to_tool_descriptor_full`.
+#[tokio::test]
+async fn test_dynamic_tools_two_identities_see_different_tool_lists() {
+    let _ = env_logger::try_init();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let port = spawn_dynamic_server(true, Arc::clone(&calls)).await;
+    let client = reqwest::Client::new();
+    let base_url = format!("http://127.0.0.1:{}", port);
+
+    let alice = list_tool_names(&client, &base_url, Some("alice-token")).await;
+    let bob = list_tool_names(&client, &base_url, Some("bob-token")).await;
+
+    assert!(
+        alice.contains(&"testapp_alice_only".to_string())
+            && alice.contains(&"testapp_alice_second".to_string()),
+        "alice must see her own tools: {alice:?}"
+    );
+    assert!(
+        !alice.contains(&"testapp_bob_only".to_string()),
+        "alice must not see bob's tools: {alice:?}"
+    );
+    assert!(
+        bob.contains(&"testapp_bob_only".to_string()),
+        "bob must see his own tool: {bob:?}"
+    );
+    assert!(
+        !bob.contains(&"testapp_alice_only".to_string())
+            && !bob.contains(&"testapp_alice_second".to_string()),
+        "bob must not see alice's tools: {bob:?}"
+    );
+
+    // The static tool is in both lists — the provider only ever adds.
+    assert!(
+        alice.contains(&"testapp_whoami".to_string())
+            && bob.contains(&"testapp_whoami".to_string()),
+        "static tools stay visible to everyone: {alice:?} / {bob:?}"
+    );
+
+    // Descriptor parity with the static path: the typed argument reached the
+    // generated `inputSchema`, and the opaque `_meta` plus `visibility` tags
+    // survived onto the wire exactly as they do for a statically registered
+    // command.
+    let entries = list_tools_raw(&client, &base_url, Some("alice-token")).await;
+    let rich = entries
+        .iter()
+        .find(|t| t["name"] == "testapp_alice_second")
+        .unwrap_or_else(|| panic!("testapp_alice_second missing: {entries:?}"));
+    assert_eq!(
+        rich["description"], "second per-caller tool, with a typed argument",
+        "description must come from the command's own summary: {rich}"
+    );
+    assert_eq!(
+        rich["inputSchema"]["properties"]["note"]["type"], "string",
+        "per-caller tools must get the same generated input schema: {rich}"
+    );
+    assert_eq!(
+        rich["_meta"]["x_tenant"], "alice",
+        "opaque _meta must pass through for per-caller tools: {rich}"
+    );
+    assert_eq!(
+        rich["_meta"]["visibility"],
+        serde_json::json!(["app"]),
+        "visibility tags must pass through for per-caller tools: {rich}"
+    );
+}
+
+/// Requirement: a tool served only to identity A is callable by A and returns
+/// `MCP_CMD_NOT_FOUND` for identity B — the list and the dispatch path agree.
+#[tokio::test]
+async fn test_dynamic_tool_is_callable_only_by_the_identity_it_was_listed_for() {
+    let _ = env_logger::try_init();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let port = spawn_dynamic_server(true, Arc::clone(&calls)).await;
+    let client = reqwest::Client::new();
+    let base_url = format!("http://127.0.0.1:{}", port);
+
+    let text = call_tool_text(
+        &client,
+        &base_url,
+        Some("alice-token"),
+        "testapp_alice_only",
+    )
+    .await;
+    assert_eq!(text, "alice-tool");
+
+    let json = call_tool_rpc(&client, &base_url, Some("bob-token"), "testapp_alice_only").await;
+    let message = json
+        .pointer("/error/message")
+        .and_then(|m| m.as_str())
+        .unwrap_or_else(|| panic!("bob's call must fail, got: {json}"));
+    assert!(
+        message.contains("MCP_CMD_NOT_FOUND"),
+        "expected MCP_CMD_NOT_FOUND, got: {message}"
+    );
+
+    // And the reverse direction, so the test cannot pass by the provider
+    // simply returning nothing for one of the two callers.
+    let text = call_tool_text(&client, &base_url, Some("bob-token"), "testapp_bob_only").await;
+    assert_eq!(text, "bob-tool");
+}
+
+/// Requirement: a per-caller name colliding with a statically registered one
+/// resolves to the *static* command on dispatch, and `tools/list` emits a
+/// single entry for it.
+#[tokio::test]
+async fn test_static_command_wins_collision_and_is_listed_once() {
+    let _ = env_logger::try_init();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let port = spawn_dynamic_server(true, Arc::clone(&calls)).await;
+    let client = reqwest::Client::new();
+    let base_url = format!("http://127.0.0.1:{}", port);
+
+    // The provider offers its own `testapp_whoami` printing "DYNAMIC-COLLISION".
+    // The static command reports the caller identity instead.
+    let text = call_tool_text(&client, &base_url, Some("alice-token"), "testapp_whoami").await;
+    assert_eq!(
+        text, "alice-token",
+        "a static tool name must always resolve to the static command"
+    );
+
+    let names = list_tool_names(&client, &base_url, Some("alice-token")).await;
+    let occurrences = names.iter().filter(|n| *n == "testapp_whoami").count();
+    assert_eq!(
+        occurrences, 1,
+        "a colliding per-caller tool must not be listed a second time: {names:?}"
+    );
+}
+
+/// Requirement: the ordering of the merged list is the provider's, appended
+/// after the static block, and stable across identical requests. The static
+/// block's own order is left exactly as `McpToolRegistry::list_tools` produces
+/// it — this change deliberately does not start sorting it.
+#[tokio::test]
+async fn test_dynamic_tools_are_appended_after_static_ones_in_provider_order() {
+    let _ = env_logger::try_init();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let port = spawn_dynamic_server(true, Arc::clone(&calls)).await;
+    let client = reqwest::Client::new();
+    let base_url = format!("http://127.0.0.1:{}", port);
+
+    let names = list_tool_names(&client, &base_url, Some("alice-token")).await;
+    let tail: Vec<&String> = names.iter().rev().take(2).rev().collect();
+    assert_eq!(
+        tail,
+        vec!["testapp_alice_only", "testapp_alice_second"],
+        "per-caller tools must be appended last, in the order the provider \
+         returned them: {names:?}"
+    );
+
+    let again = list_tool_names(&client, &base_url, Some("alice-token")).await;
+    assert_eq!(
+        names, again,
+        "two identical requests must produce an identical list"
+    );
+}
+
+/// Requirement: with a provider installed but no authenticator, the provider
+/// is invoked with `None` — not skipped — even though the request carries a
+/// real Bearer token that nothing is there to interpret.
+#[tokio::test]
+async fn test_dynamic_tools_invoked_with_none_identity_when_no_authenticator() {
+    let _ = env_logger::try_init();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let port = spawn_dynamic_server(false, Arc::clone(&calls)).await;
+    let client = reqwest::Client::new();
+    let base_url = format!("http://127.0.0.1:{}", port);
+
+    let names = list_tool_names(&client, &base_url, Some("alice-token")).await;
+    assert!(
+        names.contains(&"testapp_anonymous_only".to_string()),
+        "the provider must run with a None identity, not be skipped: {names:?}"
+    );
+    assert!(
+        !names.contains(&"testapp_alice_only".to_string()),
+        "with no authenticator installed there is no identity to key on: {names:?}"
+    );
+
+    // The same set is dispatchable, which is the whole point of deriving both
+    // from one provider call per request.
+    let text = call_tool_text(
+        &client,
+        &base_url,
+        Some("alice-token"),
+        "testapp_anonymous_only",
+    )
+    .await;
+    assert_eq!(text, "anonymous-tool");
+}
+
+/// Requirement: an authenticated transport with no Bearer header also reaches
+/// the provider with `None`.
+#[tokio::test]
+async fn test_dynamic_tools_invoked_with_none_identity_when_no_bearer_header() {
+    let _ = env_logger::try_init();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let port = spawn_dynamic_server(true, Arc::clone(&calls)).await;
+    let client = reqwest::Client::new();
+    let base_url = format!("http://127.0.0.1:{}", port);
+
+    let names = list_tool_names(&client, &base_url, None).await;
+    assert!(
+        names.contains(&"testapp_anonymous_only".to_string()),
+        "an unauthenticated request must still reach the provider: {names:?}"
+    );
+}
+
+/// Requirement: the provider runs once per request and nothing is cached
+/// across requests with different identities.
+#[tokio::test]
+async fn test_dynamic_tools_recomputed_per_request_never_cached() {
+    let _ = env_logger::try_init();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let port = spawn_dynamic_server(true, Arc::clone(&calls)).await;
+    let client = reqwest::Client::new();
+    let base_url = format!("http://127.0.0.1:{}", port);
+    let count = || calls.load(std::sync::atomic::Ordering::SeqCst);
+
+    let before = count();
+    let alice = list_tool_names(&client, &base_url, Some("alice-token")).await;
+    assert_eq!(
+        count(),
+        before + 1,
+        "tools/list must call the provider once"
+    );
+
+    let bob = list_tool_names(&client, &base_url, Some("bob-token")).await;
+    assert_eq!(
+        count(),
+        before + 2,
+        "a second identity must not be served a cached set"
+    );
+    assert_ne!(alice, bob, "the two identities must get different lists");
+
+    // Asking again as alice recomputes rather than replaying a stored answer.
+    let alice_again = list_tool_names(&client, &base_url, Some("alice-token")).await;
+    assert_eq!(count(), before + 3, "each request recomputes");
+    assert_eq!(alice, alice_again);
+
+    // A `tools/call` that misses the static set consults the provider once...
+    call_tool_text(
+        &client,
+        &base_url,
+        Some("alice-token"),
+        "testapp_alice_only",
+    )
+    .await;
+    assert_eq!(
+        count(),
+        before + 4,
+        "a static miss must consult the provider for this request"
+    );
+
+    // ...and one that hits the static set does not consult it at all.
+    call_tool_text(&client, &base_url, Some("alice-token"), "testapp_whoami").await;
+    assert_eq!(
+        count(),
+        before + 4,
+        "a static hit must not pay for the provider"
+    );
+}
+
+/// Regression guard for every existing consumer: with no provider installed,
+/// `tools/list` and `tools/call` are exactly what they were before this hook
+/// existed — identical for every caller, with no per-caller entries anywhere.
+#[tokio::test]
+async fn test_no_dynamic_tools_installed_leaves_list_and_call_unchanged() {
+    let _ = env_logger::try_init();
+    // Authenticator installed but no provider: the strictest form of the
+    // guard, since an identity *is* established and still changes nothing.
+    let port = spawn_whoami_server(true).await;
+    let client = reqwest::Client::new();
+    let base_url = format!("http://127.0.0.1:{}", port);
+
+    let alice = list_tools_raw(&client, &base_url, Some("alice-token")).await;
+    let bob = list_tools_raw(&client, &base_url, Some("bob-token")).await;
+    let anonymous = list_tools_raw(&client, &base_url, None).await;
+
+    assert_eq!(alice, bob, "without a provider every caller sees one list");
+    assert_eq!(alice, anonymous, "including the anonymous one");
+    assert!(
+        alice.iter().any(|t| t["name"] == "testapp_whoami"),
+        "the static tool set is still served: {alice:?}"
+    );
+    assert!(
+        !alice
+            .iter()
+            .any(|t| t["name"].as_str().is_some_and(|n| n.ends_with("_only"))),
+        "no per-caller entries may appear: {alice:?}"
+    );
+
+    // And dispatch is untouched, including the identity seam it already had.
+    assert_eq!(
+        call_tool_text(&client, &base_url, Some("alice-token"), "testapp_whoami").await,
+        "alice-token"
+    );
+    let json = call_tool_rpc(&client, &base_url, Some("alice-token"), "testapp_nope").await;
+    assert!(
+        json.pointer("/error/message")
+            .and_then(|m| m.as_str())
+            .is_some_and(|m| m.contains("MCP_CMD_NOT_FOUND")),
+        "an unknown tool still fails the same way: {json}"
+    );
+}
+
+/// Like [`bearer_authenticator`], but counts how many times the framework
+/// invokes it, so a test can assert on the *absence* of a call.
+fn counting_bearer_authenticator(
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+) -> cli_framework::mcp::McpRequestAuthenticator {
+    Arc::new(move |headers: &http::HeaderMap| {
+        calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let value = headers.get(http::header::AUTHORIZATION)?.to_str().ok()?;
+        let token = value.strip_prefix("Bearer ")?;
+        Some(Arc::new(TestCallerId(token.to_string())) as Arc<dyn std::any::Any + Send + Sync>)
+    })
+}
+
+/// Spawns `testapp mcp serve --port <port>` with a counting authenticator and,
+/// optionally, the per-caller provider. Mirrors [`spawn_dynamic_server`].
+async fn spawn_counting_auth_server(
+    auth_calls: Arc<std::sync::atomic::AtomicUsize>,
+    install_provider: bool,
+) -> u16 {
+    let port_guard = port_lock().lock().await;
+    let port = reserve_port();
+
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        rt.block_on(async move {
+            struct Ctx;
+            impl AppContext for Ctx {}
+
+            let mut builder = AppBuilder::new()
+                .with_version("testapp", "0.1.0")
+                .register_command(whoami_command())
+                .unwrap()
+                .with_mcp_request_authenticator(counting_bearer_authenticator(auth_calls));
+            if install_provider {
+                let provider_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                builder = builder.with_mcp_dynamic_tools(tenant_provider(provider_calls));
+            }
+            let mut app = builder.build(Ctx).unwrap();
+
+            record_server_exit(
+                "mcp serve (counting authenticator)",
+                app.run_with_args(vec![
+                    "testapp".to_string(),
+                    "mcp".to_string(),
+                    "serve".to_string(),
+                    "--port".to_string(),
+                    port.to_string(),
+                ])
+                .await,
+            );
+        });
+    });
+
+    let base_url = format!("http://127.0.0.1:{}", port);
+    wait_for_http_server(&reqwest::Client::new(), &base_url).await;
+    drop(port_guard);
+
+    port
+}
+
+/// The consumer's authenticator is consumer code: it may log, emit metrics or
+/// spend a rate-limit budget. Installing no provider must therefore leave
+/// `tools/list` exactly as it was before this feature, which means the
+/// authenticator is not invoked there at all — its result could not be used.
+/// The same authenticator is still invoked on `tools/call` (the seam that
+/// already existed), and it *is* invoked on `tools/list` once a provider is
+/// installed, so this test fails both on a missing guard and on a guard that
+/// disables the seam altogether.
+#[tokio::test]
+async fn test_tools_list_does_not_invoke_the_authenticator_without_a_provider() {
+    let _ = env_logger::try_init();
+    let auth_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let port = spawn_counting_auth_server(Arc::clone(&auth_calls), false).await;
+    let client = reqwest::Client::new();
+    let base_url = format!("http://127.0.0.1:{}", port);
+
+    // `initialize` happens inside the first helper call; take the baseline
+    // after it so only the `tools/list` round trip is measured.
+    let _ = list_tools_raw(&client, &base_url, Some("alice-token")).await;
+    let before = auth_calls.load(std::sync::atomic::Ordering::SeqCst);
+    let _ = list_tools_raw(&client, &base_url, Some("alice-token")).await;
+    assert_eq!(
+        auth_calls.load(std::sync::atomic::Ordering::SeqCst),
+        before,
+        "tools/list must not run the authenticator when no provider is installed"
+    );
+
+    // The pre-existing dispatch seam is untouched.
+    assert_eq!(
+        call_tool_text(&client, &base_url, Some("alice-token"), "testapp_whoami").await,
+        "alice-token"
+    );
+    assert!(
+        auth_calls.load(std::sync::atomic::Ordering::SeqCst) > before,
+        "tools/call must still run the authenticator"
+    );
+
+    // With a provider installed, tools/list does run it.
+    let auth_calls2 = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let port2 = spawn_counting_auth_server(Arc::clone(&auth_calls2), true).await;
+    let base_url2 = format!("http://127.0.0.1:{}", port2);
+    let _ = list_tools_raw(&client, &base_url2, Some("alice-token")).await;
+    let before2 = auth_calls2.load(std::sync::atomic::Ordering::SeqCst);
+    let _ = list_tools_raw(&client, &base_url2, Some("alice-token")).await;
+    assert!(
+        auth_calls2.load(std::sync::atomic::Ordering::SeqCst) > before2,
+        "tools/list must run the authenticator when a provider is installed"
+    );
+}
+
+/// The other half of the dedup rule: a name repeated *within one provider
+/// result*. Static dedup cannot catch this, so it is asserted separately —
+/// two tenant plugins declaring the same action verb is a realistic collision,
+/// and a `tools/list` carrying two tools with one name is a protocol problem
+/// for clients, not an aesthetic one. First pair wins, on both paths.
+#[tokio::test]
+async fn test_provider_returning_one_name_twice_lists_and_dispatches_the_first() {
+    let _ = env_logger::try_init();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let port = spawn_dynamic_server(true, Arc::clone(&calls)).await;
+    let client = reqwest::Client::new();
+    let base_url = format!("http://127.0.0.1:{}", port);
+
+    let tools = list_tools_raw(&client, &base_url, Some("dup-token")).await;
+    let dups: Vec<&serde_json::Value> = tools
+        .iter()
+        .filter(|t| t["name"] == "testapp_dup")
+        .collect();
+    assert_eq!(
+        dups.len(),
+        1,
+        "a name the provider returned twice must be described exactly once: {tools:?}"
+    );
+    assert_eq!(
+        dups[0]["description"], "FIRST pair, must win",
+        "the entry kept must be the first pair, not the last: {:?}",
+        dups[0]
+    );
+
+    // And dispatch agrees with the list — the whole point of one hook feeding
+    // both paths.
+    assert_eq!(
+        call_tool_text(&client, &base_url, Some("dup-token"), "testapp_dup").await,
+        "dup-first"
+    );
+}
+
+/// Mirrors `test_mcp_serve_stdio_with_authenticator_installed_does_not_hang`
+/// for the new hook: `mcp serve --transport stdio` must still exit on closed
+/// stdin with a per-caller provider installed. Under stdio there is no HTTP
+/// request, so the provider would be invoked with a `None` identity; what is
+/// verified here is that installing one neither breaks the stdio wiring nor
+/// blocks.
+#[tokio::test]
+async fn test_mcp_serve_stdio_with_dynamic_tools_installed_does_not_hang() {
+    struct Ctx;
+    impl AppContext for Ctx {}
+
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut app = AppBuilder::new()
+        .with_version("testapp", "0.1.0")
+        .with_mcp_dynamic_tools(tenant_provider(calls))
+        .build(Ctx)
+        .unwrap();
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        app.run_with_args(vec![
+            "testapp".to_string(),
+            "mcp".to_string(),
+            "serve".to_string(),
+            "--transport".to_string(),
+            "stdio".to_string(),
+        ]),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "mcp serve --transport stdio must not hang when stdin is closed, even with a per-caller tool provider installed"
+    );
 }

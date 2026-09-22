@@ -118,6 +118,84 @@ Each tool's `inputSchema` is derived from `CommandSpec.args`:
 
 Commands without a `CommandSpec` use a permissive schema `{ "type": "object", "additionalProperties": true }`.
 
+### Per-caller tool sets
+
+By default every MCP client sees the same tool list: the commands registered at
+build time. An app that serves different callers — tenants, plan tiers, a
+per-user set of saved queries — can install one hook that supplies extra
+commands for the caller behind the current request:
+
+```rust
+use std::sync::Arc;
+
+let app = AppBuilder::new()
+    .with_version("myapp", "0.1.0")
+    // Establishes *who* the caller is, from the HTTP request headers.
+    .with_mcp_request_authenticator(Arc::new(|headers| {
+        let token = headers.get("authorization")?.to_str().ok()?;
+        Some(Arc::new(lookup_tenant(token)?) as Arc<dyn std::any::Any + Send + Sync>)
+    }))
+    // Supplies the commands that caller may discover, per request.
+    .with_mcp_dynamic_tools(Arc::new(|identity| {
+        Box::pin(async move {
+            let Some(tenant) = identity.and_then(|i| i.downcast_ref::<Tenant>().cloned()) else {
+                return Vec::new(); // stdio, or an unauthenticated HTTP caller
+            };
+            load_saved_queries(&tenant).await // Vec<(String, Command)>
+        })
+    }))
+    .build();
+```
+
+The hook is awaited once per request and feeds **both** `tools/list` and
+`tools/call`, so the advertised set and the callable set cannot drift apart.
+Its result is never cached between requests. Statically registered commands
+always win: a name in the static set resolves to the static command and is
+listed once, whatever the hook returns for it. The static block keeps the order
+`tools/list` already produced and the per-caller block is appended after it in
+the order the hook returned, so the merge introduces no ordering of its own.
+
+Under stdio — and for an HTTP caller with no authenticator installed, or whose
+credentials the authenticator rejects — there is no identity, and the hook is
+invoked with `None`. Returning an empty `Vec` for `None` is the usual choice.
+
+> **This is discovery, not authorization.** Leaving a tool out of a caller's
+> list does not stop them calling it: MCP clients may send `tools/call` with any
+> name, tool names are derived from command ids and are guessable, and the
+> static set stays callable by everyone. Enforce authorization inside the
+> command's own `execute`, exactly as you would without this hook — that is
+> the only place the caller identity is available. An
+> `AppBuilder::with_mcp_tool_gate` gate also runs for per-caller tools, but
+> `ExecutionGate::before_execute` receives the command, its arguments and its
+> risk tier, not the identity, so it can block a kind of call and not a
+> particular caller.
+
+Two related boundaries worth stating explicitly: `McpToolExportPolicy` /
+`expose_mcp` filter only the **static** set, so a command the hook returns is
+exported even with `expose_mcp: false` — the hook is the only filter for its own
+commands. Conversely the command risk policy and any MCP tool gate **do** apply
+to per-caller tools, because they dispatch through the same bridge as static
+ones — but the risk policy only classifies what the provider lets it classify:
+`CommandRiskPolicy::classify` keys on `Command.id` and the command's category,
+and a provider-built id is never in your `tiers` map, so a per-caller command
+without a category lands on `default_tier` (`Safe`). Set `category` on the
+commands the hook returns if your destructive tier is meant to cover them.
+
+Two operational notes. A name the hook returns that collides with a static tool,
+or that it repeats within one result, is dropped from the list and reported at
+`tracing::warn!` naming the tool — dropping is silent to the client, so it is not
+silent to you. And the hook runs once per `tools/list` plus once per `tools/call`
+whose name is *not* statically registered; that second rate is the caller's to
+choose, including an unauthenticated one, so a flood of calls to unknown names is
+one provider invocation — usually a database read — per request. Rate-limit at
+the edge.
+
+Revocation is prompt at dispatch and lagging at discovery: `tools/call` re-runs
+the hook every time, but the server advertises `tools` without `listChanged` and
+never sends `notifications/tools/list_changed`, so a client that listed once at
+session start keeps displaying a withdrawn tool until it lists again. Calling it
+still fails — which is the point of enforcing in `execute`.
+
 ### Cursor integration example
 
 ```json
@@ -138,6 +216,7 @@ All MCP tool calls are routed through the same validation pipeline as CLI calls:
 - **stdio MCP**: assumes **local trust** (a local process can spawn and fully control the server). There is no transport auth.
 - **stdio stdout constraint**: in stdio mode, **stdout is reserved for JSON-RPC**. Commands and hosts MUST NOT write to stdout (use stderr or structured logging). Writing to stdout will corrupt the MCP transport.
 - **Destructive commands**: `ALLOW_DESTRUCTIVE_COMMANDS` and interactive confirmations apply to `chat`; MCP tool calls do not prompt. If you need allowlisting/confirmation for MCP, configure an MCP tool gate via `AppBuilder::with_mcp_tool_gate(...)`.
+- **Per-caller tool sets are not access control**: `AppBuilder::with_mcp_dynamic_tools(...)` (see [Per-caller tool sets](#per-caller-tool-sets)) varies what a caller *discovers*, not what they may *do*. A tool omitted from a caller's `tools/list` is still reachable by name via `tools/call` — the hook is consulted for every call, so if it returns that tool for this identity it runs, and every statically registered command remains callable by everyone regardless. Authorization belongs inside the command's `execute` or in an MCP tool gate.
 
 Choose this crate when you want one stack for classical subcommands plus optional LLM resolution and scripted workflows, without assembling parsing, sanitization, and policy from scratch.
 

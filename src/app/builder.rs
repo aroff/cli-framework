@@ -62,6 +62,8 @@ pub struct AppBuilder {
     #[cfg(feature = "mcp-server")]
     mcp_request_authenticator: Option<crate::mcp::McpRequestAuthenticator>,
     #[cfg(feature = "mcp-server")]
+    mcp_dynamic_tools: Option<crate::mcp::McpDynamicToolProvider>,
+    #[cfg(feature = "mcp-server")]
     auto_register_mcp: bool,
     #[cfg(feature = "chat")]
     chat_tool_policy: crate::command::chat::ChatToolPolicy,
@@ -175,6 +177,8 @@ impl AppBuilder {
             mcp_resource_registry: None,
             #[cfg(feature = "mcp-server")]
             mcp_request_authenticator: None,
+            #[cfg(feature = "mcp-server")]
+            mcp_dynamic_tools: None,
             #[cfg(feature = "mcp-server")]
             auto_register_mcp: true,
             #[cfg(feature = "chat")]
@@ -631,6 +635,69 @@ impl AppBuilder {
         authenticator: crate::mcp::McpRequestAuthenticator,
     ) -> Self {
         self.mcp_request_authenticator = Some(authenticator);
+        self
+    }
+
+    /// Install a per-caller MCP tool-set provider
+    /// (see [`crate::mcp::McpToolRegistry::with_dynamic_tools`], which carries
+    /// the full contract this method wires up).
+    ///
+    /// The provider receives the opaque identity produced by
+    /// [`Self::with_mcp_request_authenticator`] — or `None` when none was
+    /// established — and returns the extra commands that caller may see and
+    /// invoke. `tools/list` appends them to the statically registered tools and
+    /// `tools/call` falls back to them when a name is not statically
+    /// registered, so the advertised and callable sets are the same set.
+    ///
+    /// **Discovery, not authorization.** Hiding a tool from a caller's
+    /// `tools/list` does not stop that caller from asking for it by name, and
+    /// every statically registered command remains callable by everyone
+    /// regardless of what this provider returns. Authorization MUST be enforced
+    /// inside the command's own handler, which can read the identity via
+    /// `ctx.request_identity::<T>()` — and only there: an
+    /// [`Self::with_mcp_tool_gate`] gate does run for per-caller tools, but
+    /// `ExecutionGate::before_execute` is given the command, its arguments and
+    /// its risk tier and *not* the identity, so it cannot make a per-caller
+    /// decision. Note also that [`Self::with_mcp_export_policy`] / `expose_mcp`
+    /// filter only the static set — a command this provider returns is exported
+    /// regardless — while the risk policy and the gate do cover per-caller
+    /// tools. The risk policy covers them only as well as the provider
+    /// classifies them: `CommandRiskPolicy::classify` keys on `Command.id` and
+    /// the command's category, and a provider-built id is not in the consumer's
+    /// `tiers` map, so without a category the tool takes `default_tier`
+    /// (`Safe`). A name that collides with a static tool, or that the provider
+    /// repeats within one result, is dropped from `tools/list` with a
+    /// `tracing::warn!` naming it.
+    ///
+    /// Opt-in: when unset, `tools/list` and `tools/call` are unchanged from
+    /// before this hook existed, on both transports — including that
+    /// `tools/list` does not run an installed authenticator at all, since it
+    /// would have no use for the result.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use cli_framework::app::AppBuilder;
+    /// # use cli_framework::command::Command;
+    /// # use std::sync::Arc;
+    /// # struct CallerId(String);
+    /// # fn tools_for(_who: &str) -> Vec<(String, Command)> { vec![] }
+    /// let app = AppBuilder::new()
+    ///     .with_version("myapp", "0.1.0")
+    ///     .with_mcp_dynamic_tools(Arc::new(|identity| {
+    ///         let who = identity
+    ///             .and_then(|id| id.downcast_ref::<CallerId>().map(|c| c.0.clone()));
+    ///         Box::pin(async move {
+    ///             match who {
+    ///                 Some(who) => tools_for(&who),
+    ///                 None => Vec::new(),
+    ///             }
+    ///         })
+    ///     }));
+    /// ```
+    #[cfg(feature = "mcp-server")]
+    pub fn with_mcp_dynamic_tools(mut self, provider: crate::mcp::McpDynamicToolProvider) -> Self {
+        self.mcp_dynamic_tools = Some(provider);
         self
     }
 
@@ -1412,6 +1479,7 @@ impl AppBuilder {
                     .clone()
                     .unwrap_or_else(|| Arc::new(crate::mcp::resources::ResourceRegistry::new()));
                 let request_authenticator_for_serve = self.mcp_request_authenticator.clone();
+                let dynamic_tools_for_serve = self.mcp_dynamic_tools.clone();
 
                 let serve_cmd = crate::mcp::commands::create_mcp_serve_command_with_deps(
                     registry_arc_for_serve,
@@ -1421,6 +1489,7 @@ impl AppBuilder {
                     gate_for_serve,
                     resource_registry_for_serve,
                     request_authenticator_for_serve,
+                    dynamic_tools_for_serve,
                 );
                 self.command_registry
                     .register_at(&mcp_serve_path, serve_cmd)
