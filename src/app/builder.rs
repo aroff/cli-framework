@@ -649,6 +649,17 @@ impl AppBuilder {
     /// `tools/call` falls back to them when a name is not statically
     /// registered, so the advertised and callable sets are the same set.
     ///
+    /// Each entry is a [`crate::mcp::McpDynamicTool`]: a name, a [`Command`]
+    /// and an optional [`crate::mcp::McpToolPresentation`]. `(String,
+    /// Command)` converts into one with `.into()` and describes the tool from
+    /// its static `CommandSpec`. A presentation instead supplies an owned
+    /// `description` and `inputSchema`, for tools whose shape is runtime data
+    /// (a tenant plugin's argument names and help text are database rows, not
+    /// `&'static str`). It changes `tools/list` only: dispatch, argument
+    /// validation and risk classification are identical either way, and the
+    /// presented schema *replaces* the derived one rather than merging with
+    /// it.
+    ///
     /// **Discovery, not authorization.** Hiding a tool from a caller's
     /// `tools/list` does not stop that caller from asking for it by name, and
     /// every statically registered command remains callable by everyone
@@ -679,6 +690,7 @@ impl AppBuilder {
     /// ```rust,no_run
     /// # use cli_framework::app::AppBuilder;
     /// # use cli_framework::command::Command;
+    /// # use cli_framework::mcp::McpDynamicTool;
     /// # use std::sync::Arc;
     /// # struct CallerId(String);
     /// # fn tools_for(_who: &str) -> Vec<(String, Command)> { vec![] }
@@ -689,7 +701,13 @@ impl AppBuilder {
     ///             .and_then(|id| id.downcast_ref::<CallerId>().map(|c| c.0.clone()));
     ///         Box::pin(async move {
     ///             match who {
-    ///                 Some(who) => tools_for(&who),
+    ///                 // `(name, command)` tuples convert with `.into()`;
+    ///                 // build `McpDynamicTool` by hand to attach an
+    ///                 // `McpToolPresentation`.
+    ///                 Some(who) => tools_for(&who)
+    ///                     .into_iter()
+    ///                     .map(McpDynamicTool::from)
+    ///                     .collect(),
     ///                 None => Vec::new(),
     ///             }
     ///         })

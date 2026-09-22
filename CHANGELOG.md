@@ -71,9 +71,19 @@
   `AppBuilder::with_mcp_dynamic_tools` / `McpToolRegistry::with_dynamic_tools`
   install one `McpDynamicToolProvider` — an async hook taking the same
   `Option<Arc<dyn Any + Send + Sync>>` identity `McpRequestAuthenticator`
-  produces and returning `Vec<(String, Command)>`. It feeds **both**
+  produces and returning `Vec<McpDynamicTool>`, where `McpDynamicTool` is
+  `{ name, command, presentation: Option<McpToolPresentation> }` and
+  `(String, Command)` converts in with `.into()`. It feeds **both**
   `tools/list` (`McpToolRegistry::list_tools_for_identity`) and `tools/call`,
-  so the advertised and callable sets cannot drift. Statically registered
+  so the advertised and callable sets cannot drift. An `McpToolPresentation`
+  (`{ description: String, input_schema: serde_json::Value }`) lets a provider
+  advertise a tool whose shape is runtime data rather than a `&'static str`
+  `CommandSpec` — a tenant plugin's argument names and help text. It is read by
+  `tools/list` only, *replacing* (never merging with) the schema derived from
+  the command's spec, and never by dispatch, argument validation or risk
+  classification; `_meta` and `visibility` keep coming from the `Command`, and
+  an entry dropped by the de-duplication rules is dropped whole, presentation
+  included. Statically registered
   commands always win a name collision and are listed once; the static block
   keeps the order `list_tools()` produced and the per-caller block is appended
   after it in provider order; a name that collides with a static tool or that

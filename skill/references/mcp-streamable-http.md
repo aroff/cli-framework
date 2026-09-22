@@ -185,20 +185,41 @@ AppBuilder::new()
     .with_mcp_request_authenticator(Arc::new(|headers| { /* -> Option<Arc<dyn Any + Send + Sync>> */ }))
     // Supplies WHAT that caller may discover, per request.
     .with_mcp_dynamic_tools(Arc::new(|identity| {
-        Box::pin(async move { /* -> Vec<(String, Command)> */ })
+        Box::pin(async move { /* -> Vec<McpDynamicTool> */ })
     }))
 ```
 
 Signature:
 
 ```rust
+pub struct McpToolPresentation {
+    pub description: String,
+    pub input_schema: serde_json::Value,
+}
+pub struct McpDynamicTool {
+    pub name: String,                              // already `{app}_{path}`
+    pub command: Command,
+    pub presentation: Option<McpToolPresentation>, // `(String, Command).into()` → None
+}
+
 pub type McpDynamicToolsFuture =
-    Pin<Box<dyn Future<Output = Vec<(String, Command)>> + Send + 'static>>;
+    Pin<Box<dyn Future<Output = Vec<McpDynamicTool>> + Send + 'static>>;
 pub type McpDynamicToolProvider =
     Arc<dyn Fn(Option<Arc<dyn Any + Send + Sync>>) -> McpDynamicToolsFuture + Send + Sync>;
 ```
 
 Rules the framework guarantees:
+
+- **Presentation is advertising.** `CommandSpec` / `ArgSpec` are `&'static str`, so a tool built
+  from runtime data (a tenant plugin's argument names and help text) cannot describe itself through
+  the spec without leaking a `String` per `tools/list`. An `McpToolPresentation` supplies an owned
+  `description` and `inputSchema` that `tools/list` emits verbatim, *replacing* (never merging
+  with) `build_input_schema`'s output — a merged schema would have two authors and no one could say
+  which half a rejected call violated. `_meta` and `visibility` still come from the `Command`.
+  Dispatch reads only `McpDynamicTool::command`: validation (`Command::validator`, an owned
+  `Arc<dyn Fn>`), risk classification and the gate are identical with and without a presentation,
+  and undeclared JSON keys still reach `execute` either way. A dropped entry is dropped whole,
+  presentation included.
 
 - **One hook, both paths.** The same provider feeds `tools/list`
   (`McpToolRegistry::list_tools_for_identity`) and `tools/call`, so the advertised set and the
