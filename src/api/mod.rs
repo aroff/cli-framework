@@ -878,7 +878,36 @@ impl ApiServer {
         self.shutdown.clone()
     }
 
+    /// Binds `addr` and serves until a shutdown signal arrives.
+    ///
+    /// Binding happens inside this call, so the port is unknown to the caller
+    /// until it is already taken. When the caller needs the port *before* the
+    /// server starts — an ephemeral `:0` bind whose address has to be handed to
+    /// something else first — use [`serve_with_listener`] instead, which never
+    /// releases the port in between.
+    ///
+    /// [`serve_with_listener`]: ApiServer::serve_with_listener
     pub async fn serve(self, addr: &str) -> anyhow::Result<()> {
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        self.serve_with_listener(listener).await
+    }
+
+    /// Serves on a listener the caller already bound.
+    ///
+    /// This is the composable half of [`serve`]: the caller owns the bind, so
+    /// it can read `local_addr()` and publish the real address before any
+    /// request is served. That matters for a `127.0.0.1:0` bind, where the
+    /// alternative — bind, read the port, drop the listener, hand the bare
+    /// number to [`serve`] — leaves a window in which any other process on the
+    /// machine can be assigned that port, because `:0` draws from the same
+    /// ephemeral range the kernel uses for outbound connections. Keeping the
+    /// listener closes the window entirely.
+    ///
+    /// [`serve`]: ApiServer::serve
+    pub async fn serve_with_listener(
+        self,
+        listener: tokio::net::TcpListener,
+    ) -> anyhow::Result<()> {
         // Init batch telemetry for the server lifetime.  The guard must outlive
         // the axum::serve call so pending spans flush on graceful shutdown.
         #[cfg(feature = "telemetry")]
@@ -888,8 +917,6 @@ impl ApiServer {
         } else {
             None
         };
-
-        let listener = tokio::net::TcpListener::bind(addr).await?;
 
         let shutdown_token = self.shutdown.clone();
         let shutdown_readiness = Arc::clone(&self.shutdown_readiness);
