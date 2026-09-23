@@ -26,6 +26,15 @@
 
 ### Added
 
+- `AppBuilder::with_mcp_http_listener(std::net::TcpListener)`: the
+  auto-registered `mcp serve` HTTP transport serves on a listener the app
+  already bound instead of binding `--host`/`--port` itself, so an app can
+  report the address (or fail on a conflict) while the port is held, with no
+  release-and-rebind window. Lower level,
+  `transport_http::start_streamable_http_with_listener` serves an
+  `McpToolRegistry` on a bound `tokio::net::TcpListener`;
+  `start_streamable_http_with_resources` now binds and delegates to it.
+
 - `self-install` feature (ADR 0080, phase 1): `AppBuilder::with_self_install`
   registers `self install`, `self uninstall` and `self status` for `EndUser`
   apps. Installs write a receipt, edit PATH reversibly (a shared `env` file

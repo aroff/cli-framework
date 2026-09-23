@@ -24,6 +24,32 @@ my-app mcp serve --host 0.0.0.0 --port 9000 --path /mcp
 | `--port` | `8080` | Bind port |
 | `--path` | `/mcp` | HTTP path for the MCP endpoint |
 
+### Serving on a listener the app already bound
+
+`mcp serve` binds `--host`/`--port` itself, so an app that must act on the
+bound address first — emit a structured "started" event, fail fast on a port
+conflict with its own error code, publish a `:0` port — would otherwise have to
+bind, drop and let `mcp serve` rebind. That leaves a window in which another
+process can take the port, and the "started" signal arrives before anything is
+listening. Bind the listener yourself and hand it over instead:
+
+```rust
+let listener = std::net::TcpListener::bind("127.0.0.1:8730")?;
+eprintln!("{{\"event\":\"mcp_started\",\"addr\":\"{}\"}}", listener.local_addr()?);
+let mut app = AppBuilder::new()
+    .with_version("myapp", "0.1.0")
+    .with_mcp_http_listener(listener)
+    .build(ctx)?;
+app.run_with_args(argv).await?; // argv: ["myapp", "mcp", "serve", ...]
+```
+
+The first HTTP `mcp serve` takes the listener and does not consult
+`--host`/`--port`; the banner reports the listener's local address; `--path`
+still applies. `--transport stdio` leaves it unused. Code that drives the
+transport directly can call
+`transport_http::start_streamable_http_with_listener(tools, resources, listener, path, banner)`,
+which `start_streamable_http_with_resources` wraps after binding.
+
 ## Tool naming convention
 
 Tool names follow `<app_name>.<command_id>`:

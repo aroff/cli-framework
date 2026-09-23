@@ -64,6 +64,8 @@ pub struct AppBuilder {
     #[cfg(feature = "mcp-server")]
     mcp_dynamic_tools: Option<crate::mcp::McpDynamicToolProvider>,
     #[cfg(feature = "mcp-server")]
+    mcp_http_listener: Option<std::net::TcpListener>,
+    #[cfg(feature = "mcp-server")]
     auto_register_mcp: bool,
     #[cfg(feature = "chat")]
     chat_tool_policy: crate::command::chat::ChatToolPolicy,
@@ -179,6 +181,8 @@ impl AppBuilder {
             mcp_request_authenticator: None,
             #[cfg(feature = "mcp-server")]
             mcp_dynamic_tools: None,
+            #[cfg(feature = "mcp-server")]
+            mcp_http_listener: None,
             #[cfg(feature = "mcp-server")]
             auto_register_mcp: true,
             #[cfg(feature = "chat")]
@@ -716,6 +720,44 @@ impl AppBuilder {
     #[cfg(feature = "mcp-server")]
     pub fn with_mcp_dynamic_tools(mut self, provider: crate::mcp::McpDynamicToolProvider) -> Self {
         self.mcp_dynamic_tools = Some(provider);
+        self
+    }
+
+    /// Serve the auto-registered `mcp serve` HTTP transport on a listener the
+    /// application already bound, instead of binding `--host`/`--port` itself.
+    ///
+    /// Use this when the application must act on the bound address before the
+    /// server starts — emit a structured "started" event, fail fast with its
+    /// own error code on a port conflict, hand a `:0` port to a client. The
+    /// alternative, binding to probe the port, dropping the listener and
+    /// letting `mcp serve` rebind, leaves a window in which another process
+    /// can take the port, and the "started" signal arrives before anything is
+    /// listening. With this, the port is held from the application's bind
+    /// until the server stops.
+    ///
+    /// The first `mcp serve --transport http` takes the listener; `--host` and
+    /// `--port` are then not consulted (the application resolved them when it
+    /// bound), and the banner reports the listener's local address. `--path`
+    /// still applies. `--transport stdio` leaves the listener unused.
+    ///
+    /// Takes a `std` listener so it can be bound before any tokio runtime
+    /// exists; it is switched to non-blocking and registered with the runtime
+    /// that runs `mcp serve`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use cli_framework::app::AppBuilder;
+    /// let listener = std::net::TcpListener::bind("127.0.0.1:8730")?;
+    /// println!("mcp listening on {}", listener.local_addr()?);
+    /// let builder = AppBuilder::new()
+    ///     .with_version("myapp", "0.1.0")
+    ///     .with_mcp_http_listener(listener);
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
+    #[cfg(feature = "mcp-server")]
+    pub fn with_mcp_http_listener(mut self, listener: std::net::TcpListener) -> Self {
+        self.mcp_http_listener = Some(listener);
         self
     }
 
@@ -1499,7 +1541,10 @@ impl AppBuilder {
                 let request_authenticator_for_serve = self.mcp_request_authenticator.clone();
                 let dynamic_tools_for_serve = self.mcp_dynamic_tools.clone();
 
-                let serve_cmd = crate::mcp::commands::create_mcp_serve_command_with_deps(
+                let listener_for_serve =
+                    Arc::new(std::sync::Mutex::new(self.mcp_http_listener.take()));
+
+                let serve_cmd = crate::mcp::commands::create_mcp_serve_command_with_listener(
                     registry_arc_for_serve,
                     app_name_for_serve,
                     risk_policy_for_serve,
@@ -1508,6 +1553,7 @@ impl AppBuilder {
                     resource_registry_for_serve,
                     request_authenticator_for_serve,
                     dynamic_tools_for_serve,
+                    listener_for_serve,
                 );
                 self.command_registry
                     .register_at(&mcp_serve_path, serve_cmd)

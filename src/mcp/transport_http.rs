@@ -132,24 +132,74 @@ pub async fn start_streamable_http_with_resources(
             e
         )
     })?;
-
-    tracing::info!(
-        "MCP server listening on http://{}:{}{}",
-        args.host,
+    serve_on(
+        listener,
+        &args.host,
         args.port,
-        args.path
-    );
+        &args.path,
+        tool_registry,
+        resource_registry,
+        banner,
+    )
+    .await
+}
+
+/// Like [`start_streamable_http_with_resources`], but serves on a listener the
+/// caller already bound instead of binding `host:port` itself.
+///
+/// The caller owns the bind, so it can report the address — a structured
+/// "server started" event, a port file, a `:0` port handed to a client — while
+/// the port is already held. Binding to check the port, releasing it and
+/// letting [`start_streamable_http_with_resources`] rebind leaves a window in
+/// which another process can take it; keeping the listener closes it. The
+/// banner and the listening log line report `listener.local_addr()`.
+pub async fn start_streamable_http_with_listener(
+    tool_registry: Arc<McpToolRegistry>,
+    resource_registry: Arc<ResourceRegistry>,
+    listener: tokio::net::TcpListener,
+    path: &str,
+    banner: BannerSettings,
+) -> Result<()> {
+    let local = listener
+        .local_addr()
+        .map_err(|e| anyhow::anyhow!("MCP listener has no local address: {}", e))?;
+    let host = match local.ip() {
+        std::net::IpAddr::V4(ip) => ip.to_string(),
+        std::net::IpAddr::V6(ip) => format!("[{}]", ip),
+    };
+    serve_on(
+        listener,
+        &host,
+        local.port(),
+        path,
+        tool_registry,
+        resource_registry,
+        banner,
+    )
+    .await
+}
+
+async fn serve_on(
+    listener: tokio::net::TcpListener,
+    host: &str,
+    port: u16,
+    path: &str,
+    tool_registry: Arc<McpToolRegistry>,
+    resource_registry: Arc<ResourceRegistry>,
+    banner: BannerSettings,
+) -> Result<()> {
+    tracing::info!("MCP server listening on http://{}:{}{}", host, port, path);
     tracing::info!("MCP: exported {} tools", tool_registry.tool_count());
     tracing::info!("MCP: exported {} resources", resource_registry.len());
 
     // Bind succeeded — print the startup banner (URL + tool list) to stdout.
-    let data = BannerData::http(&args.host, args.port, &args.path, &tool_registry);
+    let data = BannerData::http(host, port, path, &tool_registry);
     emit_banner(&data, banner);
 
     // mcp_axum_router_with_resources returns a flat router (service at "/" and
     // "/*path"). Wrap it at the declared path prefix for standalone serving.
-    let inner = mcp_axum_router_with_resources(tool_registry, resource_registry, &args.path);
-    let router = axum::Router::new().nest(&args.path, inner);
+    let inner = mcp_axum_router_with_resources(tool_registry, resource_registry, path);
+    let router = axum::Router::new().nest(path, inner);
 
     axum::serve(listener, router)
         .await
