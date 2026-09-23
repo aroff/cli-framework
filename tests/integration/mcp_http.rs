@@ -2306,3 +2306,57 @@ async fn test_mcp_serve_stdio_with_dynamic_tools_installed_does_not_hang() {
         "mcp serve --transport stdio must not hang when stdin is closed, even with a per-caller tool provider installed"
     );
 }
+
+/// `AppBuilder::with_mcp_http_listener`: `mcp serve` serves on the caller's
+/// listener and does not bind `--host`/`--port` itself. `--port 1` would fail
+/// to bind for an unprivileged test process, so a served request proves the
+/// flag was not consulted. The listener is bound on `:0` and never released,
+/// so this test needs neither `reserve_port` nor the port lock.
+#[tokio::test]
+async fn test_mcp_serve_on_caller_bound_listener() {
+    let _ = env_logger::try_init();
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind 127.0.0.1:0");
+    let port = listener.local_addr().expect("local_addr").port();
+
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        rt.block_on(async move {
+            struct Ctx;
+            impl AppContext for Ctx {}
+
+            let mut app = AppBuilder::new()
+                .with_version("testapp", "0.1.0")
+                .register_command(echo_command("widget", "widget ran"))
+                .unwrap()
+                .with_mcp_http_listener(listener)
+                .build(Ctx)
+                .unwrap();
+
+            record_server_exit(
+                "mcp serve on caller listener",
+                app.run_with_args(vec![
+                    "testapp".to_string(),
+                    "mcp".to_string(),
+                    "serve".to_string(),
+                    "--port".to_string(),
+                    "1".to_string(),
+                ])
+                .await,
+            );
+        });
+    });
+
+    let client = reqwest::Client::new();
+    let base_url = format!("http://127.0.0.1:{}", port);
+    wait_for_http_server(&client, &base_url).await;
+
+    let names = list_tool_names(&client, &base_url, None).await;
+    assert!(
+        names.iter().any(|n| n == "testapp_widget"),
+        "testapp_widget not found in tools: {names:?}"
+    );
+}

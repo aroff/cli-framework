@@ -33,6 +33,38 @@ pub fn create_mcp_serve_command_with_deps(
     request_authenticator: Option<crate::mcp::McpRequestAuthenticator>,
     dynamic_tools: Option<crate::mcp::McpDynamicToolProvider>,
 ) -> Command {
+    create_mcp_serve_command_with_listener(
+        registry,
+        app_name,
+        risk_policy,
+        export_policy,
+        gate,
+        resource_registry,
+        request_authenticator,
+        dynamic_tools,
+        McpHttpListenerSlot::default(),
+    )
+}
+
+/// A listener the embedding application bound for the `mcp serve` HTTP
+/// transport (`AppBuilder::with_mcp_http_listener`). The first HTTP `mcp serve`
+/// takes it; later ones, and every stdio one, find it empty.
+#[cfg(feature = "mcp-server")]
+pub(crate) type McpHttpListenerSlot = Arc<std::sync::Mutex<Option<std::net::TcpListener>>>;
+
+#[cfg(feature = "mcp-server")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_mcp_serve_command_with_listener(
+    registry: Arc<crate::command::CommandRegistry>,
+    app_name: &'static str,
+    risk_policy: crate::security::command_risk::CommandRiskPolicy,
+    export_policy: crate::mcp::McpToolExportPolicy,
+    gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
+    resource_registry: Arc<crate::mcp::resources::ResourceRegistry>,
+    request_authenticator: Option<crate::mcp::McpRequestAuthenticator>,
+    dynamic_tools: Option<crate::mcp::McpDynamicToolProvider>,
+    listener: McpHttpListenerSlot,
+) -> Command {
     Command {
         id: Arc::from("serve"),
         spec: Arc::new(CommandSpec {
@@ -107,6 +139,7 @@ pub fn create_mcp_serve_command_with_deps(
             let resource_registry = Arc::clone(&resource_registry);
             let request_authenticator = request_authenticator.clone();
             let dynamic_tools = dynamic_tools.clone();
+            let listener = Arc::clone(&listener);
             // Resolve banner settings up front (ctx is not 'static, can't cross await).
             let banner = crate::mcp::BannerSettings::resolve(ctx.opt_global_args(), &args);
             // Extract telemetry Arc before entering the async block — ctx can't cross await.
@@ -194,10 +227,32 @@ pub fn create_mcp_serve_command_with_deps(
                     })
                     .unwrap_or_else(|| MCP_DEFAULT_PATH.to_string());
 
-                crate::mcp::serve_mcp_with_gate_opts_with_resources(
+                // A caller-bound listener wins over --host/--port: the
+                // embedder resolved those flags when it bound, and serving on
+                // its socket is what keeps the port held from bind to serve.
+                let caller_listener = listener
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                let bind = match caller_listener {
+                    Some(listener) => {
+                        listener.set_nonblocking(true)?;
+                        crate::mcp::McpHttpBind::Listener {
+                            listener: tokio::net::TcpListener::from_std(listener)?,
+                            path,
+                        }
+                    }
+                    None => crate::mcp::McpHttpBind::Address(crate::mcp::McpServerArgs {
+                        host,
+                        port,
+                        path,
+                    }),
+                };
+
+                crate::mcp::serve_mcp_http(
                     registry,
                     app_name,
-                    crate::mcp::McpServerArgs { host, port, path },
+                    bind,
                     risk_policy,
                     export_policy,
                     gate,

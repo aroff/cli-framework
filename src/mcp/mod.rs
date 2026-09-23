@@ -1410,6 +1410,49 @@ pub async fn serve_mcp_with_gate_opts_with_resources(
     request_authenticator: Option<McpRequestAuthenticator>,
     dynamic_tools: Option<McpDynamicToolProvider>,
 ) -> Result<()> {
+    serve_mcp_http(
+        registry,
+        app_name,
+        McpHttpBind::Address(args),
+        risk_policy,
+        export_policy,
+        gate,
+        resource_registry,
+        banner,
+        telemetry,
+        request_authenticator,
+        dynamic_tools,
+    )
+    .await
+}
+
+/// Where the Streamable HTTP server gets its socket: bind `host:port` itself,
+/// or serve on a listener the embedding application already bound (see
+/// `AppBuilder::with_mcp_http_listener`).
+#[cfg(feature = "mcp-server")]
+pub(crate) enum McpHttpBind {
+    Address(McpServerArgs),
+    Listener {
+        listener: tokio::net::TcpListener,
+        path: String,
+    },
+}
+
+#[cfg(feature = "mcp-server")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn serve_mcp_http(
+    registry: Arc<CommandRegistry>,
+    app_name: &str,
+    bind: McpHttpBind,
+    risk_policy: crate::security::CommandRiskPolicy,
+    export_policy: McpToolExportPolicy,
+    gate: Option<std::sync::Arc<dyn crate::security::ExecutionGate>>,
+    resource_registry: Arc<resources::ResourceRegistry>,
+    banner: BannerSettings,
+    telemetry: Option<std::sync::Arc<dyn crate::telemetry::Telemetry + Send + Sync>>,
+    request_authenticator: Option<McpRequestAuthenticator>,
+    dynamic_tools: Option<McpDynamicToolProvider>,
+) -> Result<()> {
     let mut tool_registry =
         McpToolRegistry::from_command_registry_with_policy(&registry, app_name, export_policy)
             .with_risk_policy(risk_policy);
@@ -1427,13 +1470,27 @@ pub async fn serve_mcp_with_gate_opts_with_resources(
     }
     let tool_registry = Arc::new(tool_registry);
 
-    transport_http::start_streamable_http_with_resources(
-        tool_registry,
-        resource_registry,
-        &args,
-        banner,
-    )
-    .await
+    match bind {
+        McpHttpBind::Address(args) => {
+            transport_http::start_streamable_http_with_resources(
+                tool_registry,
+                resource_registry,
+                &args,
+                banner,
+            )
+            .await
+        }
+        McpHttpBind::Listener { listener, path } => {
+            transport_http::start_streamable_http_with_listener(
+                tool_registry,
+                resource_registry,
+                listener,
+                &path,
+                banner,
+            )
+            .await
+        }
+    }
 }
 
 #[cfg(feature = "mcp-server")]
