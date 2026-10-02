@@ -697,6 +697,7 @@ async fn discovered_insecure_jwks_uri_returns_503() {
         jwks_ttl: std::time::Duration::from_secs(300),
         clock_skew: std::time::Duration::from_secs(0),
         min_refetch_interval: std::time::Duration::from_secs(0),
+        ..OidcValidationConfig::new(base.clone(), AudiencePolicy::Unchecked)
     };
     let app = make_app(cfg).await;
 
@@ -747,6 +748,7 @@ async fn discovery_issuer_mismatch_returns_503() {
         jwks_ttl: std::time::Duration::from_secs(300),
         clock_skew: std::time::Duration::from_secs(0),
         min_refetch_interval: std::time::Duration::from_secs(0),
+        ..OidcValidationConfig::new(base.clone(), AudiencePolicy::Unchecked)
     };
     let app = make_app(cfg).await;
 

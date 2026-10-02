@@ -24,7 +24,32 @@
   `create_mcp_serve_command_with_deps`. Direct callers pass `None` to keep
   today's behaviour; `AppBuilder` users are unaffected.
 
+- `cli-framework-oidc`: `OidcValidationConfig` gains the public fields
+  `static_jwks`, `roles_claim_path` and `groups_claim_path`, and `OidcClaims`
+  gains `groups` (ADR 0082). Code that builds either with a struct literal
+  listing every field must add them or end the literal with
+  `..OidcValidationConfig::new(..)`; `OidcValidationConfig::new` plus field
+  assignment is unaffected. The default roles path now also reads a single
+  string `realm_access.roles` as one role (previously only an array counted).
+
 ### Added
+
+- `cli-framework-oidc` (`server`): several trusted issuers (ADR 0082).
+  `OidcValidator::new_multi(configs)` and `oidc_validation_layer_multi(configs)`
+  route each token by its unverified `iss` to the matching issuer, which then
+  verifies it with its own keys, audience and algorithms. An `iss` naming no
+  configured issuer is rejected as `TokenRejection::UnknownIssuer`
+  (`error_description="unknown_issuer"`) with no discovery or JWKS fetch; each
+  issuer keeps its own JWKS cache and refetch limits; duplicate issuers are
+  `OidcConfigError::DuplicateIssuer`. `OidcValidator::layer()` builds the tower
+  layer from a validator (sharing its caches) and `OidcValidator::issuers()`
+  lists the trusted issuers. Per-issuer `roles_claim_path` (default
+  `realm_access.roles`) and `groups_claim_path` (fills `OidcClaims::groups`)
+  take dot-separated paths with `\.` for a literal dot; malformed paths are
+  `OidcConfigError::InvalidClaimPath`. `static_jwks` (`with_static_jwks`) gives
+  an issuer's keys inline (`OidcConfigError::InvalidJwks` when misused), and
+  `test_support::TestIssuer` synthesizes issuers with inline keys and mints
+  tokens for them, for tests without a mock server.
 
 - `AppBuilder::with_mcp_http_listener(std::net::TcpListener)`: the
   auto-registered `mcp serve` HTTP transport serves on a listener the app

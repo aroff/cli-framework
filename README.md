@@ -365,7 +365,7 @@ Auth commands are **never** exposed as MCP tools or chat tools regardless of the
 `cli-framework-oidc` (companion crate) works with any OIDC-compliant provider — Keycloak, Azure AD, etc. — and is split into two independent halves:
 
 - **`client`** — `OidcClient` (a `TokenProvider`) with three grant flows (Device Code, Auth Code + PKCE, Client Credentials), OIDC discovery, and an on-disk token cache protected for the current user (`0600` on Unix; protected owner DACL on Windows).
-- **`server`** — an Axum JWT validation layer (`oidc_validation_layer` + `OidcClaims` extractor) that verifies incoming bearer tokens against the provider's JWKS. It handles signing-key rotation (forced refetch on an unknown `kid`) with single-flight + rate-limit bounds so an attacker-supplied `kid` cannot amplify into a fetch flood (ADR 0070).
+- **`server`** — an Axum JWT validation layer (`oidc_validation_layer` + `OidcClaims` extractor) that verifies incoming bearer tokens against the provider's JWKS. It handles signing-key rotation (forced refetch on an unknown `kid`) with single-flight + rate-limit bounds so an attacker-supplied `kid` cannot amplify into a fetch flood (ADR 0070). It can trust several issuers at once (`OidcValidator::new_multi` / `oidc_validation_layer_multi`): a token is routed by its `iss` to that issuer's own keys, audience and algorithms, and an untrusted `iss` is rejected without any network request. Roles and groups are read from configurable claim paths per issuer (default roles path `realm_access.roles`; ADR 0082).
 
 A consumer enables only the half it needs. See [`cli-framework-oidc/README.md`](cli-framework-oidc/README.md) and the [auth & OIDC skill reference](skill/references/auth-and-oidc.md).
 

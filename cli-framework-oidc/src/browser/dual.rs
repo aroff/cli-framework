@@ -210,14 +210,8 @@ async fn validate_bearer_token(
                         .as_str()
                         .map(|s| s.split_whitespace().map(String::from).collect())
                         .unwrap_or_default(),
-                    roles: c["realm_access"]["roles"]
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|v| v.as_str().map(String::from))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
+                    roles: crate::claim_path::ClaimPath::default_roles().strings(c),
+                    groups: Vec::new(),
                     raw: c.clone(),
                 });
             }

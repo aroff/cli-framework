@@ -392,14 +392,7 @@ fn try_decode_jwt(
         .as_str()
         .map(|s| s.split_whitespace().map(String::from).collect())
         .unwrap_or_default();
-    let roles: Vec<String> = c["realm_access"]["roles"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    let roles = crate::claim_path::ClaimPath::default_roles().strings(c);
 
     Ok(OidcClaims {
         sub,
@@ -412,6 +405,7 @@ fn try_decode_jwt(
         email: c["email"].as_str().map(String::from),
         scopes,
         roles,
+        groups: Vec::new(),
         raw: c.clone(),
     })
 }

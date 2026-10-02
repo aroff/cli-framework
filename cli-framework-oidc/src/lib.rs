@@ -21,6 +21,12 @@ pub enum OidcConfigError {
     InvalidFlow(String),
     #[error("cookie envelope exceeds browser size limit: {0} bytes (max 3900)")]
     CookieTooLarge(usize),
+    #[error("issuer configured more than once (after normalization): {0}")]
+    DuplicateIssuer(String),
+    #[error("invalid claim path {0}")]
+    InvalidClaimPath(String),
+    #[error("invalid static JWKS: {0}")]
+    InvalidJwks(String),
 }
 
 /// Validate that a JWKS URI is secure: must be https, or http to loopback only.
@@ -98,6 +104,10 @@ pub mod types;
 #[cfg(any(feature = "server", feature = "browser"))]
 pub(crate) mod jwks;
 
+/// Claim paths for reading roles and groups out of verified claims.
+#[cfg(any(feature = "server", feature = "browser"))]
+pub(crate) mod claim_path;
+
 /// PKCE (RFC 7636) helpers, shared by the `client` and `browser` flows.
 #[cfg(any(feature = "client", feature = "browser"))]
 pub mod pkce;
@@ -121,6 +131,9 @@ pub mod browser;
 // Re-export shared types at crate root when either feature is active.
 #[cfg(any(feature = "server", feature = "browser"))]
 pub use types::{AudiencePolicy, OidcClaims};
+
+#[cfg(any(feature = "server", feature = "browser"))]
+pub use claim_path::DEFAULT_ROLES_CLAIM_PATH;
 
 /// Synthesized-OIDC-issuer test helpers (spec 021 testing decisions) —
 /// promoted out of `tests/server_validation.rs` so downstream crates'
