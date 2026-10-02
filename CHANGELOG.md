@@ -456,6 +456,16 @@
   whose issuer omits `iss` from access tokens is non-compliant with OIDC and
   will now see 401s. ADR 0082, Amendment A.
 
+- `cli-framework-oidc`: under `AudiencePolicy::Require` or `RequireAny`, every
+  validator (`OidcValidator::new` / `new_multi`, `oidc_validation_layer` /
+  `oidc_validation_layer_multi`, and the bearer-token checks of
+  `oidc_browser_session_layer` and `oidc_dual_mode_layer`) now requires the
+  `aud` claim. `jsonwebtoken` compares `aud` with the configured audience only
+  when the claim is present, so a correctly signed token with no `aud` was
+  accepted. Such a token is now rejected as `TokenRejection::InvalidAudience`
+  (`error_description="invalid_audience"`). `AudiencePolicy::Unchecked` still
+  accepts it. ADR 0082, Amendment B.
+
 - The update notice for a package-manager install now names only the upgrade
   command (for example ``run `brew upgrade fastskill` ``) instead of the whole
   SI004 hint with its `(remove: ...)` part. New `upgrade_command` export.

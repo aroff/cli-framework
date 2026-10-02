@@ -173,11 +173,7 @@ async fn validate_bearer_token(
         val.algorithms = state.algorithms.clone();
         val.set_issuer(&[&state.cfg.issuer_url]);
         val.set_required_spec_claims(crate::jwks::REQUIRED_SPEC_CLAIMS);
-        match &state.api_audience {
-            crate::types::AudiencePolicy::Require(a) => val.set_audience(&[a]),
-            crate::types::AudiencePolicy::RequireAny(a) => val.set_audience(a),
-            crate::types::AudiencePolicy::Unchecked => val.validate_aud = false,
-        }
+        crate::jwks::apply_audience_policy(&mut val, &state.api_audience);
         val.leeway = state.cfg.clock_skew.as_secs();
 
         match jsonwebtoken::decode::<JsonValue>(token, key, &val) {

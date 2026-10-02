@@ -179,3 +179,24 @@ for a missing `iss` as well.
 
 Consequence: an issuer that leaves `iss` out of its access tokens, which OIDC
 does not allow, is no longer usable with any validator in this crate.
+
+## Amendment B — a required audience requires `aud` (2026-10-02)
+
+D2 says the chosen issuer checks `aud`. `jsonwebtoken`'s `set_audience` only
+records the expected values: the comparison runs when the token carries `aud`
+and is skipped when it does not, unless `aud` is also a required spec claim. A
+token signed by the issuer's key but carrying no `aud` therefore passed every
+validator configured with `AudiencePolicy::Require` or `RequireAny`, in both
+`new` and `new_multi` and in the bearer-token checks of the browser layers.
+
+Under `Require` and `RequireAny` every validator now adds `aud` to the required
+spec claims (on top of `exp` and `iss`, Amendment A), and a missing `aud` is
+rejected as `TokenRejection::InvalidAudience` (wire
+`error_description="invalid_audience"`), the rejection a wrong `aud` already
+gets. `Unchecked` is unchanged: it neither compares nor requires `aud`. The
+policy is applied by one shared helper, so the server and browser paths cannot
+drift apart again.
+
+Consequence: a deployment that configured an audience but whose issuer leaves
+`aud` out of its access tokens now gets 401s; it must either have the issuer
+add the audience or switch to `Unchecked` deliberately.

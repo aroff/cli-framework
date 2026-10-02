@@ -367,11 +367,7 @@ fn try_decode_jwt(
     validation.algorithms = state.algorithms.clone();
     validation.set_issuer(&[&state.cfg.issuer_url]);
     validation.set_required_spec_claims(crate::jwks::REQUIRED_SPEC_CLAIMS);
-    match &state.cfg.audience {
-        crate::types::AudiencePolicy::Require(aud) => validation.set_audience(&[aud]),
-        crate::types::AudiencePolicy::RequireAny(auds) => validation.set_audience(auds),
-        crate::types::AudiencePolicy::Unchecked => validation.validate_aud = false,
-    }
+    crate::jwks::apply_audience_policy(&mut validation, &state.cfg.audience);
     validation.leeway = state.cfg.clock_skew.as_secs();
 
     let data = jsonwebtoken::decode::<JsonValue>(token, key, &validation)

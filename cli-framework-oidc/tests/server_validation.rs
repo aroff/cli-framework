@@ -1841,3 +1841,91 @@ async fn validator_clones_share_jwks_state_single_fetch() {
         "shared clones must coalesce into at most 1 JWKS fetch, got {jwks_hits}"
     );
 }
+
+// ── A required audience requires the `aud` claim ─────────────────────────────
+//
+// `jsonwebtoken` compares `aud` with the configured audience only when the
+// claim is present; `Require`/`RequireAny` must also make it required.
+
+mod missing_aud {
+    use super::*;
+    use cli_framework_oidc::server::{OidcValidationError, OidcValidator, TokenRejection};
+    use cli_framework_oidc::test_support::TestIssuer;
+
+    const ISSUER: &str = "https://issuer.test";
+
+    async fn validate_without_aud(audience: AudiencePolicy) -> Result<OidcClaims, TokenRejection> {
+        let issuer = TestIssuer::new(ISSUER);
+        let v = OidcValidator::new(OidcValidationConfig {
+            audience,
+            ..issuer.config()
+        })
+        .expect("validator");
+        v.validate(&issuer.mint(json!({"sub": "u"})))
+            .await
+            .map_err(|e| match e {
+                OidcValidationError::InvalidToken(r) => r,
+                other => panic!("expected InvalidToken, got {other:?}"),
+            })
+    }
+
+    #[tokio::test]
+    async fn rejected_under_require() {
+        let err = validate_without_aud(AudiencePolicy::Require("my-app".into()))
+            .await
+            .unwrap_err();
+        assert_eq!(err, TokenRejection::InvalidAudience);
+    }
+
+    #[tokio::test]
+    async fn rejected_under_require_any() {
+        let err = validate_without_aud(AudiencePolicy::RequireAny(vec!["a".into(), "b".into()]))
+            .await
+            .unwrap_err();
+        assert_eq!(err, TokenRejection::InvalidAudience);
+    }
+
+    #[tokio::test]
+    async fn accepted_under_unchecked() {
+        let claims = validate_without_aud(AudiencePolicy::Unchecked)
+            .await
+            .expect("Unchecked does not look at aud");
+        assert_eq!(claims.sub, "u");
+        assert!(claims.aud.is_empty());
+    }
+
+    #[tokio::test]
+    async fn layer_reports_invalid_audience() {
+        let mock = MockServer::start().await;
+        let kp = test_key_pair();
+        setup_mock_jwks(&mock, &kp).await;
+
+        let mut cfg = make_cfg(&mock);
+        cfg.audience = AudiencePolicy::Require("my-app".into());
+        let issuer = cfg.issuer_url.clone();
+        let app = make_app(cfg).await;
+
+        let token = mint_jwt(
+            &kp,
+            json!({ "sub": "u", "iss": issuer, "exp": now_secs() + 3600 }),
+        );
+        let req = axum::http::Request::builder()
+            .uri("/protected")
+            .header("authorization", format!("Bearer {}", token))
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 401);
+        let www = resp
+            .headers()
+            .get("www-authenticate")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(
+            extract_error_description(www),
+            Some("invalid_audience"),
+            "missing aud under Require must produce invalid_audience; got: {www:?}"
+        );
+    }
+}

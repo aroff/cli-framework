@@ -48,7 +48,7 @@ pub enum TokenRejection {
     InvalidSignature,
     /// `iss` is missing or did not match the configured issuer.
     InvalidIssuer,
-    /// `aud` did not satisfy the configured `AudiencePolicy`.
+    /// `aud` is missing or did not satisfy the configured `AudiencePolicy`.
     InvalidAudience,
     /// The token's `iss` names none of the issuers a multi-issuer validator
     /// trusts (ADR 0082). Decided before any key lookup or JWKS fetch.
@@ -826,6 +826,9 @@ fn jwt_err_to_rejection(e: &jsonwebtoken::errors::Error) -> TokenRejection {
     if crate::jwks::is_missing_iss(e) {
         return TokenRejection::InvalidIssuer;
     }
+    if crate::jwks::is_missing_aud(e) {
+        return TokenRejection::InvalidAudience;
+    }
     match e.kind() {
         ErrorKind::ExpiredSignature => TokenRejection::Expired,
         ErrorKind::ImmatureSignature => TokenRejection::NotYetValid,
@@ -850,17 +853,7 @@ fn try_validate_jwt(
     validation.algorithms = cfg.algorithms.clone();
     validation.set_issuer(&[issuer_url]);
     validation.set_required_spec_claims(crate::jwks::REQUIRED_SPEC_CLAIMS);
-    match &cfg.audience {
-        AudiencePolicy::Require(aud) => {
-            validation.set_audience(&[aud]);
-        }
-        AudiencePolicy::RequireAny(auds) => {
-            validation.set_audience(auds);
-        }
-        AudiencePolicy::Unchecked => {
-            validation.validate_aud = false;
-        }
-    }
+    crate::jwks::apply_audience_policy(&mut validation, &cfg.audience);
     validation.leeway = cfg.clock_skew.as_secs();
 
     let token_data = jsonwebtoken::decode::<JsonValue>(token, key, &validation)
