@@ -22,7 +22,7 @@ use jsonwebtoken::Algorithm;
 use serde_json::json;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::server::{AudiencePolicy, OidcValidationConfig};
+use crate::server::{AudiencePolicy, JwkSet, OidcValidationConfig};
 
 /// A generated P-256 key pair usable both to mint a JWT (`encoding_key`) and
 /// to publish the corresponding JWK (`x`/`y`/`kid`) — see [`jwk_for_key`].
@@ -125,13 +125,81 @@ pub fn now_secs() -> i64 {
 #[doc(hidden)]
 pub fn make_cfg(issuer_uri: &str) -> OidcValidationConfig {
     OidcValidationConfig {
-        issuer_url: issuer_uri.to_string(),
-        audience: AudiencePolicy::Unchecked,
         jwks_uri: Some(format!("{issuer_uri}/jwks")),
         algorithms: vec![Algorithm::ES256],
-        jwks_ttl: std::time::Duration::from_secs(300),
-        clock_skew: std::time::Duration::from_secs(60),
-        min_refetch_interval: std::time::Duration::from_secs(60),
+        ..OidcValidationConfig::new(issuer_uri, AudiencePolicy::Unchecked)
+    }
+}
+
+/// A synthesized issuer: an issuer URL, its own signing key, and its JWK set
+/// given inline — no HTTP server, no network, no real identity provider.
+/// Build several to exercise a multi-issuer validator (ADR 0082):
+///
+/// ```ignore
+/// let a = TestIssuer::new("https://issuer-a.test");
+/// let b = TestIssuer::new("https://issuer-b.test");
+/// let validator = OidcValidator::new_multi([a.config(), b.config()])?;
+/// let claims = validator.validate(&a.mint(json!({"sub": "u"}))).await?;
+/// assert_eq!(claims.iss, "https://issuer-a.test");
+/// ```
+#[doc(hidden)]
+pub struct TestIssuer {
+    /// The issuer URL as given (use a normalized form, e.g. no trailing slash,
+    /// so minted `iss` claims match the validator's normalized issuer).
+    pub issuer: String,
+    pub key: TestKeyPair,
+}
+
+impl TestIssuer {
+    /// A new issuer with a fresh P-256 key whose `kid` is `"{issuer}#key-1"`,
+    /// so two test issuers never share a `kid`.
+    pub fn new(issuer: &str) -> Self {
+        Self::with_kid(issuer, &format!("{issuer}#key-1"))
+    }
+
+    /// A new issuer with a fresh P-256 key and an explicit `kid`.
+    pub fn with_kid(issuer: &str, kid: &str) -> Self {
+        Self {
+            issuer: issuer.to_string(),
+            key: test_key_pair_with_kid(kid),
+        }
+    }
+
+    /// This issuer's public JWK.
+    pub fn jwk(&self) -> serde_json::Value {
+        jwk_for_key(&self.key)
+    }
+
+    /// This issuer's JWK set, as served at a `jwks_uri` or passed inline.
+    pub fn jwk_set(&self) -> JwkSet {
+        serde_json::from_value(json!({ "keys": [self.jwk()] })).expect("valid JWK set")
+    }
+
+    /// A validation config trusting this issuer: inline keys
+    /// ([`OidcValidationConfig::static_jwks`]), ES256, `AudiencePolicy::Unchecked`
+    /// and default claim paths. Adjust fields before use.
+    pub fn config(&self) -> OidcValidationConfig {
+        OidcValidationConfig {
+            algorithms: vec![Algorithm::ES256],
+            ..OidcValidationConfig::new(&self.issuer, AudiencePolicy::Unchecked)
+        }
+        .with_static_jwks(self.jwk_set())
+    }
+
+    /// Mint a token signed by this issuer's key. `claims` must be a JSON
+    /// object; `iss` (this issuer), `iat` (now) and `exp` (now + 300 s) are
+    /// filled in when absent, so a caller may override any of them — e.g. set
+    /// another issuer's `iss` to forge a cross-issuer token.
+    pub fn mint(&self, claims: serde_json::Value) -> String {
+        let mut claims = claims;
+        let obj = claims
+            .as_object_mut()
+            .expect("claims must be a JSON object");
+        let now = now_secs();
+        obj.entry("iss").or_insert_with(|| json!(self.issuer));
+        obj.entry("iat").or_insert_with(|| json!(now));
+        obj.entry("exp").or_insert_with(|| json!(now + 300));
+        mint_jwt(&self.key, claims)
     }
 }
 
@@ -179,6 +247,19 @@ mod tests {
             Some("https://issuer.example.com/jwks")
         );
         assert_eq!(cfg.issuer_url, "https://issuer.example.com");
+    }
+
+    #[test]
+    fn test_issuer_mints_with_defaults_and_publishes_its_key() {
+        let issuer = TestIssuer::new("https://issuer-a.test");
+        let token = issuer.mint(json!({"sub": "u"}));
+        let header = jsonwebtoken::decode_header(&token).unwrap();
+        assert_eq!(header.kid.as_deref(), Some("https://issuer-a.test#key-1"));
+        assert_eq!(issuer.jwk_set().keys.len(), 1);
+        let cfg = issuer.config();
+        assert!(cfg.static_jwks.is_some());
+        assert!(cfg.jwks_uri.is_none());
+        assert_eq!(cfg.issuer_url, "https://issuer-a.test");
     }
 
     #[test]

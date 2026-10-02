@@ -33,6 +33,8 @@ client = [
 server = [
     "cli-framework/api-server",
     "dep:jsonwebtoken",
+    # Reads the unverified `iss` claim to pick an issuer when several are trusted.
+    "dep:base64",
     "dep:reqwest",
     "dep:serde",
     "dep:serde_json",
@@ -124,6 +126,11 @@ required-features = ["client"]
 [[test]]
 name = "server_validation"
 path = "tests/server_validation.rs"
+required-features = ["server", "test-support"]
+
+[[test]]
+name = "multi_issuer"
+path = "tests/multi_issuer.rs"
 required-features = ["server", "test-support"]
 
 [[test]]

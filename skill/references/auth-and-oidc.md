@@ -464,6 +464,27 @@ async fn list_things(claims: OidcClaims) -> impl IntoResponse {
 | `jwks_ttl` | 300 s | How long a fetched key set is considered fresh |
 | `clock_skew` | 60 s | Leeway applied to `exp`/`nbf`/`iat` |
 | `min_refetch_interval` | 60 s | Floor between forced (unknown-`kid`) refetches — the rate-limit half of the amplification defense |
+| `static_jwks` | `None` | Inline `JwkSet` (`.with_static_jwks(..)`): no discovery or JWKS fetch for this issuer. Cannot be combined with `jwks_uri`; must hold at least one public key (no `oct`) |
+| `roles_claim_path` | `realm_access.roles` | Where `OidcClaims::roles` is read (`.with_roles_claim_path(..)`) |
+| `groups_claim_path` | `None` | Where `OidcClaims::groups` is read (`.with_groups_claim_path(..)`); `None` leaves `groups` empty |
+
+**Claim paths** are object keys separated by `.` (`org.roles` reads `{"org":{"roles":[..]}}`); `\.` is a literal dot inside a key, so a namespaced claim is `https://example\.com/groups` (write `r"https://example\.com/groups"` in Rust). The value may be an array (string elements kept) or a single string; a path that does not resolve gives an empty list. A malformed path (empty key, unknown escape, trailing backslash) fails construction with `OidcConfigError::InvalidClaimPath`.
+
+### Several trusted issuers
+
+To accept tokens from more than one issuer, pass one config per issuer to `OidcValidator::new_multi([..])` (then `.layer()`) or `oidc_validation_layer_multi([..])`:
+
+```rust
+let validator = OidcValidator::new_multi([
+    OidcValidationConfig::new("https://login.example.com/realms/users", AudiencePolicy::Require("my-api".into()))
+        .with_groups_claim_path("groups"),
+    OidcValidationConfig::new("https://workload-issuer.example.net", AudiencePolicy::Require("my-api".into()))
+        .with_roles_claim_path("org.roles"),
+])?;
+let layer = validator.layer();
+```
+
+The token's `iss` (read before verification, only to pick the issuer) must equal one configured issuer exactly after normalization; that issuer then checks algorithm, `kid` in **its own** key set, signature, `iss`, `aud` and `exp`. An `iss` naming no configured issuer is a 401 `unknown_issuer` with no network request. Each issuer has its own JWKS cache and refetch limits. Duplicate issuers fail with `OidcConfigError::DuplicateIssuer`. Handlers tell issuers apart by `claims.iss`. In tests, `test_support::TestIssuer` (feature `test-support`) builds a config with inline keys and mints tokens for it, with no mock server (ADR 0082).
 
 ### JWKS fetching, key rotation, and amplification defense
 
@@ -486,4 +507,4 @@ A rejected token returns 401 with an RFC 6750 header naming the reason, e.g.:
 WWW-Authenticate: Bearer error="invalid_token", error_description="expired"
 ```
 
-`error_description` is drawn from a closed set: `expired`, `not_yet_valid`, `invalid_signature`, `invalid_issuer`, `invalid_audience`, `unsupported_algorithm`, `unknown_key` (the `kid` was not found even after a forced refetch), and `malformed_token` (missing `kid`/`exp`/`sub` and other structural failures). Two cases carry no `error_description`: a missing/empty `Authorization` header returns a bare `Bearer` challenge, and a token whose header can't even be decoded returns a bare `error="invalid_token"`.
+`error_description` is drawn from a closed set: `expired`, `not_yet_valid`, `invalid_signature`, `invalid_issuer`, `invalid_audience`, `unsupported_algorithm`, `unknown_key` (the `kid` was not found even after a forced refetch), `unknown_issuer` (multi-issuer validator: the `iss` names no trusted issuer), and `malformed_token` (missing `kid`/`exp`/`sub` and other structural failures). Two cases carry no `error_description`: a missing/empty `Authorization` header returns a bare `Bearer` challenge, and a token whose header can't even be decoded returns a bare `error="invalid_token"`.

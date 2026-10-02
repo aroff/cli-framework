@@ -95,13 +95,10 @@ cli-framework-oidc = { version = "0.1", features = ["server"] }
 use cli_framework_oidc::server::{OidcValidationConfig, AudiencePolicy, oidc_validation_layer};
 use cli_framework_oidc::OidcConfigError;
 
-let layer = oidc_validation_layer(
-    OidcValidationConfig::new(
-        "https://auth.example.com",
-        AudiencePolicy::Require("my-api".to_string()),
-    )
-    .await?,
-)?;
+let layer = oidc_validation_layer(OidcValidationConfig::new(
+    "https://auth.example.com",
+    AudiencePolicy::Require("my-api".to_string()),
+))?;
 ```
 
 Use `OidcClaims` in any handler that sits behind the layer:
@@ -116,8 +113,99 @@ async fn protected(claims: OidcClaims) -> Json<serde_json::Value> {
 ```
 
 `OidcClaims` returns HTTP 401 with a structured `error_description` for all token
-rejections (`expired`, `invalid_signature`, `unknown_key`, etc.) and HTTP 500 if the
+rejections (`expired`, `invalid_signature`, `unknown_key`, `unknown_issuer`, etc.) and HTTP 500 if the
 layer is not installed (wiring bug).
+
+### Several trusted issuers
+
+`OidcValidator::new_multi` (or `oidc_validation_layer_multi`) trusts a list of
+issuers, one `OidcValidationConfig` each, with its own audience policy, JWKS
+source, algorithms and claim paths (ADR 0082):
+
+```rust
+use cli_framework_oidc::server::{AudiencePolicy, OidcValidationConfig, OidcValidator};
+
+let validator = OidcValidator::new_multi([
+    OidcValidationConfig::new(
+        "https://login.example.com/realms/users",
+        AudiencePolicy::Require("my-api".into()),
+    )
+    .with_groups_claim_path("groups"),
+    OidcValidationConfig::new(
+        "https://workload-issuer.example.net",
+        AudiencePolicy::Require("https://my-api.example.com".into()),
+    )
+    .with_roles_claim_path("org.roles"),
+])?;
+let layer = validator.layer(); // same caches as `validator.validate(..)`
+```
+
+A token is routed by its `iss` claim, read from the payload before any
+verification, to the issuer whose normalized `issuer_url` equals it exactly.
+That issuer then verifies the token in full (its algorithms, its own keys, `iss`,
+`aud`, `exp`), so a key published by one issuer never validates a token claiming
+another. A token whose `iss` names no configured issuer is rejected with
+`error_description="unknown_issuer"` (`TokenRejection::UnknownIssuer`) without
+any discovery or JWKS request. Each issuer keeps its own JWKS cache, refetch
+rate limit and single-flight gate. Two configs that normalize to the same issuer
+are a construction error (`OidcConfigError::DuplicateIssuer`). Handlers tell
+issuers apart by `OidcClaims::iss`, the normalized configured issuer.
+
+`OidcValidator::new` / `oidc_validation_layer` (one issuer) behave as before.
+
+### Roles and groups claim paths
+
+`OidcClaims::roles` is read from `roles_claim_path` (default
+`realm_access.roles`, where Keycloak puts realm roles) and `OidcClaims::groups`
+from `groups_claim_path` (default none, so `groups` is empty). Both are set per
+issuer:
+
+- A path is object keys separated by `.`, descending through nested JSON
+  objects: `org.roles` reads `{"org": {"roles": [...]}}`. Arrays are not
+  descended into.
+- `\.` is a literal dot inside a key, `\\` a literal backslash:
+  `https://example\.com/groups` is the single key `https://example.com/groups`.
+  In Rust source, write it as a raw string: `r"https://example\.com/groups"`.
+- The value is read as a list of strings: the string elements of an array, or a
+  single string as a one-element list. Anything else, or a path that does not
+  resolve, gives an empty list, not an error.
+- An empty path, an empty key (`a..b`), an unknown escape or a trailing
+  backslash is rejected when the validator is built
+  (`OidcConfigError::InvalidClaimPath`).
+
+The browser layers (`browser` feature) read roles from the default path and
+leave `groups` empty.
+
+### Inline keys and tests without an identity provider
+
+`OidcValidationConfig::static_jwks` (or `.with_static_jwks(jwk_set)`) gives an
+issuer's keys inline as a `JwkSet` (re-exported from `jsonwebtoken`). Such an
+issuer never performs discovery or a JWKS fetch. It cannot be combined with
+`jwks_uri`, must hold at least one key, and refuses symmetric (`oct`) keys.
+
+With the `test-support` feature (for `[dev-dependencies]` only),
+`test_support::TestIssuer` synthesizes issuers this way, so tests need no
+network and no real identity provider:
+
+```rust
+use cli_framework_oidc::server::OidcValidator;
+use cli_framework_oidc::test_support::TestIssuer;
+use serde_json::json;
+
+let a = TestIssuer::new("https://issuer-a.test");
+let b = TestIssuer::new("https://issuer-b.test");
+let validator = OidcValidator::new_multi([
+    a.config().with_groups_claim_path("groups"),
+    b.config(),
+])?;
+let claims = validator
+    .validate(&a.mint(json!({"sub": "alice", "groups": ["/team"]})))
+    .await?;
+assert_eq!((claims.iss.as_str(), claims.groups), ("https://issuer-a.test", vec!["/team".to_string()]));
+```
+
+`mint` fills `iss`, `iat` and `exp` when the claims leave them out; set `iss`
+yourself to forge a token for another issuer.
 
 ### JWKS cache
 
@@ -125,7 +213,7 @@ The layer caches JWKS keys in memory with a configurable TTL (default 300 s). On
 miss or key rotation it performs a single-flight refresh. If the JWKS endpoint is
 unreachable it serves stale keys rather than failing all requests; it returns 503 only
 when no keys have ever been fetched. Forced refetches (unknown key ID) are rate-limited
-to once per 60 s by default.
+to once per 60 s by default. With several issuers, each has its own cache and limits.
 
 ## License
 
