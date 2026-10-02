@@ -227,6 +227,41 @@ async fn audience_is_enforced_per_issuer() {
 }
 
 #[tokio::test]
+async fn token_without_aud_is_rejected_when_its_issuer_requires_one() {
+    let a = TestIssuer::new(A);
+    let b = TestIssuer::new(B);
+    let v = OidcValidator::new_multi([
+        OidcValidationConfig {
+            audience: AudiencePolicy::Require("api-a".into()),
+            ..a.config()
+        },
+        OidcValidationConfig {
+            audience: AudiencePolicy::RequireAny(vec!["api-b".into(), "api-c".into()]),
+            ..b.config()
+        },
+        // C keeps the default `Unchecked`.
+        TestIssuer::new(C).config(),
+    ])
+    .unwrap();
+
+    for issuer in [&a, &b] {
+        let err = v
+            .validate(&issuer.mint(json!({"sub": "u"})))
+            .await
+            .unwrap_err();
+        assert_eq!(rejection(err), TokenRejection::InvalidAudience);
+    }
+}
+
+#[tokio::test]
+async fn token_without_aud_is_accepted_when_its_issuer_is_unchecked() {
+    let (a, _b, v) = two_issuers();
+    let claims = v.validate(&a.mint(json!({"sub": "u"}))).await.unwrap();
+    assert_eq!(claims.iss, A);
+    assert!(claims.aud.is_empty());
+}
+
+#[tokio::test]
 async fn algorithms_are_enforced_per_issuer() {
     let a = TestIssuer::new(A);
     let b = TestIssuer::new(B);

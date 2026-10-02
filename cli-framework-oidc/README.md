@@ -154,6 +154,8 @@ issuers apart by `OidcClaims::iss`, the normalized configured issuer.
 `OidcValidator::new` / `oidc_validation_layer` (one issuer) behave as before.
 Both forms require `iss`: a token with no `iss`, or with a non-string `iss`, is
 rejected (`unknown_issuer` with several issuers, `invalid_issuer` with one).
+With `AudiencePolicy::Require` or `RequireAny`, a token with no `aud` is
+rejected as `invalid_audience`; only `Unchecked` accepts it.
 
 ### Roles and groups claim paths
 

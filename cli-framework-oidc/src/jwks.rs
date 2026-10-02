@@ -1,5 +1,6 @@
 /// Shared JWKS fetching and caching logic used by both `server` and `browser` features.
-use jsonwebtoken::DecodingKey;
+use crate::types::AudiencePolicy;
+use jsonwebtoken::{DecodingKey, Validation};
 use serde_json::Value as JsonValue;
 use std::time::{Duration, Instant};
 
@@ -165,11 +166,37 @@ pub(crate) fn is_missing_iss(e: &jsonwebtoken::errors::Error) -> bool {
     matches!(e.kind(), jsonwebtoken::errors::ErrorKind::MissingRequiredClaim(c) if c == "iss")
 }
 
+/// Applies `policy` to `validation`. Under `Require` and `RequireAny`, `aud`
+/// also becomes a required spec claim: `jsonwebtoken` compares `aud` with the
+/// configured audience only when the claim is present, so without this a
+/// token with no `aud` at all would pass. A missing `aud` is rejected as an
+/// invalid audience (see [`is_missing_aud`]). Call it after
+/// `set_required_spec_claims(REQUIRED_SPEC_CLAIMS)`, which replaces the set.
+pub(crate) fn apply_audience_policy(validation: &mut Validation, policy: &AudiencePolicy) {
+    match policy {
+        AudiencePolicy::Require(aud) => validation.set_audience(&[aud]),
+        AudiencePolicy::RequireAny(auds) => validation.set_audience(auds),
+        AudiencePolicy::Unchecked => {
+            validation.validate_aud = false;
+            return;
+        }
+    }
+    validation.required_spec_claims.insert("aud".to_string());
+}
+
+/// `true` when `e` is a missing `aud` (see [`apply_audience_policy`]).
+pub(crate) fn is_missing_aud(e: &jsonwebtoken::errors::Error) -> bool {
+    matches!(e.kind(), jsonwebtoken::errors::ErrorKind::MissingRequiredClaim(c) if c == "aud")
+}
+
 #[cfg(feature = "browser")]
 pub(crate) fn map_jwt_error(e: &jsonwebtoken::errors::Error) -> String {
     use jsonwebtoken::errors::ErrorKind;
     if is_missing_iss(e) {
         return "invalid_issuer".to_string();
+    }
+    if is_missing_aud(e) {
+        return "invalid_audience".to_string();
     }
     match e.kind() {
         ErrorKind::ExpiredSignature => "expired".to_string(),
@@ -185,7 +212,7 @@ pub(crate) fn map_jwt_error(e: &jsonwebtoken::errors::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+    use jsonwebtoken::{decode, encode, Algorithm, EncodingKey, Header};
 
     fn decode_without_iss() -> jsonwebtoken::errors::Error {
         let now = jsonwebtoken::get_current_timestamp();
@@ -208,9 +235,46 @@ mod tests {
         assert!(is_missing_iss(&decode_without_iss()));
     }
 
+    fn decode_with(policy: &AudiencePolicy) -> jsonwebtoken::errors::Result<()> {
+        let now = jsonwebtoken::get_current_timestamp();
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &serde_json::json!({ "sub": "u", "iss": "https://issuer.test", "exp": now + 300 }),
+            &EncodingKey::from_secret(b"k"),
+        )
+        .expect("encode");
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.set_issuer(&["https://issuer.test"]);
+        validation.set_required_spec_claims(REQUIRED_SPEC_CLAIMS);
+        apply_audience_policy(&mut validation, policy);
+        decode::<JsonValue>(&token, &DecodingKey::from_secret(b"k"), &validation).map(|_| ())
+    }
+
+    #[test]
+    fn missing_aud_is_rejected_when_an_audience_is_required() {
+        let err = decode_with(&AudiencePolicy::Require("api".into()))
+            .expect_err("a token without aud must not validate under Require");
+        assert!(is_missing_aud(&err));
+        let err = decode_with(&AudiencePolicy::RequireAny(vec!["a".into(), "b".into()]))
+            .expect_err("a token without aud must not validate under RequireAny");
+        assert!(is_missing_aud(&err));
+    }
+
+    #[test]
+    fn missing_aud_is_accepted_when_unchecked() {
+        decode_with(&AudiencePolicy::Unchecked).expect("Unchecked ignores aud");
+    }
+
     #[cfg(feature = "browser")]
     #[test]
     fn browser_maps_missing_iss_to_invalid_issuer() {
         assert_eq!(map_jwt_error(&decode_without_iss()), "invalid_issuer");
+    }
+
+    #[cfg(feature = "browser")]
+    #[test]
+    fn browser_maps_missing_aud_to_invalid_audience() {
+        let err = decode_with(&AudiencePolicy::Require("api".into())).unwrap_err();
+        assert_eq!(map_jwt_error(&err), "invalid_audience");
     }
 }
