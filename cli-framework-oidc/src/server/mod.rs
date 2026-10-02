@@ -46,7 +46,7 @@ pub enum TokenRejection {
     NotYetValid,
     /// Signature did not verify against the selected key.
     InvalidSignature,
-    /// `iss` did not match the configured issuer.
+    /// `iss` is missing or did not match the configured issuer.
     InvalidIssuer,
     /// `aud` did not satisfy the configured `AudiencePolicy`.
     InvalidAudience,
@@ -823,6 +823,9 @@ fn rejection_wire_string(r: &TokenRejection) -> &'static str {
 
 fn jwt_err_to_rejection(e: &jsonwebtoken::errors::Error) -> TokenRejection {
     use jsonwebtoken::errors::ErrorKind;
+    if crate::jwks::is_missing_iss(e) {
+        return TokenRejection::InvalidIssuer;
+    }
     match e.kind() {
         ErrorKind::ExpiredSignature => TokenRejection::Expired,
         ErrorKind::ImmatureSignature => TokenRejection::NotYetValid,
@@ -846,6 +849,7 @@ fn try_validate_jwt(
     let mut validation = Validation::new(cfg.algorithms[0]);
     validation.algorithms = cfg.algorithms.clone();
     validation.set_issuer(&[issuer_url]);
+    validation.set_required_spec_claims(crate::jwks::REQUIRED_SPEC_CLAIMS);
     match &cfg.audience {
         AudiencePolicy::Require(aud) => {
             validation.set_audience(&[aud]);
@@ -868,11 +872,14 @@ fn try_validate_jwt(
         .as_str()
         .ok_or(TokenRejection::Malformed)?
         .to_string();
-    // When present as a string, `iss` was just checked to equal `issuer_url`,
-    // the normalized configured issuer. A multi-issuer validator only gets
-    // here for a token whose `iss` is that string, so `OidcClaims::iss` names
-    // the issuer that validated it.
-    let iss = claims["iss"].as_str().unwrap_or("").to_string();
+    // `iss` is required and was just checked against `issuer_url`, the
+    // normalized configured issuer, so `OidcClaims::iss` names the issuer that
+    // validated the token. `jsonwebtoken` also accepts an array `iss` that
+    // contains the issuer; RFC 7519 makes `iss` a single string, so refuse it.
+    let iss = claims["iss"]
+        .as_str()
+        .ok_or(TokenRejection::InvalidIssuer)?
+        .to_string();
     let exp = claims["exp"].as_i64().unwrap_or(0);
     let iat = claims["iat"].as_i64();
     let nbf = claims["nbf"].as_i64();

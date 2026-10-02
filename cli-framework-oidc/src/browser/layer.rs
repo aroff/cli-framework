@@ -366,6 +366,7 @@ fn try_decode_jwt(
     let mut validation = Validation::new(state.algorithms[0]);
     validation.algorithms = state.algorithms.clone();
     validation.set_issuer(&[&state.cfg.issuer_url]);
+    validation.set_required_spec_claims(crate::jwks::REQUIRED_SPEC_CLAIMS);
     match &state.cfg.audience {
         crate::types::AudiencePolicy::Require(aud) => validation.set_audience(&[aud]),
         crate::types::AudiencePolicy::RequireAny(auds) => validation.set_audience(auds),
@@ -378,7 +379,8 @@ fn try_decode_jwt(
     let c = &data.claims;
 
     let sub = c["sub"].as_str().ok_or("missing sub")?.to_string();
-    let iss = c["iss"].as_str().unwrap_or("").to_string();
+    // Required and checked above; a non-string (array) `iss` is refused.
+    let iss = c["iss"].as_str().ok_or("invalid_issuer")?.to_string();
     let exp = c["exp"].as_i64().unwrap_or(0);
     let aud: Vec<String> = match &c["aud"] {
         JsonValue::String(s) => vec![s.clone()],

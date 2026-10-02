@@ -153,9 +153,24 @@ pub(crate) async fn fetch_jwks(
     Ok(result)
 }
 
+/// Spec claims every validated token must carry, for
+/// `Validation::set_required_spec_claims`. `jsonwebtoken` compares `iss` with
+/// the configured issuer only when the claim is present, so without `"iss"`
+/// here a token with no `iss` at all would pass. A missing `iss` is rejected
+/// as an invalid issuer, a missing `exp` as a malformed token.
+pub(crate) const REQUIRED_SPEC_CLAIMS: &[&str] = &["exp", "iss"];
+
+/// `true` when `e` is a missing `iss` (see [`REQUIRED_SPEC_CLAIMS`]).
+pub(crate) fn is_missing_iss(e: &jsonwebtoken::errors::Error) -> bool {
+    matches!(e.kind(), jsonwebtoken::errors::ErrorKind::MissingRequiredClaim(c) if c == "iss")
+}
+
 #[cfg(feature = "browser")]
 pub(crate) fn map_jwt_error(e: &jsonwebtoken::errors::Error) -> String {
     use jsonwebtoken::errors::ErrorKind;
+    if is_missing_iss(e) {
+        return "invalid_issuer".to_string();
+    }
     match e.kind() {
         ErrorKind::ExpiredSignature => "expired".to_string(),
         ErrorKind::ImmatureSignature => "not_yet_valid".to_string(),
@@ -164,5 +179,38 @@ pub(crate) fn map_jwt_error(e: &jsonwebtoken::errors::Error) -> String {
         ErrorKind::InvalidAudience => "invalid_audience".to_string(),
         ErrorKind::InvalidAlgorithm => "unsupported_algorithm".to_string(),
         _ => "malformed_token".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+
+    fn decode_without_iss() -> jsonwebtoken::errors::Error {
+        let now = jsonwebtoken::get_current_timestamp();
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &serde_json::json!({ "sub": "u", "exp": now + 300 }),
+            &EncodingKey::from_secret(b"k"),
+        )
+        .expect("encode");
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.set_issuer(&["https://issuer.test"]);
+        validation.validate_aud = false;
+        validation.set_required_spec_claims(REQUIRED_SPEC_CLAIMS);
+        decode::<serde_json::Value>(&token, &DecodingKey::from_secret(b"k"), &validation)
+            .expect_err("a token without iss must not validate")
+    }
+
+    #[test]
+    fn missing_iss_is_rejected_and_recognised() {
+        assert!(is_missing_iss(&decode_without_iss()));
+    }
+
+    #[cfg(feature = "browser")]
+    #[test]
+    fn browser_maps_missing_iss_to_invalid_issuer() {
+        assert_eq!(map_jwt_error(&decode_without_iss()), "invalid_issuer");
     }
 }

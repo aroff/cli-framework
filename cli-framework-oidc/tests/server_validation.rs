@@ -19,7 +19,7 @@ use cli_framework_oidc::server::{
 // (RUSTSEC-2023-0071, no upstream fix).
 use cli_framework_oidc::test_support::{
     jwk_for_key, jwk_for_key_no_kid, mint_jwt, mint_jwt_no_kid, mint_jwt_with_kid, now_secs,
-    test_key_pair, TestKeyPair,
+    test_key_pair, TestIssuer, TestKeyPair,
 };
 
 // ── Test app builder ──────────────────────────────────────────────────────────
@@ -968,6 +968,39 @@ async fn error_description_invalid_issuer_for_wrong_iss() {
     );
 }
 
+/// A token with no `iss` at all must not pass the single-issuer layer:
+/// `jsonwebtoken` only compares `iss` when the claim is present.
+#[tokio::test]
+async fn error_description_invalid_issuer_for_missing_iss() {
+    let issuer = TestIssuer::new("https://issuer.test");
+    let app = make_app(issuer.config()).await;
+
+    let token = mint_jwt(
+        &issuer.key,
+        json!({ "sub": "u", "exp": now_secs() + 3600i64 }),
+    );
+
+    let req = axum::http::Request::builder()
+        .uri("/protected")
+        .header("authorization", format!("Bearer {}", token))
+        .body(axum::body::Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 401);
+    let www = resp
+        .headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(
+        extract_error_description(www),
+        Some("invalid_issuer"),
+        "missing iss must produce error_description=invalid_issuer; got: {:?}",
+        www
+    );
+}
+
 #[tokio::test]
 async fn error_description_invalid_audience_for_wrong_aud() {
     let mock = MockServer::start().await;
@@ -1413,6 +1446,52 @@ async fn validator_wrong_issuer() {
         err,
         OidcValidationError::InvalidToken(TokenRejection::InvalidIssuer),
         "wrong issuer should yield InvalidIssuer"
+    );
+}
+
+#[tokio::test]
+async fn validator_missing_iss_is_invalid_issuer() {
+    let issuer = TestIssuer::new("https://issuer.test");
+    let validator = OidcValidator::new(issuer.config()).expect("validator");
+
+    // `mint_jwt`, not `TestIssuer::mint`, which would fill in `iss`.
+    let token = mint_jwt(
+        &issuer.key,
+        json!({ "sub": "u", "exp": now_secs() + 3600i64 }),
+    );
+
+    let err = validator.validate(&token).await.unwrap_err();
+    assert_eq!(
+        err,
+        OidcValidationError::InvalidToken(TokenRejection::InvalidIssuer),
+        "a token without iss must be rejected as InvalidIssuer"
+    );
+
+    // Same token with the issuer's `iss` passes: only the claim was missing.
+    let ok = issuer.mint(json!({ "sub": "u" }));
+    assert_eq!(
+        validator.validate(&ok).await.expect("valid").iss,
+        issuer.issuer
+    );
+}
+
+#[tokio::test]
+async fn validator_array_iss_is_invalid_issuer() {
+    let issuer = TestIssuer::new("https://issuer.test");
+    let validator = OidcValidator::new(issuer.config()).expect("validator");
+
+    // `jsonwebtoken` accepts an array `iss` containing the issuer; RFC 7519
+    // makes `iss` a single string.
+    let token = mint_jwt(
+        &issuer.key,
+        json!({ "sub": "u", "iss": [issuer.issuer], "exp": now_secs() + 3600i64 }),
+    );
+
+    let err = validator.validate(&token).await.unwrap_err();
+    assert_eq!(
+        err,
+        OidcValidationError::InvalidToken(TokenRejection::InvalidIssuer),
+        "an array iss must be rejected as InvalidIssuer"
     );
 }
 

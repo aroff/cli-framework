@@ -154,3 +154,28 @@ unit test. The existing helpers are unchanged.
    `claim_path` convention the config service's assignment rules already use
    (object keys only, unresolved means nothing), extended here with one escape
    for keys that contain dots. Rejected.
+
+## Amendment A — `iss` is required by every validator (2026-10-02)
+
+D2 says the chosen issuer checks `iss`, and D3 rejects a missing `iss` before
+routing. `OidcValidator::new` (and `oidc_validation_layer`) had no routing
+step, and `jsonwebtoken` compares `iss` with the configured issuer only when
+the claim is present: its default required claims are just `exp`. A token
+signed by the issuer's key but carrying no `iss` therefore passed
+single-issuer validation, with an empty `OidcClaims::iss`. The bearer-token
+checks of `oidc_browser_session_layer` and `oidc_dual_mode_layer` had the same
+gap.
+
+Every validator now lists `iss` among `jsonwebtoken`'s required spec claims
+(alongside `exp`), and a missing `iss` is rejected as
+`TokenRejection::InvalidIssuer` (wire `error_description="invalid_issuer"`), the
+rejection a wrong `iss` already gets. A non-string `iss` is refused the same
+way: `jsonwebtoken` accepts an array that contains the issuer, but RFC 7519
+makes `iss` a single string, and `OidcClaims::iss` must name the issuer that
+validated the token. `new_multi` is unchanged: it still rejects both cases as
+`UnknownIssuer` before any key lookup. D1's statement that `new_multi` with one
+config differs from `new` only in the rejection a foreign `iss` gets now holds
+for a missing `iss` as well.
+
+Consequence: an issuer that leaves `iss` out of its access tokens, which OIDC
+does not allow, is no longer usable with any validator in this crate.

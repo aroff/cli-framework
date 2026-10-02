@@ -172,6 +172,7 @@ async fn validate_bearer_token(
         let mut val = Validation::new(state.algorithms[0]);
         val.algorithms = state.algorithms.clone();
         val.set_issuer(&[&state.cfg.issuer_url]);
+        val.set_required_spec_claims(crate::jwks::REQUIRED_SPEC_CLAIMS);
         match &state.api_audience {
             crate::types::AudiencePolicy::Require(a) => val.set_audience(&[a]),
             crate::types::AudiencePolicy::RequireAny(a) => val.set_audience(a),
@@ -189,6 +190,14 @@ async fn validate_bearer_token(
                         continue;
                     }
                 };
+                // Required and checked above; a non-string (array) `iss` is refused.
+                let iss = match c["iss"].as_str() {
+                    Some(s) => s.to_string(),
+                    None => {
+                        last_err = "invalid_issuer".to_string();
+                        continue;
+                    }
+                };
                 let aud: Vec<String> = match &c["aud"] {
                     JsonValue::String(s) => vec![s.clone()],
                     JsonValue::Array(a) => a
@@ -199,7 +208,7 @@ async fn validate_bearer_token(
                 };
                 return Ok(OidcClaims {
                     sub,
-                    iss: c["iss"].as_str().unwrap_or("").to_string(),
+                    iss,
                     aud,
                     exp: c["exp"].as_i64().unwrap_or(0),
                     iat: c["iat"].as_i64(),
