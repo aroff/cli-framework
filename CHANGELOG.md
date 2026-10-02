@@ -444,6 +444,18 @@
 
 ### Fixed
 
+- `cli-framework-oidc`: single-issuer validation (`OidcValidator::new`,
+  `oidc_validation_layer`) and the bearer-token checks of the browser layers
+  (`oidc_browser_session_layer`, `oidc_dual_mode_layer`) now require the `iss`
+  claim. `jsonwebtoken` compares `iss` with the configured issuer only when the
+  claim is present, so a correctly signed token with no `iss` was accepted.
+  Such a token, and one whose `iss` is not a single string (an array that
+  contains the issuer used to pass), is now rejected as
+  `TokenRejection::InvalidIssuer` (`error_description="invalid_issuer"`). The
+  multi-issuer validator already rejected both as `UnknownIssuer`. A deployment
+  whose issuer omits `iss` from access tokens is non-compliant with OIDC and
+  will now see 401s. ADR 0082, Amendment A.
+
 - The update notice for a package-manager install now names only the upgrade
   command (for example ``run `brew upgrade fastskill` ``) instead of the whole
   SI004 hint with its `(remove: ...)` part. New `upgrade_command` export.

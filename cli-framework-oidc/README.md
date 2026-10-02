@@ -152,6 +152,8 @@ are a construction error (`OidcConfigError::DuplicateIssuer`). Handlers tell
 issuers apart by `OidcClaims::iss`, the normalized configured issuer.
 
 `OidcValidator::new` / `oidc_validation_layer` (one issuer) behave as before.
+Both forms require `iss`: a token with no `iss`, or with a non-string `iss`, is
+rejected (`unknown_issuer` with several issuers, `invalid_issuer` with one).
 
 ### Roles and groups claim paths
 
