@@ -295,7 +295,12 @@ Requests for one session serialize refresh. Short-lived refreshed tokens receive
 a proactive-refresh cooldown of half their remaining lifetime, capped by the
 configured skew and original session deadline. Expired access tokens bypass that
 cooldown. Cookie-authenticated mutations and POST `/logout` require exactly one
-Origin matching the registered callback origin, and reject cross-site fetches.
+Origin matching the registered callback origin or an explicitly configured
+`trusted_browser_origins` entry, and reject cross-site fetches. The additional
+allowlist defaults to empty, contains at most 32 exact canonical HTTPS or loopback
+HTTP origins, and rejects credentials, paths, query/fragment and wildcards.
+`OidcBrowserSession::permits_browser_origin` lets hosts validate their transport
+configuration against this policy; hosts separately own CORS and Host checks.
 Bearer API calls retain their independent validation path.
 
 Middleware inserts both `OidcClaims` and `BrowserSessionAccess` into extensions.

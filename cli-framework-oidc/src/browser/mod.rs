@@ -62,6 +62,9 @@ pub struct OidcBrowserSessionConfig {
     pub algorithms: Vec<Algorithm>,
     /// Other trusted ID-token audiences, in addition to client_id (default none).
     pub trusted_id_token_audiences: Vec<String>,
+    /// Additional exact origins allowed to send browser-cookie mutations/logout.
+    /// Empty by default. Fetch Metadata still rejects cross-site requests.
+    pub trusted_browser_origins: Vec<String>,
 }
 
 impl OidcBrowserSessionConfig {
@@ -88,6 +91,7 @@ impl OidcBrowserSessionConfig {
             clock_skew: Duration::from_secs(60),
             algorithms: vec![Algorithm::RS256],
             trusted_id_token_audiences: Vec::new(),
+            trusted_browser_origins: Vec::new(),
         }
     }
 }
@@ -140,6 +144,11 @@ pub type OidcBrowserServiceLayer = tower::util::BoxCloneSyncServiceLayer<
 >;
 
 impl OidcBrowserSession {
+    /// Whether this runtime accepts a browser mutation from this exact origin.
+    /// This does not provide CORS permission or bypass per-request site checks.
+    pub fn permits_browser_origin(&self, origin: &str) -> bool {
+        origin_is_trusted(origin, &self.state.cfg)
+    }
     /// Validate configuration and create a runtime without binding a listener.
     pub fn new(cfg: OidcBrowserSessionConfig) -> Result<Self, OidcConfigError> {
         validate_browser_config(&cfg)?;
@@ -237,6 +246,17 @@ pub fn oidc_dual_mode_layer(
 }
 
 fn validate_browser_config(cfg: &OidcBrowserSessionConfig) -> Result<(), OidcConfigError> {
+    if cfg.trusted_browser_origins.len() > 32
+        || cfg.trusted_browser_origins.iter().any(|origin| {
+            crate::endpoint_security::secure_endpoint(origin).is_err()
+                || url::Url::parse(origin)
+                    .is_ok_and(|url| url.origin().ascii_serialization() != *origin)
+        })
+    {
+        return Err(OidcConfigError::InvalidFlow(
+            "invalid trusted browser origin allowlist".into(),
+        ));
+    }
     if cfg.algorithms.is_empty() {
         return Err(OidcConfigError::EmptyAlgorithms);
     }
@@ -314,12 +334,68 @@ pub(crate) fn browser_origin_allowed(
     if headers.get_all(ORIGIN).iter().count() != 1 {
         return false;
     }
-    let expected = match url::Url::parse(&cfg.redirect_uri) {
-        Ok(url) => url.origin().ascii_serialization(),
-        Err(_) => return false,
-    };
-    headers.get(ORIGIN).and_then(|value| value.to_str().ok()) == Some(expected.as_str())
+    headers
+        .get(ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|origin| origin_is_trusted(origin, cfg))
         && headers
             .get("sec-fetch-site")
             .is_none_or(|value| value.as_bytes() != b"cross-site")
+}
+
+fn origin_is_trusted(origin: &str, cfg: &OidcBrowserSessionConfig) -> bool {
+    url::Url::parse(&cfg.redirect_uri).is_ok_and(|url| url.origin().ascii_serialization() == origin)
+        || cfg
+            .trusted_browser_origins
+            .iter()
+            .any(|trusted| trusted == origin)
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+    use cli_framework::axum::http::HeaderMap;
+
+    fn config() -> OidcBrowserSessionConfig {
+        OidcBrowserSessionConfig::new(
+            "https://issuer.test",
+            "client",
+            "http://127.0.0.1:4310/callback",
+            SessionKey::from_bytes([1; 32]),
+            AudiencePolicy::Require("api".into()),
+        )
+    }
+
+    #[test]
+    fn trusted_origins_require_explicit_canonical_secure_configuration() {
+        for invalid in [
+            "*",
+            "null",
+            "http://remote.test",
+            "https://user@remote.test",
+            "https://remote.test/",
+            "https://remote.test/path",
+            "https://remote.test?query",
+            "https://remote.test#fragment",
+        ] {
+            let mut cfg = config();
+            cfg.trusted_browser_origins = vec![invalid.into()];
+            assert!(validate_browser_config(&cfg).is_err(), "{invalid}");
+        }
+        let mut cfg = config();
+        cfg.trusted_browser_origins = vec!["http://127.0.0.1:6006".into()];
+        assert!(validate_browser_config(&cfg).is_ok());
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", "http://127.0.0.1:6006".parse().unwrap());
+        assert!(browser_origin_allowed(&headers, &cfg));
+        headers.insert("sec-fetch-site", "cross-site".parse().unwrap());
+        assert!(!browser_origin_allowed(&headers, &cfg));
+        headers.remove("sec-fetch-site");
+        headers.append("origin", "http://127.0.0.1:4310".parse().unwrap());
+        assert!(!browser_origin_allowed(&headers, &cfg));
+        headers.remove("origin");
+        assert!(!browser_origin_allowed(&headers, &cfg));
+        headers.insert("origin", "http://127.0.0.1:6007".parse().unwrap());
+        assert!(!browser_origin_allowed(&headers, &cfg));
+    }
 }

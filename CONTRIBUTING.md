@@ -73,7 +73,9 @@ validates signed ID-token identity, nonce and optional access-token hashes.
 cookies, fixed monotonic session deadlines, local revocation and coordinated
 refresh. Its `BrowserSessionAccess` lets host mutations and streams observe
 expiry/logout. Real-provider and deployment qualification remain separate from
-these local contracts; see the OIDC crate README.
+these local contracts. Browser mutation origins use the callback origin plus an
+explicit canonical trusted-origin allowlist; hosts separately enforce CORS/Host.
+See the OIDC crate README.
 
 The OIDC client's loopback callback lives in `cli-framework-oidc/src/client/callback.rs`:
 bounded asynchronous reception owns its sockets for cancellation, validates the
