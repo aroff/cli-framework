@@ -9,6 +9,7 @@ pub mod auth_state;
 pub mod cookie;
 pub(crate) mod dual;
 pub(crate) mod handlers;
+mod id_token;
 pub(crate) mod layer;
 pub mod pkce;
 pub mod request_type;
@@ -20,7 +21,7 @@ pub use session_key::SessionKey;
 
 use crate::jwks::JwksCache;
 use crate::OidcConfigError;
-use jsonwebtoken::Algorithm;
+pub use jsonwebtoken::Algorithm;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, OnceCell};
@@ -55,6 +56,8 @@ pub struct OidcBrowserSessionConfig {
     pub jwks_ttl: Duration,
     /// JWT clock skew tolerance applied to exp checks (default 60s).
     pub clock_skew: Duration,
+    /// Explicit asymmetric signing algorithm allowlist (default RS256).
+    pub algorithms: Vec<Algorithm>,
 }
 
 impl OidcBrowserSessionConfig {
@@ -79,6 +82,7 @@ impl OidcBrowserSessionConfig {
             jwks_uri: None,
             jwks_ttl: Duration::from_secs(300),
             clock_skew: Duration::from_secs(60),
+            algorithms: vec![Algorithm::RS256],
         }
     }
 }
@@ -112,49 +116,84 @@ pub struct OidcBrowserSessionLayer {
 pub fn oidc_browser_session_layer(
     cfg: OidcBrowserSessionConfig,
 ) -> Result<OidcBrowserSessionLayer, OidcConfigError> {
-    validate_browser_config(&cfg)?;
-    let normalized_issuer = crate::normalize_issuer(&cfg.issuer_url)?;
+    Ok(OidcBrowserSession::new(cfg)?.browser_layer())
+}
 
-    if let Some(ref uri) = cfg.jwks_uri {
-        crate::validate_jwks_uri(uri)?;
+/// Shared issuer, login-state and session runtime for browser and API routes.
+/// Clone this handle rather than constructing separate runtimes for one app.
+#[derive(Clone)]
+pub struct OidcBrowserSession {
+    state: Arc<BrowserLayerState>,
+}
+
+/// Boxed layer wrapping an Axum Router service.
+pub type OidcBrowserServiceLayer = tower::util::BoxCloneSyncServiceLayer<
+    cli_framework::axum::Router,
+    cli_framework::axum::http::Request<cli_framework::axum::body::Body>,
+    cli_framework::axum::response::Response,
+    std::convert::Infallible,
+>;
+
+impl OidcBrowserSession {
+    /// Validate configuration and create a runtime without binding a listener.
+    pub fn new(cfg: OidcBrowserSessionConfig) -> Result<Self, OidcConfigError> {
+        validate_browser_config(&cfg)?;
+        let normalized_issuer = crate::normalize_issuer(&cfg.issuer_url)?;
+
+        if let Some(ref uri) = cfg.jwks_uri {
+            crate::validate_jwks_uri(uri)?;
+        }
+
+        let hmac_key = derive_hmac_key(cfg.session_key.as_bytes());
+
+        let mut cfg = cfg;
+        cfg.issuer_url = normalized_issuer;
+
+        let state = Arc::new(BrowserLayerState {
+            hmac_key,
+            algorithms: cfg.algorithms.clone(),
+            pending_logins: Mutex::new(std::collections::HashMap::new()),
+            jwks_cache: Mutex::new(JwksCache::empty()),
+            discovery: OnceCell::new(),
+            last_forced_refetch: Mutex::new(None),
+            refetch_gate: Mutex::new(()),
+            http: crate::jwks::http_client(),
+            cfg,
+        });
+
+        Ok(Self { state })
     }
 
-    let hmac_key = derive_hmac_key(cfg.session_key.as_bytes());
-    let api_audience = cfg.audience.clone();
+    /// Build UI middleware and callback/logout routes sharing this runtime.
+    pub fn browser_layer(&self) -> OidcBrowserSessionLayer {
+        let state = &self.state;
+        // Build callback router
+        use cli_framework::axum::{routing, Router};
+        let callback_path = state.cfg.callback_path.clone();
+        let callback_router = Router::new()
+            .route(&callback_path, routing::get(handlers::handle_callback))
+            .route("/logout", routing::post(handlers::handle_logout))
+            .with_state(Arc::clone(state));
 
-    let mut cfg = cfg;
-    cfg.issuer_url = normalized_issuer;
+        // Build browser session layer
+        let browser_layer = layer::BrowserSessionLayer {
+            state: Arc::clone(state),
+        };
+        let boxed = tower::util::BoxCloneSyncServiceLayer::new(browser_layer);
 
-    let state = Arc::new(BrowserLayerState {
-        hmac_key,
-        api_audience,
-        algorithms: vec![Algorithm::RS256],
-        jwks_cache: Mutex::new(JwksCache::empty()),
-        discovery: OnceCell::new(),
-        last_forced_refetch: Mutex::new(None),
-        refetch_gate: Mutex::new(()),
-        http: crate::jwks::http_client(),
-        cfg,
-    });
+        OidcBrowserSessionLayer {
+            layer: boxed,
+            callback_router,
+        }
+    }
 
-    // Build callback router
-    use cli_framework::axum::{routing, Router};
-    let callback_path = state.cfg.callback_path.clone();
-    let callback_router = Router::new()
-        .route(&callback_path, routing::get(handlers::handle_callback))
-        .route("/logout", routing::post(handlers::handle_logout))
-        .with_state(Arc::clone(&state));
-
-    // Build browser session layer
-    let browser_layer = layer::BrowserSessionLayer {
-        state: Arc::clone(&state),
-    };
-    let boxed = tower::util::BoxCloneSyncServiceLayer::new(browser_layer);
-
-    Ok(OidcBrowserSessionLayer {
-        layer: boxed,
-        callback_router,
-    })
+    /// Build API middleware sharing keys and session lifecycle with UI routes.
+    pub fn api_layer(&self, audience: AudiencePolicy) -> OidcBrowserServiceLayer {
+        tower::util::BoxCloneSyncServiceLayer::new(dual::DualModeLayer {
+            state: self.state.clone(),
+            audience,
+        })
+    }
 }
 
 /// Build a dual-mode layer for API routes.
@@ -174,34 +213,31 @@ pub fn oidc_dual_mode_layer(
     >,
     OidcConfigError,
 > {
-    validate_browser_config(cfg)?;
-    let normalized_issuer = crate::normalize_issuer(&cfg.issuer_url)?;
-    if let Some(ref uri) = cfg.jwks_uri {
-        crate::validate_jwks_uri(uri)?;
-    }
-
-    let hmac_key = derive_hmac_key(cfg.session_key.as_bytes());
-
-    let mut cfg = cfg.clone();
-    cfg.issuer_url = normalized_issuer;
-
-    let state = Arc::new(BrowserLayerState {
-        hmac_key,
-        api_audience,
-        algorithms: vec![Algorithm::RS256],
-        jwks_cache: Mutex::new(JwksCache::empty()),
-        discovery: OnceCell::new(),
-        last_forced_refetch: Mutex::new(None),
-        refetch_gate: Mutex::new(()),
-        http: crate::jwks::http_client(),
-        cfg,
-    });
-
-    let dual_layer = dual::DualModeLayer { state };
-    Ok(tower::util::BoxCloneSyncServiceLayer::new(dual_layer))
+    Ok(OidcBrowserSession::new(cfg.clone())?.api_layer(api_audience))
 }
 
 fn validate_browser_config(cfg: &OidcBrowserSessionConfig) -> Result<(), OidcConfigError> {
+    if cfg.algorithms.is_empty() {
+        return Err(OidcConfigError::EmptyAlgorithms);
+    }
+    if cfg.algorithms.iter().any(|alg| {
+        !matches!(
+            alg,
+            Algorithm::RS256
+                | Algorithm::RS384
+                | Algorithm::RS512
+                | Algorithm::PS256
+                | Algorithm::PS384
+                | Algorithm::PS512
+                | Algorithm::ES256
+                | Algorithm::ES384
+        )
+    }) {
+        return Err(OidcConfigError::InvalidFlow(
+            "browser signing algorithms must be asymmetric with a supported access-token hash"
+                .into(),
+        ));
+    }
     let redirect = crate::endpoint_security::secure_endpoint(&cfg.redirect_uri)
         .map_err(|_| OidcConfigError::InvalidFlow("invalid browser callback URL".into()))?;
     if redirect.query().is_some()

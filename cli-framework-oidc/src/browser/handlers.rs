@@ -1,6 +1,7 @@
 /// Axum handlers for /callback and /logout routes.
 use super::auth_state::{decode_auth_state, AuthState};
 use super::cookie::encrypt_cookie;
+use super::layer::extract_cookie_header as extract_cookie_value;
 use super::state::BrowserLayerState;
 use cli_framework::axum::{
     extract::{Query, State},
@@ -24,19 +25,28 @@ pub async fn handle_callback(
     Query(params): Query<CallbackParams>,
     headers: cli_framework::axum::http::HeaderMap,
 ) -> Response {
+    let mut response = callback_response(&state, params, &headers).await;
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        clear_cookie("__auth_state", &state.cfg.callback_path, &state.cfg)
+            .parse()
+            .expect("validated cookie"),
+    );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    response
+        .headers_mut()
+        .insert(header::PRAGMA, "no-cache".parse().unwrap());
+    response
+}
+
+async fn callback_response(
+    state: &Arc<BrowserLayerState>,
+    params: CallbackParams,
+    headers: &cli_framework::axum::http::HeaderMap,
+) -> Response {
     // Treat provider-supplied error text as untrusted and potentially sensitive.
-    if params.error.is_some() {
-        tracing::warn!(event = "login_error");
-        return (StatusCode::BAD_REQUEST, "Login failed").into_response();
-    }
-
-    let code = match params.code {
-        Some(ref c) => c.clone(),
-        None => {
-            return (StatusCode::BAD_REQUEST, "Missing code parameter").into_response();
-        }
-    };
-
     let returned_state = match params.state {
         Some(ref s) => s.clone(),
         None => {
@@ -45,7 +55,7 @@ pub async fn handle_callback(
     };
 
     // Read and verify __auth_state cookie
-    let auth_state_value = match extract_cookie_value(&headers, "__auth_state") {
+    let auth_state_value = match extract_cookie_value(headers, "__auth_state") {
         Some(v) => v,
         None => {
             return (StatusCode::BAD_REQUEST, "Missing auth state cookie").into_response();
@@ -56,31 +66,34 @@ pub async fn handle_callback(
         Some(s) => s,
         None => {
             tracing::warn!(event = "auth_state_invalid");
-            let mut resp =
-                (StatusCode::BAD_REQUEST, "Invalid or expired auth state").into_response();
-            // Clear the bad __auth_state cookie
-            resp.headers_mut().append(
-                header::SET_COOKIE,
-                clear_cookie("__auth_state", &state.cfg.callback_path)
-                    .parse()
-                    .expect("valid header"),
-            );
-            return resp;
+            return (StatusCode::BAD_REQUEST, "Invalid or expired auth state").into_response();
         }
     };
 
     // Verify state matches
     if auth_state.state != returned_state {
         tracing::warn!(event = "state_mismatch");
-        let mut resp = (StatusCode::BAD_REQUEST, "State mismatch").into_response();
-        resp.headers_mut().append(
-            header::SET_COOKIE,
-            clear_cookie("__auth_state", &state.cfg.callback_path)
-                .parse()
-                .expect("valid header"),
-        );
-        return resp;
+        return (StatusCode::BAD_REQUEST, "State mismatch").into_response();
     }
+
+    let login = match state.consume_login(&auth_state.state).await {
+        Some(login) => login,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "Unknown, expired or consumed login state",
+            )
+                .into_response()
+        }
+    };
+    if params.error.is_some() {
+        tracing::warn!(event = "login_error");
+        return (StatusCode::BAD_REQUEST, "Login failed").into_response();
+    }
+    let code = match params.code {
+        Some(code) if !code.is_empty() && code.len() <= 16 * 1024 => code,
+        _ => return (StatusCode::BAD_REQUEST, "Invalid code parameter").into_response(),
+    };
 
     // Exchange code + verifier for tokens
     let token_resp = match exchange_code(
@@ -100,8 +113,39 @@ pub async fn handle_callback(
         }
     };
 
-    // Build and seal the session cookie
-    let refresh_exp = token_resp.refresh_expires_at();
+    let Some(id_token) = token_resp.id_token.as_deref() else {
+        return (StatusCode::BAD_GATEWAY, "Missing login identity").into_response();
+    };
+    let subject = match super::id_token::verify(
+        id_token,
+        &login.nonce,
+        &token_resp.access_token,
+        state,
+    )
+    .await
+    {
+        Ok(subject) => subject,
+        Err(_) => return (StatusCode::BAD_GATEWAY, "Login identity rejected").into_response(),
+    };
+    let access =
+        match super::layer::validate_access_token_str(&token_resp.access_token, state).await {
+            Ok(claims) if claims.sub == subject => claims,
+            _ => return (StatusCode::BAD_GATEWAY, "Login access token rejected").into_response(),
+        };
+
+    if !login.is_live() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "Login state expired during verification",
+        )
+            .into_response();
+    }
+    // Build and seal only verified matching identity/access tokens.
+    let refresh_exp = if token_resp.refresh_token.is_empty() {
+        access.exp
+    } else {
+        token_resp.refresh_expires_at()
+    };
     let cookie_value = match encrypt_cookie(
         state.cfg.session_key.as_bytes(),
         &token_resp.access_token,
@@ -149,13 +193,6 @@ pub async fn handle_callback(
         header::SET_COOKIE,
         session_cookie.parse().expect("valid cookie header"),
     );
-    // Clear the auth state cookie
-    headers.append(
-        header::SET_COOKIE,
-        clear_cookie("__auth_state", &state.cfg.callback_path)
-            .parse()
-            .expect("valid header"),
-    );
     resp
 }
 
@@ -165,15 +202,8 @@ pub async fn handle_logout(
     State(state): State<Arc<BrowserLayerState>>,
     headers: cli_framework::axum::http::HeaderMap,
 ) -> Response {
-    // Read sub from session cookie if present (for logging only)
-    let sub = extract_cookie_value(&headers, &state.cfg.cookie_name)
-        .and_then(|v| super::cookie::decrypt_cookie(state.cfg.session_key.as_bytes(), v).ok())
-        .and_then(|payload| {
-            // Try to extract sub from the access token without full validation
-            extract_sub_from_jwt(&payload.access_token)
-        });
-
-    tracing::info!(event = "logout", sub = sub.as_deref().unwrap_or("unknown"));
+    let _ = headers;
+    tracing::info!(event = "logout");
 
     let end_session_url = state.end_session_endpoint().await;
     let app_root = {
@@ -216,25 +246,11 @@ pub async fn handle_logout(
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-fn extract_cookie_value<'a>(
-    headers: &'a cli_framework::axum::http::HeaderMap,
-    name: &str,
-) -> Option<&'a str> {
-    let header_val = headers.get(header::COOKIE)?;
-    let s = header_val.to_str().ok()?;
-    for pair in s.split(';') {
-        let pair = pair.trim();
-        if let Some(rest) = pair.strip_prefix(name) {
-            if let Some(value) = rest.strip_prefix('=') {
-                return Some(value);
-            }
-        }
-    }
-    None
-}
-
-fn clear_cookie(name: &str, path: &str) -> String {
-    format!("{name}=; Max-Age=0; HttpOnly; Secure; SameSite=Lax; Path={path}")
+fn clear_cookie(name: &str, path: &str, cfg: &super::OidcBrowserSessionConfig) -> String {
+    format!(
+        "{name}=; Max-Age=0; HttpOnly{}; SameSite=Lax; Path={path}",
+        super::secure_cookie_suffix(cfg)
+    )
 }
 
 fn url_encode(s: &str) -> String {
@@ -248,23 +264,13 @@ fn url_encode(s: &str) -> String {
         .collect()
 }
 
-fn extract_sub_from_jwt(token: &str) -> Option<String> {
-    let parts: Vec<&str> = token.splitn(3, '.').collect();
-    if parts.len() < 2 {
-        return None;
-    }
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-    let payload = URL_SAFE_NO_PAD.decode(parts[1]).ok()?;
-    let v: serde_json::Value = serde_json::from_slice(&payload).ok()?;
-    v["sub"].as_str().map(String::from)
-}
-
 // ── Token exchange ───────────────────────────────────────────────────────────
 
 pub(crate) struct TokenResponse {
     pub access_token: String,
     pub refresh_token: String,
     pub refresh_expires_in: u64,
+    pub id_token: Option<String>,
 }
 
 impl TokenResponse {
@@ -273,7 +279,8 @@ impl TokenResponse {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        (now + self.refresh_expires_in) as i64
+        now.saturating_add(self.refresh_expires_in)
+            .min(i64::MAX as u64) as i64
     }
 }
 
@@ -303,18 +310,7 @@ async fn exchange_code(
         .map_err(|_| "token request failed")?;
 
     let body = crate::jwks::bounded_json(resp, 64 * 1024).await?;
-
-    Ok(TokenResponse {
-        access_token: body["access_token"]
-            .as_str()
-            .ok_or("missing access_token")?
-            .to_string(),
-        refresh_token: body["refresh_token"]
-            .as_str()
-            .ok_or("missing refresh_token")?
-            .to_string(),
-        refresh_expires_in: body["refresh_expires_in"].as_u64().unwrap_or(1800),
-    })
+    parse_token_response(&body, "")
 }
 
 pub(crate) async fn refresh_tokens(
@@ -339,16 +335,37 @@ pub(crate) async fn refresh_tokens(
         .map_err(|_| "token request failed")?;
 
     let body = crate::jwks::bounded_json(resp, 64 * 1024).await?;
+    parse_token_response(&body, refresh_token)
+}
 
+fn parse_token_response(
+    body: &serde_json::Value,
+    previous_refresh: &str,
+) -> Result<TokenResponse, String> {
+    if !body["token_type"]
+        .as_str()
+        .is_some_and(|value| value.eq_ignore_ascii_case("Bearer"))
+    {
+        return Err("unsupported or missing token type".into());
+    }
+    let refresh_expires_in = match body.get("refresh_expires_in") {
+        None => 1800,
+        Some(value) => value
+            .as_u64()
+            .filter(|value| *value <= i64::MAX as u64 / 2)
+            .ok_or("invalid refresh-token lifetime")?,
+    };
     Ok(TokenResponse {
+        id_token: body["id_token"].as_str().map(String::from),
         access_token: body["access_token"]
             .as_str()
+            .filter(|value| !value.is_empty())
             .ok_or("missing access_token")?
             .to_string(),
         refresh_token: body["refresh_token"]
             .as_str()
-            .unwrap_or(refresh_token) // some Keycloak configs don't rotate
+            .unwrap_or(previous_refresh)
             .to_string(),
-        refresh_expires_in: body["refresh_expires_in"].as_u64().unwrap_or(1800),
+        refresh_expires_in,
     })
 }

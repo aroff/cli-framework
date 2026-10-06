@@ -63,26 +63,39 @@ async fn token_exchange_rejects_redirects_error_status_and_large_bodies() {
             .expect(1)
             .mount(&provider)
             .await;
-        let signed = encode_auth_state(
-            &AuthState {
-                state: "expected-state".into(),
-                verifier: generate_verifier(),
-                return_to: "/".into(),
-            },
-            &derive_hmac_key(&test_key()),
-        );
-        let response = browser_app(&issuer)
+        let app = browser_app(&issuer);
+        let login = navigate(app.clone()).await;
+        let location = url::Url::parse(login.headers()["location"].to_str().unwrap()).unwrap();
+        let returned_state = location
+            .query_pairs()
+            .find(|(name, _)| name == "state")
+            .unwrap()
+            .1
+            .into_owned();
+        let cookie = login.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap();
+        let response = app
             .oneshot(
                 axum::http::Request::builder()
-                    .uri("/auth/callback?state=expected-state&code=secret-code")
-                    .header("cookie", format!("__auth_state={signed}"))
+                    .uri(format!(
+                        "/auth/callback?state={returned_state}&code=secret-code"
+                    ))
+                    .header("cookie", cookie)
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
-        assert!(!response.headers().contains_key("set-cookie"));
+        assert!(response
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .all(|value| value.to_str().unwrap().starts_with("__auth_state=;")));
         let body = axum::body::to_bytes(response.into_body(), 1024)
             .await
             .unwrap();
@@ -150,6 +163,7 @@ async fn navigation_uses_discovered_endpoint_and_encodes_parameters() {
         .await;
     let response = navigate(browser_app(&issuer)).await;
     assert_eq!(response.status(), axum::http::StatusCode::FOUND);
+    assert_eq!(response.headers()["cache-control"], "no-store");
     let url = url::Url::parse(response.headers()["location"].to_str().unwrap()).unwrap();
     assert_eq!(url.path(), "/custom-login");
     let pairs: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();

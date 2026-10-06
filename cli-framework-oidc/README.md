@@ -245,10 +245,46 @@ synthetic startup estimate. The public size-estimation helper remains advisory.
 API middleware rejects any malformed or multiple Authorization headers before
 considering cookies; it never falls back from an offered invalid credential.
 
-These transport bounds do not establish complete browser authentication
-qualification. ID-token/nonce validation, replay-resistant expiring login state,
-server-enforced session lifetime and shared logout revocation remain necessary
-before relying on this flow for a deployed browser application.
+### Shared browser login runtime
+
+Construct `OidcBrowserSession::new(config)` once, then use `browser_layer()` for
+UI/callback routes and `api_layer(audience)` for API routes. Cloned handles share
+issuer discovery, key caches and pending login state. The original free builders
+remain available, but each creates its own runtime; they do not share lifecycle
+state with another independently constructed builder.
+
+Login now uses independent random state and nonce values. Signed state carries a
+strict ten-minute issue-time limit; a bounded runtime table (1024 pending logins)
+also enforces monotonic expiry and single use. Callbacks consume the entry before
+provider I/O and recheck its deadline after verification. Restart invalidates
+pending logins, requiring a fresh navigation. Legacy state without issue time is
+rejected. Duplicate matching cookie values are rejected across Cookie headers.
+Callback failures clear state at the configured path, and callback/UI responses
+use `Cache-Control: no-store`.
+
+Code exchange requires Bearer token type and a signed ID token. Verification
+checks issuer, client audience (independent of the API audience), expiry, issue
+time, nonce and subject. Multiple audiences require this client as `azp`; any
+present `azp` must match. A present `at_hash` must bind the returned access token.
+The access token must independently validate and have the same subject before
+session issuance. `algorithms` defaults to RS256; use the constructor and set an
+explicit asymmetric allowlist when another supported algorithm is needed.
+This new configuration field requires updating older struct literals.
+
+Providers may omit refresh tokens: those sessions are bounded by the verified
+access-token expiry. Refresh responses must validate under the original signed
+identity before a new cookie is emitted. An unsuccessful proactive refresh can
+retain a still-valid original access token without persisting the failed response.
+
+`examples/browser_session.rs` is a compiling host that composes the shared
+runtime with UI and API routers. Its loopback listener and ephemeral session key
+are for local development; a production host must supply deployment and key
+lifecycle configuration.
+
+This is bounded local validation, not complete browser deployment qualification.
+Server-enforced session lifetime, shared logout revocation, concurrent refresh
+coordination, complete refresh-ID-token lifecycle validation and deployment
+qualification remain necessary before relying on this flow for a deployed app.
 
 ## License
 

@@ -88,43 +88,54 @@ where
 
             let headers = req.headers().clone();
             let request_type = detect(&headers);
+            let return_to = req
+                .uri()
+                .path_and_query()
+                .map(|value| value.as_str())
+                .unwrap_or("/");
 
             // Try to read and validate the session cookie
             let cookie_value = extract_cookie_header(&headers, &state.cfg.cookie_name);
 
-            match process_session(&state, cookie_value, &headers, request_type).await {
-                SessionOutcome::Valid(claims, maybe_refresh_cookie) => {
-                    req.extensions_mut().insert(*claims);
-                    let mut resp = inner.call(req).await?;
-                    if let Some(set_cookie) = maybe_refresh_cookie {
+            let response: Result<Resp, std::convert::Infallible> =
+                match process_session(&state, cookie_value, return_to, request_type).await {
+                    SessionOutcome::Valid(claims, maybe_refresh_cookie) => {
+                        req.extensions_mut().insert(*claims);
+                        let mut resp = inner.call(req).await?;
+                        if let Some(set_cookie) = maybe_refresh_cookie {
+                            resp.headers_mut().append(
+                                header::SET_COOKIE,
+                                set_cookie.parse().expect("valid cookie"),
+                            );
+                        }
+                        Ok(resp)
+                    }
+                    SessionOutcome::Redirect(location, clear_cookie) => {
+                        let mut resp = (StatusCode::FOUND, "").into_response();
                         resp.headers_mut().append(
-                            header::SET_COOKIE,
-                            set_cookie.parse().expect("valid cookie"),
+                            header::LOCATION,
+                            location.parse().unwrap_or_else(|_| "/".parse().unwrap()),
                         );
+                        if let Some(c) = clear_cookie {
+                            resp.headers_mut()
+                                .append(header::SET_COOKIE, c.parse().expect("valid cookie"));
+                        }
+                        Ok(resp)
                     }
-                    Ok(resp)
-                }
-                SessionOutcome::Redirect(location, clear_cookie) => {
-                    let mut resp = (StatusCode::FOUND, "").into_response();
-                    resp.headers_mut().append(
-                        header::LOCATION,
-                        location.parse().unwrap_or_else(|_| "/".parse().unwrap()),
-                    );
-                    if let Some(c) = clear_cookie {
-                        resp.headers_mut()
-                            .append(header::SET_COOKIE, c.parse().expect("valid cookie"));
+                    SessionOutcome::Unauthorized(msg) => {
+                        Ok((StatusCode::UNAUTHORIZED, msg).into_response())
                     }
-                    Ok(resp)
-                }
-                SessionOutcome::Unauthorized(msg) => {
-                    Ok((StatusCode::UNAUTHORIZED, msg).into_response())
-                }
-                SessionOutcome::Unavailable => Ok((
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "Identity service unavailable",
-                )
-                    .into_response()),
-            }
+                    SessionOutcome::Unavailable => Ok((
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "Identity service unavailable",
+                    )
+                        .into_response()),
+                };
+            let mut response = response?;
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+            Ok(response)
         })
     }
 }
@@ -142,7 +153,7 @@ enum SessionOutcome {
 async fn process_session(
     state: &Arc<BrowserLayerState>,
     cookie_value: Option<&str>,
-    headers: &cli_framework::axum::http::HeaderMap,
+    return_to: &str,
     request_type: RequestType,
 ) -> SessionOutcome {
     let now_secs = SystemTime::now()
@@ -152,7 +163,7 @@ async fn process_session(
 
     let cookie_value = match cookie_value {
         Some(v) => v,
-        None => return redirect_to_login(state, headers, request_type).await,
+        None => return redirect_to_login(state, return_to, request_type).await,
     };
 
     let payload = match decrypt_cookie(state.cfg.session_key.as_bytes(), cookie_value) {
@@ -160,17 +171,17 @@ async fn process_session(
         Err(CookieError::UnknownVersion(_))
         | Err(CookieError::Invalid)
         | Err(CookieError::Tampered) => {
-            return redirect_to_login(state, headers, request_type).await;
+            return redirect_to_login(state, return_to, request_type).await;
         }
-        Err(_) => return redirect_to_login(state, headers, request_type).await,
+        Err(_) => return redirect_to_login(state, return_to, request_type).await,
     };
 
     // Check refresh token expiry (hard session boundary)
     let refresh_skew = state.cfg.clock_skew.as_secs() as i64;
-    if now_secs > payload.refresh_exp + refresh_skew {
+    if now_secs > payload.refresh_exp.saturating_add(refresh_skew) {
         tracing::info!(event = "session_expired");
         return match request_type {
-            RequestType::Navigation => redirect_to_login(state, headers, request_type).await,
+            RequestType::Navigation => redirect_to_login(state, return_to, request_type).await,
             RequestType::ApiFetch => {
                 SessionOutcome::Unauthorized(r#"{"error":"session_expired"}"#.to_string())
             }
@@ -183,7 +194,9 @@ async fn process_session(
             // Check if near expiry — proactive refresh
             let access_exp = claims.exp;
             let refresh_skew_secs = state.cfg.refresh_skew.as_secs() as i64;
-            if now_secs + refresh_skew_secs > access_exp {
+            if !payload.refresh_token.is_empty()
+                && now_secs.saturating_add(refresh_skew_secs) > access_exp
+            {
                 // Attempt in-handler token refresh
                 let token_ep = state.token_endpoint().await;
                 match refresh_tokens(
@@ -195,9 +208,18 @@ async fn process_session(
                 .await
                 {
                     Ok(new_tokens) => {
+                        let new_claims = match validate_access_token_str(
+                            &new_tokens.access_token,
+                            state,
+                        )
+                        .await
+                        {
+                            Ok(new_claims) if new_claims.sub == claims.sub => new_claims,
+                            _ => return SessionOutcome::Valid(Box::new(claims), None),
+                        };
                         tracing::info!(event = "refresh", sub = %claims.sub);
                         let new_exp = new_tokens.refresh_expires_in;
-                        let new_refresh_exp = now_secs + new_exp as i64;
+                        let new_refresh_exp = now_secs.saturating_add(new_exp as i64);
                         let new_cookie = encrypt_cookie(
                             state.cfg.session_key.as_bytes(),
                             &new_tokens.access_token,
@@ -205,17 +227,6 @@ async fn process_session(
                             new_refresh_exp,
                         )
                         .ok();
-
-                        // Re-validate the new access token to get fresh claims
-                        let new_claims = match validate_access_token_str(
-                            &new_tokens.access_token,
-                            state,
-                        )
-                        .await
-                        {
-                            Ok(c) => c,
-                            Err(_) => claims, // fallback to old claims
-                        };
 
                         let set_cookie_header = new_cookie.map(|v| {
                             build_session_cookie_header(state, &v, new_refresh_exp, now_secs)
@@ -234,7 +245,12 @@ async fn process_session(
             }
         }
         Err(_) => {
-            // Access token is invalid/expired — try refresh
+            // Establish the original signed identity even when exp has elapsed.
+            // Wrong signatures/issuer/audience/nbf never become refresh admission.
+            let previous = match verify_access_token(&payload.access_token, state, false).await {
+                Ok(previous) if !payload.refresh_token.is_empty() => previous,
+                _ => return redirect_to_login(state, return_to, request_type).await,
+            };
             let token_ep = state.token_endpoint().await;
             match refresh_tokens(
                 &state.http,
@@ -246,7 +262,7 @@ async fn process_session(
             {
                 Ok(new_tokens) => {
                     let new_exp = new_tokens.refresh_expires_in;
-                    let new_refresh_exp = now_secs + new_exp as i64;
+                    let new_refresh_exp = now_secs.saturating_add(new_exp as i64);
                     let new_cookie = encrypt_cookie(
                         state.cfg.session_key.as_bytes(),
                         &new_tokens.access_token,
@@ -255,21 +271,21 @@ async fn process_session(
                     )
                     .ok();
                     match validate_access_token_str(&new_tokens.access_token, state).await {
-                        Ok(claims) => {
+                        Ok(claims) if claims.sub == previous.sub => {
                             tracing::info!(event = "refresh", sub = %claims.sub);
                             let set_cookie = new_cookie.map(|v| {
                                 build_session_cookie_header(state, &v, new_refresh_exp, now_secs)
                             });
                             SessionOutcome::Valid(Box::new(claims), set_cookie)
                         }
-                        Err(_) => redirect_to_login(state, headers, request_type).await,
+                        _ => redirect_to_login(state, return_to, request_type).await,
                     }
                 }
                 Err(e) => {
                     tracing::warn!(event = "refresh_failure", error = e);
                     match request_type {
                         RequestType::Navigation => {
-                            redirect_to_login(state, headers, request_type).await
+                            redirect_to_login(state, return_to, request_type).await
                         }
                         RequestType::ApiFetch => SessionOutcome::Unauthorized(
                             r#"{"error":"session_expired"}"#.to_string(),
@@ -283,7 +299,7 @@ async fn process_session(
 
 async fn redirect_to_login(
     state: &Arc<BrowserLayerState>,
-    headers: &cli_framework::axum::http::HeaderMap,
+    return_to: &str,
     request_type: RequestType,
 ) -> SessionOutcome {
     if request_type == RequestType::ApiFetch {
@@ -294,8 +310,12 @@ async fn redirect_to_login(
     let challenge = derive_challenge(&verifier);
     let state_val = random_state();
 
-    // Determine return_to from the request path (not available here — callers pass headers only)
-    let return_to = extract_original_path(headers).unwrap_or_else(|| "/".to_string());
+    let return_to =
+        if return_to.len() <= 1024 && super::request_type::validate_return_to(return_to).is_ok() {
+            return_to.to_string()
+        } else {
+            "/".to_string()
+        };
 
     let auth_state = AuthState {
         state: state_val.clone(),
@@ -329,6 +349,10 @@ async fn redirect_to_login(
     {
         return SessionOutcome::Unavailable;
     }
+    let nonce = match state.begin_login(state_val.clone()).await {
+        Some(nonce) => nonce,
+        None => return SessionOutcome::Unavailable,
+    };
     auth_url.query_pairs_mut().extend_pairs([
         ("client_id", state.cfg.client_id.as_str()),
         ("redirect_uri", state.cfg.redirect_uri.as_str()),
@@ -337,6 +361,7 @@ async fn redirect_to_login(
         ("code_challenge", challenge.as_str()),
         ("code_challenge_method", "S256"),
         ("state", state_val.as_str()),
+        ("nonce", nonce.as_str()),
     ]);
 
     let secure_flag = super::secure_cookie_suffix(&state.cfg);
@@ -349,14 +374,6 @@ async fn redirect_to_login(
     SessionOutcome::Redirect(auth_url.into(), Some(auth_state_cookie))
 }
 
-fn extract_original_path(headers: &cli_framework::axum::http::HeaderMap) -> Option<String> {
-    // In practice the path is in the request URI, but since we only have headers here,
-    // we use a sensible default. The caller (BrowserSessionService) can be enhanced
-    // to pass the path; for now return None so the handler defaults to "/".
-    let _ = headers;
-    None
-}
-
 async fn validate_access_token(
     token: &str,
     state: &BrowserLayerState,
@@ -364,9 +381,17 @@ async fn validate_access_token(
     validate_access_token_str(token, state).await
 }
 
-async fn validate_access_token_str(
+pub(crate) async fn validate_access_token_str(
     token: &str,
     state: &BrowserLayerState,
+) -> Result<OidcClaims, String> {
+    verify_access_token(token, state, true).await
+}
+
+async fn verify_access_token(
+    token: &str,
+    state: &BrowserLayerState,
+    validate_exp: bool,
 ) -> Result<OidcClaims, String> {
     let header = jsonwebtoken::decode_header(token).map_err(|e| e.to_string())?;
 
@@ -382,7 +407,7 @@ async fn validate_access_token_str(
 
     let mut last_err = String::new();
     for key in &keys {
-        match try_decode_jwt(token, key, state) {
+        match try_decode_jwt(token, key, state, validate_exp) {
             Ok(claims) => return Ok(claims),
             Err(e) => last_err = e,
         }
@@ -394,6 +419,7 @@ fn try_decode_jwt(
     token: &str,
     key: &DecodingKey,
     state: &BrowserLayerState,
+    validate_exp: bool,
 ) -> Result<OidcClaims, String> {
     let mut validation = Validation::new(state.algorithms[0]);
     validation.algorithms = state.algorithms.clone();
@@ -401,6 +427,8 @@ fn try_decode_jwt(
     validation.set_required_spec_claims(crate::jwks::REQUIRED_SPEC_CLAIMS);
     crate::jwks::apply_audience_policy(&mut validation, &state.cfg.audience);
     validation.leeway = state.cfg.clock_skew.as_secs();
+    validation.validate_nbf = true;
+    validation.validate_exp = validate_exp;
 
     let data = jsonwebtoken::decode::<JsonValue>(token, key, &validation)
         .map_err(|e| crate::jwks::map_jwt_error(&e))?;
@@ -455,21 +483,30 @@ fn build_session_cookie_header(
     )
 }
 
-fn extract_cookie_header<'a>(
+pub(crate) fn extract_cookie_header<'a>(
     headers: &'a cli_framework::axum::http::HeaderMap,
     name: &str,
 ) -> Option<&'a str> {
-    let v = headers.get(header::COOKIE)?;
-    let s = v.to_str().ok()?;
-    for pair in s.split(';') {
-        let pair = pair.trim();
-        if let Some(rest) = pair.strip_prefix(name) {
-            if let Some(val) = rest.strip_prefix('=') {
-                return Some(val);
+    let mut found = None;
+    let mut bytes = 0usize;
+    for value in headers.get_all(header::COOKIE) {
+        let value = value.to_str().ok()?;
+        bytes = bytes.saturating_add(value.len());
+        if bytes > 16 * 1024 {
+            return None;
+        }
+        for pair in value.split(';') {
+            if let Some((key, value)) = pair.trim().split_once('=') {
+                if key == name {
+                    if found.is_some() || value.is_empty() {
+                        return None;
+                    }
+                    found = Some(value);
+                }
             }
         }
     }
-    None
+    found
 }
 
 /// Owned version of extract_cookie_header for use by dual.rs.
@@ -493,7 +530,11 @@ pub(crate) async fn validate_jwt_from_cookie(
         .unwrap_or_default()
         .as_secs() as i64;
 
-    if now_secs > payload.refresh_exp + state.cfg.clock_skew.as_secs() as i64 {
+    if now_secs
+        > payload
+            .refresh_exp
+            .saturating_add(state.cfg.clock_skew.as_secs() as i64)
+    {
         return Err("session_expired".to_string());
     }
 

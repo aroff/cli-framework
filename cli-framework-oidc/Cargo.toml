@@ -109,6 +109,11 @@ name = "keycloak_cli"
 path = "examples/keycloak_cli.rs"
 required-features = ["client"]
 
+[[example]]
+name = "browser_session"
+path = "examples/browser_session.rs"
+required-features = ["browser"]
+
 [[test]]
 name = "config_validation"
 path = "tests/config_validation.rs"
@@ -137,6 +142,11 @@ required-features = ["server", "test-support"]
 name = "browser_validation"
 path = "tests/browser_validation.rs"
 required-features = ["browser"]
+
+[[test]]
+name = "browser_login"
+path = "tests/browser_login.rs"
+required-features = ["browser", "test-support"]
 
 [dev-dependencies]
 tokio = { version = "1.52", features = ["full"] }

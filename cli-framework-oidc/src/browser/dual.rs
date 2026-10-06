@@ -22,6 +22,7 @@ type Req = Request<Body>;
 #[derive(Clone)]
 pub(crate) struct DualModeLayer {
     pub state: Arc<BrowserLayerState>,
+    pub audience: super::AudiencePolicy,
 }
 
 impl<S> Layer<S> for DualModeLayer
@@ -39,6 +40,7 @@ where
         DualModeService {
             inner,
             state: self.state.clone(),
+            audience: self.audience.clone(),
         }
     }
 }
@@ -47,6 +49,7 @@ where
 pub(crate) struct DualModeService<S> {
     inner: S,
     state: Arc<BrowserLayerState>,
+    audience: super::AudiencePolicy,
 }
 
 impl<S> Service<Req> for DualModeService<S>
@@ -68,6 +71,7 @@ where
 
     fn call(&mut self, mut req: Req) -> Self::Future {
         let state = self.state.clone();
+        let audience = self.audience.clone();
         let inner = self.inner.clone();
         let mut inner = std::mem::replace(&mut self.inner, inner);
 
@@ -84,7 +88,7 @@ where
                     )
                         .into_response());
                 };
-                match validate_bearer_token(bearer, &state).await {
+                match validate_bearer_token(bearer, &state, &audience).await {
                     Ok(claims) => {
                         req.extensions_mut().insert(claims);
                         return inner.call(req).await;
@@ -139,6 +143,7 @@ fn extract_bearer(headers: &cli_framework::axum::http::HeaderMap) -> Option<&str
 async fn validate_bearer_token(
     token: &str,
     state: &Arc<BrowserLayerState>,
+    audience: &super::AudiencePolicy,
 ) -> Result<OidcClaims, Response> {
     use cli_framework::axum::response::IntoResponse;
     use jsonwebtoken::Validation;
@@ -189,7 +194,8 @@ async fn validate_bearer_token(
         val.algorithms = state.algorithms.clone();
         val.set_issuer(&[&state.cfg.issuer_url]);
         val.set_required_spec_claims(crate::jwks::REQUIRED_SPEC_CLAIMS);
-        crate::jwks::apply_audience_policy(&mut val, &state.api_audience);
+        crate::jwks::apply_audience_policy(&mut val, audience);
+        val.validate_nbf = true;
         val.leeway = state.cfg.clock_skew.as_secs();
 
         match jsonwebtoken::decode::<JsonValue>(token, key, &val) {

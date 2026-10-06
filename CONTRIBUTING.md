@@ -66,7 +66,10 @@ OIDC browser/server discovery and JWKS share `cli-framework-oidc/src/jwks.rs`
 for no-redirect HTTP clients, bounded response reads and request deadlines.
 `endpoint_security.rs` validates credential-bearing endpoint URLs across OIDC
 features. Browser login uses discovered authorization metadata; cookie crypto
-enforces actual value bounds. Browser session lifecycle qualification remains
+enforces actual value bounds. `browser::OidcBrowserSession` shares discovery and
+single-use, expiring login state across UI/API layers; `browser/id_token.rs`
+validates signed ID-token identity, nonce and optional access-token hashes.
+Browser session lifecycle qualification remains
 separate from these transport safeguards; see the OIDC crate README.
 
 The OIDC client's loopback callback lives in `cli-framework-oidc/src/client/callback.rs`:

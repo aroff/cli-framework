@@ -4,14 +4,27 @@ use jsonwebtoken::Algorithm;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, OnceCell};
 
-use crate::types::AudiencePolicy;
+use std::collections::HashMap;
+
+const LOGIN_TTL: Duration = Duration::from_secs(600);
+const MAX_PENDING_LOGINS: usize = 1024;
+
+pub(crate) struct PendingLogin {
+    pub nonce: String,
+    deadline: Instant,
+}
+
+impl PendingLogin {
+    pub fn is_live(&self) -> bool {
+        self.deadline > Instant::now()
+    }
+}
 
 pub(crate) struct BrowserLayerState {
     pub cfg: super::OidcBrowserSessionConfig,
     /// HMAC key derived from session_key (not stored in cfg to keep it separate).
     pub hmac_key: [u8; 32],
-    /// Audience policy used by the dual-mode API layer (may differ from cfg.audience).
-    pub api_audience: AudiencePolicy,
+    pub pending_logins: Mutex<HashMap<String, PendingLogin>>,
     pub algorithms: Vec<Algorithm>,
     pub jwks_cache: Mutex<JwksCache>,
     pub discovery: OnceCell<OidcDiscovery>,
@@ -21,6 +34,29 @@ pub(crate) struct BrowserLayerState {
 }
 
 impl BrowserLayerState {
+    pub async fn begin_login(&self, state: String) -> Option<String> {
+        let mut pending = self.pending_logins.lock().await;
+        let now = Instant::now();
+        pending.retain(|_, login| login.deadline > now);
+        if pending.len() >= MAX_PENDING_LOGINS || pending.contains_key(&state) {
+            return None;
+        }
+        let nonce = super::auth_state::random_state();
+        pending.insert(
+            state,
+            PendingLogin {
+                nonce: nonce.clone(),
+                deadline: now + LOGIN_TTL,
+            },
+        );
+        Some(nonce)
+    }
+
+    /// Remove before any provider I/O; simultaneous or failed callbacks cannot replay.
+    pub async fn consume_login(&self, state: &str) -> Option<PendingLogin> {
+        let login = self.pending_logins.lock().await.remove(state)?;
+        login.is_live().then_some(login)
+    }
     pub async fn authorization_endpoint(&self) -> Result<String, String> {
         self.discovery()
             .await?
@@ -129,5 +165,67 @@ impl BrowserLayerState {
         }
         let disc = self.discovery().await?;
         Ok(disc.jwks_uri.clone())
+    }
+}
+
+#[cfg(test)]
+mod login_tests {
+    use super::*;
+    use crate::browser::{
+        AudiencePolicy, OidcBrowserSession, OidcBrowserSessionConfig, SessionKey,
+    };
+
+    fn session_runtime() -> OidcBrowserSession {
+        OidcBrowserSession::new(OidcBrowserSessionConfig::new(
+            "https://issuer.example",
+            "client",
+            "https://app.example/callback",
+            SessionKey::from_bytes([7; 32]),
+            AudiencePolicy::Require("api".into()),
+        ))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn pending_logins_are_bounded_expiring_and_consumed_once() {
+        let runtime = session_runtime();
+        let state = &runtime.state;
+        for index in 0..MAX_PENDING_LOGINS {
+            assert!(state.begin_login(index.to_string()).await.is_some());
+        }
+        assert!(state.begin_login("overflow".into()).await.is_none());
+        assert!(state.begin_login("0".into()).await.is_none());
+        state
+            .pending_logins
+            .lock()
+            .await
+            .get_mut("0")
+            .unwrap()
+            .deadline = Instant::now();
+        assert!(state.consume_login("0").await.is_none());
+        assert!(state.begin_login("replacement".into()).await.is_some());
+        assert!(state.consume_login("replacement").await.is_some());
+        assert!(state.consume_login("replacement").await.is_none());
+        assert!(state.consume_login("never-issued").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn cloned_runtimes_share_pending_state_and_restart_invalidates_it() {
+        let runtime = session_runtime();
+        assert!(runtime.state.begin_login("issued".into()).await.is_some());
+        let clone = runtime.clone();
+        assert!(clone.state.consume_login("issued").await.is_some());
+        assert!(runtime.state.consume_login("issued").await.is_none());
+        assert!(runtime
+            .state
+            .begin_login("before-restart".into())
+            .await
+            .is_some());
+        let restarted = session_runtime();
+        assert!(restarted
+            .state
+            .consume_login("before-restart")
+            .await
+            .is_none());
     }
 }
