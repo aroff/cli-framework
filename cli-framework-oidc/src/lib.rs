@@ -32,21 +32,11 @@ pub enum OidcConfigError {
 /// Validate that a JWKS URI is secure: must be https, or http to loopback only.
 #[cfg(any(feature = "server", feature = "browser"))]
 pub(crate) fn validate_jwks_uri(uri: &str) -> Result<(), OidcConfigError> {
-    let url =
-        url::Url::parse(uri).map_err(|e| OidcConfigError::InvalidJwksUri(format!("{uri}: {e}")))?;
-    let scheme = url.scheme();
-    let host = url.host_str().unwrap_or("");
-    let is_loopback = host == "127.0.0.1" || host == "localhost" || host == "[::1]";
-    if scheme == "http" && !is_loopback {
-        return Err(OidcConfigError::InvalidJwksUri(format!(
-            "insecure JWKS URI (non-loopback http): {uri}"
-        )));
-    }
-    if scheme != "https" && !(scheme == "http" && is_loopback) {
-        return Err(OidcConfigError::InvalidJwksUri(format!(
-            "unsupported scheme in JWKS URI: {uri}"
-        )));
-    }
+    crate::endpoint_security::secure_endpoint(uri).map_err(|_| {
+        OidcConfigError::InvalidJwksUri(
+            "endpoint must be credential-free HTTPS or loopback HTTP".into(),
+        )
+    })?;
     Ok(())
 }
 
@@ -57,8 +47,18 @@ pub(crate) fn validate_jwks_uri(uri: &str) -> Result<(), OidcConfigError> {
 /// - Strips default ports (443 for https, 80 for http).
 /// - Strips trailing slash.
 pub fn normalize_issuer(raw: &str) -> Result<String, OidcConfigError> {
-    let url =
-        url::Url::parse(raw).map_err(|e| OidcConfigError::InsecureIssuer(format!("{raw}: {e}")))?;
+    let url = url::Url::parse(raw)
+        .map_err(|_| OidcConfigError::InsecureIssuer("invalid issuer URL".into()))?;
+    if url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(OidcConfigError::InsecureIssuer(
+            "issuer must not contain credentials, query or fragment".into(),
+        ));
+    }
     let scheme = url.scheme();
     let host = url.host_str().unwrap_or("");
 
@@ -115,7 +115,7 @@ pub mod pkce;
 #[cfg(feature = "client")]
 pub mod client;
 
-#[cfg(feature = "client")]
+#[cfg(any(feature = "client", feature = "server", feature = "browser"))]
 mod endpoint_security;
 
 /// Native RP-initiated logout URL preparation; browser launch remains host-owned.

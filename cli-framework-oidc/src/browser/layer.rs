@@ -119,6 +119,11 @@ where
                 SessionOutcome::Unauthorized(msg) => {
                     Ok((StatusCode::UNAUTHORIZED, msg).into_response())
                 }
+                SessionOutcome::Unavailable => Ok((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Identity service unavailable",
+                )
+                    .into_response()),
             }
         })
     }
@@ -131,6 +136,7 @@ enum SessionOutcome {
     Redirect(String, Option<String>),
     /// API request with hard session end.
     Unauthorized(String),
+    Unavailable,
 }
 
 async fn process_session(
@@ -146,7 +152,7 @@ async fn process_session(
 
     let cookie_value = match cookie_value {
         Some(v) => v,
-        None => return redirect_to_login(state, headers, request_type),
+        None => return redirect_to_login(state, headers, request_type).await,
     };
 
     let payload = match decrypt_cookie(state.cfg.session_key.as_bytes(), cookie_value) {
@@ -154,9 +160,9 @@ async fn process_session(
         Err(CookieError::UnknownVersion(_))
         | Err(CookieError::Invalid)
         | Err(CookieError::Tampered) => {
-            return redirect_to_login(state, headers, request_type);
+            return redirect_to_login(state, headers, request_type).await;
         }
-        Err(_) => return redirect_to_login(state, headers, request_type),
+        Err(_) => return redirect_to_login(state, headers, request_type).await,
     };
 
     // Check refresh token expiry (hard session boundary)
@@ -164,7 +170,7 @@ async fn process_session(
     if now_secs > payload.refresh_exp + refresh_skew {
         tracing::info!(event = "session_expired");
         return match request_type {
-            RequestType::Navigation => redirect_to_login(state, headers, request_type),
+            RequestType::Navigation => redirect_to_login(state, headers, request_type).await,
             RequestType::ApiFetch => {
                 SessionOutcome::Unauthorized(r#"{"error":"session_expired"}"#.to_string())
             }
@@ -256,13 +262,15 @@ async fn process_session(
                             });
                             SessionOutcome::Valid(Box::new(claims), set_cookie)
                         }
-                        Err(_) => redirect_to_login(state, headers, request_type),
+                        Err(_) => redirect_to_login(state, headers, request_type).await,
                     }
                 }
                 Err(e) => {
                     tracing::warn!(event = "refresh_failure", error = e);
                     match request_type {
-                        RequestType::Navigation => redirect_to_login(state, headers, request_type),
+                        RequestType::Navigation => {
+                            redirect_to_login(state, headers, request_type).await
+                        }
                         RequestType::ApiFetch => SessionOutcome::Unauthorized(
                             r#"{"error":"session_expired"}"#.to_string(),
                         ),
@@ -273,7 +281,7 @@ async fn process_session(
     }
 }
 
-fn redirect_to_login(
+async fn redirect_to_login(
     state: &Arc<BrowserLayerState>,
     headers: &cli_framework::axum::http::HeaderMap,
     request_type: RequestType,
@@ -296,25 +304,49 @@ fn redirect_to_login(
     };
     let auth_state_cookie_val = encode_auth_state(&auth_state, &state.hmac_key);
 
-    let auth_url = format!(
-        "{}/protocol/openid-connect/auth?client_id={}&redirect_uri={}&response_type=code&scope=openid+profile+email&code_challenge={}&code_challenge_method=S256&state={}",
-        state.cfg.issuer_url,
-        url_encode(&state.cfg.client_id),
-        url_encode(&state.cfg.redirect_uri),
-        url_encode(&challenge),
-        url_encode(&state_val),
-    );
+    let endpoint = match state.authorization_endpoint().await {
+        Ok(endpoint) => endpoint,
+        Err(_) => return SessionOutcome::Unavailable,
+    };
+    let mut auth_url = match url::Url::parse(&endpoint) {
+        Ok(url) => url,
+        Err(_) => return SessionOutcome::Unavailable,
+    };
+    // Reserved parameters must occur exactly once even if discovery contains a query.
+    let reserved = [
+        "client_id",
+        "redirect_uri",
+        "response_type",
+        "scope",
+        "code_challenge",
+        "code_challenge_method",
+        "state",
+        "nonce",
+    ];
+    if auth_url
+        .query_pairs()
+        .any(|(name, _)| reserved.contains(&name.as_ref()))
+    {
+        return SessionOutcome::Unavailable;
+    }
+    auth_url.query_pairs_mut().extend_pairs([
+        ("client_id", state.cfg.client_id.as_str()),
+        ("redirect_uri", state.cfg.redirect_uri.as_str()),
+        ("response_type", "code"),
+        ("scope", "openid profile email"),
+        ("code_challenge", challenge.as_str()),
+        ("code_challenge_method", "S256"),
+        ("state", state_val.as_str()),
+    ]);
 
-    let is_loopback = state.cfg.redirect_uri.starts_with("http://127.0.0.1")
-        || state.cfg.redirect_uri.starts_with("http://localhost");
-    let secure_flag = if is_loopback { "" } else { "; Secure" };
+    let secure_flag = super::secure_cookie_suffix(&state.cfg);
 
     let auth_state_cookie = format!(
-        "__auth_state={}; HttpOnly{}; SameSite=Lax; Path=/callback; Max-Age=600",
-        auth_state_cookie_val, secure_flag
+        "__auth_state={}; HttpOnly{}; SameSite=Lax; Path={}; Max-Age=600",
+        auth_state_cookie_val, secure_flag, state.cfg.callback_path
     );
 
-    SessionOutcome::Redirect(auth_url, Some(auth_state_cookie))
+    SessionOutcome::Redirect(auth_url.into(), Some(auth_state_cookie))
 }
 
 fn extract_original_path(headers: &cli_framework::axum::http::HeaderMap) -> Option<String> {
@@ -416,9 +448,7 @@ fn build_session_cookie_header(
 ) -> String {
     let from_exp = (refresh_exp - now_secs).max(0) as u64;
     let max_age = from_exp.min(state.cfg.session_ttl.as_secs());
-    let is_loopback = state.cfg.redirect_uri.starts_with("http://127.0.0.1")
-        || state.cfg.redirect_uri.starts_with("http://localhost");
-    let secure = if is_loopback { "" } else { "; Secure" };
+    let secure = super::secure_cookie_suffix(&state.cfg);
     format!(
         "{}={}; HttpOnly{}; SameSite=Lax; Path=/; Max-Age={}",
         state.cfg.cookie_name, cookie_value, secure, max_age
@@ -468,13 +498,4 @@ pub(crate) async fn validate_jwt_from_cookie(
     }
 
     validate_access_token_str(&payload.access_token, state).await
-}
-
-fn url_encode(s: &str) -> String {
-    s.chars()
-        .flat_map(|c| match c {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => vec![c],
-            c => format!("%{:02X}", c as u32).chars().collect(),
-        })
-        .collect()
 }

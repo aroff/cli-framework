@@ -17,7 +17,6 @@ pub struct CallbackParams {
     pub code: Option<String>,
     pub state: Option<String>,
     pub error: Option<String>,
-    pub error_description: Option<String>,
 }
 
 pub async fn handle_callback(
@@ -25,18 +24,10 @@ pub async fn handle_callback(
     Query(params): Query<CallbackParams>,
     headers: cli_framework::axum::http::HeaderMap,
 ) -> Response {
-    // Keycloak returned an error
-    if let Some(ref err) = params.error {
-        let desc = params
-            .error_description
-            .as_deref()
-            .unwrap_or("authorization failed");
-        tracing::warn!(event = "login_error", error = err, description = desc);
-        return (
-            StatusCode::BAD_REQUEST,
-            format!("Login failed: {err}: {desc}"),
-        )
-            .into_response();
+    // Treat provider-supplied error text as untrusted and potentially sensitive.
+    if params.error.is_some() {
+        tracing::warn!(event = "login_error");
+        return (StatusCode::BAD_REQUEST, "Login failed").into_response();
     }
 
     let code = match params.code {
@@ -70,7 +61,7 @@ pub async fn handle_callback(
             // Clear the bad __auth_state cookie
             resp.headers_mut().append(
                 header::SET_COOKIE,
-                clear_cookie("__auth_state", "/callback")
+                clear_cookie("__auth_state", &state.cfg.callback_path)
                     .parse()
                     .expect("valid header"),
             );
@@ -84,7 +75,7 @@ pub async fn handle_callback(
         let mut resp = (StatusCode::BAD_REQUEST, "State mismatch").into_response();
         resp.headers_mut().append(
             header::SET_COOKIE,
-            clear_cookie("__auth_state", "/callback")
+            clear_cookie("__auth_state", &state.cfg.callback_path)
                 .parse()
                 .expect("valid header"),
         );
@@ -133,9 +124,7 @@ pub async fn handle_callback(
         from_exp.min(state.cfg.session_ttl.as_secs())
     };
 
-    let is_loopback = state.cfg.redirect_uri.starts_with("http://127.0.0.1")
-        || state.cfg.redirect_uri.starts_with("http://localhost");
-    let secure_flag = if is_loopback { "" } else { "; Secure" };
+    let secure_flag = super::secure_cookie_suffix(&state.cfg);
 
     let session_cookie = format!(
         "{}={}; HttpOnly{}; SameSite=Lax; Path=/; Max-Age={}",
@@ -163,7 +152,7 @@ pub async fn handle_callback(
     // Clear the auth state cookie
     headers.append(
         header::SET_COOKIE,
-        clear_cookie("__auth_state", "/callback")
+        clear_cookie("__auth_state", &state.cfg.callback_path)
             .parse()
             .expect("valid header"),
     );
@@ -203,9 +192,7 @@ pub async fn handle_logout(
         "/".to_string()
     };
 
-    let is_loopback = state.cfg.redirect_uri.starts_with("http://127.0.0.1")
-        || state.cfg.redirect_uri.starts_with("http://localhost");
-    let secure_flag = if is_loopback { "" } else { "; Secure" };
+    let secure_flag = super::secure_cookie_suffix(&state.cfg);
 
     let clear_session = format!(
         "{}=; Max-Age=0; HttpOnly{}; SameSite=Lax; Path=/",
@@ -298,6 +285,8 @@ async fn exchange_code(
     verifier: &str,
     redirect_uri: &str,
 ) -> Result<TokenResponse, String> {
+    crate::endpoint_security::secure_endpoint(token_endpoint)
+        .map_err(|_| "invalid token endpoint")?;
     let params = [
         ("grant_type", "authorization_code"),
         ("client_id", client_id),
@@ -311,16 +300,9 @@ async fn exchange_code(
         .form(&params)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| "token request failed")?;
 
-    let status = resp.status();
-    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-
-    if !status.is_success() {
-        let err = body["error"].as_str().unwrap_or("unknown");
-        let desc = body["error_description"].as_str().unwrap_or("");
-        return Err(format!("{err}: {desc}"));
-    }
+    let body = crate::jwks::bounded_json(resp, 64 * 1024).await?;
 
     Ok(TokenResponse {
         access_token: body["access_token"]
@@ -341,6 +323,8 @@ pub(crate) async fn refresh_tokens(
     client_id: &str,
     refresh_token: &str,
 ) -> Result<TokenResponse, String> {
+    crate::endpoint_security::secure_endpoint(token_endpoint)
+        .map_err(|_| "invalid token endpoint")?;
     let params = [
         ("grant_type", "refresh_token"),
         ("client_id", client_id),
@@ -352,16 +336,9 @@ pub(crate) async fn refresh_tokens(
         .form(&params)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| "token request failed")?;
 
-    let status = resp.status();
-    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-
-    if !status.is_success() {
-        let err = body["error"].as_str().unwrap_or("unknown");
-        let desc = body["error_description"].as_str().unwrap_or("");
-        return Err(format!("{err}: {desc}"));
-    }
+    let body = crate::jwks::bounded_json(resp, 64 * 1024).await?;
 
     Ok(TokenResponse {
         access_token: body["access_token"]

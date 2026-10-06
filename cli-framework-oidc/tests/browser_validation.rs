@@ -13,6 +13,285 @@ fn test_key() -> [u8; 32] {
     [42u8; 32]
 }
 
+fn browser_config(issuer: &str) -> cli_framework_oidc::browser::OidcBrowserSessionConfig {
+    cli_framework_oidc::browser::OidcBrowserSessionConfig::new(
+        issuer,
+        "client ü & +",
+        "https://app.example/auth/callback",
+        test_session_key(),
+        cli_framework_oidc::browser::AudiencePolicy::Unchecked,
+    )
+}
+
+#[tokio::test]
+async fn token_exchange_rejects_redirects_error_status_and_large_bodies() {
+    use tower::ServiceExt;
+    use wiremock::{
+        matchers::{method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
+    let destination = MockServer::start().await;
+    Mock::given(path("/capture"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&destination)
+        .await;
+    let responses = [
+        ResponseTemplate::new(307)
+            .insert_header("Location", format!("{}/capture", destination.uri())),
+        ResponseTemplate::new(400).set_body_json(
+            serde_json::json!({"access_token": "secret-access", "refresh_token": "secret-refresh"}),
+        ),
+        ResponseTemplate::new(200).set_body_string("x".repeat(64 * 1024 + 1)),
+    ];
+    for token_response in responses {
+        let provider = MockServer::start().await;
+        let issuer = provider.uri();
+        Mock::given(path("/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issuer": issuer,
+                "authorization_endpoint": format!("{issuer}/login"),
+                "token_endpoint": format!("{issuer}/token"),
+                "jwks_uri": format!("{issuer}/keys")
+            })))
+            .expect(1)
+            .mount(&provider)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(token_response)
+            .expect(1)
+            .mount(&provider)
+            .await;
+        let signed = encode_auth_state(
+            &AuthState {
+                state: "expected-state".into(),
+                verifier: generate_verifier(),
+                return_to: "/".into(),
+            },
+            &derive_hmac_key(&test_key()),
+        );
+        let response = browser_app(&issuer)
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/auth/callback?state=expected-state&code=secret-code")
+                    .header("cookie", format!("__auth_state={signed}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
+        assert!(!response.headers().contains_key("set-cookie"));
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), b"Token exchange failed");
+    }
+}
+
+#[tokio::test]
+async fn invalid_callback_state_clears_the_configured_cookie_path() {
+    use tower::ServiceExt;
+    let response = browser_app("https://provider.example")
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/auth/callback?state=invalid&code=code")
+                .header("cookie", "__auth_state=tampered")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    let cookie = response.headers()["set-cookie"].to_str().unwrap();
+    assert!(cookie.contains("Path=/auth/callback"));
+    assert!(cookie.contains("Max-Age=0"));
+}
+
+fn browser_app(issuer: &str) -> axum::Router {
+    use tower::Layer;
+    let mut cfg = browser_config(issuer);
+    cfg.callback_path = "/auth/callback".into();
+    let parts = cli_framework_oidc::browser::oidc_browser_session_layer(cfg).unwrap();
+    let protected = axum::Router::new().route("/", axum::routing::get(|| async { "protected" }));
+    parts
+        .callback_router
+        .fallback_service(parts.layer.layer(protected))
+}
+
+async fn navigate(app: axum::Router) -> axum::response::Response {
+    use tower::ServiceExt;
+    app.oneshot(
+        axum::http::Request::builder()
+            .uri("/")
+            .header("accept", "text/html")
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn navigation_uses_discovered_endpoint_and_encodes_parameters() {
+    use wiremock::{matchers::path, Mock, MockServer, ResponseTemplate};
+    let provider = MockServer::start().await;
+    let issuer = provider.uri();
+    Mock::given(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "issuer": issuer,
+            "authorization_endpoint": format!("{issuer}/custom-login?tenant=one"),
+            "token_endpoint": format!("{issuer}/token"),
+            "jwks_uri": format!("{issuer}/keys")
+        })))
+        .expect(1)
+        .mount(&provider)
+        .await;
+    let response = navigate(browser_app(&issuer)).await;
+    assert_eq!(response.status(), axum::http::StatusCode::FOUND);
+    let url = url::Url::parse(response.headers()["location"].to_str().unwrap()).unwrap();
+    assert_eq!(url.path(), "/custom-login");
+    let pairs: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+    assert_eq!(pairs["tenant"], "one");
+    assert_eq!(pairs["client_id"], "client ü & +");
+    assert_eq!(pairs["redirect_uri"], "https://app.example/auth/callback");
+    assert_eq!(pairs["code_challenge_method"], "S256");
+    assert_eq!(pairs["state"].len(), 43);
+    let cookie = response.headers()["set-cookie"].to_str().unwrap();
+    assert!(cookie.contains("; Secure;"));
+    assert!(cookie.contains("Path=/auth/callback;"));
+}
+
+#[tokio::test]
+async fn unusable_discovery_fails_without_issuing_state() {
+    use wiremock::{matchers::path, Mock, MockServer, ResponseTemplate};
+    for endpoint in [
+        None,
+        Some("http://remote.example/login"),
+        Some("https://user@provider.example/login"),
+        Some("https://provider.example/login?state=override"),
+    ] {
+        let provider = MockServer::start().await;
+        let issuer = provider.uri();
+        Mock::given(path("/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issuer": issuer,
+                "authorization_endpoint": endpoint,
+                "token_endpoint": format!("{issuer}/token"),
+                "jwks_uri": format!("{issuer}/keys")
+            })))
+            .expect(1)
+            .mount(&provider)
+            .await;
+        let response = navigate(browser_app(&issuer)).await;
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "{endpoint:?}"
+        );
+        assert!(!response.headers().contains_key("set-cookie"));
+        assert!(!response.headers().contains_key("location"));
+    }
+}
+
+#[tokio::test]
+async fn discovery_redirect_does_not_contact_destination() {
+    use wiremock::{matchers::path, Mock, MockServer, ResponseTemplate};
+    let provider = MockServer::start().await;
+    let destination = MockServer::start().await;
+    Mock::given(path("/redirected"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&destination)
+        .await;
+    Mock::given(path("/.well-known/openid-configuration"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("Location", format!("{}/redirected", destination.uri())),
+        )
+        .expect(1)
+        .mount(&provider)
+        .await;
+    let response = navigate(browser_app(&provider.uri())).await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    );
+}
+
+#[test]
+fn actual_cookie_budget_rejects_oversized_sealed_values() {
+    use cli_framework_oidc::browser::cookie::CookieError;
+    assert!(matches!(
+        encrypt_cookie(&test_key(), &"x".repeat(2048), &"r".repeat(64), 123),
+        Err(CookieError::TooLarge)
+    ));
+    assert!(matches!(
+        decrypt_cookie(&test_key(), &"x".repeat(3801)),
+        Err(CookieError::TooLarge)
+    ));
+    assert!(encrypt_cookie(&test_key(), "access", "refresh", 123).is_ok());
+}
+
+#[test]
+fn browser_configuration_rejects_unsafe_callback_and_cookie_paths() {
+    use cli_framework_oidc::browser::oidc_browser_session_layer;
+    for callback in [
+        "https://user@app.example/auth/callback",
+        "https://app.example/auth/callback?query=1",
+        "https://app.example/auth/callback#fragment",
+        "http://app.example/auth/callback",
+    ] {
+        let mut cfg = browser_config("https://provider.example");
+        cfg.callback_path = "/auth/callback".into();
+        cfg.redirect_uri = callback.into();
+        assert!(oidc_browser_session_layer(cfg).is_err(), "{callback}");
+    }
+    let mut cfg = browser_config("https://provider.example");
+    cfg.callback_path = "/auth/callback".into();
+    cfg.cookie_name = "session; injected=value".into();
+    assert!(oidc_browser_session_layer(cfg).is_err());
+}
+
+#[tokio::test]
+async fn malformed_authorization_is_rejected_before_cookie_or_network() {
+    use tower::{Layer, ServiceExt};
+    use wiremock::MockServer;
+    let provider = MockServer::start().await;
+    let mut cfg = browser_config(&provider.uri());
+    cfg.callback_path = "/auth/callback".into();
+    let layer =
+        cli_framework_oidc::browser::oidc_dual_mode_layer(&cfg, cfg.audience.clone()).unwrap();
+    let app =
+        layer.layer(axum::Router::new().route("/", axum::routing::get(|| async { "protected" })));
+    for values in [
+        vec!["Basic abc"],
+        vec!["Bearer "],
+        vec!["Bearer a b"],
+        vec!["éééé abc"],
+        vec!["Bearer a", "Bearer b"],
+    ] {
+        let mut request = axum::http::Request::builder()
+            .uri("/")
+            .header("cookie", "session=offered");
+        for value in values {
+            request = request.header("authorization", value);
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(axum::body::Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.headers()["www-authenticate"],
+            "Bearer error=\"invalid_request\""
+        );
+    }
+    assert!(provider.received_requests().await.unwrap().is_empty());
+}
+
 fn test_session_key() -> SessionKey {
     SessionKey::from_bytes(test_key())
 }
@@ -40,10 +319,10 @@ fn test_cookie_tamper_detection() {
     let encrypted = encrypt_cookie(&key, "token", "refresh", 9999999999).expect("encrypt");
 
     // Flip a byte in the middle of the base64
-    let mut tampered = encrypted.clone();
-    let mid = tampered.len() / 2;
-    let bytes = unsafe { tampered.as_bytes_mut() };
-    bytes[mid] ^= 0xFF;
+    let mut bytes = encrypted.into_bytes();
+    let mid = bytes.len() / 2;
+    bytes[mid] = if bytes[mid] == b'A' { b'B' } else { b'A' };
+    let tampered = String::from_utf8(bytes).unwrap();
 
     let result = decrypt_cookie(&key, &tampered);
     assert!(result.is_err(), "tampered cookie should fail decryption");
@@ -143,9 +422,9 @@ fn test_auth_state_hmac_reject_on_tamper() {
 
     // Flip a character in the payload portion (before the last '.')
     let dot = encoded.rfind('.').unwrap();
-    let mut tampered = encoded.clone();
-    let bytes = unsafe { tampered.as_bytes_mut() };
-    bytes[dot - 1] ^= 0x01;
+    let mut bytes = encoded.into_bytes();
+    bytes[dot - 1] = if bytes[dot - 1] == b'A' { b'B' } else { b'A' };
+    let tampered = String::from_utf8(bytes).unwrap();
 
     let result = decode_auth_state(&tampered, &hmac_key);
     assert!(result.is_none(), "tampered auth state should be rejected");

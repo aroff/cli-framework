@@ -62,6 +62,13 @@ Also: `auth` (feature `auth`) — `TokenProvider` trait, `AccessToken`, `AuthErr
 
 **Security (summary):** sanitize untrusted terminal output; command risk tier policy; plugin paths rooted (no traversal).
 
+OIDC browser/server discovery and JWKS share `cli-framework-oidc/src/jwks.rs`
+for no-redirect HTTP clients, bounded response reads and request deadlines.
+`endpoint_security.rs` validates credential-bearing endpoint URLs across OIDC
+features. Browser login uses discovered authorization metadata; cookie crypto
+enforces actual value bounds. Browser session lifecycle qualification remains
+separate from these transport safeguards; see the OIDC crate README.
+
 The OIDC client's loopback callback lives in `cli-framework-oidc/src/client/callback.rs`:
 bounded asynchronous reception owns its sockets for cancellation, validates the
 request path/state/code, and constructs unambiguous PKCE authorization queries.

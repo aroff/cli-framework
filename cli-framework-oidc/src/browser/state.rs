@@ -21,6 +21,13 @@ pub(crate) struct BrowserLayerState {
 }
 
 impl BrowserLayerState {
+    pub async fn authorization_endpoint(&self) -> Result<String, String> {
+        self.discovery()
+            .await?
+            .authorization_endpoint
+            .clone()
+            .ok_or_else(|| "missing authorization endpoint".into())
+    }
     pub async fn token_endpoint(&self) -> String {
         self.discovery()
             .await

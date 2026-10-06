@@ -75,7 +75,15 @@ where
             let headers = req.headers().clone();
 
             // 1. Try Bearer header first
-            if let Some(bearer) = extract_bearer(&headers) {
+            if headers.contains_key(header::AUTHORIZATION) {
+                let Some(bearer) = extract_bearer(&headers) else {
+                    return Ok((
+                        StatusCode::UNAUTHORIZED,
+                        [(header::WWW_AUTHENTICATE, "Bearer error=\"invalid_request\"")],
+                        "",
+                    )
+                        .into_response());
+                };
                 match validate_bearer_token(bearer, &state).await {
                     Ok(claims) => {
                         req.extensions_mut().insert(claims);
@@ -112,12 +120,20 @@ where
 }
 
 fn extract_bearer(headers: &cli_framework::axum::http::HeaderMap) -> Option<&str> {
-    let v = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    if v.len() > 7 && v[..7].eq_ignore_ascii_case("bearer ") {
-        Some(&v[7..])
-    } else {
-        None
+    if headers.get_all(header::AUTHORIZATION).iter().count() != 1 {
+        return None;
     }
+    let v = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    if v.len() > 16 * 1024 {
+        return None;
+    }
+    let (scheme, token) = v.split_once(' ')?;
+    (scheme.eq_ignore_ascii_case("bearer")
+        && !token.is_empty()
+        && !token
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control()))
+    .then_some(token)
 }
 
 async fn validate_bearer_token(

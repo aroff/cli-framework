@@ -219,6 +219,37 @@ unreachable it serves stale keys rather than failing all requests; it returns 50
 when no keys have ever been fetched. Forced refetches (unknown key ID) are rate-limited
 to once per 60 s by default. With several issuers, each has its own cache and limits.
 
+## Browser middleware transport bounds
+
+With the `browser` feature, navigation discovers `authorization_endpoint` from
+the configured issuer. It preserves provider query parameters and uses URL query
+encoding for OAuth parameters. Missing endpoints and conflicting reserved
+parameters return 503 without issuing login state. Configure `callback_path` to
+match the registered `redirect_uri`; the temporary state cookie uses that path.
+
+The returned boxed layers wrap a `Router` service. Use `tower::Layer::layer`
+and `Router::fallback_service` or `nest_service`, rather than `Router::layer`,
+which applies layers to individual `Route` services.
+
+Browser and server discovery/JWKS clients do not follow redirects. Connect and
+total request deadlines are three and ten seconds respectively. Metadata/key
+responses are limited to 1 MiB and browser token responses to 64 KiB, including
+bodies without Content-Length. Non-success responses are rejected; provider
+response bodies and request credentials are excluded from error messages.
+Endpoints require HTTPS except explicit HTTP loopback, and reject user information
+and fragments. Issuer queries are rejected as ambiguous identities.
+
+Actual encrypted cookie values are bounded to 3800 bytes at issuance and read.
+Oversized provider tokens therefore fail issuance instead of relying on a
+synthetic startup estimate. The public size-estimation helper remains advisory.
+API middleware rejects any malformed or multiple Authorization headers before
+considering cookies; it never falls back from an offered invalid credential.
+
+These transport bounds do not establish complete browser authentication
+qualification. ID-token/nonce validation, replay-resistant expiring login state,
+server-enforced session lifetime and shared logout revocation remain necessary
+before relying on this flow for a deployed browser application.
+
 ## License
 
 Apache-2.0 — same as `cli-framework`.

@@ -42,12 +42,12 @@ pub fn detect(headers: &HeaderMap) -> RequestType {
 /// - Control characters (CR, LF, NUL)
 /// - Absolute URLs (callers should only pass paths)
 pub fn validate_return_to(return_to: &str) -> Result<String, String> {
-    if return_to.contains('\r') || return_to.contains('\n') || return_to.contains('\0') {
+    if return_to.bytes().any(|byte| byte.is_ascii_control()) {
         return Err("return_to contains control characters".to_string());
     }
 
     // Reject backslash before the path
-    if return_to.starts_with('\\') {
+    if return_to.contains('\\') {
         return Err("return_to starts with backslash".to_string());
     }
 

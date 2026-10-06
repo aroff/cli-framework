@@ -2,7 +2,7 @@
 ///
 /// Provides two tower Layers:
 /// - `oidc_browser_session_layer`: for HTML/UI routes — validates session cookie,
-///   redirects to Keycloak on miss, handles /callback and /logout.
+///   redirects to the discovered authorization endpoint on miss, handles callback and logout.
 /// - `oidc_dual_mode_layer`: for /api/* routes — accepts Bearer JWT (Agents)
 ///   or Session Cookie (browser fetch). Bearer takes precedence.
 pub mod auth_state;
@@ -26,20 +26,16 @@ use std::time::Duration;
 use tokio::sync::{Mutex, OnceCell};
 
 use auth_state::derive_hmac_key;
-use cookie::estimate_cookie_size;
 use state::BrowserLayerState;
-
-/// Maximum access token size used in the startup-time cookie size check.
-const DEFAULT_MAX_ACCESS_TOKEN_SIZE: usize = 2048;
 
 /// Configuration for the browser session layer.
 #[derive(Clone)]
 pub struct OidcBrowserSessionConfig {
     /// OIDC issuer URL (normalized via normalize_issuer).
     pub issuer_url: String,
-    /// Keycloak public client_id (PKCE only, no client_secret).
+    /// Public OIDC client_id (PKCE only, no client_secret).
     pub client_id: String,
-    /// Full callback URL registered in Keycloak.
+    /// Full callback URL registered with the provider.
     pub redirect_uri: String,
     /// 32-byte AES-256-GCM session key (provisioned via OpenBao).
     pub session_key: SessionKey,
@@ -90,11 +86,12 @@ impl OidcBrowserSessionConfig {
 /// Returned by `oidc_browser_session_layer`. Both parts must be wired in:
 ///
 /// ```ignore
+/// use tower::Layer;
 /// let OidcBrowserSessionLayer { layer, callback_router } = oidc_browser_session_layer(cfg)?;
 /// let app = Router::new()
 ///     .merge(callback_router)                           // /callback, /logout
-///     .nest("/api/v1", api_routes().layer(api_layer))
-///     .fallback_service(ui_handler().layer(layer));
+///     .nest_service("/api/v1", api_layer.layer(api_routes()))
+///     .fallback_service(layer.layer(ui_routes()));
 /// ```
 pub struct OidcBrowserSessionLayer {
     /// Tower Layer: validates session cookie on every request. Apply to HTML/UI routes.
@@ -110,21 +107,16 @@ pub struct OidcBrowserSessionLayer {
 
 /// Build the browser session layer and callback router.
 ///
-/// Validates config at call time (issuer URL, JWKS URI, cookie size budget).
+/// Validates configuration at call time. Actual sealed cookies are size bounded
+/// when issued; synthetic token lengths cannot establish a provider's budget.
 pub fn oidc_browser_session_layer(
     cfg: OidcBrowserSessionConfig,
 ) -> Result<OidcBrowserSessionLayer, OidcConfigError> {
+    validate_browser_config(&cfg)?;
     let normalized_issuer = crate::normalize_issuer(&cfg.issuer_url)?;
 
     if let Some(ref uri) = cfg.jwks_uri {
         crate::validate_jwks_uri(uri)?;
-    }
-
-    // Startup-time cookie size check
-    let cookie_size =
-        estimate_cookie_size(cfg.session_key.as_bytes(), DEFAULT_MAX_ACCESS_TOKEN_SIZE);
-    if cookie_size > 3900 {
-        return Err(OidcConfigError::CookieTooLarge(cookie_size));
     }
 
     let hmac_key = derive_hmac_key(cfg.session_key.as_bytes());
@@ -141,10 +133,7 @@ pub fn oidc_browser_session_layer(
         discovery: OnceCell::new(),
         last_forced_refetch: Mutex::new(None),
         refetch_gate: Mutex::new(()),
-        http: reqwest::Client::builder()
-            .user_agent(concat!("cli-framework-oidc/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .expect("reqwest client"),
+        http: crate::jwks::http_client(),
         cfg,
     });
 
@@ -185,6 +174,7 @@ pub fn oidc_dual_mode_layer(
     >,
     OidcConfigError,
 > {
+    validate_browser_config(cfg)?;
     let normalized_issuer = crate::normalize_issuer(&cfg.issuer_url)?;
     if let Some(ref uri) = cfg.jwks_uri {
         crate::validate_jwks_uri(uri)?;
@@ -203,13 +193,45 @@ pub fn oidc_dual_mode_layer(
         discovery: OnceCell::new(),
         last_forced_refetch: Mutex::new(None),
         refetch_gate: Mutex::new(()),
-        http: reqwest::Client::builder()
-            .user_agent(concat!("cli-framework-oidc/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .expect("reqwest client"),
+        http: crate::jwks::http_client(),
         cfg,
     });
 
     let dual_layer = dual::DualModeLayer { state };
     Ok(tower::util::BoxCloneSyncServiceLayer::new(dual_layer))
+}
+
+fn validate_browser_config(cfg: &OidcBrowserSessionConfig) -> Result<(), OidcConfigError> {
+    let redirect = crate::endpoint_security::secure_endpoint(&cfg.redirect_uri)
+        .map_err(|_| OidcConfigError::InvalidFlow("invalid browser callback URL".into()))?;
+    if redirect.query().is_some()
+        || redirect.path() != cfg.callback_path
+        || cfg.callback_path.len() > 1024
+        || request_type::validate_return_to(&cfg.callback_path).is_err()
+        || cfg.callback_path.contains(['?', '#', ';', '{', '}', '*'])
+        || cfg.callback_path == "/logout"
+        || cfg.client_id.trim().is_empty()
+        || cfg.client_id.len() > 1024
+        || cfg.cookie_name.is_empty()
+        || cfg.cookie_name.len() > 128
+        || !cfg
+            .cookie_name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        || cfg.cookie_name == "__auth_state"
+        || cfg.session_ttl.is_zero()
+    {
+        return Err(OidcConfigError::InvalidFlow(
+            "invalid browser callback path, client, cookie or session lifetime".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn secure_cookie_suffix(cfg: &OidcBrowserSessionConfig) -> &'static str {
+    // Configuration validation accepts plaintext only on explicit loopback.
+    match url::Url::parse(&cfg.redirect_uri) {
+        Ok(uri) if uri.scheme() == "http" => "",
+        _ => "; Secure",
+    }
 }

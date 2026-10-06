@@ -218,16 +218,7 @@ impl IssuerState {
         }
 
         if let Some(ref uri) = cfg.jwks_uri {
-            let parsed = url::Url::parse(uri)
-                .map_err(|e| OidcConfigError::InvalidJwksUri(format!("{uri}: {e}")))?;
-            let scheme = parsed.scheme();
-            let host = parsed.host_str().unwrap_or("");
-            let is_loopback = host == "127.0.0.1" || host == "localhost" || host == "[::1]";
-            if scheme != "https" && !(scheme == "http" && is_loopback) {
-                return Err(OidcConfigError::InvalidJwksUri(format!(
-                    "insecure URI: {uri}"
-                )));
-            }
+            crate::validate_jwks_uri(uri)?;
         }
 
         let static_keys = match &cfg.static_jwks {
@@ -588,10 +579,7 @@ impl OidcValidator {
 }
 
 fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .user_agent(concat!("cli-framework-oidc/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .expect("reqwest client")
+    crate::jwks::http_client()
 }
 
 // ── Main entry point ────────────────────────────────────────────────────────

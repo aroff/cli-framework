@@ -15,8 +15,13 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
+// Leave room for the cookie name and attributes in a browser's 4096-byte budget.
+const MAX_COOKIE_VALUE_BYTES: usize = 3800;
+
 #[derive(Debug, thiserror::Error)]
 pub enum CookieError {
+    #[error("cookie exceeds the supported size")]
+    TooLarge,
     #[error("cookie is tampered or MAC-invalid")]
     Tampered,
     #[error("cookie is malformed")]
@@ -77,6 +82,9 @@ pub fn encrypt_cookie(
     refresh_token: &str,
     refresh_exp: i64,
 ) -> Result<String, CookieError> {
+    if access_token.len() > MAX_COOKIE_VALUE_BYTES || refresh_token.len() > MAX_COOKIE_VALUE_BYTES {
+        return Err(CookieError::TooLarge);
+    }
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| CookieError::Crypto)?;
 
     let at_blob = aes_encrypt(&cipher, access_token.as_bytes())?;
@@ -94,11 +102,18 @@ pub fn encrypt_cookie(
     .map_err(|_| CookieError::Crypto)?;
 
     let outer_blob = aes_encrypt(&cipher, inner.as_bytes())?;
-    Ok(URL_SAFE_NO_PAD.encode(&outer_blob))
+    let sealed = URL_SAFE_NO_PAD.encode(&outer_blob);
+    if sealed.len() > MAX_COOKIE_VALUE_BYTES {
+        return Err(CookieError::TooLarge);
+    }
+    Ok(sealed)
 }
 
 /// Decrypt and verify a cookie value, returning the contained tokens.
 pub fn decrypt_cookie(key: &[u8; 32], cookie_value: &str) -> Result<CookiePayload, CookieError> {
+    if cookie_value.len() > MAX_COOKIE_VALUE_BYTES {
+        return Err(CookieError::TooLarge);
+    }
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| CookieError::Crypto)?;
 
     let outer_blob = URL_SAFE_NO_PAD
@@ -132,8 +147,11 @@ pub fn decrypt_cookie(key: &[u8; 32], cookie_value: &str) -> Result<CookiePayloa
 }
 
 /// Estimate the encrypted cookie size for a given access token length.
-/// Used at startup for the CookieTooLarge check.
+/// Advisory only: actual token sizes and sealed values are checked when issued.
 pub fn estimate_cookie_size(key: &[u8; 32], access_token_len: usize) -> usize {
+    if access_token_len > MAX_COOKIE_VALUE_BYTES {
+        return usize::MAX;
+    }
     // Synthetic tokens of the given size.
     let at = "A".repeat(access_token_len);
     let rt = "R".repeat(64); // typical opaque refresh token

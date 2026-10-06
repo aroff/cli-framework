@@ -31,6 +31,9 @@ impl JwksCache {
 /// OIDC discovery document — extended to include fields needed by the browser feature.
 pub(crate) struct OidcDiscovery {
     pub jwks_uri: String,
+    /// Browser login must use the advertised endpoint, never an issuer-specific path.
+    #[allow(dead_code)]
+    pub authorization_endpoint: Option<String>,
     /// Token endpoint for token exchange and refresh (browser feature).
     #[allow(dead_code)]
     pub token_endpoint: String,
@@ -79,25 +82,106 @@ pub(crate) fn filter_keys(
 
 // ── Network fetching ─────────────────────────────────────────────────────────
 
+pub(crate) fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(concat!("cli-framework-oidc/", env!("CARGO_PKG_VERSION")))
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("reqwest client")
+}
+
+/// Bound every response while reading, including chunked bodies without a
+/// Content-Length. Provider errors and credentials never become error text.
+pub(crate) async fn bounded_json(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> Result<JsonValue, String> {
+    if !response.status().is_success() {
+        return Err("OIDC endpoint returned unsuccessful status".into());
+    }
+    if response
+        .content_length()
+        .is_some_and(|size| size > limit as u64)
+    {
+        return Err("OIDC response exceeds size limit".into());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| "OIDC response read failed")?
+    {
+        if chunk.len() > limit.saturating_sub(bytes.len()) {
+            return Err("OIDC response exceeds size limit".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes).map_err(|_| "OIDC response is not valid JSON".into())
+}
+
+#[cfg(test)]
+mod response_bounds_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn chunked_response_without_content_length_is_bounded() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let provider = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0; 256];
+            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let count = stream.read(&mut chunk).await.unwrap();
+                assert!(count > 0, "request ended before its headers");
+                request.extend_from_slice(&chunk[..count]);
+                assert!(
+                    request.len() <= 4096,
+                    "test request headers exceeded budget"
+                );
+            }
+            stream.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nC\r\nxxxxxxxxxxxx\r\nC\r\nxxxxxxxxxxxx\r\n0\r\n\r\n").await.unwrap();
+        });
+        let response = http_client()
+            .get(format!("http://{address}/metadata"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.content_length(), None);
+        assert_eq!(
+            bounded_json(response, 16).await.unwrap_err(),
+            "OIDC response exceeds size limit"
+        );
+        provider.await.unwrap();
+    }
+}
+
 pub(crate) async fn fetch_discovery(
     issuer_url: &str,
     http: &reqwest::Client,
 ) -> Result<OidcDiscovery, String> {
+    crate::endpoint_security::secure_issuer(issuer_url).map_err(|_| "invalid discovery issuer")?;
     let url = format!("{}/.well-known/openid-configuration", issuer_url);
-    let resp = http.get(&url).send().await.map_err(|e| e.to_string())?;
-    let doc: JsonValue = resp.json().await.map_err(|e| e.to_string())?;
+    let resp = http
+        .get(&url)
+        .send()
+        .await
+        .map_err(|_| "OIDC discovery request failed")?;
+    let doc = bounded_json(resp, 1024 * 1024).await?;
 
     // Verify the discovery doc's issuer matches the configured issuer_url.
     let discovered_issuer = doc["issuer"]
         .as_str()
         .ok_or_else(|| "missing issuer in discovery doc".to_string())?;
-    let normalized_configured = crate::normalize_issuer(issuer_url).map_err(|e| e.to_string())?;
+    let normalized_configured =
+        crate::normalize_issuer(issuer_url).map_err(|_| "invalid configured issuer")?;
     let normalized_discovered =
-        crate::normalize_issuer(discovered_issuer).map_err(|e| e.to_string())?;
+        crate::normalize_issuer(discovered_issuer).map_err(|_| "invalid discovered issuer")?;
     if normalized_configured != normalized_discovered {
-        return Err(format!(
-            "discovery issuer mismatch: expected {normalized_configured}, got {normalized_discovered}"
-        ));
+        return Err("discovery issuer mismatch".into());
     }
 
     let jwks_uri = doc["jwks_uri"]
@@ -110,11 +194,24 @@ pub(crate) async fn fetch_discovery(
         .as_str()
         .ok_or_else(|| "missing token_endpoint in discovery doc".to_string())?
         .to_string();
+    crate::endpoint_security::secure_endpoint(&token_endpoint)
+        .map_err(|_| "invalid token endpoint")?;
+
+    let authorization_endpoint = doc["authorization_endpoint"].as_str().map(String::from);
+    if let Some(endpoint) = &authorization_endpoint {
+        crate::endpoint_security::secure_endpoint(endpoint)
+            .map_err(|_| "invalid authorization endpoint")?;
+    }
 
     let end_session_endpoint = doc["end_session_endpoint"].as_str().map(String::from);
+    if let Some(endpoint) = &end_session_endpoint {
+        crate::endpoint_security::secure_endpoint(endpoint)
+            .map_err(|_| "invalid end-session endpoint")?;
+    }
 
     Ok(OidcDiscovery {
         jwks_uri,
+        authorization_endpoint,
         token_endpoint,
         end_session_endpoint,
     })
@@ -124,8 +221,12 @@ pub(crate) async fn fetch_jwks(
     jwks_uri: &str,
     http: &reqwest::Client,
 ) -> Result<Vec<(Option<String>, DecodingKey)>, String> {
-    let resp = http.get(jwks_uri).send().await.map_err(|e| e.to_string())?;
-    let doc: JsonValue = resp.json().await.map_err(|e| e.to_string())?;
+    let resp = http
+        .get(jwks_uri)
+        .send()
+        .await
+        .map_err(|_| "JWKS request failed")?;
+    let doc = bounded_json(resp, 1024 * 1024).await?;
 
     let keys_arr = doc["keys"].as_array().ok_or("missing keys array")?;
     let mut result = vec![];
