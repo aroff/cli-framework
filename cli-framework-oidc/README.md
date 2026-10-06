@@ -239,9 +239,10 @@ response bodies and request credentials are excluded from error messages.
 Endpoints require HTTPS except explicit HTTP loopback, and reject user information
 and fragments. Issuer queries are rejected as ambiguous identities.
 
-Actual encrypted cookie values are bounded to 3800 bytes at issuance and read.
-Oversized provider tokens therefore fail issuance instead of relying on a
-synthetic startup estimate. The public size-estimation helper remains advisory.
+Active session cookies are random 256-bit opaque identifiers (`s2.` plus 43
+base64url characters). Provider tokens stay in a bounded process-local store,
+so large valid tokens do not enlarge the cookie. Legacy encrypted-cookie helpers
+remain available with their 3800-byte limit, but middleware rejects those cookies.
 API middleware rejects any malformed or multiple Authorization headers before
 considering cookies; it never falls back from an offered invalid credential.
 
@@ -265,16 +266,49 @@ use `Cache-Control: no-store`.
 Code exchange requires Bearer token type and a signed ID token. Verification
 checks issuer, client audience (independent of the API audience), expiry, issue
 time, nonce and subject. Multiple audiences require this client as `azp`; any
-present `azp` must match. A present `at_hash` must bind the returned access token.
+present `azp` must match. Additional audiences must also be explicitly configured
+in `trusted_id_token_audiences` (empty by default). A present `at_hash` must bind
+the returned access token.
 The access token must independently validate and have the same subject before
 session issuance. `algorithms` defaults to RS256; use the constructor and set an
 explicit asymmetric allowlist when another supported algorithm is needed.
-This new configuration field requires updating older struct literals.
+These configuration fields require updating older struct literals.
 
 Providers may omit refresh tokens: those sessions are bounded by the verified
 access-token expiry. Refresh responses must validate under the original signed
-identity before a new cookie is emitted. An unsuccessful proactive refresh can
-retain a still-valid original access token without persisting the failed response.
+identity before a new cookie is emitted. A refreshed ID token, when present,
+must preserve issuer, subject, audience and authorized party; any nonce or
+authentication time must match the original login. An unsuccessful proactive
+refresh can retain a still-valid original access token without persisting the
+failed response. Failed or cancelled attempts that might have reached the
+provider are not automatically retried, because the refresh token may have rotated.
+
+### Browser session lifetime and revocation
+
+The runtime holds at most 1024 active sessions. Original `session_ttl` is enforced
+with a monotonic deadline and never slides on requests or refresh. Cookie Max-Age
+reflects the remaining original lifetime and refresh-token expiry. Dropping the
+runtime or restarting the process invalidates sessions, even with the same key.
+Multiple replicas require session affinity; this API provides no shared store.
+
+Requests for one session serialize refresh. Short-lived refreshed tokens receive
+a proactive-refresh cooldown of half their remaining lifetime, capped by the
+configured skew and original session deadline. Expired access tokens bypass that
+cooldown. Cookie-authenticated mutations and POST `/logout` require exactly one
+Origin matching the registered callback origin, and reject cross-site fetches.
+Bearer API calls retain their independent validation path.
+
+Middleware inserts both `OidcClaims` and `BrowserSessionAccess` into extensions.
+Hosts must recheck `access.is_live()` before admitting queued mutations and select
+on `access.invalidated()` for streams. `authenticate_cookie` provides the same
+access handle to host adapters; trusted hosts can call `revoke_cookie` directly.
+HTTP logout revokes the server record before clearing the cookie: copied cookies
+and retained access handles immediately lose access. An optional issuer logout
+redirect requests SSO logout; it does not prove provider revocation.
+
+Migration: construct one `OidcBrowserSession` and derive all UI/API layers from
+it. Independently constructed free builders cannot authenticate one another's
+opaque cookies. Old encrypted cookies require a fresh login.
 
 `examples/browser_session.rs` is a compiling host that composes the shared
 runtime with UI and API routers. Its loopback listener and ephemeral session key
@@ -282,9 +316,8 @@ are for local development; a production host must supply deployment and key
 lifecycle configuration.
 
 This is bounded local validation, not complete browser deployment qualification.
-Server-enforced session lifetime, shared logout revocation, concurrent refresh
-coordination, complete refresh-ID-token lifecycle validation and deployment
-qualification remain necessary before relying on this flow for a deployed app.
+Real-provider login/logout/refresh, TLS/proxy deployment, browser compatibility
+and MSRV qualification remain necessary before relying on this flow in production.
 
 ## License
 

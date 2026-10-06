@@ -11,7 +11,39 @@ pub(crate) async fn verify(
     nonce: &str,
     access_token: &str,
     state: &BrowserLayerState,
-) -> Result<String, &'static str> {
+) -> Result<Value, &'static str> {
+    verify_identity(token, Some(nonce), access_token, state).await
+}
+
+pub(crate) async fn verify_refresh(
+    token: &str,
+    original: &Value,
+    access_token: &str,
+    state: &BrowserLayerState,
+) -> Result<(), &'static str> {
+    let claims = verify_identity(token, None, access_token, state).await?;
+    if claims["iat"].as_u64() < original["iat"].as_u64()
+        || claims["sub"] != original["sub"]
+        || claims["aud"] != original["aud"]
+        || claims.get("azp") != original.get("azp")
+        || claims
+            .get("auth_time")
+            .is_some_and(|value| Some(value) != original.get("auth_time"))
+        || claims
+            .get("nonce")
+            .is_some_and(|value| Some(value) != original.get("nonce"))
+    {
+        return Err("refreshed identity differs from original authentication");
+    }
+    Ok(())
+}
+
+async fn verify_identity(
+    token: &str,
+    nonce: Option<&str>,
+    access_token: &str,
+    state: &BrowserLayerState,
+) -> Result<Value, &'static str> {
     if token.is_empty() || token.len() > 16 * 1024 {
         return Err("invalid ID token");
     }
@@ -30,7 +62,8 @@ pub(crate) async fn verify(
     validation.leeway = state.cfg.clock_skew.as_secs();
     for key in keys {
         if let Ok(data) = jsonwebtoken::decode::<Value>(token, &key, &validation) {
-            return verify_claims(&data.claims, nonce, access_token, header.alg, state);
+            verify_claims(&data.claims, nonce, access_token, header.alg, state)?;
+            return Ok(data.claims);
         }
     }
     Err("ID-token signature or claims rejected")
@@ -38,7 +71,7 @@ pub(crate) async fn verify(
 
 fn verify_claims(
     claims: &Value,
-    nonce: &str,
+    nonce: Option<&str>,
     access_token: &str,
     algorithm: Algorithm,
     state: &BrowserLayerState,
@@ -57,7 +90,7 @@ fn verify_claims(
     if issued_at > now.saturating_add(state.cfg.clock_skew.as_secs())
         || claims["exp"].as_i64().is_none()
         || claims["iss"].as_str() != Some(state.cfg.issuer_url.as_str())
-        || claims["nonce"].as_str() != Some(nonce)
+        || nonce.is_some_and(|nonce| claims["nonce"].as_str() != Some(nonce))
     {
         return Err("ID-token identity or nonce rejected");
     }
@@ -74,6 +107,27 @@ fn verify_claims(
         }
         _ => return Err("ID-token audience rejected"),
     };
+    if let Value::Array(values) = &claims["aud"] {
+        if values.iter().filter_map(Value::as_str).any(|audience| {
+            audience != state.cfg.client_id
+                && !state
+                    .cfg
+                    .trusted_id_token_audiences
+                    .iter()
+                    .any(|trusted| trusted == audience)
+        }) {
+            return Err("untrusted additional ID-token audience");
+        }
+    }
+    if claims
+        .get("nbf")
+        .is_some_and(|value| value.as_u64().is_none())
+        || claims
+            .get("auth_time")
+            .is_some_and(|value| value.as_u64().is_none())
+    {
+        return Err("invalid ID-token temporal claim");
+    }
     let authorized_party = claims.get("azp");
     if (audience_count > 1 || authorized_party.is_some())
         && authorized_party.and_then(Value::as_str) != Some(&state.cfg.client_id)

@@ -14,10 +14,12 @@ pub(crate) mod layer;
 pub mod pkce;
 pub mod request_type;
 pub mod session_key;
+mod sessions;
 pub(crate) mod state;
 
 pub use crate::types::{AudiencePolicy, OidcClaims};
 pub use session_key::SessionKey;
+pub use sessions::{BrowserSessionAccess, BrowserSessionError};
 
 use crate::jwks::JwksCache;
 use crate::OidcConfigError;
@@ -38,7 +40,7 @@ pub struct OidcBrowserSessionConfig {
     pub client_id: String,
     /// Full callback URL registered with the provider.
     pub redirect_uri: String,
-    /// 32-byte AES-256-GCM session key (provisioned via OpenBao).
+    /// 32-byte secret used to derive login-state signing keys.
     pub session_key: SessionKey,
     /// Route path for the callback handler (default "/callback").
     pub callback_path: String,
@@ -48,7 +50,7 @@ pub struct OidcBrowserSessionConfig {
     pub session_ttl: Duration,
     /// How far before access token exp to proactively refresh (default 60s).
     pub refresh_skew: Duration,
-    /// Audience validation policy for JWTs inside the session cookie.
+    /// Audience validation policy for server-held access tokens.
     pub audience: AudiencePolicy,
     /// JWKS URI override (None = discover from /.well-known/openid-configuration).
     pub jwks_uri: Option<String>,
@@ -58,6 +60,8 @@ pub struct OidcBrowserSessionConfig {
     pub clock_skew: Duration,
     /// Explicit asymmetric signing algorithm allowlist (default RS256).
     pub algorithms: Vec<Algorithm>,
+    /// Other trusted ID-token audiences, in addition to client_id (default none).
+    pub trusted_id_token_audiences: Vec<String>,
 }
 
 impl OidcBrowserSessionConfig {
@@ -83,6 +87,7 @@ impl OidcBrowserSessionConfig {
             jwks_ttl: Duration::from_secs(300),
             clock_skew: Duration::from_secs(60),
             algorithms: vec![Algorithm::RS256],
+            trusted_id_token_audiences: Vec::new(),
         }
     }
 }
@@ -111,8 +116,8 @@ pub struct OidcBrowserSessionLayer {
 
 /// Build the browser session layer and callback router.
 ///
-/// Validates configuration at call time. Actual sealed cookies are size bounded
-/// when issued; synthetic token lengths cannot establish a provider's budget.
+/// Validates configuration at call time. Session cookies are opaque identifiers;
+/// provider credentials remain in this runtime's bounded process-local store.
 pub fn oidc_browser_session_layer(
     cfg: OidcBrowserSessionConfig,
 ) -> Result<OidcBrowserSessionLayer, OidcConfigError> {
@@ -153,6 +158,7 @@ impl OidcBrowserSession {
             hmac_key,
             algorithms: cfg.algorithms.clone(),
             pending_logins: Mutex::new(std::collections::HashMap::new()),
+            sessions: Mutex::new(std::collections::HashMap::new()),
             jwks_cache: Mutex::new(JwksCache::empty()),
             discovery: OnceCell::new(),
             last_forced_refetch: Mutex::new(None),
@@ -193,6 +199,20 @@ impl OidcBrowserSession {
             state: self.state.clone(),
             audience,
         })
+    }
+
+    /// Authenticate an opaque cookie, coordinating refresh through this runtime.
+    pub async fn authenticate_cookie(
+        &self,
+        cookie: &str,
+    ) -> Result<BrowserSessionAccess, BrowserSessionError> {
+        self.state.authenticate(cookie).await
+    }
+
+    /// Revoke this local browser session. This does not revoke provider tokens.
+    /// Intended for trusted host calls; the HTTP logout route validates Origin.
+    pub async fn revoke_cookie(&self, cookie: &str) {
+        self.state.revoke(cookie).await;
     }
 }
 
@@ -270,4 +290,36 @@ pub(crate) fn secure_cookie_suffix(cfg: &OidcBrowserSessionConfig) -> &'static s
         Ok(uri) if uri.scheme() == "http" => "",
         _ => "; Secure",
     }
+}
+
+pub(crate) fn session_cookie_header(
+    cfg: &OidcBrowserSessionConfig,
+    value: &str,
+    max_age: u64,
+) -> String {
+    format!(
+        "{}={}; HttpOnly{}; SameSite=Lax; Path=/; Max-Age={}",
+        cfg.cookie_name,
+        value,
+        secure_cookie_suffix(cfg),
+        max_age
+    )
+}
+
+pub(crate) fn browser_origin_allowed(
+    headers: &cli_framework::axum::http::HeaderMap,
+    cfg: &OidcBrowserSessionConfig,
+) -> bool {
+    use cli_framework::axum::http::header::ORIGIN;
+    if headers.get_all(ORIGIN).iter().count() != 1 {
+        return false;
+    }
+    let expected = match url::Url::parse(&cfg.redirect_uri) {
+        Ok(url) => url.origin().ascii_serialization(),
+        Err(_) => return false,
+    };
+    headers.get(ORIGIN).and_then(|value| value.to_str().ok()) == Some(expected.as_str())
+        && headers
+            .get("sec-fetch-site")
+            .is_none_or(|value| value.as_bytes() != b"cross-site")
 }

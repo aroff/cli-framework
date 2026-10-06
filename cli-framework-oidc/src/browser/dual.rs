@@ -2,7 +2,7 @@
 ///
 /// Bearer takes precedence. If Bearer is present but invalid, the request is rejected
 /// with 401 — the cookie is NOT consulted as a fallback.
-use super::layer::{extract_cookie_header_owned, validate_jwt_from_cookie};
+use super::layer::extract_cookie_header_owned;
 use super::state::BrowserLayerState;
 use crate::jwks::KeyResult;
 use crate::types::OidcClaims;
@@ -100,10 +100,40 @@ where
             // 2. No Bearer — try session cookie
             let cookie_val = extract_cookie_header_owned(&headers, &state.cfg.cookie_name);
             if let Some(ref cv) = cookie_val {
-                match validate_jwt_from_cookie(cv, &state).await {
+                if !matches!(
+                    *req.method(),
+                    cli_framework::axum::http::Method::GET
+                        | cli_framework::axum::http::Method::HEAD
+                        | cli_framework::axum::http::Method::OPTIONS
+                ) && !super::browser_origin_allowed(&headers, &state.cfg)
+                {
+                    return Ok((StatusCode::FORBIDDEN, "Browser origin rejected").into_response());
+                }
+                match state.authenticate(cv).await {
                     Ok(claims) => {
+                        if !claims.is_live() {
+                            return Ok(StatusCode::UNAUTHORIZED.into_response());
+                        }
+                        let cookie =
+                            super::session_cookie_header(&state.cfg, cv, claims.cookie_max_age());
+                        req.extensions_mut().insert(claims.claims().clone());
                         req.extensions_mut().insert(claims);
-                        return inner.call(req).await;
+                        let mut response = inner.call(req).await?;
+                        response.headers_mut().append(
+                            header::SET_COOKIE,
+                            cookie.parse().expect("validated cookie"),
+                        );
+                        response
+                            .headers_mut()
+                            .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+                        return Ok(response);
+                    }
+                    Err(super::BrowserSessionError::Unavailable) => {
+                        let mut response = StatusCode::SERVICE_UNAVAILABLE.into_response();
+                        response
+                            .headers_mut()
+                            .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+                        return Ok(response);
                     }
                     Err(_) => {
                         return Ok((StatusCode::UNAUTHORIZED, r#"{"error":"unauthorized"}"#)

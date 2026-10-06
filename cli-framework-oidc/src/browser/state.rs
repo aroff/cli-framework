@@ -25,12 +25,21 @@ pub(crate) struct BrowserLayerState {
     /// HMAC key derived from session_key (not stored in cfg to keep it separate).
     pub hmac_key: [u8; 32],
     pub pending_logins: Mutex<HashMap<String, PendingLogin>>,
+    pub sessions: Mutex<HashMap<String, std::sync::Arc<super::sessions::SessionRecord>>>,
     pub algorithms: Vec<Algorithm>,
     pub jwks_cache: Mutex<JwksCache>,
     pub discovery: OnceCell<OidcDiscovery>,
     pub last_forced_refetch: Mutex<Option<Instant>>,
     pub refetch_gate: Mutex<()>,
     pub http: reqwest::Client,
+}
+
+impl Drop for BrowserLayerState {
+    fn drop(&mut self) {
+        for record in self.sessions.get_mut().values() {
+            record.revoke();
+        }
+    }
 }
 
 impl BrowserLayerState {

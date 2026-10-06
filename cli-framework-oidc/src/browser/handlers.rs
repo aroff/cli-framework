@@ -1,6 +1,5 @@
 /// Axum handlers for /callback and /logout routes.
 use super::auth_state::{decode_auth_state, AuthState};
-use super::cookie::encrypt_cookie;
 use super::layer::extract_cookie_header as extract_cookie_value;
 use super::state::BrowserLayerState;
 use cli_framework::axum::{
@@ -116,7 +115,7 @@ async fn callback_response(
     let Some(id_token) = token_resp.id_token.as_deref() else {
         return (StatusCode::BAD_GATEWAY, "Missing login identity").into_response();
     };
-    let subject = match super::id_token::verify(
+    let identity = match super::id_token::verify(
         id_token,
         &login.nonce,
         &token_resp.access_token,
@@ -124,12 +123,12 @@ async fn callback_response(
     )
     .await
     {
-        Ok(subject) => subject,
+        Ok(identity) => identity,
         Err(_) => return (StatusCode::BAD_GATEWAY, "Login identity rejected").into_response(),
     };
     let access =
         match super::layer::validate_access_token_str(&token_resp.access_token, state).await {
-            Ok(claims) if claims.sub == subject => claims,
+            Ok(claims) if Some(claims.sub.as_str()) == identity["sub"].as_str() => claims,
             _ => return (StatusCode::BAD_GATEWAY, "Login access token rejected").into_response(),
         };
 
@@ -140,40 +139,23 @@ async fn callback_response(
         )
             .into_response();
     }
-    // Build and seal only verified matching identity/access tokens.
-    let refresh_exp = if token_resp.refresh_token.is_empty() {
-        access.exp
-    } else {
-        token_resp.refresh_expires_at()
-    };
-    let cookie_value = match encrypt_cookie(
-        state.cfg.session_key.as_bytes(),
-        &token_resp.access_token,
-        &token_resp.refresh_token,
-        refresh_exp,
-    ) {
-        Ok(v) => v,
+    let (cookie_value, max_age) = match state.issue_session(token_resp, access, identity).await {
+        Ok(session) => session,
         Err(e) => {
-            tracing::error!(event = "cookie_encrypt_failed", error = %e);
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            tracing::warn!(event = "session_issue_failed", error = %e);
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
         }
     };
 
-    let max_age = {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-        let from_exp = (refresh_exp - now).max(0) as u64;
-        from_exp.min(state.cfg.session_ttl.as_secs())
-    };
-
-    let secure_flag = super::secure_cookie_suffix(&state.cfg);
-
-    let session_cookie = format!(
-        "{}={}; HttpOnly{}; SameSite=Lax; Path=/; Max-Age={}",
-        state.cfg.cookie_name, cookie_value, secure_flag, max_age
-    );
+    if !login.is_live() {
+        state.revoke(&cookie_value).await;
+        return (
+            StatusCode::BAD_REQUEST,
+            "Login state expired during issuance",
+        )
+            .into_response();
+    }
+    let session_cookie = super::session_cookie_header(&state.cfg, &cookie_value, max_age);
 
     let return_to = if auth_state.return_to.is_empty() || auth_state.return_to == "/" {
         "/".to_string()
@@ -202,25 +184,41 @@ pub async fn handle_logout(
     State(state): State<Arc<BrowserLayerState>>,
     headers: cli_framework::axum::http::HeaderMap,
 ) -> Response {
-    let _ = headers;
+    if !super::browser_origin_allowed(&headers, &state.cfg) {
+        return (StatusCode::FORBIDDEN, "Browser origin rejected").into_response();
+    }
+    let existed = match extract_cookie_value(&headers, &state.cfg.cookie_name) {
+        Some(cookie) => state.revoke(cookie).await,
+        None => false,
+    };
     tracing::info!(event = "logout");
 
-    let end_session_url = state.end_session_endpoint().await;
-    let app_root = {
-        // Derive app root from redirect_uri (strip /callback)
-        let uri = &state.cfg.redirect_uri;
-        if let Some(pos) = uri.rfind('/') {
-            uri[..pos].to_string()
-        } else {
-            uri.clone()
+    let mut redirect_target = "/".to_string();
+    if existed {
+        if let Some(endpoint) = state.end_session_endpoint().await {
+            if let Ok(mut url) = url::Url::parse(&endpoint) {
+                if !url.query_pairs().any(|(name, _)| {
+                    matches!(
+                        name.as_ref(),
+                        "post_logout_redirect_uri" | "id_token_hint" | "client_id" | "state"
+                    )
+                }) {
+                    let root = format!(
+                        "{}/",
+                        url::Url::parse(&state.cfg.redirect_uri)
+                            .expect("validated callback")
+                            .origin()
+                            .ascii_serialization()
+                    );
+                    url.query_pairs_mut().extend_pairs([
+                        ("post_logout_redirect_uri", root.as_str()),
+                        ("client_id", state.cfg.client_id.as_str()),
+                    ]);
+                    redirect_target = url.into();
+                }
+            }
         }
-    };
-
-    let redirect_target = if let Some(ref url) = end_session_url {
-        format!("{}?post_logout_redirect_uri={}", url, url_encode(&app_root))
-    } else {
-        "/".to_string()
-    };
+    }
 
     let secure_flag = super::secure_cookie_suffix(&state.cfg);
 
@@ -231,6 +229,8 @@ pub async fn handle_logout(
 
     let mut resp = (StatusCode::FOUND, "").into_response();
     let h = resp.headers_mut();
+    h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    h.insert(header::REFERRER_POLICY, "no-referrer".parse().unwrap());
     h.append(
         header::LOCATION,
         redirect_target
@@ -253,17 +253,6 @@ fn clear_cookie(name: &str, path: &str, cfg: &super::OidcBrowserSessionConfig) -
     )
 }
 
-fn url_encode(s: &str) -> String {
-    s.chars()
-        .flat_map(|c| match c {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => {
-                vec![c]
-            }
-            c => format!("%{:02X}", c as u32).chars().collect(),
-        })
-        .collect()
-}
-
 // ── Token exchange ───────────────────────────────────────────────────────────
 
 pub(crate) struct TokenResponse {
@@ -274,7 +263,7 @@ pub(crate) struct TokenResponse {
 }
 
 impl TokenResponse {
-    fn refresh_expires_at(&self) -> i64 {
+    pub(crate) fn refresh_expires_at(&self) -> i64 {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -355,17 +344,32 @@ fn parse_token_response(
             .filter(|value| *value <= i64::MAX as u64 / 2)
             .ok_or("invalid refresh-token lifetime")?,
     };
+    let id_token = match body.get("id_token") {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .ok_or("invalid ID token field")?
+                .to_string(),
+        ),
+    };
+    let refresh_token = match body.get("refresh_token") {
+        None => previous_refresh.to_string(),
+        Some(value) => value
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .ok_or("invalid refresh token field")?
+            .to_string(),
+    };
     Ok(TokenResponse {
-        id_token: body["id_token"].as_str().map(String::from),
+        id_token,
         access_token: body["access_token"]
             .as_str()
             .filter(|value| !value.is_empty())
             .ok_or("missing access_token")?
             .to_string(),
-        refresh_token: body["refresh_token"]
-            .as_str()
-            .unwrap_or(previous_refresh)
-            .to_string(),
+        refresh_token,
         refresh_expires_in,
     })
 }

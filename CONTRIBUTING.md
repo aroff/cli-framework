@@ -69,8 +69,11 @@ features. Browser login uses discovered authorization metadata; cookie crypto
 enforces actual value bounds. `browser::OidcBrowserSession` shares discovery and
 single-use, expiring login state across UI/API layers; `browser/id_token.rs`
 validates signed ID-token identity, nonce and optional access-token hashes.
-Browser session lifecycle qualification remains
-separate from these transport safeguards; see the OIDC crate README.
+`browser/sessions.rs` holds bounded process-local credentials behind opaque
+cookies, fixed monotonic session deadlines, local revocation and coordinated
+refresh. Its `BrowserSessionAccess` lets host mutations and streams observe
+expiry/logout. Real-provider and deployment qualification remain separate from
+these local contracts; see the OIDC crate README.
 
 The OIDC client's loopback callback lives in `cli-framework-oidc/src/client/callback.rs`:
 bounded asynchronous reception owns its sockets for cancellation, validates the
