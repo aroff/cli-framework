@@ -35,20 +35,23 @@ pub fn detect(headers: &HeaderMap) -> RequestType {
 
 /// Validate a `return_to` path before encoding it in the auth-state cookie.
 ///
-/// Accepts path-only URLs starting with `/`. Rejects:
+/// The value is the already-decoded query parameter, and it ends up in a
+/// `Location` header, so it is checked the way a browser would read it.
+/// Accepts path-only URLs starting with a single `/`. Rejects:
 /// - Protocol-relative (`//example.com`)
-/// - Backslash tricks (`\evil`)
-/// - URL-encoded variants of the above
-/// - Control characters (CR, LF, NUL)
+/// - Any backslash (`/\evil.example` is `//evil.example` to a browser)
+/// - Any ASCII control character, including TAB, which browsers strip
+///   (`/<TAB>/evil.example` becomes `//evil.example`)
+/// - URL-encoded forms of `//` and `\`
 /// - Absolute URLs (callers should only pass paths)
 pub fn validate_return_to(return_to: &str) -> Result<String, String> {
-    if return_to.contains('\r') || return_to.contains('\n') || return_to.contains('\0') {
+    if return_to.chars().any(|c| c.is_ascii_control()) {
         return Err("return_to contains control characters".to_string());
     }
 
-    // Reject backslash before the path
-    if return_to.starts_with('\\') {
-        return Err("return_to starts with backslash".to_string());
+    // Browsers treat `\` as `/` in http(s) URLs, anywhere in the path.
+    if return_to.contains('\\') {
+        return Err("return_to contains a backslash".to_string());
     }
 
     // Reject protocol-relative and absolute URLs

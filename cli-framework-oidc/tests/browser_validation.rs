@@ -258,6 +258,18 @@ fn test_return_to_protocol_relative_rejected() {
 #[test]
 fn test_return_to_backslash_rejected() {
     assert!(validate_return_to("\\evil").is_err());
+    // Decoded from `return_to=/%5Cevil.example`: a browser reads it as
+    // `//evil.example`, an open redirect.
+    assert!(validate_return_to("/\\evil.example").is_err());
+    assert!(validate_return_to("/ok/\\x").is_err());
+}
+
+#[test]
+fn test_return_to_whitespace_controls_rejected() {
+    // Browsers strip TAB, so `/<TAB>/evil.example` becomes `//evil.example`.
+    assert!(validate_return_to("/\t/evil.example").is_err());
+    assert!(validate_return_to("/\u{7f}x").is_err());
+    assert!(validate_return_to("/\u{0b}/evil.example").is_err());
 }
 
 #[test]

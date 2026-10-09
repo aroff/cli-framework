@@ -249,6 +249,9 @@ async fn login_redirects_with_pkce_state_and_nonce() {
         "https://evil.example/",
         "%5Cevil",
         "relative",
+        // Each decodes to a path a browser reads as `//evil.example`.
+        "/%5Cevil.example",
+        "/%09/evil.example",
     ] {
         let resp = call(&s, get(&format!("/_host/login?return_to={bad}"), &[])).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{bad}");
