@@ -219,6 +219,53 @@ unreachable it serves stale keys rather than failing all requests; it returns 50
 when no keys have ever been fetched. Forced refetches (unknown key ID) are rate-limited
 to once per 60 s by default. With several issuers, each has its own cache and limits.
 
+## Host session (`host-session` feature)
+
+A web host that signs the end user in on the server and keeps their tokens out
+of the browser. The host is a confidential client; the tokens are sealed into
+one `__Host-session` cookie (`HttpOnly; Secure; SameSite=Lax; Path=/`) that the
+browser can't read.
+
+```rust,ignore
+use cli_framework_oidc::host_session::{ClientSecret, HostSessionConfig, HostSessions, Resolution, SessionKey};
+
+let mut cfg = HostSessionConfig::new(
+    "https://auth.example.com/realms/acme",
+    "acme-host",
+    "https://acme.example.com/_host/callback",
+    SessionKey::from_bytes(key_bytes),
+    "acme-prod", // the deployment this session is bound to
+);
+cfg.client_secret = Some(ClientSecret::new(secret));
+let sessions = HostSessions::new(cfg)?; // checks the config and the cookie size
+
+let app = Router::new().merge(sessions.router()); // /_host/{login,callback,logout,session}
+
+// In your own handlers:
+match sessions.resolve(request.headers()).await {
+    Resolution::Active(s) => { /* s.access_token(), s.claims(); send s.set_cookie() if Some */ }
+    Resolution::Ended { reason, clear_cookie } => { /* 401; send clear_cookie if Some */ }
+}
+```
+
+- **Sign-in** is authorization code with PKCE, `state` and `nonce`, carried in
+  a short-lived sealed `__Host-sign-in` cookie. `return_to` must be a local
+  path. The ID token's audience, nonce and subject are checked, and the access
+  token is verified against the realm's keys.
+- **Idle timeout** defaults to 30 minutes. The cookie is rewritten with a new
+  activity stamp once a tenth of the window has passed, not on every request.
+  The cookie has no `Max-Age` unless `session_ttl` is set.
+- **Binding**: a cookie sealed for another deployment string, or with another
+  key, ends as `BindingMismatch` or `Invalid`.
+- **Refresh**: an access token within `refresh_skew` of expiry is refreshed. A
+  refused refresh ends the session; an unreachable realm keeps the old token
+  until it expires, then answers `Unavailable` without clearing the cookie.
+- **Logout** is a same-origin POST. It ends the realm session with the refresh
+  token, clears the cookie, and redirects to the realm's end-session endpoint.
+- **Cookie size**: `HostSessions::new` refuses a configuration whose expected
+  tokens would not fit `max_cookie_bytes` (4096), and sign-in refuses real
+  tokens that don't. The sealed size is logged as `cookie_bytes`.
+
 ## License
 
 Apache-2.0 — same as `cli-framework`.

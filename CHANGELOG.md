@@ -34,6 +34,18 @@
 
 ### Added
 
+- `cli-framework-oidc` gains a `host-session` feature: a server-side sign-in
+  for a web host that keeps the end user's tokens out of the browser. A
+  confidential client signs in with PKCE, `state` and `nonce`; the tokens live
+  in a sealed `__Host-` cookie (AES-256-GCM, HKDF-derived key, no `Max-Age`
+  unless `session_ttl` is set) bound to a deployment string, with an idle
+  timeout whose stamp is rewritten after a tenth of the window. `resolve`
+  refreshes the access token within a skew, keeps a still-valid token when the
+  realm is unreachable, and says why a session ended. `router()` serves
+  `login`, `callback`, `logout` (POST, same-origin, ends the realm session
+  server-side) and `session` under a configurable prefix. The cookie size is
+  checked at startup against expected token sizes and again at sign-in.
+
 - `cli-framework-oidc` (`server`): several trusted issuers (ADR 0082).
   `OidcValidator::new_multi(configs)` and `oidc_validation_layer_multi(configs)`
   route each token by its unverified `iss` to the matching issuer, which then
