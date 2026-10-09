@@ -128,6 +128,9 @@ pub mod server;
 #[cfg(feature = "browser")]
 pub mod browser;
 
+#[cfg(feature = "host-session")]
+pub mod host_session;
+
 // Re-export shared types at crate root when either feature is active.
 #[cfg(any(feature = "server", feature = "browser"))]
 pub use types::{AudiencePolicy, OidcClaims};

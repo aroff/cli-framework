@@ -57,6 +57,11 @@ browser = [
     "dep:hmac",
     "dep:hkdf",
 ]
+# Host sessions (src/host_session): a confidential-client backend-for-frontend
+# session in a sealed session cookie, with idle timeout and a binding. Builds
+# on the browser feature's key and PKCE helpers and the server feature's
+# token validator.
+host-session = ["browser", "server"]
 # Test-support: promotes the synthesized-OIDC-issuer helper set (runtime P-256
 # keys, minted JWTs, wiremock discovery+JWKS) that `tests/server_validation.rs`
 # used to keep as private copies, exposing them as `#[doc(hidden)] pub`
@@ -132,6 +137,11 @@ required-features = ["server", "test-support"]
 name = "multi_issuer"
 path = "tests/multi_issuer.rs"
 required-features = ["server", "test-support"]
+
+[[test]]
+name = "host_session"
+path = "tests/host_session.rs"
+required-features = ["host-session", "test-support"]
 
 [[test]]
 name = "browser_validation"

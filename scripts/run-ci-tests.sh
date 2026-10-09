@@ -122,6 +122,7 @@ cargo test -p cli-framework-oidc --features server,test-support --verbose
 # its suite ran nowhere, locally or in CI, despite covering the encrypted
 # session cookie and the shared PKCE helpers.
 cargo test -p cli-framework-oidc --features browser --verbose
+cargo test -p cli-framework-oidc --features host-session,test-support --verbose
 cargo test -p cli-framework-oidc --features client,server --verbose
 cargo build -p cli-framework-oidc --no-default-features --verbose
 cargo test -p cli-framework --no-default-features --features auth,testkit --verbose
