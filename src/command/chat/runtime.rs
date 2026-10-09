@@ -319,6 +319,7 @@ pub(crate) fn turns_from_events(prompt: &str, events: &[AgentInternalEvent]) -> 
                 call_id,
                 output,
                 is_error,
+                ..
             } => {
                 step_tool_results.insert(call_id.clone(), (output.clone(), *is_error));
             }
@@ -557,6 +558,8 @@ mod tests {
                 call_id: "c1".to_string(),
                 output: "out".to_string(),
                 is_error: false,
+                duration_ms: 0,
+                started_at_ms: 0,
             },
         ];
         let turns = turns_from_events("prompt", &events);
@@ -597,6 +600,8 @@ mod tests {
                 call_id: "c1".to_string(),
                 output: "permission denied".to_string(),
                 is_error: true,
+                duration_ms: 0,
+                started_at_ms: 0,
             },
             AgentInternalEvent::StepFinish {
                 iteration: 0,
@@ -627,6 +632,8 @@ mod tests {
                 call_id: "c1".to_string(),
                 output: "[a,b,c]".to_string(),
                 is_error: false,
+                duration_ms: 0,
+                started_at_ms: 0,
             },
             AgentInternalEvent::StepFinish {
                 iteration: 0,
@@ -641,6 +648,8 @@ mod tests {
                 call_id: "c2".to_string(),
                 output: "details".to_string(),
                 is_error: false,
+                duration_ms: 0,
+                started_at_ms: 0,
             },
             AgentInternalEvent::StepFinish {
                 iteration: 1,
@@ -682,6 +691,8 @@ mod tests {
                 call_id: "c1".to_string(),
                 output: "results".to_string(),
                 is_error: false,
+                duration_ms: 0,
+                started_at_ms: 0,
             },
             AgentInternalEvent::StepFinish {
                 iteration: 0,
@@ -728,11 +739,15 @@ mod tests {
                 call_id: "c1".to_string(),
                 output: "out_a".to_string(),
                 is_error: false,
+                duration_ms: 0,
+                started_at_ms: 0,
             },
             AgentInternalEvent::ToolResult {
                 call_id: "c2".to_string(),
                 output: "out_b".to_string(),
                 is_error: false,
+                duration_ms: 0,
+                started_at_ms: 0,
             },
             AgentInternalEvent::StepFinish {
                 iteration: 0,
