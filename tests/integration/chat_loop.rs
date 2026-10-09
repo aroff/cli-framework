@@ -31,6 +31,7 @@ fn make_test_config() -> AgentConfig {
         agents_md_path: None,
         timeout_secs: 30,
         connect_timeout_secs: 5,
+        capture_harness: false,
         session_persona: None,
         session_agents: Default::default(),
         host_tool_provider: None,
