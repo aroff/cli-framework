@@ -691,6 +691,61 @@ async fn logout_ends_the_realm_session_clears_the_cookie_and_redirects() {
     }
 }
 
+/// Threat review 2 F3 (rudaia-hq/apps): a browser sends `Origin` on every POST,
+/// so a logout POST with neither `Origin` nor `Sec-Fetch-Site` is refused. Either
+/// one alone, from the host's own pages, still logs out.
+#[tokio::test]
+async fn logout_refuses_a_post_with_neither_origin_nor_sec_fetch_site() {
+    let realm = Realm::start().await;
+    let s = HostSessions::new(config(&realm, &TestClock::new())).unwrap();
+    let pair = sign_in(&s, &realm, 300).await;
+    Mock::given(method("POST"))
+        .and(path("/logout"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&realm.server)
+        .await;
+
+    let bare = Request::post("/_host/logout")
+        .header(header::COOKIE, &pair)
+        .body(Body::empty())
+        .unwrap();
+    let resp = call(&s, bare).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(set_cookies(&resp).is_empty(), "the session stays");
+    assert!(realm.bodies("/logout").await.is_empty());
+
+    for (name, value) in [
+        ("sec-fetch-site", "cross-site"),
+        ("origin", "null"),
+        ("origin", "https://evil.example"),
+    ] {
+        let req = Request::post("/_host/logout")
+            .header(header::COOKIE, &pair)
+            .header(name, value)
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            call(&s, req).await.status(),
+            StatusCode::FORBIDDEN,
+            "{name}: {value}"
+        );
+    }
+    assert!(realm.bodies("/logout").await.is_empty());
+
+    for (name, value) in [("sec-fetch-site", "same-origin"), ("origin", ORIGIN)] {
+        let req = Request::post("/_host/logout")
+            .header(header::COOKIE, &pair)
+            .header(name, value)
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            call(&s, req).await.status(),
+            StatusCode::SEE_OTHER,
+            "{name}: {value}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn session_ttl_sets_max_age() {
     let realm = Realm::start().await;

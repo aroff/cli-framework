@@ -245,16 +245,17 @@ async fn callback(
     resp
 }
 
-/// Refuses a cross-site request: an `Origin` other than the host's own, or
-/// `Sec-Fetch-Site: cross-site`.
+/// Refuses a request that doesn't show it comes from the host's own pages: an
+/// `Origin` other than the host's own, `Sec-Fetch-Site: cross-site`, or neither
+/// header at all. A browser sends `Origin` on every POST (and `Sec-Fetch-Site`
+/// to a secure origin), so a request with neither isn't a browser's form.
 pub(crate) fn cross_site(headers: &HeaderMap, origin: &str) -> bool {
-    let bad_origin = headers
-        .get(header::ORIGIN)
-        .is_some_and(|o| o.as_bytes() != origin.as_bytes());
-    let bad_site = headers
-        .get("sec-fetch-site")
-        .is_some_and(|s| s.as_bytes() == b"cross-site");
-    bad_origin || bad_site
+    let sent_origin = headers.get(header::ORIGIN);
+    let site = headers.get("sec-fetch-site");
+    let bad_origin = sent_origin.is_some_and(|o| o.as_bytes() != origin.as_bytes());
+    let bad_site = site.is_some_and(|s| s.as_bytes() == b"cross-site");
+    let neither = sent_origin.is_none() && site.is_none();
+    bad_origin || bad_site || neither
 }
 
 async fn logout(State(inner): State<Arc<Inner>>, headers: HeaderMap) -> Response {
