@@ -267,8 +267,10 @@ match sessions.resolve(request.headers()).await {
 - **Refresh**: an access token within `refresh_skew` of expiry is refreshed. A
   refused refresh ends the session; an unreachable realm keeps the old token
   until it expires, then answers `Unavailable` without clearing the cookie.
-- **Logout** is a same-origin POST. It ends the realm session with the refresh
-  token, clears the cookie, and redirects to the realm's end-session endpoint.
+- **Logout** is a same-origin POST: a foreign `Origin`, `Sec-Fetch-Site:
+  cross-site`, or a POST with neither header is refused with 403. It ends the
+  realm session with the refresh token, clears the cookie, and redirects to the
+  realm's end-session endpoint.
 - **Cookie size**: `HostSessions::new` refuses a configuration whose expected
   tokens would not fit `max_cookie_bytes` (4096), and sign-in refuses real
   tokens that don't. The sealed size is logged as `cookie_bytes`.
