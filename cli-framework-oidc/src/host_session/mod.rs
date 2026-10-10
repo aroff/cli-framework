@@ -13,6 +13,8 @@
 //!   after a tenth of the window has passed;
 //! - a random 128-bit session id and a caller-supplied **binding** sealed in
 //!   the cookie and checked on every read;
+//! - access tokens checked to be issued to this client (`azp` == `client_id`)
+//!   at sign-in and after every refresh;
 //! - routes under a configurable prefix (`{prefix}/login`, `/callback`,
 //!   `/logout`, `/session`) and a configurable cookie name (`__Host-session`
 //!   by default);
@@ -30,7 +32,7 @@ mod seal;
 
 pub use crate::browser::SessionKey;
 use crate::server::{OidcValidationConfig, OidcValidator};
-use crate::types::AudiencePolicy;
+use crate::types::{AudiencePolicy, OidcClaims};
 use crate::OidcConfigError;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -122,6 +124,16 @@ pub struct HostSessionConfig {
     pub algorithms: Vec<Algorithm>,
     /// Audience policy for the access token (the ID token's audience is always the client).
     pub access_audience: AudiencePolicy,
+    /// `true` (default): the access token's `azp` (authorized party) must be
+    /// `client_id`, i.e. the realm issued it to this host. Sign-in refuses an
+    /// access token with another or no `azp`, and a refresh that returns one
+    /// ends the session as [`EndReason::RefreshRefused`]. This is the check
+    /// that ties the access token to the host: its `aud` names the APIs it is
+    /// meant for, which is usually not the host itself, so with this on an
+    /// `Unchecked` `access_audience` logs no warning. Set `false` only for a
+    /// provider whose access tokens carry no `azp`, and set `access_audience`
+    /// then.
+    pub require_access_azp: bool,
     /// JWKS URI override (default: from discovery).
     pub jwks_uri: Option<String>,
     pub jwks_ttl: Duration,
@@ -168,6 +180,7 @@ impl HostSessionConfig {
             scopes: vec!["openid".into()],
             algorithms: vec![Algorithm::RS256],
             access_audience: AudiencePolicy::Unchecked,
+            require_access_azp: true,
             jwks_uri: None,
             jwks_ttl: Duration::from_secs(300),
             clock_skew: Duration::from_secs(60),
@@ -344,16 +357,26 @@ impl HostSessions {
             )));
         }
 
-        let validator = |audience: AudiencePolicy| {
+        let validator_config = |audience: AudiencePolicy| {
             let mut v = OidcValidationConfig::new(issuer.clone(), audience);
             v.algorithms = cfg.algorithms.clone();
             v.jwks_uri = cfg.jwks_uri.clone();
             v.jwks_ttl = cfg.jwks_ttl;
             v.clock_skew = cfg.clock_skew;
-            OidcValidator::new(v)
+            v
         };
-        let id_tokens = validator(AudiencePolicy::Require(cfg.client_id.clone()))?;
-        let access_tokens = validator(cfg.access_audience.clone())?;
+        let id_tokens = OidcValidator::new(validator_config(AudiencePolicy::Require(
+            cfg.client_id.clone(),
+        )))?;
+        // With the `azp` check on, an `Unchecked` audience is not "no binding":
+        // the token is still tied to this client, so the validator's WARN
+        // would be untrue here.
+        let access_config = validator_config(cfg.access_audience.clone());
+        let access_tokens = if cfg.require_access_azp {
+            OidcValidator::new_without_audience_warning(access_config)?
+        } else {
+            OidcValidator::new(access_config)?
+        };
         let http = reqwest::Client::builder()
             .user_agent(concat!("cli-framework-oidc/", env!("CARGO_PKG_VERSION")))
             .redirect(reqwest::redirect::Policy::none())
@@ -438,9 +461,9 @@ impl Inner {
         if now + self.cfg.refresh_skew.as_secs() as i64 >= rec.access_exp {
             match self.refresh(&rec.refresh_token).await {
                 Ok(tokens) => match self.verified_access(&tokens.access_token).await {
-                    Ok(access_exp) => {
+                    Ok(access) => {
                         rec.refresh_exp = self.refresh_exp(&tokens, now, rec.refresh_exp);
-                        rec.access_exp = access_exp;
+                        rec.access_exp = access.exp;
                         rec.access_token = Zeroizing::new(tokens.access_token);
                         if let Some(rt) = tokens.refresh_token {
                             rec.refresh_token = Zeroizing::new(rt);
@@ -504,13 +527,25 @@ impl Inner {
         }
     }
 
-    /// Verifies an access token against the realm and returns its `exp`.
-    async fn verified_access(&self, token: &str) -> Result<i64, String> {
-        self.access_tokens
+    /// Verifies an access token against the realm (signature, `iss`, `exp`,
+    /// `access_audience`) and, with `require_access_azp`, that it was issued
+    /// to this client.
+    pub(crate) async fn verified_access(&self, token: &str) -> Result<OidcClaims, String> {
+        let claims = self
+            .access_tokens
             .validate(token)
             .await
-            .map(|c| c.exp)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        if self.cfg.require_access_azp {
+            match claims.raw.get("azp").and_then(JsonValue::as_str) {
+                Some(azp) if azp == self.cfg.client_id => {}
+                Some(azp) => return Err(format!("issued to another client (azp {azp:?})")),
+                None => {
+                    return Err("no azp claim; cannot tell which client it was issued to".into())
+                }
+            }
+        }
+        Ok(claims)
     }
 
     /// A new session record for freshly obtained tokens.

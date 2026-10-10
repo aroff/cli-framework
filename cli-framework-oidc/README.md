@@ -252,6 +252,13 @@ match sessions.resolve(request.headers()).await {
   a short-lived sealed `__Host-sign-in` cookie. `return_to` must be a local
   path. The ID token's audience, nonce and subject are checked, and the access
   token is verified against the realm's keys.
+- **Authorized party**: the access token's `azp` must be the host's
+  `client_id`, at sign-in and after every refresh (`require_access_azp`, on by
+  default). Its `aud` names the APIs it is for, usually not the host, so this
+  is what ties it to the host; with it on, the default `Unchecked`
+  `access_audience` logs no warning. A refresh returning a token issued to
+  another client ends the session as `RefreshRefused`. Turn it off only for a
+  provider whose access tokens carry no `azp`, and set `access_audience`.
 - **Idle timeout** defaults to 30 minutes. The cookie is rewritten with a new
   activity stamp once a tenth of the window has passed, not on every request.
   The cookie has no `Max-Age` unless `session_ttl` is set.

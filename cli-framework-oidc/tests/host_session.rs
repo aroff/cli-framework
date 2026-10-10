@@ -19,6 +19,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const ORIGIN: &str = "http://localhost:8080";
 const BINDING: &str = "web-meridis.faseinfra.net";
+const CLIENT_ID: &str = "meridis-apps-host";
 
 struct Realm {
     server: MockServer,
@@ -51,12 +52,23 @@ impl Realm {
         Self { server, issuer }
     }
 
+    /// An access token as Keycloak issues it to the host: `aud` names the
+    /// APIs (not the host), `azp` names the host.
     fn access(&self, ttl: i64) -> String {
-        self.issuer.mint(json!({
-            "sub": "user-1", "aud": "account", "name": "Ana Souza",
+        self.access_for(Some(CLIENT_ID), ttl)
+    }
+
+    /// An access token whose `azp` is `azp` (`None`: no `azp` claim).
+    fn access_for(&self, azp: Option<&str>, ttl: i64) -> String {
+        let mut claims = json!({
+            "sub": "user-1", "aud": ["corpus", "account"], "name": "Ana Souza",
             "organization": {"clinic-a": {}}, "exp": now_secs() + ttl,
             "jti": rand_jti(),
-        }))
+        });
+        if let Some(azp) = azp {
+            claims["azp"] = json!(azp);
+        }
+        self.issuer.mint(claims)
     }
 
     fn id(&self, nonce: &str) -> String {
@@ -402,6 +414,71 @@ async fn callback_refuses_an_id_token_for_another_client_or_subject() {
 }
 
 #[tokio::test]
+async fn callback_refuses_an_access_token_issued_to_another_client() {
+    for azp in [Some("meridis-frontend"), Some(""), None] {
+        let realm = Realm::start().await;
+        let s = HostSessions::new(config(&realm, &TestClock::new())).unwrap();
+        let at = realm.access_for(azp, 300);
+        let resp = sign_in_with(&s, &realm, |nonce| {
+            json!({ "access_token": at, "refresh_token": "rt", "id_token": realm.id(nonce),
+                    "refresh_expires_in": 1800 })
+        })
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY, "azp {azp:?}");
+        assert!(
+            cookie_pair(&resp, "__Host-session").is_none(),
+            "azp {azp:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_refreshed_access_token_issued_to_another_client_ends_the_session() {
+    let realm = Realm::start().await;
+    let s = HostSessions::new(config(&realm, &TestClock::new())).unwrap();
+    let pair = sign_in(&s, &realm, 30).await;
+    let other = realm.access_for(Some("meridis-frontend"), 300);
+    realm
+        .on_refresh(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": other, "refresh_token": "rt-2", "refresh_expires_in": 1800,
+        })))
+        .await;
+    assert!(matches!(
+        s.resolve(&cookie_headers(&pair)).await,
+        Resolution::Ended {
+            reason: EndReason::RefreshRefused,
+            clear_cookie: Some(_)
+        }
+    ));
+}
+
+#[tokio::test]
+async fn the_azp_check_can_be_turned_off() {
+    let realm = Realm::start().await;
+    let mut cfg = config(&realm, &TestClock::new());
+    cfg.require_access_azp = false;
+    let s = HostSessions::new(cfg).unwrap();
+    let at = realm.access_for(None, 30);
+    let resp = sign_in_with(&s, &realm, |nonce| {
+        json!({ "access_token": at, "refresh_token": "rt-1", "id_token": realm.id(nonce),
+                "refresh_expires_in": 1800 })
+    })
+    .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let pair = cookie_pair(&resp, "__Host-session").unwrap();
+    let other = realm.access_for(Some("meridis-frontend"), 300);
+    realm
+        .on_refresh(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": other, "refresh_token": "rt-2", "refresh_expires_in": 1800,
+        })))
+        .await;
+    let Resolution::Active(a) = s.resolve(&cookie_headers(&pair)).await else {
+        panic!("the refreshed token is accepted with the check off")
+    };
+    assert_eq!(a.access_token(), other);
+}
+
+#[tokio::test]
 async fn a_cookie_bound_elsewhere_or_tampered_is_refused() {
     let realm = Realm::start().await;
     let clock = TestClock::new();
@@ -727,7 +804,7 @@ async fn cookie_size_is_checked_at_startup_and_at_sign_in() {
     let s = HostSessions::new(cfg).unwrap();
     let at = realm
         .issuer
-        .mint(json!({"sub": "user-1", "pad": "x".repeat(800)}));
+        .mint(json!({"sub": "user-1", "azp": CLIENT_ID, "pad": "x".repeat(800)}));
     let resp = sign_in_with(&s, &realm, |nonce| {
         json!({ "access_token": at, "refresh_token": "rt", "id_token": realm.id(nonce),
                 "refresh_expires_in": 1800 })

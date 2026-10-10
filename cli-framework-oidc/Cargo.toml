@@ -144,6 +144,11 @@ path = "tests/host_session.rs"
 required-features = ["host-session", "test-support"]
 
 [[test]]
+name = "host_session_logging"
+path = "tests/host_session_logging.rs"
+required-features = ["host-session"]
+
+[[test]]
 name = "browser_validation"
 path = "tests/browser_validation.rs"
 required-features = ["browser"]
@@ -159,3 +164,5 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 jsonwebtoken = "9"
 axum = { version = "0.8" }
 tower = { version = "0.5", features = ["util"] }
+# Captures log lines in tests (host_session: which validator warns at startup).
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
