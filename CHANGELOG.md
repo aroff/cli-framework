@@ -46,6 +46,14 @@
   server-side) and `session` under a configurable prefix. The cookie size is
   checked at startup against expected token sizes and again at sign-in.
 
+- `cli-framework-oidc` (`host-session`): `HostSessionConfig::require_access_azp`
+  (default `true`) refuses an access token whose `azp` isn't `client_id`, at
+  sign-in (the callback fails) and after every refresh (the session ends as
+  `RefreshRefused`). With it on, the access-token validator no longer logs the
+  `AudiencePolicy::Unchecked` warning: the token's `aud` names the APIs it is
+  for, and `azp` is what binds it to the host. Set it to `false` for a provider
+  whose access tokens carry no `azp`.
+
 - `cli-framework-oidc` (`server`): several trusted issuers (ADR 0082).
   `OidcValidator::new_multi(configs)` and `oidc_validation_layer_multi(configs)`
   route each token by its unverified `iss` to the matching issuer, which then

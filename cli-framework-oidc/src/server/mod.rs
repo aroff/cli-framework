@@ -209,8 +209,13 @@ struct IssuerState {
 impl IssuerState {
     /// Validate one issuer's config: issuer normalization, non-empty
     /// `algorithms`, JWKS-URI scheme check, key source, claim paths, and the
-    /// `Unchecked` audience WARN.
-    fn build(cfg: OidcValidationConfig, http: reqwest::Client) -> Result<Self, OidcConfigError> {
+    /// `Unchecked` audience WARN (unless `warn_unchecked` is false: the caller
+    /// binds its tokens some other way and says so itself).
+    fn build(
+        cfg: OidcValidationConfig,
+        http: reqwest::Client,
+        warn_unchecked: bool,
+    ) -> Result<Self, OidcConfigError> {
         let normalized_issuer = crate::normalize_issuer(&cfg.issuer_url)?;
 
         if cfg.algorithms.is_empty() {
@@ -247,7 +252,7 @@ impl IssuerState {
             .map(ClaimPath::parse)
             .transpose()?;
 
-        if matches!(cfg.audience, AudiencePolicy::Unchecked) {
+        if warn_unchecked && matches!(cfg.audience, AudiencePolicy::Unchecked) {
             tracing::warn!(
                 issuer = %normalized_issuer,
                 "oidc_validation_layer: AudiencePolicy::Unchecked -- no audience validation"
@@ -466,7 +471,24 @@ impl OidcValidator {
     /// normalization, non-empty `algorithms`, JWKS-URI scheme check, key
     /// source, claim paths, `Unchecked` audience WARN).
     pub fn new(cfg: OidcValidationConfig) -> Result<Self, OidcConfigError> {
-        let issuer = IssuerState::build(cfg, http_client())?;
+        Self::new_single(cfg, true)
+    }
+
+    /// [`new`](Self::new) without the `Unchecked` audience WARN, for a caller
+    /// that binds its tokens to itself another way (the host session's `azp`
+    /// check) and would otherwise log a warning that isn't true of it.
+    #[cfg(feature = "host-session")]
+    pub(crate) fn new_without_audience_warning(
+        cfg: OidcValidationConfig,
+    ) -> Result<Self, OidcConfigError> {
+        Self::new_single(cfg, false)
+    }
+
+    fn new_single(
+        cfg: OidcValidationConfig,
+        warn_unchecked: bool,
+    ) -> Result<Self, OidcConfigError> {
+        let issuer = IssuerState::build(cfg, http_client(), warn_unchecked)?;
         Ok(Self {
             inner: Arc::new(ValidatorInner {
                 issuers: vec![issuer],
@@ -493,7 +515,7 @@ impl OidcValidator {
         let http = http_client();
         let mut issuers: Vec<IssuerState> = Vec::new();
         for cfg in cfgs {
-            let issuer = IssuerState::build(cfg, http.clone())?;
+            let issuer = IssuerState::build(cfg, http.clone(), true)?;
             if issuers.iter().any(|i| i.issuer_url == issuer.issuer_url) {
                 return Err(OidcConfigError::DuplicateIssuer(issuer.issuer_url));
             }

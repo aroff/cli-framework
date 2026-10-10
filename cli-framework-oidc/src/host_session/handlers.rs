@@ -210,7 +210,7 @@ async fn callback(
     if !nonce_ok {
         return fail(StatusCode::BAD_REQUEST, "id_token nonce mismatch");
     }
-    let access = match inner.access_tokens.validate(&tokens.access_token).await {
+    let access = match inner.verified_access(&tokens.access_token).await {
         Ok(c) => c,
         Err(e) => return fail(StatusCode::BAD_GATEWAY, &format!("access_token: {e}")),
     };
