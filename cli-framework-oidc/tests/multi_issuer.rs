@@ -15,7 +15,7 @@ use cli_framework_oidc::server::{
     oidc_validation_layer_multi, AudiencePolicy, JwkSet, OidcClaims, OidcValidationConfig,
     OidcValidationError, OidcValidator, TokenRejection, DEFAULT_ROLES_CLAIM_PATH,
 };
-use cli_framework_oidc::test_support::{make_cfg, mint_jwt, TestIssuer};
+use cli_framework_oidc::test_support::{make_cfg, mint_jwt, now_secs, TestIssuer};
 use cli_framework_oidc::OidcConfigError;
 
 const A: &str = "https://issuer-a.test";
@@ -276,6 +276,43 @@ async fn algorithms_are_enforced_per_issuer() {
     assert!(v.validate(&a.mint(json!({"sub": "u"}))).await.is_ok());
     let err = v.validate(&b.mint(json!({"sub": "u"}))).await.unwrap_err();
     assert_eq!(rejection(err), TokenRejection::UnsupportedAlgorithm);
+}
+
+#[tokio::test]
+async fn algorithms_of_different_families_can_be_allowed_together() {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+
+    // An issuer that may sign with RSA or EC keys (Keycloak can do either).
+    for algorithms in [
+        vec![Algorithm::RS256, Algorithm::ES256],
+        vec![Algorithm::ES256, Algorithm::RS256],
+    ] {
+        let a = TestIssuer::new(A);
+        let v = OidcValidator::new(OidcValidationConfig {
+            algorithms: algorithms.clone(),
+            ..a.config()
+        })
+        .unwrap();
+        let claims = v.validate(&a.mint(json!({"sub": "u"}))).await;
+        assert_eq!(claims.unwrap().sub, "u", "{algorithms:?}");
+
+        // A header naming the other allowed family does not make the EC key
+        // verify it.
+        let kid = format!("{A}#key-1");
+        let header = URL_SAFE_NO_PAD.encode(json!({"alg": "RS256", "kid": kid}).to_string());
+        let payload = URL_SAFE_NO_PAD
+            .encode(json!({"sub": "u", "iss": A, "exp": now_secs() + 300}).to_string());
+        let forged = format!("{header}.{payload}.{}", URL_SAFE_NO_PAD.encode([7u8; 256]));
+        let err = v.validate(&forged).await.unwrap_err();
+        assert_eq!(rejection(err), TokenRejection::UnsupportedAlgorithm);
+
+        // An algorithm outside the set is still refused before any key.
+        let header = URL_SAFE_NO_PAD.encode(json!({"alg": "HS256", "kid": kid}).to_string());
+        let hs = format!("{header}.{payload}.{}", URL_SAFE_NO_PAD.encode([7u8; 32]));
+        let err = v.validate(&hs).await.unwrap_err();
+        assert_eq!(rejection(err), TokenRejection::UnsupportedAlgorithm);
+    }
 }
 
 #[tokio::test]

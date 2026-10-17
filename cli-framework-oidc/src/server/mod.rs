@@ -132,6 +132,9 @@ pub struct OidcValidationConfig {
     /// `{issuer_url}/.well-known/openid-configuration`. Must be `None` when
     /// `static_jwks` is set.
     pub jwks_uri: Option<String>,
+    /// The header `alg` values accepted. They may mix key families (e.g.
+    /// `[RS256, ES256]`): a token is verified with its own `alg` only, by a
+    /// key of that family.
     pub algorithms: Vec<Algorithm>,
     pub jwks_ttl: Duration,
     pub clock_skew: Duration,
@@ -385,7 +388,7 @@ impl IssuerState {
 
         let mut last_rejection: Option<TokenRejection> = None;
         for key in &keys {
-            match try_validate_jwt(token, key, self) {
+            match try_validate_jwt(token, key, header.alg, self) {
                 Ok(claims) => return Ok(claims),
                 Err(r) => {
                     last_rejection = Some(r);
@@ -864,15 +867,20 @@ fn jwt_err_to_rejection(e: &jsonwebtoken::errors::Error) -> TokenRejection {
 
 // ── Per-key JWT verification ─────────────────────────────────────────────────
 
+/// `alg` is the token header's algorithm, already checked to be one of the
+/// issuer's `algorithms`. Only it is handed to `jsonwebtoken`, which refuses a
+/// key whose family differs from *any* algorithm it is given: passing the
+/// whole set would reject every token once the set mixes families (e.g.
+/// `[RS256, ES256]`). A key of another family than `alg` is still refused.
 fn try_validate_jwt(
     token: &str,
     key: &DecodingKey,
+    alg: Algorithm,
     issuer: &IssuerState,
 ) -> Result<OidcClaims, TokenRejection> {
     let cfg = &issuer.cfg;
     let issuer_url = issuer.issuer_url.as_str();
-    let mut validation = Validation::new(cfg.algorithms[0]);
-    validation.algorithms = cfg.algorithms.clone();
+    let mut validation = Validation::new(alg);
     validation.set_issuer(&[issuer_url]);
     validation.set_required_spec_claims(crate::jwks::REQUIRED_SPEC_CLAIMS);
     crate::jwks::apply_audience_policy(&mut validation, &cfg.audience);
