@@ -1081,6 +1081,11 @@ name = "unit_testkit_telemetry_knobs"
 path = "tests/unit/testkit_telemetry_knobs.rs"
 required-features = ["telemetry", "config", "testkit"]
 
+[[test]]
+name = "unit_end_user_telemetry_opt_out"
+path = "tests/unit/end_user_telemetry_opt_out.rs"
+required-features = ["telemetry", "config", "testkit"]
+
 # Self-install operations over a temporary InstallEnv (ADR 0080).
 [[test]]
 name = "unit_self_install"
