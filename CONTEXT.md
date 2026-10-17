@@ -307,6 +307,10 @@ error rather than launching a login flow (the 401 path never pops an
 interactive prompt). Does not own a `TokenProvider` directly — the handler
 retrieves the provider via `AppContext::opt_token_provider()` and constructs the
 client itself. The framework does not pre-build or vend a shared instance.
+Its `send` is the **single attempt**: the request goes out once and the response
+comes back whatever its status, body intact; only the 401 auth-layer retry
+applies, never the inner transient budget, so a write is re-sent only after a
+401.
 _Avoid_: "auth client" (overloaded with the OIDC client concept).
 
 **cli-framework-oidc**:

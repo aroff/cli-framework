@@ -264,7 +264,9 @@ let http = AuthenticatedHttpClient::new(
 let resp = http.get("https://api.example.com/things").await?;
 ```
 
-The client exposes `get`, `post`, `put`, `delete`, `patch`, `head`, `options`. Each takes a `&str` URL and returns `anyhow::Result<reqwest::Response>`.
+The client exposes `get`, `post`, `put`, `delete`, `patch`, `head`, `options`. Each takes a `&str` URL and returns `anyhow::Result<reqwest::Response>`. They retry 5xx, 429 and network errors through the inner client and turn any 4xx or 5xx into an error, dropping the body.
+
+`send(|| client.client().post(url).json(&body))` sends once and returns the response whatever its status, so an error body can be decoded and a write is never sent twice, except after a 401: the token is renewed and the request sent once more. A second 401 comes back as the response. `NotAuthenticated` comes back as an `AuthError` inside the `anyhow::Error`.
 
 ### Accessing the provider from a command
 
