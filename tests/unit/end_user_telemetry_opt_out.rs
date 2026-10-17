@@ -101,6 +101,30 @@ fn an_opted_out_end_user_has_no_telemetry_command_group() {
 }
 
 #[tokio::test]
+async fn an_opted_out_end_user_lists_no_telemetry_variables_in_help() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = harness(dir.path(), end_user(), false)
+        .run(&["demo", "--help"])
+        .await;
+    assert!(
+        out.stdout.contains("DEMO_TELEMETRY_LEVEL"),
+        "control: root help lists the telemetry variables:\n{}",
+        out.stdout
+    );
+
+    let out = harness(dir.path(), end_user(), true)
+        .run(&["demo", "--help"])
+        .await;
+    for name in ["DEMO_TELEMETRY_", "OTEL_", "DO_NOT_TRACK"] {
+        assert!(
+            !out.stdout.contains(name),
+            "help documents a variable nothing reads ({name}):\n{}",
+            out.stdout
+        );
+    }
+}
+
+#[tokio::test]
 async fn an_opted_out_end_user_has_no_telemetry_doctor_checks() {
     let dir = tempfile::tempdir().unwrap();
     let control = doctor_check_ids(&mut harness(dir.path(), end_user(), false)).await;

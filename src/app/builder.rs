@@ -894,7 +894,8 @@ impl AppBuilder {
     }
 
     /// Ship no telemetry on an end-user install: no `telemetry` command
-    /// group, no telemetry doctor checks, no first-run notice and no export.
+    /// group, no telemetry doctor checks, no telemetry variables in root
+    /// help, no first-run notice and no export.
     ///
     /// For a binary that is both: a service where an operator runs it, and a
     /// program a person installs and runs themselves (with `self` and the
@@ -1635,9 +1636,10 @@ impl AppBuilder {
         // help beside the application's. Registered *after* the app's and the
         // commands' so that an app which documents one of these names itself
         // keeps its own wording. The same name the startup scan uses, so the
-        // variables listed are the ones that will be read.
+        // variables listed are the ones that will be read. An opted-out end
+        // user reads none of them, so none are listed.
         #[cfg(feature = "telemetry")]
-        {
+        if !telemetry_withdrawn {
             let app = self.meta.as_ref().map(|m| m.name).unwrap_or(self.app_name);
             for (name, description) in crate::telemetry::env::help_entries(app, &published_manifest)
             {

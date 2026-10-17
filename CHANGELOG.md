@@ -36,8 +36,8 @@
 
 - `AppBuilder::without_end_user_telemetry()` (feature `telemetry`): an
   end-user install ships no telemetry — no `telemetry` command group, no
-  telemetry doctor checks, no first-run notice, no export, and stored consent
-  is not read. For a binary that runs as a service where an operator runs it
+  telemetry doctor checks, no telemetry variables in root help, no first-run
+  notice, no export, and stored consent is not read. For a binary that runs as a service where an operator runs it
   and as a program a person runs themselves, and picks its `Deployment` per
   process. A `Deployment::Service` process is unaffected.
 
