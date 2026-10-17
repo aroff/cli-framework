@@ -200,7 +200,7 @@ self-replace = { version = "1.5", optional = true }
 # (minisign-verify, pure Rust, no C toolchain).
 sha2 = { version = "0.10", optional = true }
 flate2 = { version = "1", optional = true }
-zip = { version = "2", default-features = false, features = ["deflate-flate2", "flate2"], optional = true }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"], optional = true }
 semver = { version = "1", optional = true }
 minisign-verify = { version = "0.2", optional = true }
 

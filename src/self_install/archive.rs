@@ -263,7 +263,7 @@ fn extract_zip(archive: &Path, binary: &str, out: &Path) -> Result<bool, Archive
     let mut wanted = None;
     for i in 0..zip.len() {
         let entry = zip.by_index_raw(i).map_err(|e| corrupt(archive, e))?;
-        let name = entry.name().to_string();
+        let name = entry.name().map_err(|e| corrupt(archive, e))?.into_owned();
         if !is_safe_entry(&name) || entry.enclosed_name().is_none() {
             return Err(unsafe_entry(archive, &name));
         }
