@@ -464,6 +464,16 @@
 
 ### Fixed
 
+- `cli-framework-oidc`: an `OidcValidationConfig` whose `algorithms` mix key
+  families (e.g. `[RS256, ES256]`, for a Keycloak realm that may sign with an
+  RSA or an EC key) rejected every token: all the algorithms were handed to
+  `jsonwebtoken`, which refuses a key whose family differs from any of them.
+  A token is now verified with its own header `alg` only (already checked to
+  be in `algorithms`), by a key of that family. A header naming another
+  allowed family than the key's is still rejected as
+  `TokenRejection::UnsupportedAlgorithm`. Configs with one algorithm, or one
+  family, behave as before.
+
 - `cli-framework-oidc`: single-issuer validation (`OidcValidator::new`,
   `oidc_validation_layer`) and the bearer-token checks of the browser layers
   (`oidc_browser_session_layer`, `oidc_dual_mode_layer`) now require the `iss`
