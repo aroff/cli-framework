@@ -83,7 +83,7 @@ tower-http = { version = "0.7", features = ["cors"], optional = true }
 # (de)serialized itself.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"], optional = true }
 # Optional MCP install dependency (aikit-sdk provides add_mcp_server and mcp_supported_agents)
-aikit-sdk = { git = "https://github.com/goaikit/aikit.git", package = "aikit-sdk", rev = "b894e4f0d0da42465c316efd1b3eb4e9582219c8", optional = true }
+aikit-sdk = { git = "https://github.com/goaikit/aikit.git", package = "aikit-sdk", rev = "f9c8d2786bc8da2e2d34daf362e6a2a59500502d", optional = true }
 ## Optional embedded agent dependency (used by `chat` feature)
 aikit-agent = { git = "https://github.com/goaikit/aikit.git", package = "aikit-agent", rev = "b894e4f0d0da42465c316efd1b3eb4e9582219c8", optional = true }
 # Optional Swagger UI dependency for api-swagger feature.
@@ -108,7 +108,9 @@ aikit-agent = { git = "https://github.com/goaikit/aikit.git", package = "aikit-a
 # Note that `vendored` takes priority over `SWAGGER_UI_DOWNLOAD_URL` in the build
 # script: with it enabled that variable is read and printed but ignored, so the
 # `file://` override used for local builds is no longer needed.
-utoipa-swagger-ui = { version = "9.0.2", features = ["axum", "vendored"], optional = true }
+# Temporary immutable pin to the upstream zip 9 migration while
+# https://github.com/juhaku/utoipa/pull/1645 awaits release.
+utoipa-swagger-ui = { git = "https://github.com/KarstenB/utoipa.git", rev = "edc9a57726f8ef6b3fbad594639922864e999f52", features = ["axum", "vendored"], optional = true }
 # Optional emulation dependencies
 mockall = { version = "0.13", optional = true }
 
@@ -200,7 +202,7 @@ self-replace = { version = "1.5", optional = true }
 # (minisign-verify, pure Rust, no C toolchain).
 sha2 = { version = "0.10", optional = true }
 flate2 = { version = "1", optional = true }
-zip = { version = "2", default-features = false, features = ["deflate-flate2", "flate2"], optional = true }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"], optional = true }
 semver = { version = "1", optional = true }
 minisign-verify = { version = "0.2", optional = true }
 
