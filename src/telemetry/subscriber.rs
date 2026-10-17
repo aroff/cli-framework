@@ -402,6 +402,14 @@ impl LoggingGuard {
     }
 }
 
+/// Whether the default subscriber colours its lines. It writes to stdout, so
+/// this is the crate's stdout colour rule: `NO_COLOR` > `FORCE_COLOR` > a
+/// terminal. A container or a pipe gets plain lines; escape codes there end up
+/// verbatim in `kubectl logs` and the log store.
+fn default_logging_ansi() -> bool {
+    crate::cli_mode::should_color_output()
+}
+
 /// The new body of `crate::init_default_logging`: install a process-wide
 /// subscriber and hand back a guard.
 ///
@@ -422,7 +430,11 @@ pub fn install_default_logging() -> LoggingGuard {
     let installed = tracing_subscriber::registry()
         .with(slot.clone())
         .with(compose::filter())
-        .with(tracing_subscriber::fmt::layer().with_target(true))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(true)
+                .with_ansi(default_logging_ansi()),
+        )
         .try_init()
         .is_ok();
 
@@ -448,6 +460,7 @@ pub fn install_default_logging() -> LoggingGuard {
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(true)
+        .with_ansi(default_logging_ansi())
         .init();
 
     LoggingGuard {}

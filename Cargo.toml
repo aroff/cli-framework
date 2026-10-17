@@ -900,6 +900,11 @@ required-features = ["telemetry"]
 # Own binary for the same reason: `init_default_logging` installs a
 # subscriber too, and this test calls it twice to see both outcomes.
 [[test]]
+name = "unit_default_logging_color"
+path = "tests/unit/default_logging_color.rs"
+required-features = ["observability"]
+
+[[test]]
 name = "unit_telemetry_logging_guard"
 path = "tests/unit/telemetry_logging_guard.rs"
 required-features = ["telemetry"]
