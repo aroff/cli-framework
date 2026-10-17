@@ -274,6 +274,25 @@ installation but never raise it above what the person chose.
 `Deployment::Service` is the fleet case; a standalone `ApiServerBuilder`
 defaults to it.
 
+A binary that is both — a service where an operator runs it, and a program a
+person installs and runs themselves — picks its deployment per process.
+`Deployment::Service` on the server keeps its telemetry; on the person's
+machine, `EndUser` plus `without_end_user_telemetry()` ships none: no
+`telemetry` command group, no telemetry doctor checks, no notice, no export,
+and stored consent from an earlier version is not read. The end-user
+commands, such as `self`, stay.
+
+```rust
+let builder = AppBuilder::new()
+    .with_version("demo", "0.1.0")
+    .with_deployment(if std::env::var_os("DEMO_INSTANCE").is_some() {
+        Deployment::Service
+    } else {
+        Deployment::EndUser { privacy_url: None }
+    })
+    .without_end_user_telemetry();
+```
+
 ### Where it sends, and how much
 
 ```rust

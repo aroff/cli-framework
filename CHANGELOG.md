@@ -34,6 +34,13 @@
 
 ### Added
 
+- `AppBuilder::without_end_user_telemetry()` (feature `telemetry`): an
+  end-user install ships no telemetry — no `telemetry` command group, no
+  telemetry doctor checks, no first-run notice, no export, and stored consent
+  is not read. For a binary that runs as a service where an operator runs it
+  and as a program a person runs themselves, and picks its `Deployment` per
+  process. A `Deployment::Service` process is unaffected.
+
 - `cli-framework-oidc` gains a `host-session` feature: a server-side sign-in
   for a web host that keeps the end user's tokens out of the browser. A
   confidential client signs in with PKCE, `state` and `nonce`; the tokens live

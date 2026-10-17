@@ -102,6 +102,10 @@ pub struct AppBuilder {
     /// becomes a build error.
     #[cfg(feature = "telemetry")]
     telemetry_ops: Vec<&'static [crate::telemetry::ProbeSpec]>,
+    /// Whether an end-user install gets telemetry at all; see
+    /// [`Self::without_end_user_telemetry`]. A service ignores it.
+    #[cfg(feature = "telemetry")]
+    end_user_telemetry: bool,
     /// How the app answers "who is calling?"; see
     /// [`crate::telemetry::IdentityResolver`].
     #[cfg(feature = "telemetry")]
@@ -199,6 +203,8 @@ impl AppBuilder {
             telemetry_defaults: crate::telemetry::TelemetryDefaults::default(),
             #[cfg(feature = "telemetry")]
             telemetry_ops: Vec::new(),
+            #[cfg(feature = "telemetry")]
+            end_user_telemetry: true,
             #[cfg(feature = "telemetry")]
             telemetry_identity: None,
             #[cfg(feature = "telemetry")]
@@ -887,6 +893,27 @@ impl AppBuilder {
         &self.deployment
     }
 
+    /// Ship no telemetry on an end-user install: no `telemetry` command
+    /// group, no telemetry doctor checks, no first-run notice and no export.
+    ///
+    /// For a binary that is both: a service where an operator runs it, and a
+    /// program a person installs and runs themselves (with `self` and the
+    /// other end-user commands). Such an app picks its [`Deployment`] per
+    /// process -- `Service` on the server, `EndUser` on the person's machine
+    /// -- and wants telemetry only from the server. Without this, the
+    /// end-user process tells the person usage statistics are off and how to
+    /// turn them on, for an app whose author never meant to collect any.
+    ///
+    /// A `Service` process is unaffected: its telemetry stays the operator's
+    /// decision, through the `OTEL_*` variables and the kill switches.
+    ///
+    /// [`Deployment`]: crate::telemetry::Deployment
+    #[cfg(feature = "telemetry")]
+    pub fn without_end_user_telemetry(mut self) -> Self {
+        self.end_user_telemetry = false;
+        self
+    }
+
     /// Build this app against a bare [`TestContext`], returning the build
     /// error rather than panicking.
     ///
@@ -1248,14 +1275,21 @@ impl AppBuilder {
         // `feature = "telemetry"` alone, not `all(telemetry, doctor)`:
         // `telemetry` lists `doctor` among its own features (Cargo.toml), so
         // the two cannot come apart.
+        //
+        // An end-user install the author opted out of telemetry for gets
+        // none of the six: they would describe a pipeline it never starts.
+        #[cfg(feature = "telemetry")]
+        let telemetry_withdrawn = !self.end_user_telemetry && self.deployment.is_end_user();
         #[cfg(feature = "telemetry")]
         let (telemetry_policy_cell, telemetry_report_cell) = {
             let policy_cell = crate::telemetry::StartupCell::filled(telemetry_policy.clone());
             let report_cell = crate::telemetry::StartupCell::empty();
-            self.push_doctor_checks(crate::telemetry::telemetry_checks(
-                policy_cell.clone(),
-                report_cell.clone(),
-            ));
+            if !telemetry_withdrawn {
+                self.push_doctor_checks(crate::telemetry::telemetry_checks(
+                    policy_cell.clone(),
+                    report_cell.clone(),
+                ));
+            }
             (policy_cell, report_cell)
         };
 
@@ -1352,8 +1386,12 @@ impl AppBuilder {
         // made; a runtime toggle command there would be a second source of
         // truth that `telemetry status` on one replica could not answer for
         // the fleet, so no group is registered for `Deployment::Service`.
+        //
+        // Nor on an end-user install the author opted out of telemetry for
+        // ([`Self::without_end_user_telemetry`]): there is nothing to see or
+        // change.
         #[cfg(feature = "telemetry")]
-        if self.deployment.is_end_user() {
+        if self.deployment.is_end_user() && !telemetry_withdrawn {
             // `CommandRegistry::get` reads only `tree_commands`, but
             // `register_telemetry_commands` registers a *group*, and
             // `register_group` collides on either map. An app whose own
@@ -1663,6 +1701,8 @@ impl AppBuilder {
             #[cfg(feature = "telemetry")]
             telemetry_policy,
             #[cfg(feature = "telemetry")]
+            telemetry_withdrawn,
+            #[cfg(feature = "telemetry")]
             startup_report: None,
             #[cfg(feature = "telemetry")]
             telemetry_policy_cell,
@@ -1833,6 +1873,12 @@ pub struct App<C: AppContext> {
     /// that has not yet read anybody's choice.
     #[cfg(feature = "telemetry")]
     telemetry_policy: Arc<crate::telemetry::TelemetryPolicy>,
+    /// An end-user install the author opted out of telemetry for
+    /// ([`AppBuilder::without_end_user_telemetry`]). Startup never runs, so
+    /// `telemetry_policy` keeps the build-time resolution, which is `Off`
+    /// for an end user.
+    #[cfg(feature = "telemetry")]
+    telemetry_withdrawn: bool,
     /// What the spec 025 startup sequence *observed*, as opposed to what it
     /// decided — the subscriber outcome, the store state, the kill switch,
     /// the unmatched `<APP>_TELEMETRY_*` variables and the doctor findings.
@@ -2339,6 +2385,13 @@ impl<C: AppContext> App<C> {
     /// CLI process still delivers its spans.
     #[cfg(feature = "telemetry")]
     fn init_telemetry(&mut self) -> crate::telemetry::TelemetryGuard {
+        // Opted out: no store, no notice, no export. The guard still exists
+        // because `run_with_args` holds one unconditionally.
+        if self.telemetry_withdrawn {
+            let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
+            return crate::telemetry::TelemetryGuard::new(provider, None);
+        }
+
         // A kill switch wins over every layer, and a shim that predates
         // the switches is still a layer. `OTEL_SDK_DISABLED` already stopped
         // the shim, through `TelemetryConfig::is_active`; the other two are
