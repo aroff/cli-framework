@@ -264,6 +264,11 @@ match sessions.resolve(request.headers()).await {
   The cookie has no `Max-Age` unless `session_ttl` is set.
 - **Binding**: a cookie sealed for another deployment string, or with another
   key, ends as `BindingMismatch` or `Invalid`.
+- **Session key**: `SessionKey::from_bytes` takes 32 raw bytes. When the
+  secret store holds a generated string instead, use
+  `SessionKey::derive(secret, b"<host> session v1")` (HKDF-SHA256; at least
+  32 bytes of secret). The same secret and context give the same key, so
+  changing either signs every session out.
 - **Refresh**: an access token within `refresh_skew` of expiry is refreshed. A
   refused refresh ends the session; an unreachable realm keeps the old token
   until it expires, then answers `Unavailable` without clearing the cookie.
@@ -271,11 +276,6 @@ match sessions.resolve(request.headers()).await {
   cross-site`, or a POST with neither header is refused with 403. It ends the
   realm session with the refresh token, clears the cookie, and redirects to the
   realm's end-session endpoint.
-- **Session key**: `SessionKey::from_bytes` takes 32 raw bytes. When the
-  secret store holds a generated string instead, use
-  `SessionKey::derive(secret, b"<host> session v1")` (HKDF-SHA256; at least
-  32 bytes of secret). The same secret and context give the same key, so
-  changing either signs every session out.
 - **Cookie size**: `HostSessions::new` refuses a configuration whose expected
   tokens would not fit `max_cookie_bytes` (4096), and sign-in refuses real
   tokens that don't. The sealed size is logged as `cookie_bytes`.
