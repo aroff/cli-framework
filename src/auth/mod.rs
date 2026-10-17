@@ -183,6 +183,33 @@ impl AuthenticatedHttpClient {
         }
     }
 
+    /// Send the request once, with the bearer token, and return the response
+    /// whatever its status, so the caller can read the body of an error.
+    ///
+    /// A 401 is handled as in [`execute_with_retry`](Self::execute_with_retry):
+    /// the token is invalidated and re-acquired, and the request is sent once
+    /// more. Nothing else is retried: not a 5xx, a 429 or a network error. A
+    /// request that changes something is therefore sent twice only when the
+    /// first attempt was refused as unauthenticated. The inner client's retry
+    /// policy and its `http.client.request` span are not used.
+    ///
+    /// Errors are a [`AuthError`] when no token can be had (including
+    /// `NotAuthenticated` after the 401), or the `reqwest::Error` of a request
+    /// that got no answer.
+    pub async fn send<F>(&self, build: F) -> anyhow::Result<reqwest::Response>
+    where
+        F: Fn() -> reqwest::RequestBuilder + Send + Sync,
+    {
+        let token = self.provider.token().await?;
+        let response = build().bearer_auth(token.as_bearer()).send().await?;
+        if response.status() != reqwest::StatusCode::UNAUTHORIZED {
+            return Ok(response);
+        }
+        self.provider.invalidate().await;
+        let fresh = self.provider.token().await?;
+        Ok(build().bearer_auth(fresh.as_bearer()).send().await?)
+    }
+
     pub async fn get(&self, url: &str) -> anyhow::Result<reqwest::Response> {
         self.execute_with_retry(|| self.inner.client().get(url))
             .await

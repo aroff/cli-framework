@@ -295,3 +295,168 @@ fn stderr_auth_flow_reporter_compiles() {
     // Calling these writes to real stderr; we just assert they don't panic.
     reporter.message("test message");
 }
+
+// ── AuthenticatedHttpClient::send: one attempt, any status ───────────────────
+
+/// Hands out `token-v1`, then `token-v2` after `invalidate`, counting both.
+struct RotatingProvider {
+    calls: AtomicUsize,
+    invalidated: AtomicUsize,
+}
+
+impl RotatingProvider {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            calls: AtomicUsize::new(0),
+            invalidated: AtomicUsize::new(0),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl TokenProvider for RotatingProvider {
+    async fn token(&self) -> Result<AccessToken, AuthError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let token = match self.invalidated.load(Ordering::SeqCst) {
+            0 => "token-v1",
+            _ => "token-v2",
+        };
+        Ok(AccessToken::new(token.to_string(), None))
+    }
+    async fn invalidate(&self) {
+        self.invalidated.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+fn send_client(provider: Arc<dyn TokenProvider>) -> AuthenticatedHttpClient {
+    AuthenticatedHttpClient::new(RetryableHttpClient::new(reqwest::Client::new()), provider)
+}
+
+#[tokio::test]
+async fn send_returns_an_error_answer_with_its_body_and_does_not_retry_it() {
+    for status in [400u16, 403, 409, 429, 500, 503] {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/write"))
+            .and(header("authorization", "Bearer token-v1"))
+            .respond_with(ResponseTemplate::new(status).set_body_string(r#"{"code":"no"}"#))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let provider = RotatingProvider::new();
+        let client = send_client(provider.clone());
+
+        let url = format!("{}/api/write", mock.uri());
+        let response = client
+            .send(|| client.client().post(&url).body("once"))
+            .await
+            .expect("an error status is an answer, not an error");
+        assert_eq!(response.status(), status);
+        assert_eq!(response.text().await.unwrap(), r#"{"code":"no"}"#);
+        assert_eq!(provider.invalidated.load(Ordering::SeqCst), 0, "{status}");
+        mock.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn send_renews_the_token_once_on_401_and_returns_the_second_answer() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/write"))
+        .and(header("authorization", "Bearer token-v1"))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/write"))
+        .and(header("authorization", "Bearer token-v2"))
+        .respond_with(ResponseTemplate::new(201).set_body_string("made"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let provider = RotatingProvider::new();
+    let client = send_client(provider.clone());
+
+    let url = format!("{}/api/write", mock.uri());
+    let response = client.send(|| client.client().post(&url)).await.unwrap();
+    assert_eq!(response.status(), 201);
+    assert_eq!(response.text().await.unwrap(), "made");
+    assert_eq!(provider.invalidated.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    mock.verify().await;
+}
+
+#[tokio::test]
+async fn send_returns_a_second_401_as_an_answer() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/secure"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("who"))
+        .expect(2)
+        .mount(&mock)
+        .await;
+    let provider = RotatingProvider::new();
+    let client = send_client(provider.clone());
+
+    let url = format!("{}/api/secure", mock.uri());
+    let response = client.send(|| client.client().get(&url)).await.unwrap();
+    assert_eq!(response.status(), 401);
+    assert_eq!(response.text().await.unwrap(), "who");
+    assert_eq!(provider.invalidated.load(Ordering::SeqCst), 1);
+    mock.verify().await;
+}
+
+#[tokio::test]
+async fn send_surfaces_not_authenticated_and_sends_nothing_without_a_token() {
+    struct NoLogin;
+    #[async_trait::async_trait]
+    impl TokenProvider for NoLogin {
+        async fn token(&self) -> Result<AccessToken, AuthError> {
+            Err(AuthError::NotAuthenticated)
+        }
+        async fn invalidate(&self) {}
+    }
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&mock)
+        .await;
+    let client = send_client(Arc::new(NoLogin));
+
+    let url = format!("{}/api/x", mock.uri());
+    let err = client.send(|| client.client().get(&url)).await.unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<AuthError>(),
+            Some(AuthError::NotAuthenticated)
+        ),
+        "{err:?}"
+    );
+    mock.verify().await;
+}
+
+#[tokio::test]
+async fn send_does_not_retry_a_request_that_got_no_answer() {
+    // A port nothing listens on: bind, note it, close.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let provider = RotatingProvider::new();
+    let client = send_client(provider.clone());
+
+    let url = format!("http://127.0.0.1:{port}/api/write");
+    let err = client
+        .send(|| client.client().post(&url))
+        .await
+        .unwrap_err();
+    assert!(
+        err.downcast_ref::<reqwest::Error>()
+            .is_some_and(reqwest::Error::is_connect),
+        "{err:?}"
+    );
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1, "sent once");
+}

@@ -393,6 +393,22 @@ let client = AuthenticatedHttpClient::new(
 let resp = client.get("https://api.example.com/data").await?;
 ```
 
+`get`, `post` and the other verb methods go through the inner client's retry
+policy and turn a 4xx or 5xx into an error, so the response body is lost. When
+the caller needs the body of an error answer, or must not send a write twice,
+use `send`: it sends the request once and returns the response whatever its
+status. Only a 401 is retried, once, with a renewed token; a 5xx, a 429 or a
+network error is not.
+
+```rust
+let resp = client
+    .send(|| client.client().post("https://api.example.com/things").json(&body))
+    .await?;
+if !resp.status().is_success() {
+    let problem: ApiError = resp.json().await?; // the body is still there
+}
+```
+
 ## Managed Configuration (`config`, `config-managed`, `config-service`)
 
 Three independently-gated layers build on each other: the manifest data model and
