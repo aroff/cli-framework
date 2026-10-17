@@ -474,6 +474,11 @@
   `TokenRejection::UnsupportedAlgorithm`. Configs with one algorithm, or one
   family, behave as before.
 
+- `init_default_logging` colours its lines only when stdout is a terminal,
+  following the crate's colour rule (`NO_COLOR` > `FORCE_COLOR` > terminal).
+  It used to write ANSI escape codes everywhere, so a service in a container
+  sent them verbatim to `kubectl logs` and the log store.
+
 - `cli-framework-oidc`: single-issuer validation (`OidcValidator::new`,
   `oidc_validation_layer`) and the bearer-token checks of the browser layers
   (`oidc_browser_session_layer`, `oidc_dual_mode_layer`) now require the `iss`
