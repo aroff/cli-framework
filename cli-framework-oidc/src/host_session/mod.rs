@@ -409,6 +409,25 @@ impl HostSessions {
         &self.inner.origin
     }
 
+    /// Whether a request comes from the host's own pages: `true` only when
+    /// `headers` hold exactly one `Origin`, equal byte for byte to
+    /// [`origin`](Self::origin).
+    ///
+    /// Run it on every state-changing route the session cookie admits. The
+    /// cookie is `SameSite=Lax`, so the browser also sends it with requests
+    /// from other hosts of the same site (two hosts under one registrable
+    /// domain, such as `a.example.ts.net` and `b.example.ts.net`), and
+    /// `Sec-Fetch-Site: same-site` does not tell them apart; only `Origin`
+    /// does. A request without `Origin` is refused: a browser sends it on
+    /// every `fetch` other than `GET` or `HEAD` and on every form POST.
+    pub fn is_same_origin(&self, headers: &HeaderMap) -> bool {
+        let mut sent = headers.get_all(header::ORIGIN).iter();
+        match (sent.next(), sent.next()) {
+            (Some(origin), None) => origin.as_bytes() == self.inner.origin.as_bytes(),
+            _ => false,
+        }
+    }
+
     /// Reads the session cookie from `headers` and decides whether the
     /// session is live: binding, idle, expiry, and a refresh when the access
     /// token is within `refresh_skew` of expiry.

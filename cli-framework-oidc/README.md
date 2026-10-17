@@ -271,6 +271,12 @@ match sessions.resolve(request.headers()).await {
   cross-site`, or a POST with neither header is refused with 403. It ends the
   realm session with the refresh token, clears the cookie, and redirects to the
   realm's end-session endpoint.
+- **Your own writes**: run `sessions.is_same_origin(request.headers())` on
+  every state-changing route the cookie admits, and refuse the request when it
+  is `false`. It is `true` only for exactly one `Origin` equal to the host's
+  origin. `SameSite=Lax` sends the cookie with requests from other hosts of the
+  same site (say `a.example.ts.net` and `b.example.ts.net`), and
+  `Sec-Fetch-Site: same-site` does not tell them apart, so only `Origin` can.
 - **Cookie size**: `HostSessions::new` refuses a configuration whose expected
   tokens would not fit `max_cookie_bytes` (4096), and sign-in refuses real
   tokens that don't. The sealed size is logged as `cookie_bytes`.

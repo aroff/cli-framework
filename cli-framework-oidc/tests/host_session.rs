@@ -2,7 +2,7 @@
 //! end-session endpoints), driven through the router and `resolve`.
 
 use cli_framework::axum::body::Body;
-use cli_framework::axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
+use cli_framework::axum::http::{header, HeaderMap, HeaderName, HeaderValue, Request, StatusCode};
 use cli_framework::axum::response::Response;
 use cli_framework_oidc::host_session::{
     ClientSecret, Clock, EndReason, HostSessionConfig, HostSessions, Resolution, SessionKey,
@@ -820,6 +820,66 @@ async fn logout_refuses_a_post_with_neither_origin_nor_sec_fetch_site() {
             StatusCode::SEE_OTHER,
             "{name}: {value}"
         );
+    }
+}
+
+#[tokio::test]
+async fn is_same_origin_needs_exactly_one_origin_equal_to_the_hosts() {
+    let realm = Realm::start().await;
+    let s = HostSessions::new(config(&realm, &TestClock::new())).unwrap();
+    let headers = |sent: &[(&'static str, &str)]| {
+        let mut headers = HeaderMap::new();
+        for (name, value) in sent {
+            headers.append(
+                HeaderName::from_static(name),
+                HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        headers
+    };
+
+    assert_eq!(s.origin(), ORIGIN);
+    assert!(s.is_same_origin(&headers(&[("origin", ORIGIN)])));
+    assert!(s.is_same_origin(&headers(&[
+        ("origin", ORIGIN),
+        ("sec-fetch-site", "same-origin")
+    ])));
+
+    for (what, sent) in [
+        ("no header", &[][..]),
+        (
+            "Sec-Fetch-Site same-origin alone",
+            &[("sec-fetch-site", "same-origin")],
+        ),
+        (
+            "Sec-Fetch-Site same-site alone",
+            &[("sec-fetch-site", "same-site")],
+        ),
+        (
+            "another host of the same site",
+            &[
+                ("origin", "http://other.localhost:8080"),
+                ("sec-fetch-site", "same-site"),
+            ],
+        ),
+        (
+            "a look-alike host",
+            &[("origin", "http://localhost:8080.evil.example")],
+        ),
+        ("another port", &[("origin", "http://localhost:8081")]),
+        ("another scheme", &[("origin", "https://localhost:8080")]),
+        ("a trailing slash", &[("origin", "http://localhost:8080/")]),
+        ("an opaque origin", &[("origin", "null")]),
+        (
+            "two equal origins",
+            &[("origin", ORIGIN), ("origin", ORIGIN)],
+        ),
+        (
+            "the host's and another",
+            &[("origin", ORIGIN), ("origin", "https://evil.example")],
+        ),
+    ] {
+        assert!(!s.is_same_origin(&headers(sent)), "{what}");
     }
 }
 
