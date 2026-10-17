@@ -27,6 +27,8 @@ pub enum OidcConfigError {
     InvalidClaimPath(String),
     #[error("invalid static JWKS: {0}")]
     InvalidJwks(String),
+    #[error("session secret too short: {0} bytes (at least 32)")]
+    ShortSessionSecret(usize),
 }
 
 /// Validate that a JWKS URI is secure: must be https, or http to loopback only.
