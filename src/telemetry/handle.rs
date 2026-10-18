@@ -21,6 +21,18 @@ pub trait Telemetry: Send + Sync {
     /// Exported over OTLP when a `metrics_enabled` config with an endpoint is
     /// active; a safe no-op otherwise.
     fn histogram(&self, name: &str) -> Histogram;
+    /// Return a gauge handle: the last value recorded is the one exported.
+    ///
+    /// The value is re-exported on every collection until a new one is
+    /// recorded, so a series stays present between rare events (for example
+    /// the time of the last good backup, which an alert compares with now).
+    /// Exported over OTLP when a `metrics_enabled` config with an endpoint is
+    /// active; a safe no-op otherwise, and by default for an implementation
+    /// that does not override it.
+    fn gauge(&self, name: &str) -> Gauge {
+        let _ = name;
+        Gauge(GaugeInner::Noop)
+    }
     /// Open a child span; it closes when the returned [`SpanHandle`] is dropped.
     fn span(&self, name: &str, attrs: &[KeyValue]) -> SpanHandle;
 }
@@ -57,6 +69,24 @@ impl Histogram {
             }
             #[cfg(feature = "telemetry")]
             HistogramInner::Live(h) => h.record(value, attrs),
+        }
+    }
+}
+
+pub struct Gauge(pub(crate) GaugeInner);
+pub(crate) enum GaugeInner {
+    Noop,
+    #[cfg(feature = "telemetry")]
+    Live(opentelemetry::metrics::Gauge<f64>),
+}
+impl Gauge {
+    pub fn record(&self, value: f64, attrs: &[KeyValue]) {
+        match &self.0 {
+            GaugeInner::Noop => {
+                let _ = (value, attrs);
+            }
+            #[cfg(feature = "telemetry")]
+            GaugeInner::Live(g) => g.record(value, attrs),
         }
     }
 }

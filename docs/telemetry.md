@@ -427,7 +427,16 @@ every build, and is a no-op when telemetry is off:
 ```rust
 ctx.telemetry().counter("myapp.widgets_created").add(1, &[]);
 ctx.telemetry().histogram("myapp.render_ms").record(elapsed_ms, &[]);
+ctx.telemetry().gauge("myapp.last_sync_unix").record(now_unix, &[]);
 ```
+
+A gauge exports the last value recorded, and exports it again on every
+collection until a new one is recorded, so its series stays present between
+rare events. That is what an alert on "the last good run is too old" needs: a
+counter that has not moved since the process started exports nothing, and
+reads the same as a process that is not running. `gauge` has a default no-op
+implementation, so a `Telemetry` of your own (a test double, say) does not have
+to write one.
 
 Instruments emitted this way ride the same pipeline as the built-in metrics.
 `SpanHandle::set_attr` records only keys declared at the span's callsite —

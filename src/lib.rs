@@ -221,7 +221,7 @@ pub mod prelude {
         PolicyCache, PolicyClient, PolicyClientError, PolicyOutcome, RoamingConfigClient,
     };
 
-    pub use crate::telemetry::handle::{Counter, Histogram, SpanHandle, Telemetry};
+    pub use crate::telemetry::handle::{Counter, Gauge, Histogram, SpanHandle, Telemetry};
     pub use crate::telemetry::{NoopTelemetry, TelemetryConfig};
 }
 

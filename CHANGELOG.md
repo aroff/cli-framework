@@ -34,6 +34,12 @@
 
 ### Added
 
+- `Telemetry::gauge(name)` returns a `Gauge` whose `record(value, attrs)` sets
+  the value exported; the last value is exported again on every collection, so
+  a series stays present between rare events (for an alert on the time of the
+  last good run). The trait method has a default no-op implementation, so
+  existing `Telemetry` implementations keep compiling.
+
 - `AppBuilder::without_end_user_telemetry()` (feature `telemetry`): an
   end-user install ships no telemetry — no `telemetry` command group, no
   telemetry doctor checks, no telemetry variables in root help, no first-run
