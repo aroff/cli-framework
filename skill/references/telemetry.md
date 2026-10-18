@@ -78,7 +78,9 @@ let builder = builder
 ```
 
 In a handler: `ctx.telemetry().counter("myapp.x").add(1, &[])` /
-`.histogram("myapp.ms").record(v, &[])` — a no-op when telemetry is off.
+`.histogram("myapp.ms").record(v, &[])` / `.gauge("myapp.last_ok").record(t, &[])`
+— a no-op when telemetry is off. A gauge's last value is exported again on
+every collection.
 `SpanHandle::set_attr` only records keys declared at the span's callsite;
 `record_error` works.
 

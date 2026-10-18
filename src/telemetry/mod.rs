@@ -94,7 +94,7 @@ pub use guard::TelemetryGuard;
 // itself, which has a no-op stub for a default build.
 #[cfg(feature = "telemetry")]
 pub use guard::{flush_within, flush_within_for_test, FlushOutcome, END_USER_FLUSH_BUDGET};
-pub use handle::{Counter, Histogram, KeyValue, SpanHandle, Telemetry};
+pub use handle::{Counter, Gauge, Histogram, KeyValue, SpanHandle, Telemetry};
 pub use noop::NoopTelemetry;
 
 pub mod axes;

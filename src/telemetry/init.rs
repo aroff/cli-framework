@@ -2,7 +2,10 @@ use crate::telemetry::{
     config::TelemetryConfig,
     exporter::RedactingExporter,
     guard::TelemetryGuard,
-    handle::{Counter, CounterInner, Histogram, HistogramInner, SpanHandle, SpanInner, Telemetry},
+    handle::{
+        Counter, CounterInner, Gauge, GaugeInner, Histogram, HistogramInner, SpanHandle, SpanInner,
+        Telemetry,
+    },
     policy::TelemetryPolicy,
     redact::METRIC_LABEL_ALLOWLIST,
     resource::{
@@ -36,6 +39,11 @@ impl Telemetry for LiveTelemetry {
     fn histogram(&self, name: &str) -> Histogram {
         Histogram(HistogramInner::Live(
             self.meter.f64_histogram(name.to_string()).build(),
+        ))
+    }
+    fn gauge(&self, name: &str) -> Gauge {
+        Gauge(GaugeInner::Live(
+            self.meter.f64_gauge(name.to_string()).build(),
         ))
     }
     fn span(&self, name: &str, attrs: &[KeyValue]) -> SpanHandle {

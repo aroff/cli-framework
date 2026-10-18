@@ -68,6 +68,7 @@ fn noop_telemetry_is_zero_cost() {
     t.event("evt", &[]);
     t.counter("c").add(1, &[]);
     t.histogram("h").record(1.0, &[]);
+    t.gauge("g").record(1.0, &[]);
     // Exercise SpanHandle Noop paths for set_attr and record_error
     let span = t.span("s", &[]);
     span.set_attr("key", "val");
@@ -265,6 +266,79 @@ async fn live_telemetry_histogram_record_exercises_live_variant() {
         handle.histogram("latency_ms").record(42.0, &[]);
     });
     drop(guard);
+}
+
+/// Every value a gauge named `name` reported in the exporter's collections, in
+/// order.
+fn gauge_values(
+    exporter: &opentelemetry_sdk::metrics::InMemoryMetricExporter,
+    name: &str,
+) -> Vec<f64> {
+    use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+    let mut values = Vec::new();
+    for rm in exporter.get_finished_metrics().expect("finished metrics") {
+        for sm in rm.scope_metrics() {
+            for m in sm.metrics().filter(|m| m.name() == name) {
+                if let AggregatedMetrics::F64(MetricData::Gauge(g)) = m.data() {
+                    values.extend(g.data_points().map(|dp| dp.value()));
+                }
+            }
+        }
+    }
+    values
+}
+
+#[test]
+fn live_telemetry_gauge_keeps_its_last_value_between_collections() {
+    use opentelemetry::metrics::MeterProvider as _;
+    use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
+    let exporter = InMemoryMetricExporter::default();
+    let provider = SdkMeterProvider::builder()
+        .with_reader(PeriodicReader::builder(exporter.clone()).build())
+        .build();
+    let handle = cli_framework::telemetry::init::LiveTelemetry::new(provider.meter("test"));
+
+    let gauge = handle.gauge("backup.last_success_unix");
+    gauge.record(1_000.0, &[]);
+    gauge.record(1_760_000_000.0, &[]);
+    provider.force_flush().expect("first collection");
+    assert_eq!(
+        gauge_values(&exporter, "backup.last_success_unix"),
+        vec![1_760_000_000.0],
+        "a gauge exports the last value recorded, not each one"
+    );
+
+    // Nothing recorded since: the value is exported again, so the series does
+    // not go missing between two rare events.
+    exporter.reset();
+    provider.force_flush().expect("second collection");
+    assert_eq!(
+        gauge_values(&exporter, "backup.last_success_unix"),
+        vec![1_760_000_000.0]
+    );
+    provider.shutdown().expect("shutdown");
+}
+
+#[test]
+fn a_telemetry_impl_without_gauge_gets_a_noop_one() {
+    struct OnlyEvents;
+    impl Telemetry for OnlyEvents {
+        fn event(&self, _: &str, _: &[cli_framework::telemetry::KeyValue]) {}
+        fn counter(&self, name: &str) -> cli_framework::telemetry::Counter {
+            NoopTelemetry.counter(name)
+        }
+        fn histogram(&self, name: &str) -> cli_framework::telemetry::Histogram {
+            NoopTelemetry.histogram(name)
+        }
+        fn span(
+            &self,
+            name: &str,
+            attrs: &[cli_framework::telemetry::KeyValue],
+        ) -> cli_framework::telemetry::SpanHandle {
+            NoopTelemetry.span(name, attrs)
+        }
+    }
+    OnlyEvents.gauge("g").record(1.0, &[]);
 }
 
 #[tokio::test]

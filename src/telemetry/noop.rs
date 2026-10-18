@@ -1,5 +1,6 @@
 use crate::telemetry::handle::{
-    Counter, CounterInner, Histogram, HistogramInner, SpanHandle, SpanInner, Telemetry,
+    Counter, CounterInner, Gauge, GaugeInner, Histogram, HistogramInner, SpanHandle, SpanInner,
+    Telemetry,
 };
 use opentelemetry::KeyValue;
 
@@ -18,6 +19,9 @@ impl Telemetry for NoopTelemetry {
     }
     fn histogram(&self, _: &str) -> Histogram {
         Histogram(HistogramInner::Noop)
+    }
+    fn gauge(&self, _: &str) -> Gauge {
+        Gauge(GaugeInner::Noop)
     }
     fn span(&self, _: &str, _: &[KeyValue]) -> SpanHandle {
         SpanHandle(SpanInner::Noop)
