@@ -93,6 +93,8 @@ struct DiscoveryDoc {
 
 pub struct OidcClient {
     issuer_url: String,
+    discovery_url: Option<String>,
+    token_endpoint_url: Option<String>,
     client_id: String,
     flow: OidcFlow,
     scopes: Option<Vec<String>>,
@@ -176,7 +178,14 @@ impl OidcClient {
 
     async fn get_discovery(&self) -> Result<&DiscoveryDoc, cli_framework::auth::AuthError> {
         self.discovery
-            .get_or_try_init(|| fetch_discovery(&self.issuer_url, &self.http))
+            .get_or_try_init(|| {
+                fetch_discovery(
+                    &self.issuer_url,
+                    self.discovery_url.as_deref(),
+                    self.token_endpoint_url.as_deref(),
+                    &self.http,
+                )
+            })
             .await
     }
 
@@ -752,6 +761,8 @@ impl cli_framework::auth::TokenProvider for OidcClient {
 
 pub struct OidcClientBuilder {
     issuer_url: Option<String>,
+    discovery_url: Option<String>,
+    token_endpoint_url: Option<String>,
     client_id: Option<String>,
     flow: Option<OidcFlow>,
     scopes: Option<Vec<String>>,
@@ -768,6 +779,8 @@ impl OidcClientBuilder {
     fn new() -> Self {
         Self {
             issuer_url: None,
+            discovery_url: None,
+            token_endpoint_url: None,
             client_id: None,
             flow: None,
             scopes: None,
@@ -787,6 +800,8 @@ impl OidcClientBuilder {
     /// |-----|----------|---------|
     /// | `{PREFIX}_ISSUER_URL` | yes | OIDC issuer / Keycloak realm URL |
     /// | `{PREFIX}_CLIENT_ID` | yes | OAuth client id |
+    /// | `{PREFIX}_DISCOVERY_URL` | no | Deployment-owned discovery transport; the document must still name `ISSUER_URL` |
+    /// | `{PREFIX}_TOKEN_ENDPOINT_URL` | no | Deployment-owned token transport; issuer identity is unchanged |
     /// | `{PREFIX}_CLIENT_SECRET` | no | Confidential-client secret (implies Client Credentials) |
     /// | `{PREFIX}_FLOW` | no | `device` \| `pkce` \| `client-credentials` \| `auto` |
     /// | `{PREFIX}_SCOPES` | no | Space- or comma-separated scopes |
@@ -805,6 +820,8 @@ impl OidcClientBuilder {
         let issuer_url =
             var("ISSUER_URL").ok_or(OidcConfigError::MissingField("ISSUER_URL (env)"))?;
         let client_id = var("CLIENT_ID").ok_or(OidcConfigError::MissingField("CLIENT_ID (env)"))?;
+        let discovery_url = var("DISCOVERY_URL");
+        let token_endpoint_url = var("TOKEN_ENDPOINT_URL");
         let secret = var("CLIENT_SECRET");
         let flow_kind = var("FLOW");
 
@@ -839,6 +856,12 @@ impl OidcClientBuilder {
             .issuer_url(issuer_url)
             .client_id(client_id)
             .flow(flow);
+        if let Some(url) = discovery_url {
+            builder = builder.discovery_url(url);
+        }
+        if let Some(url) = token_endpoint_url {
+            builder = builder.token_endpoint_url(url);
+        }
         if let Some(raw) = var("SCOPES") {
             let scopes: Vec<String> = raw
                 .split([',', ' '])
@@ -855,6 +878,22 @@ impl OidcClientBuilder {
 
     pub fn issuer_url(mut self, url: impl Into<String>) -> Self {
         self.issuer_url = Some(url.into());
+        self
+    }
+
+    /// Fetch discovery through this deployment-owned endpoint while keeping
+    /// `issuer_url` as the token identity. The returned document must still
+    /// declare the exact configured issuer.
+    pub fn discovery_url(mut self, url: impl Into<String>) -> Self {
+        self.discovery_url = Some(url.into());
+        self
+    }
+
+    /// Send token grants to this deployment-owned endpoint instead of the
+    /// endpoint advertised by discovery. This changes transport only; cache
+    /// identity and issuer validation continue to use `issuer_url`.
+    pub fn token_endpoint_url(mut self, url: impl Into<String>) -> Self {
+        self.token_endpoint_url = Some(url.into());
         self
     }
 
@@ -932,6 +971,14 @@ impl OidcClientBuilder {
         crate::endpoint_security::secure_issuer(raw_issuer)
             .map_err(|()| OidcConfigError::InsecureIssuer("unsafe issuer URL".to_owned()))?;
         let issuer_url = crate::normalize_issuer(raw_issuer)?;
+        let discovery_url = self
+            .discovery_url
+            .map(|url| validate_transport_override("discovery_url", url))
+            .transpose()?;
+        let token_endpoint_url = self
+            .token_endpoint_url
+            .map(|url| validate_transport_override("token_endpoint_url", url))
+            .transpose()?;
         let client_id = self
             .client_id
             .ok_or(OidcConfigError::MissingField("client_id"))?;
@@ -952,6 +999,8 @@ impl OidcClientBuilder {
 
         Ok(OidcClient {
             issuer_url,
+            discovery_url,
+            token_endpoint_url,
             client_id,
             flow,
             scopes: self.scopes,
@@ -1061,9 +1110,13 @@ fn make_http_client() -> Result<reqwest::Client, OidcConfigError> {
 
 async fn fetch_discovery(
     issuer_url: &str,
+    discovery_url: Option<&str>,
+    token_endpoint_url: Option<&str>,
     http: &reqwest::Client,
 ) -> Result<DiscoveryDoc, cli_framework::auth::AuthError> {
-    let url = format!("{}/.well-known/openid-configuration", issuer_url);
+    let url = discovery_url
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{}/.well-known/openid-configuration", issuer_url));
     let resp =
         http.get(&url)
             .send()
@@ -1089,7 +1142,10 @@ async fn fetch_discovery(
         return Err(discovery_failure("OIDC discovery issuer mismatch"));
     }
 
-    let token_endpoint = required_discovered_endpoint(&doc, "token_endpoint")?;
+    let discovered_token_endpoint = required_discovered_endpoint(&doc, "token_endpoint")?;
+    let token_endpoint = token_endpoint_url
+        .map(str::to_owned)
+        .unwrap_or(discovered_token_endpoint);
     let device_authorization_endpoint =
         optional_discovered_endpoint(&doc, "device_authorization_endpoint")?;
     let authorization_endpoint = optional_discovered_endpoint(&doc, "authorization_endpoint")?;
@@ -1098,6 +1154,18 @@ async fn fetch_discovery(
         device_authorization_endpoint,
         authorization_endpoint,
     })
+}
+
+fn validate_transport_override(
+    field: &'static str,
+    raw: String,
+) -> Result<String, OidcConfigError> {
+    crate::endpoint_security::secure_transport_endpoint(&raw).map_err(|()| {
+        OidcConfigError::InvalidFlow(format!(
+            "{field} must be absolute HTTPS, or HTTP to loopback or a Kubernetes .svc host"
+        ))
+    })?;
+    Ok(raw)
 }
 
 /// Read and validate a required metadata endpoint before any credential exists.
@@ -1224,7 +1292,9 @@ mod discovery_security_tests {
             .mount(&server)
             .await;
 
-        let discovered = fetch_discovery(&server.uri(), &http).await.unwrap();
+        let discovered = fetch_discovery(&server.uri(), None, None, &http)
+            .await
+            .unwrap();
         assert!(discovered.token_endpoint.ends_with("/token?tenant=one"));
         assert!(discovered
             .authorization_endpoint
@@ -1238,6 +1308,64 @@ mod discovery_security_tests {
         let missing = serde_json::json!({"issuer": server.uri()});
         let error = required_discovered_endpoint(&missing, "token_endpoint").unwrap_err();
         assert!(error.to_string().contains("omitted a required endpoint"));
+    }
+
+    #[tokio::test]
+    async fn discovery_transport_override_does_not_override_issuer_identity() {
+        let transport = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/internal-discovery"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issuer": "https://wrong.example/realms/rudaia",
+                "token_endpoint": "https://auth.example/realms/rudaia/token",
+            })))
+            .mount(&transport)
+            .await;
+
+        let error = match fetch_discovery(
+            "https://auth.example/realms/rudaia",
+            Some(&format!("{}/internal-discovery", transport.uri())),
+            Some(&format!("{}/internal-token", transport.uri())),
+            &make_http_client().unwrap(),
+        )
+        .await
+        {
+            Ok(_) => panic!("an internal transport redefined issuer identity"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.to_string(),
+            "authentication provider error: OIDC discovery issuer mismatch"
+        );
+    }
+
+    #[test]
+    fn builder_rejects_unsafe_transport_overrides() {
+        let cache = tempfile::tempdir().unwrap();
+        for unsafe_url in [
+            "http://identity.example/token",
+            "http://10.0.0.1/token",
+            "https://user:secret@identity.example/token",
+            "file:///tmp/token",
+        ] {
+            let error = match test_builder("https://auth.example/realms/rudaia", cache.path())
+                .discovery_url(unsafe_url)
+                .build()
+            {
+                Ok(_) => panic!("unsafe discovery transport was accepted"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains("discovery_url"));
+
+            let error = match test_builder("https://auth.example/realms/rudaia", cache.path())
+                .token_endpoint_url(unsafe_url)
+                .build()
+            {
+                Ok(_) => panic!("unsafe token transport was accepted"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains("token_endpoint_url"));
+        }
     }
 
     #[test]
@@ -1282,10 +1410,11 @@ mod discovery_security_tests {
             .mount(&issuer)
             .await;
 
-        let error = match fetch_discovery(&issuer.uri(), &make_http_client().unwrap()).await {
-            Ok(_) => panic!("redirected discovery must fail closed"),
-            Err(error) => error,
-        };
+        let error =
+            match fetch_discovery(&issuer.uri(), None, None, &make_http_client().unwrap()).await {
+                Ok(_) => panic!("redirected discovery must fail closed"),
+                Err(error) => error,
+            };
         assert_eq!(
             error.to_string(),
             "authentication provider error: OIDC discovery returned a non-success status"
@@ -1568,8 +1697,24 @@ mod flow_contract_tests {
         std::env::set_var(format!("{pkce}_CLIENT_ID"), "native");
         std::env::set_var(format!("{pkce}_FLOW"), "pkce");
         std::env::set_var(format!("{pkce}_SCOPES"), "openid, profile email");
+        std::env::set_var(
+            format!("{pkce}_DISCOVERY_URL"),
+            "http://identity.identity.svc/realms/r/.well-known/openid-configuration",
+        );
+        std::env::set_var(
+            format!("{pkce}_TOKEN_ENDPOINT_URL"),
+            "http://identity.identity.svc/realms/r/token",
+        );
         let builder = OidcClientBuilder::from_env(pkce).unwrap();
         assert_eq!(builder.scopes.unwrap().len(), 3);
+        assert_eq!(
+            builder.discovery_url.as_deref(),
+            Some("http://identity.identity.svc/realms/r/.well-known/openid-configuration")
+        );
+        assert_eq!(
+            builder.token_endpoint_url.as_deref(),
+            Some("http://identity.identity.svc/realms/r/token")
+        );
 
         let missing_secret = "CFW_TEST_OIDC_CC_MISSING_SECRET";
         std::env::set_var(

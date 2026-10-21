@@ -46,6 +46,13 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
+Cluster workloads may set `.discovery_url(...)` and
+`.token_endpoint_url(...)` to route those requests through an internal
+Service while `issuer_url` remains the public token identity. The discovery
+document must still declare that exact issuer. Overrides require HTTPS, or
+HTTP to loopback or a Kubernetes `.svc` name; pair an in-cluster override with
+an exact NetworkPolicy lane.
+
 ### Supported flows
 
 | Flow | `OidcFlow` variant | When to use |
