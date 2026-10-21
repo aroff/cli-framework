@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-10-21
+
 ### Breaking
 
 - The `mcp-server` feature now depends on `rmcp` 2.x (was 1.x). rmcp types
