@@ -76,11 +76,24 @@ let client = OidcClient::builder()
 
 `issuer_url` is what Keycloak calls the **Realm URL** — it ends with `/realms/<realm-name>`. The client fetches `<issuer>/.well-known/openid-configuration` on first use (lazy, cached for the client's lifetime).
 
+Cluster workloads may keep that public issuer identity while routing discovery and confidential token grants through an internal Service:
+
+```rust
+let client = OidcClient::builder()
+    .issuer_url("https://auth.example.com/realms/my-realm")
+    .discovery_url("http://keycloak.keycloak.svc.cluster.local:8080/realms/my-realm/.well-known/openid-configuration")
+    .token_endpoint_url("http://keycloak.keycloak.svc.cluster.local:8080/realms/my-realm/protocol/openid-connect/token")
+    // client_id, flow, cache...
+    .build()?;
+```
+
+The discovery document must still name the exact public issuer. These two settings change transport only. Explicit overrides require HTTPS, except that HTTP is accepted for loopback and Kubernetes `.svc` names so a NetworkPolicy can provide the in-cluster boundary.
+
 **`cache_dir` is optional.** Set `.app_name("my-app")` and the cache defaults to `<os-cache>/cli-framework-oidc/my-app` — no `dirs` dependency or path-building in your app. Pass `.cache_dir(path)` only to override.
 
 ### Config from environment
 
-Skip hand-wiring entirely — `from_env("PREFIX")` reads `{PREFIX}_ISSUER_URL`, `{PREFIX}_CLIENT_ID`, `{PREFIX}_CLIENT_SECRET` (optional), `{PREFIX}_FLOW` (optional), `{PREFIX}_SCOPES` (optional):
+Skip hand-wiring entirely — `from_env("PREFIX")` reads `{PREFIX}_ISSUER_URL`, `{PREFIX}_CLIENT_ID`, `{PREFIX}_CLIENT_SECRET` (optional), `{PREFIX}_FLOW` (optional), `{PREFIX}_SCOPES` (optional), `{PREFIX}_DISCOVERY_URL` (optional), and `{PREFIX}_TOKEN_ENDPOINT_URL` (optional):
 
 ```rust
 use cli_framework_oidc::client::OidcClientBuilder;

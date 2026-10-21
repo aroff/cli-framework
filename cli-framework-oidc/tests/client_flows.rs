@@ -89,6 +89,52 @@ async fn cc_post_acquires_token() {
 }
 
 #[tokio::test]
+async fn cc_can_use_internal_discovery_and_token_transport_without_changing_issuer() {
+    let transport = MockServer::start().await;
+    let public_issuer = "https://auth.example/realms/rudaia";
+
+    Mock::given(method("GET"))
+        .and(path("/internal-discovery"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "issuer": public_issuer,
+            "token_endpoint": "https://auth.example/realms/rudaia/protocol/openid-connect/token",
+        })))
+        .expect(1)
+        .mount(&transport)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/internal-token"))
+        .and(body_string_contains("grant_type=client_credentials"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "internal-transport-token",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+        })))
+        .expect(1)
+        .mount(&transport)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let client = OidcClient::builder()
+        .issuer_url(public_issuer)
+        .discovery_url(format!("{}/internal-discovery", transport.uri()))
+        .token_endpoint_url(format!("{}/internal-token", transport.uri()))
+        .client_id("billing-product-data")
+        .flow(OidcFlow::ClientCredentials {
+            client_secret: make_secret("s3cr3t"),
+            token_auth: TokenAuthMethod::Post,
+        })
+        .cache_dir(dir.path().to_path_buf())
+        .build()
+        .unwrap();
+
+    assert_eq!(client.issuer_url(), public_issuer);
+    let token = client.token().await.expect("token over internal transport");
+    assert_eq!(token.as_bearer(), "internal-transport-token");
+    transport.verify().await;
+}
+
+#[tokio::test]
 async fn cc_basic_auth_acquires_token() {
     let server = MockServer::start().await;
     setup_server_with_discovery(&server).await;

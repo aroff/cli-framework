@@ -26,6 +26,29 @@ pub(crate) fn secure_endpoint(raw: &str) -> Result<Url, ()> {
     Ok(url)
 }
 
+/// Parse an operator-configured in-cluster transport endpoint.
+///
+/// This is deliberately separate from [`secure_endpoint`], which validates
+/// endpoints learned from an untrusted discovery document and therefore
+/// permits plain HTTP only on loopback. A deployment-owned override may also
+/// use plain HTTP for a Kubernetes Service DNS name. NetworkPolicy supplies
+/// the corresponding transport boundary; arbitrary external HTTP remains
+/// forbidden.
+pub(crate) fn secure_transport_endpoint(raw: &str) -> Result<Url, ()> {
+    let url = Url::parse(raw).map_err(|_| ())?;
+    let host = url.host_str().ok_or(())?;
+    let loopback = matches!(host, "127.0.0.1" | "localhost" | "[::1]");
+    let cluster_service = host.ends_with(".svc") || host.ends_with(".svc.cluster.local");
+    if !(url.scheme() == "https" || url.scheme() == "http" && (loopback || cluster_service))
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(());
+    }
+    Ok(url)
+}
+
 /// Apply [`secure_endpoint`] and additionally reject issuer queries.
 ///
 /// Issuer queries are not part of the normalized issuer identity and must not
@@ -73,6 +96,28 @@ mod tests {
             "https://user@issuer.example/realm",
         ] {
             assert!(secure_issuer(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn deployment_transport_allows_only_https_loopback_or_kubernetes_services() {
+        for valid in [
+            "https://identity.example/realms/r/.well-known/openid-configuration",
+            "http://127.0.0.1:8080/token",
+            "http://keycloak.keycloak.svc/realms/r/token",
+            "http://keycloak.keycloak.svc.cluster.local:8080/realms/r/token",
+        ] {
+            assert_eq!(secure_transport_endpoint(valid).unwrap().as_str(), valid);
+        }
+        for invalid in [
+            "http://identity.example/token",
+            "http://10.0.0.1/token",
+            "ftp://keycloak.keycloak.svc/token",
+            "https://user:secret@identity.example/token",
+            "https://identity.example/token#fragment",
+            "relative",
+        ] {
+            assert!(secure_transport_endpoint(invalid).is_err(), "{invalid}");
         }
     }
 }
