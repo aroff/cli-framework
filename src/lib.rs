@@ -2,16 +2,14 @@
 //!
 //! A pure CLI framework with AI-powered command resolution and plugin system.
 //!
-//! This framework provides command execution, plugin system, ailoop-core integration
-//! for human-in-the-loop interactions, and CLI output utilities (tables, JSON, messages,
-//! progress indicators) so application authors can focus on implementing commands
+//! This framework provides command execution, a plugin system, and CLI output
+//! utilities (tables, JSON, messages, progress indicators) so application authors can focus on implementing commands
 //! rather than CLI infrastructure.
 //!
 //! ## Features
 //!
 //! - **Chat Command**: Multi-turn agentic command resolution via aikit-agent (default feature)
 //! - **Plugin System**: Registry-based plugin loading with manifest files
-//! - **ailoop-core Integration**: Human-in-the-loop confirmations and interactions
 //! - **Command Registry**: Centralized command management
 //! - **CLI Output**: Rich formatting for tables, JSON, progress, and interactive prompts
 //!
@@ -46,7 +44,6 @@ pub mod environment;
 pub mod message;
 
 // New modules for CLI framework
-pub mod ailoop;
 pub mod plugin;
 
 // Optional modules

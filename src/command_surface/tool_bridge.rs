@@ -1,4 +1,3 @@
-use crate::ailoop::AiloopClient;
 use crate::app::context::AppContext;
 use crate::command::Command;
 use crate::mcp::schema::McpToolDescriptor;
@@ -18,7 +17,6 @@ pub enum BridgeInput {
 #[derive(Clone)]
 pub enum ConfirmationMode {
     AssumeYes,
-    Ailoop(Arc<AiloopClient>),
     InteractiveStdin,
     NonInteractive,
 }
@@ -37,9 +35,9 @@ pub enum BridgeMode {
 /// Why a confirmation or preflight gate was blocked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockReason {
-    /// User was prompted (ailoop / interactive stdin) and declined.
+    /// User was prompted (interactive stdin) and declined.
     UserDeclined,
-    /// Non-interactive context with no ailoop available; could not prompt.
+    /// Non-interactive context; could not prompt.
     NeedsInteractive,
     /// `ALLOW_DESTRUCTIVE_COMMANDS` is not set.
     EnvGated,
@@ -176,8 +174,7 @@ impl CommandAsToolBridge {
         let tier = enforcer.classify(&cmd.id, cmd.category());
 
         let assume_yes = matches!(invocation.confirmation, ConfirmationMode::AssumeYes);
-        let ailoop_available = matches!(invocation.confirmation, ConfirmationMode::Ailoop(_));
-        match enforcer.enforce_preflight(&cmd.id, cmd.category(), assume_yes, ailoop_available) {
+        match enforcer.enforce_preflight(&cmd.id, cmd.category(), assume_yes) {
             Ok(()) => {}
             Err(PrefightError::SensitiveNeedsConfirmation) => {
                 return Err(BridgeError::SensitiveRequiresConfirmation(
@@ -265,38 +262,13 @@ async fn request_confirmation(
     cmd: &Command,
     destructive: bool,
 ) -> Result<(), BridgeError> {
-    let (action, prompt) = if destructive {
-        (
-            format!("Execute DESTRUCTIVE command '{}'", cmd.id),
-            format!("Execute DESTRUCTIVE command '{}'? [y/N] ", cmd.id),
-        )
+    let prompt = if destructive {
+        format!("Execute DESTRUCTIVE command '{}'? [y/N] ", cmd.id)
     } else {
-        (
-            format!("Execute command '{}'", cmd.id),
-            format!("Execute command '{}'? [y/N] ", cmd.id),
-        )
+        format!("Execute command '{}'? [y/N] ", cmd.id)
     };
     match mode {
         ConfirmationMode::AssumeYes => Ok(()),
-        ConfirmationMode::Ailoop(client) => {
-            let confirmed = client
-                .request_confirmation(&action, None)
-                .await
-                .map_err(BridgeError::Execution)?;
-            if confirmed {
-                Ok(())
-            } else if destructive {
-                Err(BridgeError::DestructiveBlocked(
-                    cmd.id.to_string(),
-                    BlockReason::UserDeclined,
-                ))
-            } else {
-                Err(BridgeError::SensitiveRequiresConfirmation(
-                    cmd.id.to_string(),
-                    BlockReason::UserDeclined,
-                ))
-            }
-        }
         ConfirmationMode::InteractiveStdin => {
             let confirmed = prompt_confirm_blocking(prompt)
                 .await

@@ -4,11 +4,11 @@ use std::fmt;
 /// Typed reason a preflight check was blocked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrefightError {
-    /// Sensitive command requires interactive confirmation (non-interactive context, no ailoop).
+    /// Sensitive command requires interactive confirmation (non-interactive context without `--yes`).
     SensitiveNeedsConfirmation,
     /// Destructive command blocked because `ALLOW_DESTRUCTIVE_COMMANDS` is not set.
     DestructiveEnvGated,
-    /// Destructive command blocked because the terminal is non-interactive and no ailoop is available.
+    /// Destructive command blocked because the terminal is non-interactive.
     DestructiveNeedsInteractive,
 }
 
@@ -28,7 +28,7 @@ impl fmt::Display for PrefightError {
             PrefightError::DestructiveNeedsInteractive => write!(
                 f,
                 "DESTRUCTIVE_COMMAND_BLOCKED: command requires an interactive \
-                 terminal or ailoop when ALLOW_DESTRUCTIVE_COMMANDS=1"
+                 terminal when ALLOW_DESTRUCTIVE_COMMANDS=1"
             ),
         }
     }
@@ -56,6 +56,10 @@ impl RiskEnforcer {
 
     /// Preflight gate used by `chat`.
     ///
+    /// - Sensitive: allowed when the terminal is interactive or `assume_yes` (`--yes`).
+    /// - Destructive: allowed only when `ALLOW_DESTRUCTIVE_COMMANDS` is set *and*
+    ///   the terminal is interactive.
+    ///
     /// Returns a typed [`PrefightError`] rather than an opaque error so callers
     /// can match on the specific block reason without string parsing.  The
     /// `Display` impl preserves the legacy error message prefixes that golden
@@ -65,13 +69,12 @@ impl RiskEnforcer {
         command_id: &str,
         command_category: Option<&str>,
         assume_yes: bool,
-        ailoop_available: bool,
     ) -> Result<(), PrefightError> {
         let tier = self.policy.classify(command_id, command_category);
         match tier {
             CommandRiskTier::Safe => Ok(()),
             CommandRiskTier::Sensitive => {
-                if !ailoop_available && !crate::cli_mode::is_interactive() && !assume_yes {
+                if !crate::cli_mode::is_interactive() && !assume_yes {
                     tracing::warn!(
                         "Sensitive command '{}' blocked in non-interactive mode without --yes",
                         command_id
@@ -91,7 +94,7 @@ impl RiskEnforcer {
                     );
                     return Err(PrefightError::DestructiveEnvGated);
                 }
-                if !ailoop_available && !crate::cli_mode::is_interactive() {
+                if !crate::cli_mode::is_interactive() {
                     tracing::warn!(
                         "Destructive command '{}' blocked: non-interactive terminal",
                         command_id

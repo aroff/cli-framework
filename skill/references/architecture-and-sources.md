@@ -10,7 +10,6 @@ Module map for `cli-framework`. Read alongside [`CONTRIBUTING.md`](../../CONTRIB
 | `command`, `command::chat` | `Command` struct, registry, `chat` agentic resolution |
 | `parser`, `spec` | argv → `CommandArgs`; `CommandPath`, `CommandSpec`, `ArgSpec` |
 | `plugin` | Plugin registry TOML / manifests, `PluginRegistryManager` |
-| `ailoop` | `ailoop-core` client, confirmation flow |
 | `security` | Output sanitization, command risk policy (`CommandRiskPolicy`) |
 | `http_retry`, `retry` | `RetryableHttpClient`, circuit breaker, `secure_reqwest_client` |
 | `cli_output`, `cli_mode`, `message` | Help rendering, tables, JSON output modes |

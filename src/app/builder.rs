@@ -1,4 +1,3 @@
-use crate::ailoop::{AiloopClient, AiloopConfig};
 use crate::app::context::AppContext;
 use crate::app::dispatch::InvocationSurface;
 use crate::app::module::Module;
@@ -38,7 +37,6 @@ use std::sync::Mutex;
 pub struct AppBuilder {
     command_registry: CommandRegistry,
     plugin_registry_manager: Option<PluginRegistryManager>,
-    ailoop_config: Option<AiloopConfig>,
     plugin_registry_path: Option<PathBuf>,
     meta: Option<AppMeta>,
     app_name: &'static str,
@@ -160,7 +158,6 @@ impl AppBuilder {
         Self {
             command_registry: CommandRegistry::new(),
             plugin_registry_manager: None,
-            ailoop_config: None,
             plugin_registry_path: None,
             meta: None,
             app_name: "unknown",
@@ -840,20 +837,6 @@ impl AppBuilder {
         Ok(self)
     }
 
-    pub fn with_ailoop_config(mut self, config: AiloopConfig) -> Self {
-        self.ailoop_config = Some(config);
-        self
-    }
-
-    pub fn with_ailoop_channel(self, channel: &str) -> Self {
-        let config = AiloopConfig {
-            channel: channel.to_string(),
-            server_url: None,
-            default_timeout_seconds: 300,
-        };
-        self.with_ailoop_config(config)
-    }
-
     pub fn with_plugin_registry_path(mut self, path: PathBuf) -> Self {
         self.plugin_registry_path = Some(path.clone());
         self.plugin_registry_manager = Some(PluginRegistryManager::new(path));
@@ -1260,7 +1243,7 @@ impl AppBuilder {
         // discover and wire. This is the only place they are registered, and
         // it has to be *here* specifically, wedged between two constraints:
         // `push_doctor_checks` borrows all of `self`, so it must precede the
-        // first partial move out of `self` (`self.ailoop_config`, immediately
+        // first partial move out of `self` (`self.plugin_registry_manager`,
         // below); and `build` later moves `doctor_checks` wholesale into the
         // `doctor` command, so it must precede that too.
         //
@@ -1319,12 +1302,6 @@ impl AppBuilder {
             _ => None,
         };
 
-        let ailoop_client = if let Some(config) = self.ailoop_config {
-            Some(AiloopClient::with_config(config)?)
-        } else {
-            None
-        };
-
         let plugin_registry_manager = self.plugin_registry_manager;
 
         #[cfg(feature = "chat")]
@@ -1334,7 +1311,6 @@ impl AppBuilder {
                 let chat_command = crate::command::create_chat_command(
                     registry_snapshot,
                     self.risk_policy.clone(),
-                    ailoop_client.clone().map(Arc::new),
                     self.app_name,
                     self.chat_tool_policy.clone(),
                 );
@@ -1678,7 +1654,6 @@ impl AppBuilder {
 
         Ok(App {
             command_registry: registry_arc,
-            ailoop_client,
             plugin_registry_manager,
             ctx,
             meta: self.meta,
@@ -1801,7 +1776,6 @@ impl Default for AppBuilder {
 
 pub struct App<C: AppContext> {
     command_registry: Arc<CommandRegistry>,
-    ailoop_client: Option<AiloopClient>,
     plugin_registry_manager: Option<PluginRegistryManager>,
     ctx: C,
     meta: Option<AppMeta>,
@@ -2299,7 +2273,6 @@ impl<C: AppContext> App<C> {
     ) -> Result<()> {
         let env = crate::app::dispatch::DispatchEnv {
             command_registry: self.command_registry.as_ref(),
-            ailoop_client: &self.ailoop_client,
             global_args: &global_args,
             stdout_capture: self.stdout_capture.clone(),
             telemetry: self.active_telemetry.clone(),
@@ -2549,10 +2522,6 @@ impl<C: AppContext> App<C> {
     /// The deployment shape configured via [`AppBuilder::with_deployment`].
     pub fn deployment(&self) -> &crate::telemetry::Deployment {
         &self.deployment
-    }
-
-    pub fn ailoop_client(&self) -> Option<&AiloopClient> {
-        self.ailoop_client.as_ref()
     }
 
     pub fn has_plugins(&self) -> bool {

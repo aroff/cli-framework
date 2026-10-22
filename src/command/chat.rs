@@ -1,4 +1,3 @@
-use crate::ailoop::AiloopClient;
 use crate::command::{Command, CommandRegistry, CommandResult};
 use crate::security::command_risk::CommandRiskPolicy;
 use crate::spec::arg_spec::{ArgKind, ArgSpec, ArgValueType, Cardinality};
@@ -51,13 +50,11 @@ pub const CHAT_TOOL_REGISTRY_COLLISION: &str = "CHAT_TOOL_REGISTRY_COLLISION";
 pub struct ChatToolCallOptions {
     pub yolo: bool,
     pub interactive: bool,
-    pub ailoop_client: Option<Arc<AiloopClient>>,
 }
 
 pub fn create_chat_command(
     registry: Arc<CommandRegistry>,
     risk_policy: CommandRiskPolicy,
-    ailoop_client: Option<Arc<AiloopClient>>,
     app_name: &'static str,
     chat_tool_policy: ChatToolPolicy,
 ) -> Command {
@@ -70,12 +67,11 @@ pub fn create_chat_command(
         meta: None,
         visibility: None,
         execute: Arc::new(move |ctx, args| {
-            let client = ailoop_client.clone();
             let registry = Arc::clone(&registry);
             let risk_policy = risk_policy.clone();
             let policy = chat_tool_policy.clone();
             Box::pin(async move {
-                execute_chat(ctx, registry, risk_policy, client, app_name, policy, args).await
+                execute_chat(ctx, registry, risk_policy, app_name, policy, args).await
             })
         }),
     }
@@ -211,7 +207,6 @@ async fn execute_chat(
     ctx: &mut dyn crate::app::context::AppContext,
     registry_fallback: Arc<CommandRegistry>,
     risk_policy: CommandRiskPolicy,
-    ailoop_client: Option<Arc<AiloopClient>>,
     app_name: &'static str,
     chat_tool_policy: ChatToolPolicy,
     args: HashMap<String, ArgValue>,
@@ -220,7 +215,6 @@ async fn execute_chat(
         ctx,
         registry_fallback,
         risk_policy,
-        ailoop_client,
         app_name,
         chat_tool_policy,
         args,

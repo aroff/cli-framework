@@ -29,15 +29,15 @@ fn test_classify_matches_policy() {
 #[test]
 fn test_preflight_safe_always_ok() {
     let enforcer = RiskEnforcer::new(CommandRiskPolicy::default());
-    assert!(enforcer.enforce_preflight("list", None, false, false).is_ok());
-    assert!(enforcer.enforce_preflight("list", None, true, false).is_ok());
+    assert!(enforcer.enforce_preflight("list", None, false).is_ok());
+    assert!(enforcer.enforce_preflight("list", None, true).is_ok());
 }
 
 #[test]
-fn test_preflight_sensitive_blocks_non_interactive_without_assume_yes_or_ailoop() {
+fn test_preflight_sensitive_blocks_non_interactive_without_assume_yes() {
     let enforcer = RiskEnforcer::new(CommandRiskPolicy::default());
     let err = enforcer
-        .enforce_preflight("config-update", Some("config"), false, false)
+        .enforce_preflight("config-update", Some("config"), false)
         .unwrap_err();
     assert_eq!(err, PrefightError::SensitiveNeedsConfirmation);
     assert!(err.to_string().contains("SENSITIVE_COMMAND_REQUIRES_CONFIRMATION"));
@@ -47,7 +47,7 @@ fn test_preflight_sensitive_blocks_non_interactive_without_assume_yes_or_ailoop(
 fn test_preflight_sensitive_error_message_contains_required_prefix() {
     let enforcer = RiskEnforcer::new(CommandRiskPolicy::default());
     let err = enforcer
-        .enforce_preflight("config-update", Some("config"), false, false)
+        .enforce_preflight("config-update", Some("config"), false)
         .unwrap_err();
     assert!(
         err.to_string().starts_with("SENSITIVE_COMMAND_REQUIRES_CONFIRMATION:"),
@@ -57,10 +57,10 @@ fn test_preflight_sensitive_error_message_contains_required_prefix() {
 }
 
 #[test]
-fn test_preflight_sensitive_allows_with_ailoop() {
+fn test_preflight_sensitive_allows_with_assume_yes() {
     let enforcer = RiskEnforcer::new(CommandRiskPolicy::default());
     assert!(enforcer
-        .enforce_preflight("config-update", Some("config"), false, true)
+        .enforce_preflight("config-update", Some("config"), true)
         .is_ok());
 }
 
@@ -70,7 +70,7 @@ fn test_preflight_destructive_blocks_without_env() {
     std::env::remove_var("ALLOW_DESTRUCTIVE_COMMANDS");
     let enforcer = RiskEnforcer::new(CommandRiskPolicy::default());
     let err = enforcer
-        .enforce_preflight("drop-db", Some("destructive"), true, true)
+        .enforce_preflight("drop-db", Some("destructive"), true)
         .unwrap_err();
     assert_eq!(err, PrefightError::DestructiveEnvGated);
     assert!(err.to_string().contains("DESTRUCTIVE_COMMAND_BLOCKED"));
@@ -82,19 +82,19 @@ fn test_preflight_destructive_env_gated_error_message_prefix() {
     std::env::remove_var("ALLOW_DESTRUCTIVE_COMMANDS");
     let enforcer = RiskEnforcer::new(CommandRiskPolicy::default());
     let err = enforcer
-        .enforce_preflight("drop-db", Some("destructive"), true, true)
+        .enforce_preflight("drop-db", Some("destructive"), true)
         .unwrap_err();
     assert!(err.to_string().starts_with("DESTRUCTIVE_COMMAND_BLOCKED:"), "got: {}", err);
     assert!(err.to_string().contains("ALLOW_DESTRUCTIVE_COMMANDS=1"), "got: {}", err);
 }
 
 #[test]
-fn test_preflight_destructive_blocks_non_interactive_without_ailoop_even_with_env() {
+fn test_preflight_destructive_blocks_non_interactive_even_with_env() {
     let _guard = env_lock().lock().unwrap();
     std::env::set_var("ALLOW_DESTRUCTIVE_COMMANDS", "1");
     let enforcer = RiskEnforcer::new(CommandRiskPolicy::default());
     let err = enforcer
-        .enforce_preflight("drop-db", Some("destructive"), false, false)
+        .enforce_preflight("drop-db", Some("destructive"), false)
         .unwrap_err();
     assert_eq!(err, PrefightError::DestructiveNeedsInteractive);
     assert!(err.to_string().contains("DESTRUCTIVE_COMMAND_BLOCKED"));
@@ -107,7 +107,7 @@ fn test_preflight_destructive_needs_interactive_error_message_prefix() {
     std::env::set_var("ALLOW_DESTRUCTIVE_COMMANDS", "1");
     let enforcer = RiskEnforcer::new(CommandRiskPolicy::default());
     let err = enforcer
-        .enforce_preflight("drop-db", Some("destructive"), false, false)
+        .enforce_preflight("drop-db", Some("destructive"), false)
         .unwrap_err();
     std::env::remove_var("ALLOW_DESTRUCTIVE_COMMANDS");
     assert!(err.to_string().starts_with("DESTRUCTIVE_COMMAND_BLOCKED:"), "got: {}", err);

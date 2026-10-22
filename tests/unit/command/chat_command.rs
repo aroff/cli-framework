@@ -87,7 +87,6 @@ fn default_opts() -> ChatToolCallOptions {
     ChatToolCallOptions {
         yolo: true,
         interactive: false,
-        ailoop_client: None,
     }
 }
 

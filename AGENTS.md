@@ -2,7 +2,7 @@
 
 Entries use [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) normative keywords.
 
-CFW-0001 - Automated or human-assisted changes MUST keep this repository scoped to [**cli-framework**](https://github.com/aroff/cli-framework): a Rust library for CLI apps (command registry, optional `ask` / LLM, plugins, ailoop, security helpers). Agents MUST NOT treat this project as an unrelated codebase (for example generic TUI or widget frameworks).
+CFW-0001 - Automated or human-assisted changes MUST keep this repository scoped to [**cli-framework**](https://github.com/aroff/cli-framework): a Rust library for CLI apps (command registry, optional `ask` / LLM, plugins, security helpers). Agents MUST NOT treat this project as an unrelated codebase (for example generic TUI or widget frameworks).
 
 CFW-0002 - Work that affects builds, merges, or shared workflow MUST align with [CONTRIBUTING.md](CONTRIBUTING.md).
 

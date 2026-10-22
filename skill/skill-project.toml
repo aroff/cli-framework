@@ -1,7 +1,7 @@
 [metadata]
 name = "tools-cli-framework"
-version = "0.4.0"
-description = "Rust CLI guidance for cli-framework: AppBuilder, Arc Command handlers, CommandPath, optional chat/plugins/ailoop; links to repo docs and examples."
+version = "0.5.0"
+description = "Rust CLI guidance for cli-framework: AppBuilder, Arc Command handlers, CommandPath, optional chat/plugins; links to repo docs and examples."
 author = "aroff"
 repository = "https://github.com/aroff/cli-framework"
 tags = ["cli", "rust", "cli-framework", "tokio", "commands", "chat", "plugins", "telemetry", "opentelemetry"]

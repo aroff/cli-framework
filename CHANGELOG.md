@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Breaking
+
+- The ailoop integration is removed, together with the mandatory
+  `ailoop-core` git dependency, whose upstream repository is no longer
+  publicly fetchable (every consumer build failed to resolve it). Removed:
+  the `cli_framework::ailoop` module (`AiloopClient`, `AiloopConfig`,
+  `AiloopContext`, `normalize_ws_url`), `AppBuilder::with_ailoop_channel`,
+  `AppBuilder::with_ailoop_config`, `App::ailoop_client`,
+  `ChatToolCallOptions::ailoop_client`, `ConfirmationMode::Ailoop`, the
+  `with_ailoop` example and the `AILOOP_CHANNEL` / `AILOOP_SERVER`
+  environment variables.
+
+- `RiskEnforcer::enforce_preflight` drops its fourth `ailoop_available`
+  argument. A Sensitive command now proceeds when the terminal is interactive
+  or `--yes` is given; a Destructive command needs
+  `ALLOW_DESTRUCTIVE_COMMANDS=1` and an interactive terminal. Callers remove
+  the last argument.
+
+### Removed
+
+- The `.cargo/audit.toml` ignores for RUSTSEC-2026-0098/0099/0104: they
+  existed only for the `rustls-webpki 0.101` that `ailoop-core` pulled in
+  (#51).
+
 ## [0.6.0] — 2026-10-21
 
 ### Breaking

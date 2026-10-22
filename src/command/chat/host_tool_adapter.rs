@@ -86,8 +86,6 @@ impl HostToolProvider for McpHostToolAdapter {
 
         let confirmation = if self.opts.yolo {
             ConfirmationMode::AssumeYes
-        } else if let Some(ref client) = self.opts.ailoop_client {
-            ConfirmationMode::Ailoop(Arc::clone(client))
         } else if self.opts.interactive {
             ConfirmationMode::InteractiveStdin
         } else {
