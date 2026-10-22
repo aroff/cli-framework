@@ -2,13 +2,12 @@
 
 [![Repository](https://img.shields.io/badge/GitHub-aroff%2Fcli--framework-informational)](https://github.com/aroff/cli-framework)
 
-A Rust library for building CLIs with optional AI-assisted command resolution (**chat**), a plugin registry, ailoop-backed human-in-the-loop prompts, structured command metadata, and async-first dispatch on Tokio.
+A Rust library for building CLIs with optional AI-assisted command resolution (**chat**), a plugin registry, interactive confirmation for risky commands, structured command metadata, and async-first dispatch on Tokio.
 
 ## Features
 
 - **Chat**: Multi-turn agentic command resolution via `aikit-agent` (default feature)
 - **Plugins**: Manifest-driven third-party commands with path validation
-- **Human-in-the-loop**: ailoop-core for confirmations
 - **Command registry**: Central registration, optional typed `CommandSpec`, and grouping metadata
 - **CLI output helpers**: Tables, JSON, progress (behind Cargo features where applicable)
 - **Security defaults**: Output sanitization, risk tiers, hardened HTTP helpers, and handle-validated user-private files on Unix and Windows
@@ -817,8 +816,6 @@ fn main() {
 | `with_self_install(options)` | Register the `self` group and the `install.*` doctor checks for `EndUser` apps, and the update notice when `update_notice(true)`; invalid options (including a malformed `public_key`) fail `build()` (requires `self-install` feature) | disabled |
 | `with_help_section_order(sections)` | Set categorized root-help section order | alphabetical, then `Other` |
 | `suggest_corrections(bool)` | Enable or disable `"Did you mean?"` suggestions for unknown subcommands and flags (E001, E002, E012). When `true`, the `hint:` line shows the closest match clap identified; when `false`, the generic `"Use --help"` hint is always used. | `true` |
-| `with_ailoop_channel(channel)` | Configure the ailoop channel name for HITL interactions | — |
-| `with_ailoop_config(config)` | Configure ailoop with a full `AiloopConfig` | — |
 | `with_risk_policy(policy)` | Override the default command risk tier policy | — |
 | `with_token_provider(provider)` | Supply a `TokenProvider`; auto-registers four `auth` commands (requires `auth` feature) | disabled |
 | `with_deployment(deployment)` | Declare whether this app runs on someone's machine (`EndUser`) or on a server (`Service`); selects the default telemetry level, the end-user clamp, and whether the `telemetry` command group is registered (requires `telemetry` feature) | `EndUser` |
@@ -966,40 +963,6 @@ manifest_path = "/path/to/plugin.json"
 enabled = true
 ```
 
-### ailoop Integration
-
-ailoop-core provides human-in-the-loop (HITL) interactions for commands that need confirmation, authorization, or notification: all interactions are routed over WebSocket to an `ailoop serve` process. There is no fallback to stdin.
-
-**Pairing requirement:** Start `ailoop serve` before using HITL methods:
-
-```bash
-export AILOOP_SERVER=ws://localhost:8080
-ailoop serve --port 8080
-```
-
-Configure via `AppBuilder::with_ailoop_channel()` or `AppBuilder::with_ailoop_config()`:
-
-```rust
-let mut builder = AppBuilder::new()
-    .with_ailoop_channel("my-app-channel");
-```
-
-Use `cli_framework::ailoop::AiloopClient` inside a command closure for ad-hoc HITL calls:
-
-```rust
-use cli_framework::ailoop::AiloopClient;
-// Inside execute:
-let ailoop = AiloopClient::new()?;
-let confirmed = ailoop
-    .request_confirmation("Delete all user data?", Some("This action cannot be undone"))
-    .await?;
-if confirmed {
-    println!("Deleting...");
-}
-```
-
-See `skill/examples/with_ailoop` for a full program.
-
 ## Examples
 
 Run the included examples to see the framework in action:
@@ -1007,7 +970,6 @@ Run the included examples to see the framework in action:
 - `cargo run --example basic_cli` — Minimal CLI application with commands
 - `cargo run --example with_chat` — CLI with AI-backed natural language (`chat`)
 - `cargo run --example with_plugins` — CLI with registry-based plugins
-- `cargo run --example with_ailoop` — ailoop confirmations and prompts
 - `cargo run --example http_retry_demo` — `http_retry` and secure client defaults
 - `cargo run -p cli-framework-oidc --example keycloak_cli --features client` — real OIDC/Keycloak login (env-configured `OidcClient`, `auth` commands, `whoami` via userinfo)
 
@@ -1026,8 +988,8 @@ The `chat` command classifies every AI-resolved command into one of three risk t
 | Tier | Default categories | Behavior |
 |---|---|---|
 | `Safe` | All others | Proceeds normally |
-| `Sensitive` | `data`, `config` | Requires interactive confirmation; ailoop acts as the interactive channel (no TTY needed when ailoop configured) |
-| `Destructive` | `deployment`, `admin`, `destructive` | Blocked unless `ALLOW_DESTRUCTIVE_COMMANDS=1`; when set, requires TTY or ailoop for confirmation |
+| `Sensitive` | `data`, `config` | Requires interactive confirmation, or `--yes` in a non-interactive context |
+| `Destructive` | `deployment`, `admin`, `destructive` | Blocked unless `ALLOW_DESTRUCTIVE_COMMANDS=1`; when set, still requires an interactive terminal for confirmation (`--yes` does not bypass it) |
 
 Configure a custom policy via `AppBuilder::with_risk_policy()`:
 
@@ -1044,7 +1006,7 @@ let app = AppBuilder::new()
 
 ### `ALLOW_DESTRUCTIVE_COMMANDS` Environment Variable
 
-Setting `ALLOW_DESTRUCTIVE_COMMANDS=1` permits destructive-tier commands to proceed when combined with interactive confirmation. When ailoop is configured, the ailoop channel acts as the interactive channel (no TTY required). Without ailoop, an interactive terminal is always required.
+Setting `ALLOW_DESTRUCTIVE_COMMANDS=1` permits destructive-tier commands to proceed when combined with interactive confirmation. An interactive terminal is always required.
 
 ### Plugin path confinement
 
@@ -1091,13 +1053,6 @@ with different descriptions fails registration or build.
 | `OPENAI_API_KEY` | API key for the LLM endpoint |
 | `AIKIT_LLM_URL` | OpenAI-compatible endpoint URL |
 | `AIKIT_MODEL` | Model name override |
-
-### ailoop Configuration
-
-| Variable | Role |
-|---------|------|
-| `AILOOP_CHANNEL` | Channel name (default: `"cli-framework"`) |
-| `AILOOP_SERVER` | WebSocket URL of the paired `ailoop serve` process (default: `ws://localhost:8080`); `http://` and `https://` URLs are normalized to `ws://`/`wss://` automatically |
 
 ### Telemetry Configuration (`telemetry` feature)
 

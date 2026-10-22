@@ -45,7 +45,6 @@ chmod +x .git/hooks/pre-commit
 | `command_surface`, `command_surface::tool_bridge` | Command→tool schemas + shared tool invocation bridge (chat / MCP) |
 | `parser`, `spec` | argv → args; `CommandPath`, `CommandSpec` |
 | `plugin` | registry TOML / manifests |
-| `ailoop` | ailoop-core client |
 | `security` | output sanitize, command risk policy, handle-validated private-file creation/open/atomic replacement |
 | `http_retry`, `retry` | HTTP retry, `secure_reqwest_client` |
 | `cli_output`, `cli_mode`, `message`, `environment` | help, environment-variable registry, tables, JSON, modes |
@@ -58,7 +57,7 @@ Also: `auth` (feature `auth`) — `TokenProvider` trait, `AccessToken`, `AuthErr
 
 **Flow:** `AppBuilder` registers commands, groups, help ordering, and built-ins into one registry → `run` resolves id + `CommandArgs` → `await` `execute` on `AppContext`. Help, completion, command-spec export, chat, and MCP read the same frozen registry. Tool surfaces (chat / MCP) adapt inputs into `command_surface::tool_bridge` for shared parsing/validation/gating/dispatch.
 
-**Externals (summary):** `Cargo.toml` — e.g. `tokio`, `reqwest`, `clap`, `serde`, `ailoop-core`, `aikit-agent`; optional `comfy-table`, `indicatif`.
+**Externals (summary):** `Cargo.toml` — e.g. `tokio`, `reqwest`, `clap`, `serde`, `aikit-agent`; optional `comfy-table`, `indicatif`.
 
 **Security (summary):** sanitize untrusted terminal output; command risk tier policy; plugin paths rooted (no traversal).
 

@@ -233,7 +233,6 @@ async fn i4_tool_call_result_forwarded_in_events() {
         ChatToolCallOptions {
             yolo: true,
             interactive: false,
-            ailoop_client: None,
         },
     ));
 

@@ -1,4 +1,3 @@
-use crate::ailoop::AiloopClient;
 use crate::app::context::AppContext;
 use crate::command::Command;
 use crate::parser::diagnostic::Diagnostic;
@@ -29,7 +28,6 @@ impl InvocationSurface {
 
 pub(crate) struct DispatchEnv<'a> {
     pub(crate) command_registry: &'a crate::command::CommandRegistry,
-    pub(crate) ailoop_client: &'a Option<AiloopClient>,
     pub(crate) global_args: &'a HashMap<String, ArgValue>,
     pub(crate) stdout_capture: Option<Arc<Mutex<Vec<u8>>>>,
     pub(crate) telemetry: Option<Arc<dyn crate::telemetry::Telemetry + Send + Sync>>,
@@ -183,12 +181,6 @@ impl<'a> crate::app::context::CommandRegistryContext for CliAppContextWrapper<'a
     }
 }
 
-impl<'a> crate::ailoop::AiloopContext for CliAppContextWrapper<'a> {
-    fn ailoop_client(&self) -> Option<&AiloopClient> {
-        self.env.ailoop_client.as_ref()
-    }
-}
-
 #[cfg(all(test, feature = "testkit"))]
 mod tests {
     use super::*;
@@ -202,7 +194,6 @@ mod tests {
     /// content written via framework_println is returned, not silently lost.
     #[tokio::test(flavor = "multi_thread")]
     async fn cli_app_context_wrapper_drain_output_returns_captured_content() {
-        use crate::ailoop::AiloopContext;
         use crate::app::context::CommandRegistryContext;
         let mut registry = CommandRegistry::new();
         let mut nested = Command {
@@ -234,14 +225,12 @@ mod tests {
             }]
         }));
         assert_eq!(validate_typed_args(&nested, &HashMap::new()).len(), 1);
-        let ailoop_client: Option<AiloopClient> = None;
         let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
         let global_args_map: HashMap<String, ArgValue> = HashMap::new();
         #[cfg(feature = "telemetry")]
         let probe_registry = crate::telemetry::ProbeRegistry::with_builtins();
         let env = DispatchEnv {
             command_registry: &registry,
-            ailoop_client: &ailoop_client,
             global_args: &global_args_map,
             stdout_capture: Some(buf.clone()),
             telemetry: None,
@@ -272,7 +261,6 @@ mod tests {
         assert_eq!(wrapper.drain_output(), "fallible 世界\n");
         assert!(wrapper.opt_registry().is_some());
         assert!(wrapper.opt_global_args().unwrap().is_empty());
-        assert!(wrapper.ailoop_client().is_none());
         assert!(wrapper.opt_telemetry_arc().is_none());
         wrapper.telemetry().event("contract", &[]);
         wrapper.env.telemetry = Some(Arc::new(crate::telemetry::NoopTelemetry));

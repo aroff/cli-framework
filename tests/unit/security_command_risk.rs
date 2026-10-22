@@ -12,7 +12,7 @@ fn env_lock() -> &'static Mutex<()> {
 fn test_safe_tier_always_ok_false() {
     let policy = CommandRiskPolicy::default();
     let enforcer = RiskEnforcer::new(policy);
-    let result = enforcer.enforce_preflight("list", None, false, false);
+    let result = enforcer.enforce_preflight("list", None, false);
     assert!(result.is_ok());
 }
 
@@ -20,7 +20,7 @@ fn test_safe_tier_always_ok_false() {
 fn test_safe_tier_always_ok_true() {
     let policy = CommandRiskPolicy::default();
     let enforcer = RiskEnforcer::new(policy);
-    let result = enforcer.enforce_preflight("list", None, true, false);
+    let result = enforcer.enforce_preflight("list", None, true);
     assert!(result.is_ok());
 }
 
@@ -32,7 +32,7 @@ fn test_destructive_blocked_without_env() {
     let policy = CommandRiskPolicy::default();
     let enforcer = RiskEnforcer::new(policy);
 
-    let result = enforcer.enforce_preflight("drop-db", Some("destructive"), true, false);
+    let result = enforcer.enforce_preflight("drop-db", Some("destructive"), true);
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(
@@ -50,7 +50,7 @@ fn test_destructive_blocked_assume_yes_true() {
     let policy = CommandRiskPolicy::default();
     let enforcer = RiskEnforcer::new(policy);
 
-    let result = enforcer.enforce_preflight("rm-all", Some("destructive"), true, false);
+    let result = enforcer.enforce_preflight("rm-all", Some("destructive"), true);
     assert!(result.is_err());
     assert!(result
         .unwrap_err()
@@ -65,7 +65,7 @@ fn test_destructive_blocked_assume_yes_false() {
     let policy = CommandRiskPolicy::default();
     let enforcer = RiskEnforcer::new(policy);
 
-    let result = enforcer.enforce_preflight("rm-all", Some("destructive"), false, false);
+    let result = enforcer.enforce_preflight("rm-all", Some("destructive"), false);
     assert!(result.is_err());
     assert!(result
         .unwrap_err()
@@ -73,13 +73,13 @@ fn test_destructive_blocked_assume_yes_false() {
         .contains("DESTRUCTIVE_COMMAND_BLOCKED"));
 }
 
-// AC8: Sensitive command blocked in non-interactive mode without assume_yes (no ailoop)
+// AC8: Sensitive command blocked in non-interactive mode without assume_yes
 #[test]
 fn test_sensitive_blocked_non_interactive_no_assume_yes() {
     let policy = CommandRiskPolicy::default();
     let enforcer = RiskEnforcer::new(policy);
 
-    let result = enforcer.enforce_preflight("config-update", Some("config"), false, false);
+    let result = enforcer.enforce_preflight("config-update", Some("config"), false);
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(
@@ -89,50 +89,40 @@ fn test_sensitive_blocked_non_interactive_no_assume_yes() {
     );
 }
 
-// Sensitive command allowed when ailoop is available (non-interactive)
+// Sensitive command allowed with assume_yes (--yes) in non-interactive mode
 #[test]
-fn test_sensitive_allowed_with_ailoop() {
+fn test_sensitive_allowed_with_assume_yes() {
     let policy = CommandRiskPolicy::default();
     let enforcer = RiskEnforcer::new(policy);
 
-    let result = enforcer.enforce_preflight("config-update", Some("config"), false, true);
+    let result = enforcer.enforce_preflight("config-update", Some("config"), true);
     assert!(
         result.is_ok(),
-        "Sensitive command should be allowed when ailoop is available"
+        "Sensitive command should be allowed with assume_yes"
     );
 }
 
-// Destructive command allowed when ailoop + ALLOW_DESTRUCTIVE_COMMANDS=1
+// assume_yes does not stand in for an interactive terminal on destructive commands
 #[test]
-fn test_destructive_allowed_with_ailoop_and_env() {
+fn test_destructive_assume_yes_does_not_replace_interactive() {
     let _guard = env_lock().lock().unwrap();
     std::env::set_var("ALLOW_DESTRUCTIVE_COMMANDS", "1");
     let policy = CommandRiskPolicy::default();
     let enforcer = RiskEnforcer::new(policy);
 
-    let result = enforcer.enforce_preflight("drop-db", Some("destructive"), false, true);
-    assert!(
-        result.is_ok(),
-        "Destructive command should be allowed when ailoop is available and env var set"
-    );
-
+    let result = enforcer.enforce_preflight("drop-db", Some("destructive"), true);
     std::env::remove_var("ALLOW_DESTRUCTIVE_COMMANDS");
-}
 
-// Destructive command still blocked without ALLOW_DESTRUCTIVE_COMMANDS even with ailoop
-#[test]
-fn test_destructive_still_blocked_without_env_even_with_ailoop() {
-    let _guard = env_lock().lock().unwrap();
-    std::env::remove_var("ALLOW_DESTRUCTIVE_COMMANDS");
-    let policy = CommandRiskPolicy::default();
-    let enforcer = RiskEnforcer::new(policy);
-
-    let result = enforcer.enforce_preflight("drop-db", Some("destructive"), false, true);
-    assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("DESTRUCTIVE_COMMAND_BLOCKED"));
+    if cli_framework::cli_mode::is_interactive() {
+        assert!(result.is_ok());
+    } else {
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("DESTRUCTIVE_COMMAND_BLOCKED"),
+            "Expected DESTRUCTIVE_COMMAND_BLOCKED in non-interactive mode, got: {}",
+            msg
+        );
+    }
 }
 
 // AC10: RiskEnforcer is callable without App/AppBuilder
@@ -143,7 +133,7 @@ fn test_risk_enforcer_standalone() {
         .tiers
         .insert("my-cmd".to_string(), CommandRiskTier::Safe);
     let enforcer = RiskEnforcer::new(policy);
-    let result = enforcer.enforce_preflight("my-cmd", None, false, false);
+    let result = enforcer.enforce_preflight("my-cmd", None, false);
     assert!(result.is_ok());
 }
 
@@ -219,8 +209,8 @@ fn test_per_command_override_wins() {
     );
 }
 
-// AC7: Destructive-tier with ALLOW_DESTRUCTIVE_COMMANDS=1 returns Ok when interactive or ailoop,
-// or DESTRUCTIVE_COMMAND_BLOCKED when non-interactive without ailoop (as in CI/test environments).
+// AC7: Destructive-tier with ALLOW_DESTRUCTIVE_COMMANDS=1 returns Ok when interactive,
+// or DESTRUCTIVE_COMMAND_BLOCKED when non-interactive (as in CI/test environments).
 #[test]
 fn test_ac7_destructive_allowed_with_env_and_interactive() {
     let _guard = env_lock().lock().unwrap();
@@ -228,7 +218,7 @@ fn test_ac7_destructive_allowed_with_env_and_interactive() {
     let policy = CommandRiskPolicy::default();
     let enforcer = RiskEnforcer::new(policy);
 
-    let result = enforcer.enforce_preflight("drop-db", Some("destructive"), false, false);
+    let result = enforcer.enforce_preflight("drop-db", Some("destructive"), false);
 
     if cli_framework::cli_mode::is_interactive() {
         assert!(

@@ -57,7 +57,6 @@ toml = "1"
 dirs = "5.0"
 uuid.workspace = true
 crossterm = "0.28"
-ailoop-core = { git = "https://github.com/goailoop/ailoop.git", rev = "c9b70bcc0bd659823dc8ddf71d8571a8e011113b", default-features = false }
 
 # Optional dependencies for CLI output utilities
 comfy-table = { version = "7.0", optional = true }
@@ -386,10 +385,6 @@ name = "with_plugins"
 path = "skill/examples/with_plugins/src/main.rs"
 
 [[example]]
-name = "with_ailoop"
-path = "skill/examples/with_ailoop/src/main.rs"
-
-[[example]]
 name = "with_auth"
 path = "skill/examples/with_auth/src/main.rs"
 required-features = ["auth"]
@@ -416,10 +411,6 @@ path = "tests/integration/tls_native_roots.rs"
 [[test]]
 name = "integration_app_builder"
 path = "tests/integration/app_builder.rs"
-
-[[test]]
-name = "integration_ailoop_websocket"
-path = "tests/integration/ailoop_websocket.rs"
 
 [[test]]
 name = "integration_chat_loop"

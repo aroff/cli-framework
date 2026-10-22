@@ -2,25 +2,25 @@
 name: tools-cli-framework
 description: >-
   Guides building and refactoring Rust CLIs with the cli-framework crate (tokio/async
-  dispatch, Arc command handlers, CommandSpec, plugins, ailoop, chat, OpenTelemetry).
+  dispatch, Arc command handlers, CommandSpec, plugins, chat, OpenTelemetry).
   Use when the user or codebase mentions cli-framework, AppBuilder, Command registration,
   natural language chat, plugin registry, operational command layout for Rust binaries,
   or telemetry/tracing/metrics/OTLP export on a cli-framework-based service.
 license: Apache-2.0
 metadata:
-  version: "0.4.0"
+  version: "0.5.0"
 ---
 
 # cli-framework integration
 
-Implement CLIs using [`cli-framework`](https://github.com/aroff/cli-framework): `AppBuilder`, `Command` (with `Arc` async executors), optional `chat`, plugins, and ailoop. Prefer repository docs over duplicating them here.
+Implement CLIs using [`cli-framework`](https://github.com/aroff/cli-framework): `AppBuilder`, `Command` (with `Arc` async executors), optional `chat`, and plugins. Prefer repository docs over duplicating them here.
 
 ## 1. When to use
 
 Load this skill when:
 - Building a new or refactored Rust CLI on the cli-framework stack
 - Registering command trees, filling `CommandSpec` metadata
-- Implementing risk-aware `chat` flows, plugin manifests, ailoop confirmations, or HTTP retry usage
+- Implementing risk-aware `chat` flows, plugin manifests, or HTTP retry usage
 - The codebase imports `cli_framework`, references `AppBuilder`, or uses `register_command`
 
 ## 2. Dependency baseline
@@ -252,23 +252,9 @@ Set `ALLOW_DESTRUCTIVE_COMMANDS=1` in controlled environments to permit destruct
 
 See `skill/references/cli-creation-scenarios.md` for domain-specific layouts.
 
-## 11. Plugins and ailoop
+## 11. Plugins
 
-Plugin manifests are TOML files loaded by `PluginRegistryManager`. Each plugin declares commands that are registered alongside built-ins. See `skill/references/plugins-and-ailoop.md`.
-
-ailoop confirmation pattern:
-
-```rust
-use cli_framework::ailoop::AiloopClient;
-
-let ailoop = AiloopClient::new()?;
-let confirmed = ailoop
-    .request_confirmation("Delete all user data?", Some("This action cannot be undone"))
-    .await?;
-if confirmed { /* proceed */ }
-```
-
-Enable via `AppBuilder::with_ailoop_channel`. See `skill/examples/with_ailoop` and `skill/examples/with_plugins`.
+Plugin manifests are TOML files loaded by `PluginRegistryManager`. Each plugin declares commands that are registered alongside built-ins. See `skill/references/plugins.md` and `skill/examples/with_plugins`.
 
 ## 12. MCP auto-serve mode
 
@@ -490,7 +476,7 @@ Full detail — Keycloak client config, all three flows, cache file schema, runt
 | `skill/references/features-and-cargo-flags.md` | All features + `cli-framework-oidc`, defaults, TOML snippets |
 | `skill/references/auth-and-oidc.md` | `TokenProvider`, `OidcClient`, Keycloak setup, cache schema, `AuthenticatedHttpClient`, JWT server layer, testing |
 | `skill/references/mcp-streamable-http.md` | Full MCP reference: flags, error codes, concurrency |
-| `skill/references/plugins-and-ailoop.md` | Plugin manifests, ailoop confirmations |
+| `skill/references/plugins.md` | Plugin manifests |
 | `skill/references/http-retry.md` | `RetryableHttpClient`, circuit breaker |
 | `skill/references/telemetry.md` | OpenTelemetry: subscriber trap, auto spans/metrics, W3C propagation, OTLP auth headers, testing |
 | `skill/references/testing-with-testkit.md` | `CliTestHarness`, in-process test pattern |
@@ -503,7 +489,6 @@ Full detail — Keycloak client config, all three flows, cache file schema, runt
 |---------|-----------|---------------|
 | `skill/examples/basic_cli` | `cargo run --example basic_cli` | none |
 | `skill/examples/with_plugins` | `cargo run --example with_plugins` | none |
-| `skill/examples/with_ailoop` | `cargo run --example with_ailoop` | none |
 | `skill/examples/with_mcp` | `cargo run --example with_mcp --features mcp-server` | `mcp-server` |
 | `skill/examples/with_doctor` | `cargo run --example with_doctor --features doctor` | `doctor` |
 | `skill/examples/with_auth` | `cargo run --example with_auth --features auth` | `auth` |

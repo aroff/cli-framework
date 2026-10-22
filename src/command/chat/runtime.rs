@@ -51,7 +51,6 @@ pub(super) async fn execute_chat(
     ctx: &mut dyn AppContext,
     registry_fallback: Arc<CommandRegistry>,
     risk_policy: CommandRiskPolicy,
-    ailoop_client: Option<Arc<AiloopClient>>,
     app_name: &'static str,
     chat_tool_policy: ChatToolPolicy,
     args: std::collections::HashMap<String, crate::spec::value::ArgValue>,
@@ -106,7 +105,6 @@ pub(super) async fn execute_chat(
             ChatToolCallOptions {
                 yolo,
                 interactive: crate::cli_mode::is_interactive(),
-                ailoop_client: ailoop_client.clone(),
             },
         ));
         config.host_tool_provider = Some(adapter);
@@ -142,7 +140,6 @@ pub(super) async fn execute_chat(
     }
 
     repl_loop(AgentRunOpts {
-        ailoop_client,
         tool_exec,
         yolo,
         stream,
@@ -161,7 +158,6 @@ async fn read_stdin_all() -> anyhow::Result<String> {
 
 #[derive(Clone)]
 pub(crate) struct AgentRunOpts {
-    pub ailoop_client: Option<Arc<AiloopClient>>,
     pub tool_exec: Arc<McpToolRegistry>,
     pub yolo: bool,
     pub stream: bool,
@@ -211,7 +207,6 @@ async fn repl_loop(opts: AgentRunOpts) -> CommandResult {
             ChatToolCallOptions {
                 yolo: opts.yolo,
                 interactive: crate::cli_mode::is_interactive(),
-                ailoop_client: opts.ailoop_client.clone(),
             },
         ));
         config.host_tool_provider = Some(adapter);

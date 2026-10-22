@@ -2,7 +2,7 @@
 
 Domain glossary for the `cli-framework` Rust library: a CLI application
 framework with a central command registry, optional LLM-assisted resolution
-(`ask`, `chat`), ailoop-backed human-in-the-loop prompts, plugin loading,
+(`ask`, `chat`), interactive confirmation for risky commands, plugin loading,
 optional MCP exposure, and optional authentication.
 
 This file is a glossary, not a spec. Implementation details belong in
@@ -65,9 +65,8 @@ Risk gate or trigger a Confirmation; operators must wire an MCP tool gate
 explicitly if they want allowlisting or confirmation for MCP.
 
 **Confirmation**:
-A single y/N-style **HITL** interaction requested before Dispatch when the
-Risk gate requires one. Not specific to risk — any command may request one
-ad-hoc via `AiloopClient`.
+A single y/N-style **HITL** interaction on the interactive terminal,
+requested before Dispatch when the Risk gate requires one.
 _Avoid_: prompt, approval (overloaded).
 
 **CommandSpec**:
@@ -129,14 +128,12 @@ One deviation worth noting: `opt_registry` / `opt_global_args` return a
 borrowed `Option<&T>`, but `opt_token_provider` returns an owned
 `Option<Arc<dyn TokenProvider>>` — the cheap `Arc` clone lets a handler move
 the provider into a client that outlives the `&mut dyn AppContext` borrow.
-_Avoid_ extension traits on the wrapper (e.g. `AiloopContext`) as the handler
-access path: they are unreachable from `&dyn AppContext` (a handler must build
-its own client, as the `ailoop` example does).
+_Avoid_ extension traits on the wrapper as the handler access path: they are
+unreachable from `&dyn AppContext`.
 
 **DispatchEnv**:
 The **framework-internal** struct (`src/app/dispatch.rs`) carrying services
-the framework owns during a dispatch: the Command registry, ailoop client,
-stdout capture, the **TokenProvider** when wired via
+the framework owns during a dispatch: the Command registry, stdout capture, the **TokenProvider** when wired via
 `AppBuilder::with_token_provider` (`auth` feature), etc. The provider lives
 here, not in user `AppContext` state; the wrapper surfaces it through
 `opt_token_provider`, exactly as it surfaces the registry through
@@ -146,10 +143,6 @@ is a real architectural concept and the right mental model when reading the
 code.
 _Avoid_ stuffing framework-owned services into user `AppContext`, or
 user state into `DispatchEnv`.
-
-**AiloopContext**:
-A narrow trait the wrapper implements to hand the ailoop client to code
-that needs HITL. Conceptually a slice of `DispatchEnv`, not of `AppContext`.
 
 **Plugin**:
 A third-party bundle of declarative command metadata loaded from a
@@ -191,10 +184,10 @@ long-term replacement for the Ask LLM stack.
 > "LLM" alone is ambiguous in this repo — always qualify which stack.
 
 **HITL** (human-in-the-loop):
-Umbrella term for any user interaction routed through the paired
-`ailoop serve` process (Confirmation, questions, notifications,
-authorization). The framework has no stdin fallback — ailoop is the HITL
-channel.
+Umbrella term for a user interaction during a command. The framework's
+only built-in HITL is the **Confirmation** prompt on an interactive
+terminal; in a non-interactive context `--yes` answers Sensitive
+confirmations and Destructive commands are blocked.
 
 **auth feature** _(ADR 0069; shipped in 0.5.8)_:
 The Cargo feature flag in `cli-framework` that enables the **TokenProvider**
@@ -520,8 +513,7 @@ _Avoid_: "bootstrap script", "installer" for the binary's own commands.
 The one line a **Self-install**ed application may print after a successful
 command saying a newer release exists. Opt-in per application and passive:
 it never updates anything, and only the person running `self update` does.
-_Avoid_: "auto-update" (nothing updates by itself), "notification" (taken by
-ailoop).
+_Avoid_: "auto-update" (nothing updates by itself).
 
 **Telemetry level** _(spec 025)_:
 How much telemetry leaves the process: `off`, `usage` (what was used —
@@ -706,7 +698,7 @@ _Avoid_: "event log", "audit trail" as the canonical term, "event store".
 > pair like any other Resolution. But before Dispatch, the Risk gate looks
 > up `deploy` in the Risk policy — `deployment` is Destructive by default,
 > so the gate blocks unless `ALLOW_DESTRUCTIVE_COMMANDS=1`, and even then
-> it requires a Confirmation routed through ailoop (HITL). Only then does
+> it requires a Confirmation on an interactive terminal (HITL). Only then does
 > Dispatch invoke `execute`."
 >
 > **Dev:** "And if the same command is called through MCP?"
