@@ -20,6 +20,16 @@
   `ALLOW_DESTRUCTIVE_COMMANDS=1` and an interactive terminal. Callers remove
   the last argument.
 
+### Fixed
+
+- `self update` against a private GitHub repository without a token failed
+  with a bare `SI008: GET …/releases?per_page=100: HTTP 404` (or `no release
+  matches <version>`), which reads as a missing repository. When no token was
+  sent and GitHub answers 401, 403 or 404, the error now ends with `set
+  <APP>_GITHUB_TOKEN or GITHUB_TOKEN to a token that can read them`. The code
+  stays SI008. `ReleaseError` gains the `NoToken` variant for it; a `match`
+  over `ReleaseError` without a wildcard arm needs one more arm.
+
 ### Removed
 
 - The `.cargo/audit.toml` ignores for RUSTSEC-2026-0098/0099/0104: they

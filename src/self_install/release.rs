@@ -87,6 +87,16 @@ pub enum ReleaseError {
         path: std::path::PathBuf,
         source: std::io::Error,
     },
+    /// GitHub refused or hid the repository and no token was sent: a
+    /// private repository answers 404 to an anonymous request.
+    #[error(
+        "{source}; no token was sent, and GitHub hides a private repository's \
+         releases without one: set {vars} to a token that can read them"
+    )]
+    NoToken {
+        source: Box<ReleaseError>,
+        vars: String,
+    },
 }
 
 /// One release as the GitHub API lists it.
