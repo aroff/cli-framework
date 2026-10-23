@@ -1018,4 +1018,78 @@ mod unix {
         let sb = Sandbox::installed("1.2.3", &opts);
         assert_eq!(notice_line(&sb.env, &opts, &no_policy()).await, None);
     }
+
+    /// A GitHub API that hides the repository, as it does a private one from
+    /// an anonymous request. With a token, it lists no releases.
+    async fn hidden_github() -> wiremock::MockServer {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/o/demoapp/releases"))
+            .and(header("authorization", "Bearer t0ken-canary"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn github_opts(server: &wiremock::MockServer) -> SelfInstallOptions {
+        SelfInstallOptions::github("o/demoapp")
+            .github_api_base(server.uri())
+            .completions(false)
+    }
+
+    #[tokio::test]
+    async fn an_anonymous_404_from_github_names_the_token_variables() {
+        let server = hidden_github().await;
+        let opts = github_opts(&server);
+        let sb = Sandbox::installed("1.2.3", &opts);
+
+        let err = update(&sb.env, &opts, &no_policy(), &UpdateRequest::default())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("/repos/o/demoapp/releases"), "{err}");
+        assert!(err.contains("HTTP 404"), "{err}");
+        assert!(
+            err.contains("set DEMOAPP_GITHUB_TOKEN or GITHUB_TOKEN"),
+            "{err}"
+        );
+
+        // An exact version reads as "no release matches" without a token,
+        // which a private repository also answers: the hint says so too.
+        let err = update(&sb.env, &opts, &no_policy(), &to("9.9.9"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no release matches 9.9.9"), "{err}");
+        assert!(
+            err.contains("set DEMOAPP_GITHUB_TOKEN or GITHUB_TOKEN"),
+            "{err}"
+        );
+        assert_eq!(version_of(&sb.binary()), "1.2.3");
+    }
+
+    #[tokio::test]
+    async fn with_a_token_github_errors_carry_no_hint_and_never_the_token() {
+        let server = hidden_github().await;
+        let opts = github_opts(&server);
+        let mut sb = Sandbox::installed("1.2.3", &opts);
+        sb.env
+            .vars
+            .insert("DEMOAPP_GITHUB_TOKEN".into(), "t0ken-canary".into());
+
+        let err = update(&sb.env, &opts, &no_policy(), &UpdateRequest::default())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no release matches stable"), "{err}");
+        assert!(!err.contains("GITHUB_TOKEN"), "{err}");
+        assert!(!err.contains("t0ken-canary"), "{err}");
+    }
 }

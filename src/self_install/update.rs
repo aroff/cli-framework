@@ -18,7 +18,7 @@ use super::options::{check_https, current_target, ReleaseSource, SelfInstallOpti
 use super::place::{place_binary, PlaceMode};
 use super::policy::{SelfUpdatePolicy, KEY_CHANNEL, KEY_ENABLED, KEY_MINIMUM_VERSION};
 use super::receipt::{now_rfc3339, InstallReceipt};
-use super::release::{Channel, Fetcher};
+use super::release::{Channel, Fetcher, ReleaseError};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -185,6 +185,31 @@ pub(crate) fn github_token(env: &InstallEnv, source: &ReleaseSource) -> Option<S
     env.var(&format!("{}_GITHUB_TOKEN", env_var_prefix(&env.app)))
         .or_else(|| env.var("GITHUB_TOKEN"))
         .map(str::to_string)
+}
+
+/// A GitHub answer that a token could change, when none was sent, names the
+/// variables to set: a private repository answers 404 to an anonymous
+/// request, which otherwise reads as a missing repository or release.
+fn token_hint(
+    err: ReleaseError,
+    env: &InstallEnv,
+    source: &ReleaseSource,
+    sent: bool,
+) -> ReleaseError {
+    let hidden = matches!(
+        err,
+        ReleaseError::Status {
+            status: 401 | 403 | 404,
+            ..
+        } | ReleaseError::NotFound { .. }
+    );
+    if sent || !hidden || !matches!(source, ReleaseSource::Github { .. }) {
+        return err;
+    }
+    ReleaseError::NoToken {
+        source: Box::new(err),
+        vars: format!("{}_GITHUB_TOKEN or GITHUB_TOKEN", env_var_prefix(&env.app)),
+    }
 }
 
 /// The bin dir's update lock, released on drop.
@@ -397,13 +422,16 @@ pub async fn update(
         target = version;
     } else {
         let source = effective_source(env, opts, policy)?;
-        let fetcher = Fetcher::new(github_token(env, &source))?;
+        let token = github_token(env, &source);
+        let sent = token.is_some();
+        let fetcher = Fetcher::new(token)?;
         let target_triple = current_target();
         let asset_for =
             |v: &semver::Version| opts.asset_name(&env.app, &v.to_string(), &target_triple);
         let release = fetcher
             .resolve(&source, &opts.tag_prefix, &asset_for, &channel)
-            .await?;
+            .await
+            .map_err(|e| token_hint(e, env, &source, sent))?;
         let version = release.version.clone();
         if version == current && !req.force {
             return Ok(outcome(UpdateAction::UpToDate, &version, None, Vec::new()));
