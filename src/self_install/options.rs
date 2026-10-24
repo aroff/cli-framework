@@ -227,6 +227,18 @@ fn is_loopback_http(url: &str) -> bool {
         })
 }
 
+/// The target to try when a release has no archive for `target`.
+///
+/// A `linux-gnu` binary (built from source, or by `cargo install`) falls
+/// back to the `linux-musl` archive of the same architecture: that build is
+/// static and runs on any Linux, and it is what releases usually ship. No
+/// other target has a fallback.
+pub fn fallback_target(target: &str) -> Option<String> {
+    target
+        .strip_suffix("-unknown-linux-gnu")
+        .map(|arch| format!("{arch}-unknown-linux-musl"))
+}
+
 /// The Rust target triple of the running binary, as release archives name
 /// it. Linux reports `musl` or `gnu` from how this binary was built.
 pub fn current_target() -> String {

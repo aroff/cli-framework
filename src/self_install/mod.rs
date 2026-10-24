@@ -66,7 +66,7 @@ pub use ops::{
     install, path_decision, purge_roots, status, system_bin_dir, uninstall, InstallOutcome,
     InstallRequest, PathDecision, SelfInstallError, StatusReport, UninstallOutcome,
 };
-pub use options::{current_target, ReleaseSource, SelfInstallOptions};
+pub use options::{current_target, fallback_target, ReleaseSource, SelfInstallOptions};
 pub use place::{place_binary, stale_files, startup_cleanup, PlaceMode};
 pub use policy::{SelfUpdatePolicy, KEY_BASE_URL, KEY_CHANNEL, KEY_ENABLED, KEY_MINIMUM_VERSION};
 pub use receipt::{InstallReceipt, PathModification, ReceiptError, ReceiptSource};

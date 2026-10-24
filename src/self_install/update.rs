@@ -14,7 +14,9 @@ use super::env::{InstallEnv, Os};
 use super::layout::{binary_file_name, env_var_prefix, receipt_path, same_path};
 use super::method::{infer_method_from_path, upgrade_hint};
 use super::ops::SelfInstallError;
-use super::options::{check_https, current_target, ReleaseSource, SelfInstallOptions};
+use super::options::{
+    check_https, current_target, fallback_target, ReleaseSource, SelfInstallOptions,
+};
 use super::place::{place_binary, PlaceMode};
 use super::policy::{SelfUpdatePolicy, KEY_CHANNEL, KEY_ENABLED, KEY_MINIMUM_VERSION};
 use super::receipt::{now_rfc3339, InstallReceipt};
@@ -407,6 +409,7 @@ pub async fn update(
     let work;
     let staged;
     let target;
+    let mut installed_target = current_target();
     if let Some(archive) = &req.from {
         _lock = UpdateLock::acquire(&bin_dir, &env.app)?;
         work = WorkDir::create(&bin_dir, &env.app)?;
@@ -425,13 +428,31 @@ pub async fn update(
         let token = github_token(env, &source);
         let sent = token.is_some();
         let fetcher = Fetcher::new(token)?;
-        let target_triple = current_target();
-        let asset_for =
-            |v: &semver::Version| opts.asset_name(&env.app, &v.to_string(), &target_triple);
-        let release = fetcher
-            .resolve(&source, &opts.tag_prefix, &asset_for, &channel)
-            .await
-            .map_err(|e| token_hint(e, env, &source, sent))?;
+        let preferred = current_target();
+        let asset_for = |triple: &str| {
+            let triple = triple.to_string();
+            move |v: &semver::Version| opts.asset_name(&env.app, &v.to_string(), &triple)
+        };
+        let mut resolved = fetcher
+            .resolve(&source, &opts.tag_prefix, &asset_for(&preferred), &channel)
+            .await;
+        // A release without this build's archive may still carry one that
+        // runs here; a miss on both reports the preferred archive.
+        if let (Err(ReleaseError::MissingAsset { .. }), Some(fallback)) =
+            (&resolved, fallback_target(&preferred))
+        {
+            match fetcher
+                .resolve(&source, &opts.tag_prefix, &asset_for(&fallback), &channel)
+                .await
+            {
+                Err(ReleaseError::MissingAsset { .. }) => {}
+                other => {
+                    resolved = other;
+                    installed_target = fallback;
+                }
+            }
+        }
+        let release = resolved.map_err(|e| token_hint(e, env, &source, sent))?;
         let version = release.version.clone();
         if version == current && !req.force {
             return Ok(outcome(UpdateAction::UpToDate, &version, None, Vec::new()));
@@ -498,7 +519,7 @@ pub async fn update(
     }
     receipt.previous_version = Some(current.to_string());
     receipt.version = target.to_string();
-    receipt.target = current_target();
+    receipt.target = installed_target;
     if let Some(name) = channel.name().filter(|_| req.from.is_none()) {
         receipt.channel = name.to_string();
     }
