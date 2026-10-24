@@ -215,6 +215,14 @@ fn invalid_options_fail_the_build() {
 
 const DEMO: &str = env!("CARGO_BIN_EXE_cfw-self-install-demo");
 
+/// Held by every test that installs the real binary: on Windows they share
+/// one receipt in `%LOCALAPPDATA%`, so they must not overlap.
+static REAL_RECEIPT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn real_receipt() -> std::sync::MutexGuard<'static, ()> {
+    REAL_RECEIPT.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 struct Machine {
     _root: tempfile::TempDir,
     home: PathBuf,
@@ -261,6 +269,7 @@ fn ok(out: &Output, what: &str) -> String {
 
 #[test]
 fn install_status_doctor_uninstall_round_trip() {
+    let _receipt = real_receipt();
     let m = Machine::new();
     let exe_name = if cfg!(windows) {
         "cfw-self-install-demo.exe"
@@ -346,6 +355,7 @@ fn install_status_doctor_uninstall_round_trip() {
 
 #[test]
 fn root_install_places_a_download_and_self_status_sees_it() {
+    let _receipt = real_receipt();
     let m = Machine::new();
     let exe_name = if cfg!(windows) {
         "cfw-self-install-demo.exe"
