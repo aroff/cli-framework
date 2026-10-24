@@ -1094,6 +1094,7 @@ mod unix {
     }
 
     /// A GitHub release carrying only the archives for `targets`.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     async fn github_with(version: &'static str, targets: &[String]) -> wiremock::MockServer {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
