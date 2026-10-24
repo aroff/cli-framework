@@ -334,6 +334,11 @@ Both phases shipped together. As above, none reverses a decision.
   verification failed, `SI010` refused request (downgrade, nothing to roll
   back, conflicting arguments), `SI011` another update holds the lock.
   `SI001` also covers `--system` without the needed privilege.
+- `SelfInstallOptions::root_install(true)` registers the same `install`
+  command at the root too, so a person who downloaded the binary types
+  `myapp install`. Off by default, so the "no root aliases" rule above holds
+  unless the app asks; it ignores the built-in namespace, yields to an app's
+  own root `install`, and is absent for `Deployment::Service` like the group.
 
 ## Consequences
 

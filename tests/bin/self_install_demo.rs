@@ -6,6 +6,9 @@
 //!
 //! `CFW_DEMO_VERSION`, read at compile time, overrides the reported version
 //! so the end-to-end job can build a "newer release" to update to.
+//!
+//! It opts in to the root `install`, so `cfw-self-install-demo install` works
+//! as well as `self install`.
 
 use cli_framework::app::AppContext;
 use cli_framework::prelude::*;
@@ -20,7 +23,11 @@ async fn main() -> anyhow::Result<()> {
             "cfw-self-install-demo",
             option_env!("CFW_DEMO_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
         )
-        .with_self_install(SelfInstallOptions::github("aroff/cli-framework").completions(true));
+        .with_self_install(
+            SelfInstallOptions::github("aroff/cli-framework")
+                .completions(true)
+                .root_install(true),
+        );
     if let Ok(ns) = std::env::var("CFW_DEMO_NAMESPACE") {
         if !ns.is_empty() {
             builder = builder.with_builtin_command_namespace(&CommandPath::root_for(&ns));

@@ -51,7 +51,8 @@ impl Shared {
     }
 }
 
-/// Register `<namespace> self {install, update, rollback, uninstall, status}`.
+/// Register `<namespace> self {install, update, rollback, uninstall, status}`,
+/// and a root `install` when the options ask for it.
 ///
 /// `completion_command` is the argv after the binary name that reaches the
 /// built-in completion command, or `None` when the app disabled it.
@@ -86,6 +87,10 @@ pub fn register_self_commands(
             },
         )
         .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let root_install = shared
+        .options
+        .root_install_enabled()
+        .then(|| install_command(shared.clone()));
     for (leaf, command) in [
         ("install", install_command(shared.clone())),
         ("update", update_command(shared.clone())),
@@ -96,6 +101,20 @@ pub fn register_self_commands(
         registry
             .register_at(&group.push(leaf).expect("valid segment"), command)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
+    }
+    if let Some(command) = root_install {
+        let root = CommandPath::root_for("install");
+        let occupied = registry.resolve(&root).is_some()
+            || registry
+                .group_metadata_for(&root.to_path_string())
+                .is_some();
+        if occupied {
+            tracing::warn!("'install' already registered; skipping the root install command");
+        } else {
+            registry
+                .register_at(&root, command)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+        }
     }
     Ok(())
 }
