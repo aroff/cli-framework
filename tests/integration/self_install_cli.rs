@@ -140,6 +140,67 @@ fn an_app_owning_self_keeps_it() {
 }
 
 #[test]
+fn root_install_is_opt_in_and_ignores_the_namespace() {
+    let app = AppBuilder::new()
+        .with_version("demo", "0.1.0")
+        .with_self_install(options())
+        .build(Ctx)
+        .unwrap();
+    assert!(app.command_registry().get("install").is_none());
+
+    let app = AppBuilder::new()
+        .with_version("demo", "0.1.0")
+        .with_builtin_command_namespace(&CommandPath::root_for("cli"))
+        .with_self_install(options().root_install(true))
+        .build(Ctx)
+        .unwrap();
+    let reg = app.command_registry();
+    assert!(reg.get("install").is_some(), "root install");
+    assert!(reg.resolve(&path(&["cli", "self", "install"])).is_some());
+}
+
+#[test]
+fn an_app_owning_a_root_install_keeps_it() {
+    let own = Command {
+        id: Arc::from("install"),
+        spec: Arc::new(CommandSpec {
+            summary: "the app's own install",
+            ..Default::default()
+        }),
+        validator: None,
+        expose_mcp: false,
+        expose_chat: false,
+        meta: None,
+        visibility: None,
+        execute: Arc::new(|_ctx, _args| Box::pin(async move { Ok(()) })),
+    };
+    let app = AppBuilder::new()
+        .with_version("demo", "0.1.0")
+        .register_command(own)
+        .unwrap()
+        .with_self_install(options().root_install(true))
+        .build(Ctx)
+        .unwrap();
+    let reg = app.command_registry();
+    assert_eq!(
+        reg.get("install").unwrap().summary(),
+        "the app's own install"
+    );
+    assert!(reg.resolve(&path(&["self", "install"])).is_some());
+}
+
+#[test]
+fn service_deployments_get_no_root_install() {
+    let app = AppBuilder::new()
+        .with_version("demo", "0.1.0")
+        .with_deployment(Deployment::Service)
+        .with_self_install(options().root_install(true))
+        .build(Ctx)
+        .unwrap();
+    assert!(app.command_registry().get("install").is_none());
+}
+
+#[test]
 fn invalid_options_fail_the_build() {
     let result = AppBuilder::new()
         .with_version("demo", "0.1.0")
@@ -281,4 +342,41 @@ fn install_status_doctor_uninstall_round_trip() {
     let again = m.run(DEMO.as_ref(), &["self", "uninstall"]);
     assert!(!again.status.success());
     assert!(String::from_utf8_lossy(&again.stderr).contains("SI004"));
+}
+
+#[test]
+fn root_install_places_a_download_and_self_status_sees_it() {
+    let m = Machine::new();
+    let exe_name = if cfg!(windows) {
+        "cfw-self-install-demo.exe"
+    } else {
+        "cfw-self-install-demo"
+    };
+    let download_dir = m.home.join("Downloads");
+    std::fs::create_dir_all(&download_dir).unwrap();
+    let download = download_dir.join(exe_name);
+    std::fs::copy(DEMO, &download).unwrap();
+
+    let bin_dir = m.bin_dir.to_string_lossy().into_owned();
+    let stdout = ok(
+        &m.run(&download, &["install", "--bin-dir", &bin_dir]),
+        "install",
+    );
+    assert!(stdout.contains("installed to"), "{stdout}");
+    let installed = m.bin_dir.join(exe_name);
+    assert!(installed.is_file());
+    assert!(
+        download.exists(),
+        "without --from-bootstrap the download stays"
+    );
+
+    let status = ok(&m.run(&installed, &["self", "status", "--json"]), "status");
+    let report: serde_json::Value = serde_json::from_str(status.trim()).unwrap();
+    assert_eq!(report["method"], "self-install");
+    assert_eq!(
+        PathBuf::from(report["receipt"]["binary_path"].as_str().unwrap()),
+        installed
+    );
+
+    ok(&m.run(&installed, &["self", "uninstall"]), "uninstall");
 }

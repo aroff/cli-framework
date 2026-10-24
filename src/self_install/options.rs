@@ -32,6 +32,7 @@ pub struct SelfInstallOptions {
     pub(crate) update_notice: bool,
     pub(crate) apps_and_features: bool,
     pub(crate) publisher: Option<String>,
+    pub(crate) root_install: bool,
 }
 
 /// The default archive name: `<app>-<target>.tar.gz` or `.zip`.
@@ -63,6 +64,7 @@ impl SelfInstallOptions {
             update_notice: false,
             apps_and_features: true,
             publisher: None,
+            root_install: false,
         }
     }
 
@@ -115,6 +117,16 @@ impl SelfInstallOptions {
         self
     }
 
+    /// Also register `install` at the root, as `myapp install`, beside
+    /// `self install`. Off by default; an app that already owns a root
+    /// `install` keeps it. The root command ignores the built-in command
+    /// namespace: it is there so a person who downloaded the binary can
+    /// type the obvious thing.
+    pub fn root_install(mut self, enabled: bool) -> Self {
+        self.root_install = enabled;
+        self
+    }
+
     /// Register a Windows Apps & Features entry for user installs. On by
     /// default; no effect on other platforms.
     pub fn apps_and_features(mut self, enabled: bool) -> Self {
@@ -153,6 +165,10 @@ impl SelfInstallOptions {
 
     pub fn get_asset_template(&self) -> &str {
         &self.asset_template
+    }
+
+    pub fn root_install_enabled(&self) -> bool {
+        self.root_install
     }
 
     pub fn completions_enabled(&self) -> bool {
