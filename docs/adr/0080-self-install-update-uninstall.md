@@ -334,6 +334,12 @@ Both phases shipped together. As above, none reverses a decision.
   verification failed, `SI010` refused request (downgrade, nothing to roll
   back, conflicting arguments), `SI011` another update holds the lock.
   `SI001` also covers `--system` without the needed privilege.
+- A `linux-gnu` binary, built from source or by `cargo install`, updates
+  from the `linux-musl` archive of its architecture when a GitHub release
+  has no `linux-gnu` one (`fallback_target`): releases often ship only the
+  static build, which runs on any Linux. Its own archive is still preferred,
+  a miss on both names the preferred archive, and the receipt records the
+  target installed. An HTTP mirror lists no assets, so it gets no fallback.
 
 ## Consequences
 

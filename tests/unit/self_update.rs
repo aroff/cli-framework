@@ -12,12 +12,12 @@
 
 use cli_framework::config::Policy;
 use cli_framework::self_install::{
-    check_public_key, current_target, expected_digest, extract_binary, install, is_safe_entry,
-    notice_line, path_decision, pick_release, prev_path, probe_version, receipt_path, rollback,
-    system_bin_dir, uninstall, update, verify_checksum, verify_signature, ArchiveError, Channel,
-    GithubRelease, InstallEnv, InstallReceipt, InstallRequest, Os, PathDecision, SelfInstallError,
-    SelfInstallOptions, SelfUpdatePolicy, UpdateAction, UpdateRequest, KEY_CHANNEL, KEY_ENABLED,
-    KEY_MINIMUM_VERSION,
+    check_public_key, current_target, expected_digest, extract_binary, fallback_target, install,
+    is_safe_entry, notice_line, path_decision, pick_release, prev_path, probe_version,
+    receipt_path, rollback, system_bin_dir, uninstall, update, verify_checksum, verify_signature,
+    ArchiveError, Channel, GithubRelease, InstallEnv, InstallReceipt, InstallRequest, Os,
+    PathDecision, SelfInstallError, SelfInstallOptions, SelfUpdatePolicy, UpdateAction,
+    UpdateRequest, KEY_CHANNEL, KEY_ENABLED, KEY_MINIMUM_VERSION,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -1091,5 +1091,121 @@ mod unix {
         assert!(err.contains("no release matches stable"), "{err}");
         assert!(!err.contains("GITHUB_TOKEN"), "{err}");
         assert!(!err.contains("t0ken-canary"), "{err}");
+    }
+
+    /// A GitHub release carrying only the archives for `targets`.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    async fn github_with(version: &'static str, targets: &[String]) -> wiremock::MockServer {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let names = SelfInstallOptions::github("o/demoapp");
+        let archive = release_archive(version);
+        let mut assets = Vec::new();
+        let mut sums = String::new();
+        for t in targets {
+            let name = names.asset_name(APP, version, t);
+            sums.push_str(&format!("{}  {name}\n", sha256_hex(&archive)));
+            Mock::given(method("GET"))
+                .and(path(format!("/dl/{name}")))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(archive.clone()))
+                .mount(&server)
+                .await;
+            assets.push(json!({
+                "name": name,
+                "url": format!("{}/api/{name}", server.uri()),
+                "browser_download_url": format!("{}/dl/{name}", server.uri()),
+            }));
+        }
+        Mock::given(method("GET"))
+            .and(path("/dl/SHA256SUMS"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(sums))
+            .mount(&server)
+            .await;
+        assets.push(json!({
+            "name": "SHA256SUMS",
+            "url": format!("{}/api/SHA256SUMS", server.uri()),
+            "browser_download_url": format!("{}/dl/SHA256SUMS", server.uri()),
+        }));
+        Mock::given(method("GET"))
+            .and(path("/repos/o/demoapp/releases"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                { "tag_name": format!("v{version}"), "assets": assets }
+            ])))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[test]
+    fn only_linux_gnu_falls_back_and_to_musl() {
+        assert_eq!(
+            fallback_target("x86_64-unknown-linux-gnu").as_deref(),
+            Some("x86_64-unknown-linux-musl")
+        );
+        assert_eq!(
+            fallback_target("aarch64-unknown-linux-gnu").as_deref(),
+            Some("aarch64-unknown-linux-musl")
+        );
+        for t in [
+            "x86_64-unknown-linux-musl",
+            "aarch64-apple-darwin",
+            "x86_64-pc-windows-msvc",
+            "x86_64-pc-windows-gnu",
+        ] {
+            assert_eq!(fallback_target(t), None, "{t}");
+        }
+    }
+
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[tokio::test]
+    async fn a_gnu_build_updates_from_a_release_that_ships_only_musl() {
+        let musl = fallback_target(&current_target()).unwrap();
+        let server = github_with("1.3.0", std::slice::from_ref(&musl)).await;
+        let opts = github_opts(&server);
+        let sb = Sandbox::installed("1.2.3", &opts);
+
+        let check = UpdateRequest {
+            check: true,
+            ..Default::default()
+        };
+        let out = update(&sb.env, &opts, &no_policy(), &check).await.unwrap();
+        assert_eq!(out.action, UpdateAction::Available);
+
+        let out = update(&sb.env, &opts, &no_policy(), &UpdateRequest::default())
+            .await
+            .unwrap();
+        assert_eq!(out.action, UpdateAction::Updated);
+        assert_eq!(version_of(&sb.binary()), "1.3.0");
+        assert_eq!(
+            sb.receipt().target,
+            musl,
+            "the receipt names what was installed"
+        );
+    }
+
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[tokio::test]
+    async fn a_gnu_build_prefers_its_own_archive_and_a_miss_names_it() {
+        let gnu = current_target();
+        let musl = fallback_target(&gnu).unwrap();
+        let server = github_with("1.3.0", &[gnu.clone(), musl]).await;
+        let opts = github_opts(&server);
+        let sb = Sandbox::installed("1.2.3", &opts);
+        update(&sb.env, &opts, &no_policy(), &UpdateRequest::default())
+            .await
+            .unwrap();
+        assert_eq!(sb.receipt().target, gnu);
+
+        let server = github_with("1.3.0", &["x86_64-apple-darwin".to_string()]).await;
+        let opts = github_opts(&server);
+        let sb = Sandbox::installed("1.2.3", &opts);
+        let err = update(&sb.env, &opts, &no_policy(), &UpdateRequest::default())
+            .await
+            .unwrap_err()
+            .to_string();
+        let wanted = opts.asset_name(APP, "1.3.0", &gnu);
+        assert!(err.contains(&format!("has no asset {wanted}")), "{err}");
+        assert_eq!(version_of(&sb.binary()), "1.2.3");
     }
 }
